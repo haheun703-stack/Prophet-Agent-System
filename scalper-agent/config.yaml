@@ -1,0 +1,119 @@
+# ============================================
+# Scalper Agent v1.0 - 단타 자동매매
+# 키움증권 Open API 기반
+# ============================================
+
+# --- API Keys ---
+api_keys:
+  telegram_bot_token: "YOUR_TELEGRAM_BOT_TOKEN"
+  telegram_chat_id: "YOUR_CHAT_ID"
+
+# --- Kiwoom ---
+kiwoom:
+  account: ""
+  password: ""
+  auto_login: true
+
+# --- Watch List ---
+watchlist:
+  source: "manual"
+  codes: ["005930", "000660", "035720"]
+  prophet_scan_path: "../prophet-agent/results/latest_scan.csv"
+  prophet_min_score: 60
+
+# --- Trading Mode ---
+mode: "paper"
+
+# --- Data Sources ---
+data:
+  csv_dir: "../stock_data_daily"    # stock_data_daily CSV 폴더 경로
+  use_csv_indicators: true           # CSV 내장 지표 사용 여부
+
+# --- Candle Settings ---
+candles:
+  period_minutes: 1
+  history_count: 200
+
+# --- Strategy Settings ---
+strategies:
+  active: ["ma_crossover", "volume_spike"]
+
+  ma_crossover:
+    fast_period: 5
+    slow_period: 20
+    signal_period: 9
+    min_volume_ratio: 1.5
+    weight: 0.4
+
+  trend_breakout:
+    lookback_candles: 60
+    breakout_threshold_pct: 0.5
+    min_volume_ratio: 2.0
+    weight: 0.3
+
+  volume_spike:
+    avg_period: 20
+    spike_threshold: 3.0
+    price_above_vwap: true
+    weight: 0.3
+
+  # 5분 첫봉 스캘핑 전략 (files (3).zip 통합)
+  five_min_scalping:
+    rr_ratio: 2.0               # 손익비 (Risk:Reward = 1:2)
+    first_candle_index: 0       # 첫 5분봉 인덱스
+    cutoff_bar: 72              # 장마감 컷오프 (15:00 = 72번째 5분봉)
+    weight: 0.5
+
+  composite:
+    min_confidence: 0.6
+
+  # Body Hunter - 추세의 몸통 포착 (files (4).zip 통합)
+  body_hunter:
+    etf_code: "069500"              # KODEX200 기준
+    top_n: 3                        # 상대강도 상위 N종목
+    min_relative_str: 1.5           # ETF 대비 최소 상대강도
+    min_volume_ratio: 1.2           # 평균 대비 최소 거래량
+    volume_surge_min: 1.5           # 이탈봉 거래량 배수
+    retest_required: true           # 리테스트 필수
+    trailing_atr_mult: 1.2          # 트레일링 ATR 배수
+    breakeven_bars: 3               # 본전 SL 이동 봉수
+    exhaustion_bars: 2              # 소진감지 최소 신호수
+    volume_drop_ratio: 0.65         # 소진 거래량 하락 비율
+    wick_ratio_min: 0.003           # 소진 꼬리 비율
+    weight: 1.0
+
+# --- Risk Management ---
+risk:
+  min_cash_ratio: 0.10
+  max_loss_per_trade_pct: 0.02
+  daily_loss_limit: 500000
+  max_positions: 5
+  max_position_ratio: 0.30
+  stop_loss_pct: 0.02
+  take_profit_pct: 0.05
+  trailing_stop: false
+  trailing_stop_pct: 0.015
+
+# --- Market Hours ---
+market:
+  start_time: "09:00"
+  end_time: "15:20"
+  close_all_before_end: true
+  close_minutes_before: 10
+
+# --- Output ---
+output:
+  trade_log_dir: "./logs"
+  save_dir: "./results"
+  log_level: "INFO"
+  telegram_alert: true
+  alert_on_trade: true
+  alert_on_signal: false
+  daily_summary: true
+
+# --- Backtest / Paper Trading ---
+backtest:
+  initial_cash: 10000000
+  slippage_bps: 10
+  commission_bps: 15
+  risk_per_trade: 50000         # 트레이드당 위험금액

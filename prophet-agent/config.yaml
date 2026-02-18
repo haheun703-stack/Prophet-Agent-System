@@ -1,0 +1,57 @@
+# ============================================
+# 🔮 Prophet Agent v1.0 - "예언자"
+# "3개월 뒤 어디가 터질까?"
+# ============================================
+
+# --- API Keys ---
+api_keys:
+  dart_api_key: "YOUR_DART_API_KEY"  # https://opendart.fss.or.kr 에서 발급
+  telegram_bot_token: "YOUR_TELEGRAM_BOT_TOKEN"
+  telegram_chat_id: "YOUR_CHAT_ID"
+
+# --- Universe ---
+universe:
+  # 분석 대상 종목 (초기: 코스피200 + 코스닥150)
+  market: ["KOSPI", "KOSDAQ"]
+  min_market_cap: 500000000000  # 5000억 이상
+  max_stocks: 300  # 최대 분석 종목 수
+
+# --- Predictor Weights (총합 100) ---
+weights:
+  eps_divergence: 30      # EPS 괴리도 ⭐⭐⭐⭐⭐
+  credit_danger: -50      # 신용잔고 위험 (감점 차단)
+  dividend_floor: 15      # 배당수익률 바닥
+  whale_tracking: 15      # 고래 추적
+  chicken_survivor: 10    # 치킨게임 종료
+  supply_flow: 15         # 수급 전환
+  short_squeeze: 15       # 공매도 해소
+
+# --- Thresholds ---
+thresholds:
+  prophet_alert: 60       # 이 점수 이상이면 "포물선 임박" 알림
+  danger_zone: -20        # 이 점수 이하면 "절대 금지"
+  eps_divergence_pct: 20  # EPS 성장률 vs 주가 성장률 괴리 20% 이상
+  credit_extreme_pct: 90  # 신용잔고 역사적 상위 90% → 위험
+  div_yield_floor_pct: 80 # 배당수익률 역사적 상위 80% → 바닥
+
+# --- Data Collection ---
+collection:
+  lookback_days: 365      # 1년치 데이터 수집
+  eps_quarters: 8         # 최근 8분기 EPS
+  update_interval: 3600   # 1시간마다 갱신 (초)
+  
+# --- Macro Tickers (yfinance) ---
+macro:
+  vix: "^VIX"
+  sp500: "^GSPC"
+  soxx: "SOXX"           # 반도체 ETF
+  usdkrw: "USDKRW=X"
+  wti: "CL=F"
+  dram: null             # 별도 크롤링 필요
+
+# --- Output ---
+output:
+  save_dir: "./results"
+  log_level: "INFO"
+  export_csv: true
+  telegram_alert: true

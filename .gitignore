@@ -1,0 +1,49 @@
+# ============================================
+# Prophet Agent System 예언자 - .gitignore
+# ============================================
+
+# API Keys - 절대 커밋 금지
+.env
+.env.*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+venv/
+.venv/
+
+# 대용량 데이터 - GitHub에 올리지 않음
+stock_data_daily/
+
+# 원본 ZIP 파일 (이미 통합 완료)
+*.zip
+
+# 개인 자료
+서보성 대화 텍스트/
+
+# IDE & Tool metadata
+.vscode/
+.idea/
+*.swp
+*.swo
+.claude/
+.bkit/
+docs/.bkit-memory.json
+docs/.pdca-snapshots/
+docs/.pdca-status.json
+
+# Logs & Results
+scalper-agent/logs/
+scalper-agent/results/
+prophet-agent/results/
+
+# OS
+Thumbs.db
+.DS_Store
+desktop.ini
