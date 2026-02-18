@@ -382,7 +382,7 @@ class SupplyFull:
         4D 모멘텀   25%  (가속도/변곡/연속성)
         5D 에너지   15%  (ATR/유동성/스마트머니)
         6D 기술     20%  (MA/RSI/MACD/BB/거래량/교차)
-        뉴스 감성   10%  (-10~+10 → 0~100 변환)
+        뉴스 감성   10%  (네이버증권 크롤링 + Grok API 감성분석)
         """
         w3d = self.score.total_score * 0.30
         w4d = self.momentum.momentum_score * 0.25

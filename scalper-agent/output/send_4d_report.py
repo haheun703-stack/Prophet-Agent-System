@@ -107,8 +107,41 @@ def generate_report():
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     date_str = fulls[0].score.date if fulls else "?"
 
-    # BUY 이상만 추출 → 종합점수로 정렬
+    # BUY 이상만 추출
     buy_plus = [f for f in fulls if f.action in ("STRONG_BUY", "BUY")]
+
+    # ━━━ BUY+ 종목 뉴스 수집 (네이버증권 + Grok API) ━━━
+    from data.news_collector import NewsCollector
+    import logging
+    nc = NewsCollector()
+    logger = logging.getLogger("BH.Report")
+
+    # 1단계: BUY+ 전체 — 네이버 키워드 감성 (API 호출 없음, 빠름)
+    for f in buy_plus:
+        code = f.score.code
+        name = NAMES.get(code, code)
+        try:
+            result = nc.get_news_score(code, name=name, use_grok=False)
+            f.news_score = result["score"]
+            f.news_summary = result.get("summary", "")
+        except Exception as e:
+            logger.warning(f"뉴스 수집 실패 {code}: {e}")
+
+    # 1차 정렬 (뉴스 반영된 종합점수)
+    buy_plus.sort(key=lambda f: f.composite_score, reverse=True)
+
+    # 2단계: TOP 10 — Grok API 상세 감성분석
+    for f in buy_plus[:10]:
+        code = f.score.code
+        name = NAMES.get(code, code)
+        try:
+            result = nc.get_news_score(code, name=name, use_grok=True)
+            f.news_score = result["score"]
+            f.news_summary = result.get("summary", "")
+        except Exception as e:
+            logger.warning(f"Grok 분석 실패 {code}: {e}")
+
+    # 최종 정렬 (Grok 반영)
     buy_plus.sort(key=lambda f: f.composite_score, reverse=True)
 
     enters = [f for f in fulls if f.action == "ENTER"]
@@ -167,13 +200,21 @@ def generate_report():
         )
         lines.append(f"   {inst} | \uC678\uC778:{m.foreign_inflection}{warn}")
 
+        # 뉴스 감성
+        if f.news_score != 0 or f.news_summary:
+            n_emoji = "\U0001F4C8" if f.news_score > 0 else ("\U0001F4C9" if f.news_score < 0 else "\U0001F4CA")
+            news_line = f"   {n_emoji} \uB274\uC2A4: {f.news_score:+.0f}\uC810"
+            if f.news_summary:
+                news_line += f" | {f.news_summary[:25]}"
+            lines.append(news_line)
+
         # 특이태그
         tags = _get_tags(f)
         if tags:
             lines.append(f"   {' '.join(tags)}")
 
     lines.append("")
-    lines.append("3D=\uC218\uAE09 | 4D=\uBAA8\uBA58\uD140 | 5D=\uC5D0\uB108\uC9C0 | 6D=\uAE30\uC220")
+    lines.append("3D=\uC218\uAE09 | 4D=\uBAA8\uBA58\uD140 | 5D=\uC5D0\uB108\uC9C0 | 6D=\uAE30\uC220 | \uB274\uC2A4=\uB124\uC774\uBC84+Grok")
     msgs.append("\n".join(lines))
 
     # ━━━ 2장: 나머지 BUY+ (태그 한줄씩) ━━━
