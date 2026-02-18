@@ -92,8 +92,8 @@ class BodyHunterV2:
 
     v2.3 핵심:
       - fixed_tp_rr > 0 이면 고정 TP 모드 (trailing/소진감지 비활성)
-        → win +2.0R, lose -0.6R → 27%승률에서도 기대값 +0.10
-      - sl_ratio=0.6 (range의 60%, 더 타이트)
+        → win +2.0R, lose -1.0R → 손익분기 승률 33.3%
+      - sl_ratio=0.6 (SL 위치 = range의 60%, 더 타이트)
 
     v2 핵심:
       - 수익잠금: RR 1.0 → 바닥 0.5, RR 2.0 → 바닥 1.2, RR 3.0 → 바닥 2.0
@@ -335,14 +335,12 @@ class BodyHunterV2:
         if risk > 0:
             if self.direction == "LONG":
                 pos.rr_current = (c - pos.entry_price) / risk
-                rr_peak = (h - pos.entry_price) / risk  # 장중 최고 RR
             else:
                 pos.rr_current = (pos.entry_price - c) / risk
-                rr_peak = (pos.entry_price - l) / risk
 
         # ── v2.3: Fixed TP 모드 (단순 2:1 청산) ──
         if self.fixed_tp_rr > 0:
-            return self._manage_fixed_tp(candle, pos, risk, rr_peak)
+            return self._manage_fixed_tp(candle, pos, risk)
 
         # ── 기존 v2 모드: 수익잠금 + 트레일링 ──
         # v2: 수익잠금 업데이트
@@ -386,7 +384,7 @@ class BodyHunterV2:
             position=pos, exhaustion=exhaustion,
         )
 
-    def _manage_fixed_tp(self, candle: pd.Series, pos, risk, rr_peak) -> dict:
+    def _manage_fixed_tp(self, candle: pd.Series, pos, risk) -> dict:
         """v2.3: 고정 TP 모드 — SL or TP, 그 외 없음
 
         장중 고가/저가로 TP/SL 히트 판정 (봉 내 동시 히트 시 불리한 쪽 우선)

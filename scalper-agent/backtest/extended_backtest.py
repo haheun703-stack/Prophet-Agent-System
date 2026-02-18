@@ -36,7 +36,8 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================
-#  v2.3 전략 파라미터 세트
+#  A/B 비교 파라미터 (동일 진입 조건, 다른 청산 모드)
+#  NOTE: 진입 조건을 동일하게 맞춰야 청산 모드의 순수 효과를 비교할 수 있음
 # ============================================================
 
 V22_PARAMS = dict(
@@ -44,7 +45,7 @@ V22_PARAMS = dict(
     volume_surge_min=1.0, trailing_atr_mult=1.5,
     breakeven_rr=0.3, trailing_rr=0.8,
     exhaustion_bars=3, wick_ratio_min=0.005,
-    sl_ratio=0.7, fixed_tp_rr=0.0,      # v2.2: 트레일링 모드
+    sl_ratio=0.7, fixed_tp_rr=0.0,      # v2.2: 트레일링+소진감지+수익잠금
 )
 
 V23_PARAMS = dict(
@@ -52,7 +53,7 @@ V23_PARAMS = dict(
     volume_surge_min=1.0, trailing_atr_mult=1.5,
     breakeven_rr=0.3, trailing_rr=0.8,
     exhaustion_bars=3, wick_ratio_min=0.005,
-    sl_ratio=0.6, fixed_tp_rr=2.0,      # v2.3: Fixed 2:1 TP + SL 0.6
+    sl_ratio=0.6, fixed_tp_rr=2.0,      # v2.3: Fixed 2:1 TP + SL 0.6 (실전 동일)
 )
 
 

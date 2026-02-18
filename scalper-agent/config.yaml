@@ -5,8 +5,8 @@
 
 # --- API Keys ---
 api_keys:
-  telegram_bot_token: "YOUR_TELEGRAM_BOT_TOKEN"
-  telegram_chat_id: "YOUR_CHAT_ID"
+  telegram_bot_token: "${TELEGRAM_BOT_TOKEN}"
+  telegram_chat_id: "${TELEGRAM_CHAT_ID}"
 
 # --- Kiwoom ---
 kiwoom:
@@ -67,7 +67,64 @@ strategies:
   composite:
     min_confidence: 0.6
 
-  # Body Hunter - 추세의 몸통 포착 (files (4).zip 통합)
+  # 그룹 순환매 전략 (분리 전략)
+  group_rotation:
+    enabled: true
+    timeframe: "daily"                  # 일봉 기반 (스윙)
+
+    # 감시 그룹 정의 — ETF + 구성종목
+    groups:
+      hyundai:
+        name: "현대차그룹"
+        etf: "371160"                   # KODEX 현대차그룹플러스
+        members:
+          - {code: "005380", name: "현대차"}
+          - {code: "000270", name: "기아"}
+          - {code: "012330", name: "현대모비스"}
+          - {code: "018880", name: "한온시스템"}
+          - {code: "011210", name: "현대위아"}
+
+      samsung:
+        name: "삼성그룹"
+        etf: "102780"                   # KODEX 삼성그룹
+        members:
+          - {code: "005930", name: "삼성전자"}
+          - {code: "000660", name: "SK하이닉스"}    # 반도체 대장 비교용
+          - {code: "028260", name: "삼성물산"}
+          - {code: "032830", name: "삼성생명"}
+          - {code: "006400", name: "삼성SDI"}
+
+      battery:
+        name: "2차전지"
+        etf: "305720"                   # KODEX 2차전지산업
+        members:
+          - {code: "006400", name: "삼성SDI"}
+          - {code: "051910", name: "LG화학"}
+          - {code: "003670", name: "포스코퓨처엠"}
+          - {code: "247540", name: "에코프로비엠"}
+          - {code: "086520", name: "에코프로"}
+
+    # 진입 조건
+    entry:
+      etf_ma_period: 20                 # ETF 추세 판단 이평선
+      etf_above_ma: true                # ETF가 MA 위에 있어야 진입
+      lookback_days: 20                 # 상대수익률 비교 기간
+      max_picks: 2                      # 그룹당 최대 매수 종목 수
+      min_gap_pct: 5.0                  # ETF 대비 최소 낙폭 차이 (%)
+      min_volume_ratio: 0.8             # 평균 대비 최소 거래량
+
+    # 청산 조건
+    exit:
+      etf_below_ma: true                # ETF가 MA 아래로 이탈하면 전량 청산
+      individual_sl_pct: 5.0            # 개별 종목 손절 (%)
+      individual_tp_pct: 15.0           # 개별 종목 익절 (%)
+      max_hold_days: 20                 # 최대 보유일
+
+    # 리스크
+    risk_per_group: 500000              # 그룹당 최대 투자금
+    total_risk_cap: 1000000             # 순환매 전체 투자 한도
+
+  # Body Hunter v3 - 3D수급 + 4D모멘텀 통합 (디스크법)
   body_hunter:
     etf_code: "069500"              # KODEX200 기준
     top_n: 3                        # 상대강도 상위 N종목
@@ -81,6 +138,31 @@ strategies:
     volume_drop_ratio: 0.65         # 소진 거래량 하락 비율
     wick_ratio_min: 0.003           # 소진 꼬리 비율
     weight: 1.0
+
+    # 3D 수급 필터 (디스크 반지름)
+    supply_filter: true
+    supply_min_grade: ["A+", "A"]
+
+    # 4D 모멘텀 필터 (디스크 팽창/수축 속도)
+    use_4d: true                    # 4D 모멘텀 필터 활성화
+    block_caution: true             # CAUTION 차단 (등급 높지만 수축 중 = SK텔레콤 패턴)
+    # 4D 판정 기준:
+    #   STRONG_BUY = A+ + ACC (두껍고 팽창 = 최우선)
+    #   BUY        = A+/A + ACC (두껍고 성장 = 우선)
+    #   ENTER      = A+/A + STEADY (두껍고 안정 = 일반)
+    #   CAUTION    = A+/A + DEC (두껍지만 수축 = 함정!)
+    #   WATCH      = B + ACC (얇지만 팽창 = 관찰)
+    #   SKIP       = 나머지 (속 빈 디스크)
+
+    # 5D 사냥 에너지 (디스크 운동에너지)
+    use_5d: true                    # 5D 에너지 분석 활성화
+    min_stability_score: 0          # 최소 에너지 점수 (0=필터 없음, 40=MODERATE 이상만)
+    prefer_stable: true             # 동일 action 시 에너지 높은 종목 우선
+    # 5D 에너지 등급 (사냥 적합도):
+    #   EXPLOSIVE = 80+ (고변동+스마트머니+유동성+신호일치 = 폭발적 사냥감!)
+    #   HUNTABLE  = 60~79 (추적 가치 있음)
+    #   MODERATE  = 40~59 (보통)
+    #   SLUGGISH  = 0~39  (움직임 부족, 사냥 부적합)
 
 # --- Risk Management ---
 risk:
@@ -110,6 +192,16 @@ output:
   alert_on_trade: true
   alert_on_signal: false
   daily_summary: true
+
+# --- Telegram Bot (Body Hunter v3 봇) ---
+bot:
+  auto_trade: false             # 자동매매 기본 OFF ("시작" 명령으로 켬)
+  scan_interval_sec: 30         # 포지션 감시 주기 (초)
+  morning_scan_time: "09:20"    # 아침 5D 스캔 시각
+  eod_close_time: "15:10"       # 장마감 청산 시각
+  max_auto_positions: 3         # 자동매매 최대 동시 보유
+  auto_buy_amount: 500000       # 자동매수 1회 금액 (원)
+  confirm_real_order: true      # 실주문 전 확인 메시지 요구
 
 # --- Backtest / Paper Trading ---
 backtest:

@@ -4,3 +4,7 @@ numpy>=1.24.0
 PyYAML>=6.0
 requests>=2.31.0
 pandas-ta>=0.3.14
+python-telegram-bot>=20.0
+python-dotenv>=1.0.0
+mojito2>=0.1.0
+pykrx>=1.0.0

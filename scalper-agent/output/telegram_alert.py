@@ -1,24 +1,41 @@
 """
 Telegram Alert - 텔레그램 알림
 ================================
-매매 체결, 손절, 일일 요약 등 알림 전송
-prophet-agent의 telegram_alert.py 패턴 재사용
+매매 체결, 손절, 일일 요약, 4D 리포트 등 알림 전송
 """
 
+import os
 import logging
-from typing import Dict
+from typing import Dict, List, Optional
 
 logger = logging.getLogger('Scalper.Telegram')
+
+# 텔레그램 메시지 최대 길이
+TG_MAX_LEN = 4096
 
 
 class TelegramAlert:
     """텔레그램 알림 전송"""
 
-    def __init__(self, config: dict):
-        self.bot_token = config['api_keys']['telegram_bot_token']
-        self.chat_id = config['api_keys']['telegram_chat_id']
-        self.enabled = config['output']['telegram_alert']
-        self.alert_on_trade = config['output'].get('alert_on_trade', True)
+    def __init__(self, config: dict = None):
+        if config:
+            token = config['api_keys']['telegram_bot_token']
+            chat_id = config['api_keys']['telegram_chat_id']
+            # ${ENV_VAR} 패턴이면 환경변수에서 로드
+            if token.startswith("${"):
+                token = os.getenv(token[2:-1], "")
+            if str(chat_id).startswith("${"):
+                chat_id = os.getenv(str(chat_id)[2:-1], "")
+            self.bot_token = token
+            self.chat_id = str(chat_id)
+            self.enabled = config.get('output', {}).get('telegram_alert', True)
+            self.alert_on_trade = config.get('output', {}).get('alert_on_trade', True)
+        else:
+            # config 없이 .env에서 직접 로드
+            self.bot_token = os.getenv('TELEGRAM_BOT_TOKEN', '')
+            self.chat_id = os.getenv('TELEGRAM_CHAT_ID', '')
+            self.enabled = bool(self.bot_token and self.chat_id)
+            self.alert_on_trade = True
 
     def send_trade(self, trade: Dict):
         """매매 체결 알림"""
@@ -74,11 +91,44 @@ class TelegramAlert:
         )
         self._send(msg)
 
+    def send_report(self, report_text: str):
+        """긴 리포트 전송 (4D 디스크법 등) — 자동 분할"""
+        if not self.enabled:
+            return
+
+        # 4096자 제한 → 자동 분할
+        chunks = self._split_message(report_text)
+        for i, chunk in enumerate(chunks):
+            self._send(chunk)
+            if i < len(chunks) - 1:
+                import time
+                time.sleep(0.5)  # 순서 보장
+
+    def _split_message(self, text: str) -> List[str]:
+        """텔레그램 4096자 제한에 맞춰 분할 (구분선 기준)"""
+        if len(text) <= TG_MAX_LEN:
+            return [text]
+
+        chunks = []
+        current = ""
+
+        for line in text.split('\n'):
+            if len(current) + len(line) + 1 > TG_MAX_LEN - 50:
+                chunks.append(current)
+                current = line + '\n'
+            else:
+                current += line + '\n'
+
+        if current.strip():
+            chunks.append(current)
+
+        return chunks
+
     def _send(self, message: str):
         if not self.enabled:
             return
-        if self.bot_token.startswith("YOUR_"):
-            logger.info(f"[Telegram 미설정] {message}")
+        if not self.bot_token or self.bot_token.startswith("YOUR_"):
+            logger.info(f"[Telegram 미설정] {message[:80]}...")
             return
         try:
             import requests
@@ -86,9 +136,8 @@ class TelegramAlert:
             payload = {
                 'chat_id': self.chat_id,
                 'text': message,
-                'parse_mode': 'HTML',
             }
-            resp = requests.post(url, json=payload, timeout=10)
+            resp = requests.post(url, json=payload, timeout=15)
             if resp.status_code == 200:
                 logger.debug("텔레그램 전송 완료")
             else:

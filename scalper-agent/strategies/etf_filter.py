@@ -103,7 +103,7 @@ class ETFDirectionFilter:
     def judge_from_daily(self, df: pd.DataFrame, date_str: str = None) -> ETFSignal:
         """일봉 데이터에서 방향 판단 (백테스트용)"""
         if date_str:
-            row = df[df["Date"] == date_str]
+            row = df[df["date"] == date_str] if "date" in df.columns else df.loc[[date_str]]
             if row.empty:
                 return ETFSignal(MarketDirection.NEUTRAL, self.primary, 0, 0, 0, "데이터없음")
             row = row.iloc[0]
@@ -111,7 +111,7 @@ class ETFDirectionFilter:
             row = df.iloc[-1]
 
         candle = pd.Series({
-            "open": row["Open"], "close": row["Close"], "volume": row["Volume"]
+            "open": row["open"], "close": row["close"], "volume": row["volume"]
         })
-        avg_vol = df["Volume"].rolling(20).mean().iloc[-1] if len(df) >= 20 else row["Volume"]
+        avg_vol = df["volume"].rolling(20).mean().iloc[-1] if len(df) >= 20 else row["volume"]
         return self.judge(candle, avg_volume=avg_vol)
