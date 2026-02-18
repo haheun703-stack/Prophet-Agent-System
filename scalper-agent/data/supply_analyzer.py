@@ -375,6 +375,25 @@ class SupplyFull:
         return label
 
     @property
+    def composite_score(self) -> float:
+        """6D 종합점수 — 전 차원 가중합산 (0~100)
+
+        3D 수급     30%  (기관/외인/공매도 정적 등급)
+        4D 모멘텀   25%  (가속도/변곡/연속성)
+        5D 에너지   15%  (ATR/유동성/스마트머니)
+        6D 기술     20%  (MA/RSI/MACD/BB/거래량/교차)
+        뉴스 감성   10%  (-10~+10 → 0~100 변환)
+        """
+        w3d = self.score.total_score * 0.30
+        w4d = self.momentum.momentum_score * 0.25
+        w5d = (self.stability.stability_score if self.stability else 50) * 0.15
+        w6d = (self.tech_health.tech_score if self.tech_health else 50) * 0.20
+        # 뉴스: -10~+10 → 0~100 (0=50점, +10=100점, -10=0점)
+        news_normalized = (self.news_score + 10) * 5  # -10→0, 0→50, +10→100
+        w_news = news_normalized * 0.10
+        return w3d + w4d + w5d + w6d + w_news
+
+    @property
     def disk_thickness(self) -> str:
         """디스크 부피 비유 — 두께 판정"""
         a = self.action
