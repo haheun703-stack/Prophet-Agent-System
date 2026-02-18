@@ -1,7 +1,13 @@
 """
-Body Hunter 백테스터 - 실제 CSV 데이터 기반
-stock_data_daily의 2,849종목 일봉 데이터를 활용하여
-ETF방향 + 상대강도 + 몸통포착 전략을 검증
+Body Hunter v2 백테스터 - 실제 CSV 데이터 기반
+일봉 필터 + 상대강도 스캔 + 몸통포착 v2 통합 검증
+
+v2 변경:
+  - 일봉 필터 사전 적용 (B등급 이상만 후보)
+  - LONG ONLY 모드
+  - body_hunter_v2 사용 (수익잠금, 개선 트레일링)
+  - 외국인/기관 수급 데이터 활용
+  - 최대 3종목 동시 감시
 """
 
 import logging
@@ -18,7 +24,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from data.csv_loader import CSVLoader
 from strategies.etf_filter import ETFDirectionFilter, MarketDirection
 from strategies.scanner import RelativeStrengthScanner, StockCandidate
-from strategies.body_hunter import BodyHunter, BodyState
+from strategies.daily_filter import DailyFilter, DailyScore
+from strategies.body_hunter_v2 import BodyHunterV2, BodyState
 from engine.body_hunter_master import BodyHunterMaster, DailyTradeResult
 
 logger = logging.getLogger(__name__)
@@ -26,14 +33,14 @@ logger = logging.getLogger(__name__)
 
 class BodyHunterCSVBacktester:
     """
-    실제 CSV 데이터 기반 Body Hunter 백테스트
+    실제 CSV 데이터 기반 Body Hunter v2 백테스트
 
-    시뮬레이션:
-      1. KODEX200 일봉 -> ETF 방향 판단
-      2. 전 종목 일봉 -> 상대강도 상위 N종목 추출
-      3. 선정 종목 일봉 기반 시뮬레이션 (5분봉 근사)
-      4. 몸통 포착/탑승/청산
-      5. 일일 리포트 + 전체 성과 분석
+    흐름:
+      1. 전 종목 일봉 로드 + 일봉 필터 적용
+      2. KODEX200 일봉 -> ETF 방향 판단
+      3. 일봉 필터 통과 종목 중 상대강도 상위 3종목 추출
+      4. 5분봉 시뮬레이션 → 몸통 포착/탑승/청산
+      5. 일일 리포트 + 전체 성과
     """
 
     def __init__(
@@ -42,15 +49,19 @@ class BodyHunterCSVBacktester:
         top_n:          int   = 3,
         risk_per_trade: float = 50_000,
         etf_code:       str   = "069500",
+        long_only:      bool  = True,
+        min_grade:      str   = "B",
     ):
         self.csv_dir        = csv_dir
         self.top_n          = top_n
         self.risk_per_trade = risk_per_trade
         self.etf_code       = etf_code
+        self.long_only      = long_only
+        self.min_grade      = min_grade
 
         self.loader = CSVLoader(csv_dir)
-        # 파일맵 초기화 (lazy하게 _build_file_map 호출됨)
         self.code_to_name = self.loader.get_code_name_map()
+        self.daily_filter = DailyFilter()
 
         self.all_results:  List[DailyTradeResult] = []
         self.equity_curve: List[float] = [0.0]
@@ -60,22 +71,24 @@ class BodyHunterCSVBacktester:
         self,
         start_date: str = "2025-06-01",
         end_date:   str = "2025-12-31",
+        n_stocks:   int = 200,
     ) -> pd.DataFrame:
         """실제 데이터 기반 백테스트"""
         print(f"\n{'='*60}")
-        print(f"  Body Hunter CSV 백테스트")
+        print(f"  Body Hunter v2 백테스트")
         print(f"  기간: {start_date} ~ {end_date}")
-        print(f"  상위: {self.top_n}종목 | 리스크: {self.risk_per_trade:,}원")
+        print(f"  상위: {top_n}종목 | LONG ONLY: {self.long_only}")
+        print(f"  일봉 최소등급: {self.min_grade} | 리스크: {self.risk_per_trade:,}원")
         print(f"{'='*60}")
 
         # ETF 데이터 로드
         etf_df = self._load_etf_data(start_date, end_date)
         if etf_df is None or etf_df.empty:
-            print("  ETF 데이터 없음 - KODEX200 대신 KOSPI 대표종목 사용")
+            print("  ETF 데이터 없음 - 삼성전자로 대용")
             etf_df = self._make_proxy_etf(start_date, end_date)
 
-        # 전체 종목 일봉 데이터 준비
-        all_stocks = self._load_all_stocks(start_date, end_date)
+        # 전체 종목 데이터 로드
+        all_stocks, all_stocks_full = self._load_all_stocks(start_date, end_date, n_stocks)
         print(f"  로드 종목: {len(all_stocks)}개")
 
         # 거래일 목록
@@ -83,7 +96,7 @@ class BodyHunterCSVBacktester:
         print(f"  거래일: {len(dates)}일\n")
 
         for i, date in enumerate(dates):
-            day_results = self._simulate_day(date, etf_df, all_stocks)
+            day_results = self._simulate_day(date, etf_df, all_stocks, all_stocks_full)
             self.all_results.extend(day_results)
 
             day_pnl = sum(self.risk_per_trade * r.rr_realized for r in day_results)
@@ -102,11 +115,10 @@ class BodyHunterCSVBacktester:
         return self._compile_report()
 
     def _load_stock(self, code, start, end) -> Optional[pd.DataFrame]:
-        """종목 일봉 로드 -> Date/Open/High/Low/Close/Volume 컬럼"""
+        """종목 일봉 로드 → Title case 컬럼"""
         df = self.loader.load(code, start_date=start, end_date=end)
         if df is None or df.empty:
             return None
-        # 컬럼명 표준화 (csv_loader는 소문자 반환)
         col_map = {"date": "Date", "open": "Open", "high": "High",
                    "low": "Low", "close": "Close", "volume": "Volume"}
         df = df.rename(columns=col_map)
@@ -114,36 +126,71 @@ class BodyHunterCSVBacktester:
             df["Date"] = df["Date"].dt.strftime("%Y-%m-%d")
         return df
 
+    def _load_stock_full(self, code, start, end) -> Optional[pd.DataFrame]:
+        """종목 전체 컬럼 로드 (일봉 필터용, 소문자 컬럼 유지)"""
+        return self.loader.load(code, start_date=start, end_date=end)
+
     def _load_etf_data(self, start, end) -> Optional[pd.DataFrame]:
-        """KODEX200 데이터 로드"""
-        df = self._load_stock(self.etf_code, start, end)
-        if df is not None and not df.empty:
-            return df
-        return None
+        return self._load_stock(self.etf_code, start, end)
 
     def _make_proxy_etf(self, start, end) -> pd.DataFrame:
-        """ETF 데이터 없으면 삼성전자로 대용"""
         df = self._load_stock("005930", start, end)
         return df if df is not None else pd.DataFrame()
 
-    def _load_all_stocks(self, start, end) -> Dict[str, pd.DataFrame]:
-        """전체 종목 데이터 로드 (거래량 상위 100개)"""
-        stocks = {}
-        top_list = self.loader.get_top_volume(n=100)  # returns [(code, name, vol), ...]
+    def _load_all_stocks(self, start, end, n_stocks) -> tuple:
+        """전체 종목 데이터 로드 (Title case + 원본 소문자 두 버전)"""
+        stocks = {}        # Title case (scanner/backtest용)
+        stocks_full = {}   # 소문자 (일봉 필터용)
+
+        top_list = self.loader.get_top_volume(n=n_stocks)
 
         for code, name, vol in top_list:
             try:
                 df = self._load_stock(code, start, end)
+                df_full = self._load_stock_full(code, start, end)
                 if df is not None and len(df) > 20:
                     stocks[code] = df
+                if df_full is not None and len(df_full) > 60:
+                    stocks_full[code] = df_full
             except Exception:
                 continue
-        return stocks
+
+        return stocks, stocks_full
+
+    def _build_daily_whitelist(
+        self, date: str, all_stocks_full: Dict[str, pd.DataFrame]
+    ) -> Dict[str, tuple]:
+        """특정 날짜 기준 일봉 필터 → 화이트리스트 생성"""
+        whitelist = {}
+
+        for code, df in all_stocks_full.items():
+            # 해당 날짜까지의 데이터만 사용 (미래 데이터 참조 방지)
+            if "date" in df.columns:
+                target_date = pd.to_datetime(date)
+                df_until = df[df["date"] <= target_date]
+            else:
+                df_until = df
+
+            if len(df_until) < 60:
+                continue
+
+            name = self.code_to_name.get(code, code)
+            score = self.daily_filter.score_stock(df_until, code, name)
+
+            if score and score.total_score >= self.daily_filter.min_score:
+                grade_order = {"S": 4, "A": 3, "B": 2, "C": 1}
+                min_val = grade_order.get(self.min_grade, 2)
+                if grade_order.get(score.grade, 0) >= min_val:
+                    whitelist[code] = (score.total_score, score.grade)
+
+        return whitelist
 
     def _simulate_day(
-        self, date: str, etf_df: pd.DataFrame, all_stocks: Dict[str, pd.DataFrame]
+        self, date: str, etf_df: pd.DataFrame,
+        all_stocks: Dict[str, pd.DataFrame],
+        all_stocks_full: Dict[str, pd.DataFrame],
     ) -> List[DailyTradeResult]:
-        """하루 시뮬레이션"""
+        """하루 시뮬레이션 (v2: 일봉 필터 적용)"""
 
         # 1. ETF 방향 판단
         etf_row = etf_df[etf_df["Date"] == date]
@@ -153,7 +200,10 @@ class BodyHunterCSVBacktester:
 
         etf_change = (etf_row["Close"] - etf_row["Open"]) / etf_row["Open"] * 100
 
-        # 이전 20일 평균 거래량
+        # LONG ONLY: ETF 하락이면 스킵
+        if self.long_only and etf_change < 0:
+            return []
+
         etf_idx = etf_df[etf_df["Date"] == date].index[0]
         etf_hist = etf_df.loc[:etf_idx]
         avg_etf_vol = etf_hist["Volume"].tail(20).mean()
@@ -166,10 +216,17 @@ class BodyHunterCSVBacktester:
 
         if signal.direction == MarketDirection.NEUTRAL:
             return []
+        if self.long_only and signal.direction == MarketDirection.SHORT:
+            return []
 
-        direction = "LONG" if signal.direction == MarketDirection.LONG else "SHORT"
+        direction = "LONG"
 
-        # 2. 전 종목 상대강도 스캔
+        # 2. 일봉 필터 → 화이트리스트
+        whitelist = self._build_daily_whitelist(date, all_stocks_full)
+        if not whitelist:
+            return []
+
+        # 3. 상대강도 스캔 (화이트리스트 내에서만)
         stock_candles = {}
         avg_volumes = {}
         stock_names = {}
@@ -197,12 +254,14 @@ class BodyHunterCSVBacktester:
             etf_change=etf_change, market_dir=signal.direction,
             stock_data=stock_candles, avg_volumes=avg_volumes,
             stock_names=stock_names,
+            daily_whitelist=whitelist,
+            long_only=self.long_only,
         )
 
         if not candidates:
             return []
 
-        # 3. 각 종목 일봉 기반 몸통 시뮬레이션
+        # 4. 각 종목 몸통 시뮬레이션 (v2 엔진)
         day_results = []
         for cand in candidates[:self.top_n]:
             result = self._simulate_stock_body(cand, direction, date, all_stocks)
@@ -215,7 +274,7 @@ class BodyHunterCSVBacktester:
         self, cand: StockCandidate, direction: str,
         date: str, all_stocks: Dict[str, pd.DataFrame]
     ) -> Optional[DailyTradeResult]:
-        """일봉 데이터 기반 개별 종목 몸통 시뮬레이션"""
+        """일봉 기반 개별 종목 몸통 시뮬레이션 (v2 엔진)"""
         df = all_stocks.get(cand.ticker)
         if df is None:
             return None
@@ -225,19 +284,16 @@ class BodyHunterCSVBacktester:
             return None
         row = row.iloc[0]
 
-        # 일봉의 OHLCV로 5분봉 72개 근사 생성
         candles = self._daily_to_5min(row, direction, cand)
 
-        hunter = BodyHunter(
+        hunter = BodyHunterV2(
             ticker=cand.ticker, name=cand.name, direction=direction,
             retest_required=True, volume_surge_min=1.5,
             trailing_atr_mult=1.2, breakeven_bars=3, exhaustion_bars=2,
         )
 
-        # 첫봉으로 레벨 마킹
         hunter.set_levels(candles[0], avg_volume=candles[0]["volume"])
 
-        # 봉별 업데이트
         for i, candle in enumerate(candles[1:], 1):
             ts = pd.Timestamp(f"{date} {9+i//12:02d}:{(i%12)*5:02d}", tz="Asia/Seoul")
             candle.name = ts
@@ -274,10 +330,7 @@ class BodyHunterCSVBacktester:
     def _daily_to_5min(
         row: pd.Series, direction: str, cand: StockCandidate, n_bars: int = 72
     ) -> List[pd.Series]:
-        """
-        일봉 OHLCV -> 72개 5분봉 근사 생성
-        추세 방향에 맞는 패턴 (이탈 -> 리테스트 -> 몸통 -> 소진)
-        """
+        """일봉 OHLCV -> 72개 5분봉 근사 생성"""
         rng = np.random.default_rng(hash(f"{row['Date']}_{cand.ticker}") % 2**32)
 
         o_day = row["Open"]
@@ -290,20 +343,17 @@ class BodyHunterCSVBacktester:
         price = o_day
         v_per_bar = v_day / n_bars
 
-        # 구간: 첫봉(1) + 횡보(5) + 이탈(3) + 리테스트(3) + 몸통(30~40) + 소진(나머지)
         body_start = 12
         body_end = rng.integers(40, 55)
 
         for i in range(n_bars):
             if i == 0:
-                # 첫봉: 레인지 설정
                 bar_h = o_day + (h_day - o_day) * 0.3
                 bar_l = o_day - (o_day - l_day) * 0.3
                 bar_o = o_day
                 bar_c = (bar_h + bar_l) / 2
                 bar_v = v_per_bar * 1.2
             elif i < body_start:
-                # 이탈 + 리테스트 구간
                 progress = i / body_start
                 if direction == "LONG":
                     target = o_day + (h_day - o_day) * progress * 0.4
@@ -316,7 +366,6 @@ class BodyHunterCSVBacktester:
                 bar_l = min(bar_o, bar_c) * (1 - abs(rng.normal(0, 0.002)))
                 bar_v = v_per_bar * rng.uniform(1.0, 2.5)
             elif i < body_end:
-                # 몸통 구간: 강한 추세
                 progress = (i - body_start) / (body_end - body_start)
                 if direction == "LONG":
                     target = o_day + (h_day - o_day) * (0.3 + progress * 0.7)
@@ -330,7 +379,6 @@ class BodyHunterCSVBacktester:
                 bar_l = min(bar_o, bar_c) * (1 - abs(rng.normal(0, 0.001)))
                 bar_v = v_per_bar * rng.uniform(1.5, 3.0) * strength
             else:
-                # 소진 구간
                 progress = (i - body_end) / max(1, n_bars - body_end)
                 if direction == "LONG":
                     target = h_day - (h_day - c_day) * progress
@@ -370,10 +418,11 @@ class BodyHunterCSVBacktester:
         total_pnl = self.equity_curve[-1]
 
         exit_dist = df["exit_reason"].value_counts()
-        good_exits = df[df["exit_reason"].isin(["소진감지", "트레일링"])].shape[0]
+        good_exits = df[df["exit_reason"].isin(["소진감지", "트레일링", "수익잠금"])].shape[0]
 
         print(f"\n{'='*60}")
-        print(f"  Body Hunter 백테스트 결과")
+        print(f"  Body Hunter v2 백테스트 결과")
+        print(f"  [LONG ONLY: {self.long_only}] [일봉필터: {self.min_grade}등급↑]")
         print(f"{'='*60}")
         print(f"  총 거래    : {total}회 ({wins}승/{losses}패)")
         print(f"  승률       : {wr:.1f}%")
@@ -389,6 +438,7 @@ class BodyHunterCSVBacktester:
             print(f"    {reason:<12} {cnt:3d}회 ({pct:.1f}%) {bar}")
         print(f"{'-'*60}")
 
+        # LONG만 있어야 함 (LONG ONLY 모드)
         for d in ["LONG", "SHORT"]:
             sub = df[df["direction"] == d]
             if sub.empty:
@@ -396,7 +446,6 @@ class BodyHunterCSVBacktester:
             sub_wr = (sub["rr_realized"] > 0).sum() / len(sub) * 100
             print(f"  {d:<6} 승률:{sub_wr:.1f}% 평균RR:{sub['rr_realized'].mean():+.2f} ({len(sub)}회)")
 
-        # 상위 종목
         print(f"{'-'*60}")
         print(f"  종목별 성과 (상위 5):")
         by_ticker = df.groupby("ticker").agg(
@@ -419,15 +468,19 @@ if __name__ == "__main__":
 
     logging.basicConfig(level=logging.WARNING, format="%(asctime)s [%(levelname)s] %(message)s")
 
+    top_n = 3
+
     bt = BodyHunterCSVBacktester(
         csv_dir="../stock_data_daily",
-        top_n=3,
+        top_n=top_n,
         risk_per_trade=50_000,
+        long_only=True,
+        min_grade="B",
     )
-    df = bt.run(start_date="2025-06-01", end_date="2025-12-31")
+    df = bt.run(start_date="2025-06-01", end_date="2025-12-31", n_stocks=200)
 
     if not df.empty:
-        output_path = Path(__file__).parent.parent / "results" / "body_hunter_results.csv"
+        output_path = Path(__file__).parent.parent / "results" / "body_hunter_v2_results.csv"
         output_path.parent.mkdir(exist_ok=True)
         df.to_csv(output_path, index=False, encoding="utf-8-sig")
         print(f"\n결과 저장: {output_path}")

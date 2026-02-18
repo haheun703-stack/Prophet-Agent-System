@@ -1,12 +1,13 @@
 """
-상대강도 스캐너
+상대강도 스캐너 v2
 - ETF 대비 강한 개별종목 추출
 - 당일 수급 집중 종목 = 몸통이 선명하게 나오는 종목
+- v2: 일봉 필터 통합 + LONG ONLY 기본
 """
 
 import logging
 from dataclasses import dataclass
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Set
 import pandas as pd
 import numpy as np
 
@@ -30,14 +31,17 @@ class StockCandidate:
     first_mid:      float
     score:          float
     direction:      str
+    daily_score:    float = 0.0    # v2: 일봉 필터 점수
+    daily_grade:    str   = ""     # v2: 일봉 등급
 
     def __str__(self):
+        grade_tag = f" [{self.daily_grade}]{self.daily_score:.0f}" if self.daily_grade else ""
         return (
             f"{self.ticker}({self.name}) "
             f"등락:{self.change_pct:+.2f}% "
             f"상대강도:{self.relative_str:.1f}x "
             f"거래량:{self.volume_ratio:.1f}x "
-            f"점수:{self.score:.1f}"
+            f"점수:{self.score:.1f}{grade_tag}"
         )
 
 
@@ -68,13 +72,21 @@ class RelativeStrengthScanner:
 
     def scan(
         self,
-        etf_change:    float,
-        market_dir:    MarketDirection,
-        stock_data:    Dict[str, pd.Series],
-        avg_volumes:   Optional[Dict[str, float]] = None,
-        stock_names:   Optional[Dict[str, str]]   = None,
+        etf_change:      float,
+        market_dir:      MarketDirection,
+        stock_data:      Dict[str, pd.Series],
+        avg_volumes:     Optional[Dict[str, float]] = None,
+        stock_names:     Optional[Dict[str, str]]   = None,
+        daily_whitelist: Optional[Dict[str, tuple]] = None,
+        long_only:       bool = True,
     ) -> List[StockCandidate]:
-        """전 종목 스캔 -> 조건 필터 -> 상위 N개 반환"""
+        """
+        전 종목 스캔 -> 조건 필터 -> 상위 N개 반환
+
+        v2 변경:
+          - daily_whitelist: 일봉 필터 통과 종목만 스캔 {code: (score, grade)}
+          - long_only: True면 LONG만 (SHORT 시장에서는 거래 안 함)
+        """
         if market_dir == MarketDirection.NEUTRAL:
             logger.info("중립장 - 스캔 스킵")
             return []
@@ -82,11 +94,20 @@ class RelativeStrengthScanner:
         if abs(etf_change) < 0.01:
             return []
 
+        # v2: LONG ONLY 모드 - SHORT 시장이면 거래 안 함
+        if long_only and market_dir == MarketDirection.SHORT:
+            logger.info("LONG ONLY 모드 - SHORT 시장 스킵")
+            return []
+
         direction = "LONG" if market_dir == MarketDirection.LONG else "SHORT"
         candidates = []
 
         for ticker, candle in stock_data.items():
             try:
+                # v2: 일봉 화이트리스트 필터
+                if daily_whitelist and ticker not in daily_whitelist:
+                    continue
+
                 o = candle["open"]
                 c = candle["close"]
                 h = candle["high"]
@@ -118,7 +139,17 @@ class RelativeStrengthScanner:
                     continue
 
                 mid = (h + l) / 2
-                score = relative_str * 0.4 + vol_ratio * 0.4 + abs(change_pct) * 0.2
+
+                # v2: 일봉 점수 가중 반영
+                daily_s, daily_g = 0.0, ""
+                if daily_whitelist and ticker in daily_whitelist:
+                    daily_s, daily_g = daily_whitelist[ticker]
+
+                # 스코어 = 상대강도(30%) + 거래량(30%) + 등락률(15%) + 일봉점수(25%)
+                daily_bonus = (daily_s / 100.0) * 2.5 if daily_s > 0 else 0
+                score = (relative_str * 0.3 + vol_ratio * 0.3
+                         + abs(change_pct) * 0.15 + daily_bonus)
+
                 name = (stock_names or {}).get(ticker, ticker)
 
                 candidates.append(StockCandidate(
@@ -127,6 +158,7 @@ class RelativeStrengthScanner:
                     relative_str=relative_str, volume_ratio=vol_ratio,
                     current_price=c, first_high=h, first_low=l, first_mid=mid,
                     score=score, direction=direction,
+                    daily_score=daily_s, daily_grade=daily_g,
                 ))
             except (KeyError, ZeroDivisionError):
                 continue
