@@ -125,7 +125,8 @@ class BodyHunterMaster:
                 self.hunters[c.ticker] = BodyHunterV2(
                     ticker=c.ticker, name=c.name, direction=c.direction,
                     retest_required=True, volume_surge_min=1.5,
-                    trailing_atr_mult=1.2, breakeven_bars=3, exhaustion_bars=2,
+                    trailing_atr_mult=1.2, breakeven_rr=0.3, trailing_rr=1.0,
+                    exhaustion_bars=2,
                 )
                 first_candle = stock_data[c.ticker]
                 avg_vol = (avg_volumes or {}).get(c.ticker)

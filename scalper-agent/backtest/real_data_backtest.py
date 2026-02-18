@@ -263,7 +263,8 @@ def _simulate_real_day(
             ticker=code, name=cand["name"], direction="LONG",
             retest_required=False, close_only_breakout=True,
             volume_surge_min=1.0, trailing_atr_mult=2.0,
-            breakeven_bars=6, exhaustion_bars=3, wick_ratio_min=0.005,
+            breakeven_rr=0.3, trailing_rr=1.0,
+            exhaustion_bars=3, wick_ratio_min=0.005,
         )
         hunter.set_levels(first_candle, avg_volume=float(day_df.iloc[:4]["volume"].mean()))
 

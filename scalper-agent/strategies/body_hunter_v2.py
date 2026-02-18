@@ -82,7 +82,7 @@ class BodyHunterV2:
 
     핵심 개선:
       - 수익잠금: RR 1.0 → 바닥 0.5, RR 2.0 → 바닥 1.2, RR 3.0 → 바닥 2.0
-      - 본전이동: breakeven_bars 후 SL을 진입가로 이동
+      - RR 기반 본전이동: RR 0.3 도달 후에만 SL을 진입가로 이동 (시간 아닌 성과 기준)
       - 시간대: 장중 시간에 따라 진입 허용/차단
     """
 
@@ -104,7 +104,8 @@ class BodyHunterV2:
         retest_required:   bool  = True,
         close_only_breakout: bool = False,
         trailing_atr_mult: float = 1.2,
-        breakeven_bars:    int   = 3,
+        breakeven_rr:      float = 0.3,
+        trailing_rr:       float = 1.0,
         exhaustion_bars:   int   = 2,
         volume_drop_ratio: float = 0.65,
         wick_ratio_min:    float = 0.003,
@@ -120,7 +121,8 @@ class BodyHunterV2:
         self.retest_required    = retest_required
         self.close_only_breakout = close_only_breakout
         self.trailing_atr_mult  = trailing_atr_mult
-        self.breakeven_bars     = breakeven_bars
+        self.breakeven_rr       = breakeven_rr
+        self.trailing_rr        = trailing_rr
         self.exhaustion_bars    = exhaustion_bars
         self.volume_drop_ratio  = volume_drop_ratio
         self.wick_ratio_min     = wick_ratio_min
@@ -367,7 +369,7 @@ class BodyHunterV2:
             return pos.entry_price - risk * pos.rr_floor
 
     def _update_trailing_sl(self, candle: pd.Series):
-        """v2: 개선된 트레일링 SL"""
+        """v2.1: RR 기반 트레일링 SL (시간 기반 → 성과 기반)"""
         pos = self.position
         lv  = self.levels
 
@@ -379,18 +381,21 @@ class BodyHunterV2:
             if candle["low"] < pos.peak_price:
                 pos.peak_price = candle["low"]
 
-        # Phase 1: 초기 (breakeven_bars 이내) → SL 고정
-        if pos.hold_bars <= self.breakeven_bars:
+        # Phase 1: RR < breakeven_rr → SL 고정 (원래 손절가)
+        #   실제로 움직이지 않으면 절대 본전 안 줌
+        if pos.rr_current < self.breakeven_rr:
             pos.trailing_sl = pos.stop_loss
 
-        # Phase 2: 본전 이동 (breakeven_bars ~ 2x)
-        elif pos.hold_bars <= self.breakeven_bars * 2:
+        # Phase 2: RR >= breakeven_rr → 본전 이동
+        #   실제로 RR 0.3 이상 갔다가 돌아오면 본전 탈출
+        elif pos.rr_current < self.trailing_rr:
             if self.direction == "LONG":
                 pos.trailing_sl = max(pos.trailing_sl, pos.entry_price)
             else:
                 pos.trailing_sl = min(pos.trailing_sl, pos.entry_price)
 
-        # Phase 3: ATR 트레일링
+        # Phase 3: RR >= trailing_rr → ATR 트레일링
+        #   본격 추세구간 — 피크에서 ATR 만큼 뒤에서 따라감
         else:
             atr_dist = lv.atr * self.trailing_atr_mult
             if self.direction == "LONG":

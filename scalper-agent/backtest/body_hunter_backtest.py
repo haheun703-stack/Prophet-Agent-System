@@ -289,7 +289,8 @@ class BodyHunterCSVBacktester:
         hunter = BodyHunterV2(
             ticker=cand.ticker, name=cand.name, direction=direction,
             retest_required=True, volume_surge_min=1.5,
-            trailing_atr_mult=1.2, breakeven_bars=3, exhaustion_bars=2,
+            trailing_atr_mult=1.2, breakeven_rr=0.3, trailing_rr=1.0,
+            exhaustion_bars=2,
         )
 
         hunter.set_levels(candles[0], avg_volume=candles[0]["volume"])
