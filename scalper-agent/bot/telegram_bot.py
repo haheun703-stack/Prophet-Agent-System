@@ -58,6 +58,7 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
     ],
     resize_keyboard=True,
 )
+# 참고: "분석 종목명", "뉴스 종목명"은 키보드 없이 텍스트 입력
 
 HELP_TEXT = """
 🔮 Body Hunter v3 명령어
@@ -66,7 +67,8 @@ HELP_TEXT = """
   스캔 — 5D 전종목 수급 스캔
   ETF — ETF 유니버스 스캔
   리포트 — 5D 리포트 전송
-  분석 삼성전자 — 개별 종목 분석
+  분석 삼성전자 — 개별 종목 6D 분석
+  뉴스 삼성전자 — 뉴스 + Grok 감성분석
 
 [매매]
   매수 삼성전자 10 — 시장가 매수
@@ -253,12 +255,12 @@ class BodyHunterBot:
             await update.message.reply_text(f"종목을 찾을 수 없습니다: {query}")
             return
 
-        await update.message.reply_text(f"🔍 {name}({code}) 분석중...")
+        await update.message.reply_text(f"🔍 {name}({code}) 6D+뉴스 분석중...")
 
         def _run():
             from data.supply_analyzer import SupplyAnalyzer
             analyzer = SupplyAnalyzer()
-            f = analyzer.analyze_full(code)
+            f = analyzer.analyze_full(code, with_news=True, name=name)
             if f is None:
                 return None
             return f
@@ -274,7 +276,7 @@ class BodyHunterBot:
         st = full.stability
 
         lines = [
-            f"🔮 {name} ({code}) 5D 분석",
+            f"🔮 {name} ({code}) 6D 분석",
             "━" * 25,
             f"판정: {full.risk_label}",
             f"3D: {s.grade}({s.total_score:.0f}점)",
@@ -287,12 +289,27 @@ class BodyHunterBot:
             lines.append(f"  SM강도: {st.intensity_score:.0f} | 신호: {st.alignment_score:.0f}")
             lines.append(f"  ATR: {st.atr_pct:.1f}% | SM비율: {st.smart_money_ratio:+.1f}%")
 
+        # 6D 기술건강도
+        th = full.tech_health
+        if th:
+            lines.append(f"6D: {th.tech_grade}({th.tech_score:.0f}점)")
+            lines.append(f"  MA: {th.ma_status} | RSI: {th.rsi_value:.0f}({th.rsi_zone})")
+            lines.append(f"  MACD: {th.macd_score:.0f}점 | BB: {th.bb_position:.0%}")
+            lines.append(f"  거래량: {th.vol_ratio:.1f}x | 교차: {th.cross_score:.0f}점")
+
         # PER/PBR 밸류에이션
         if full.per > 0 or full.pbr > 0:
             per_str = f"{full.per:.1f}" if full.per > 0 else "적자"
             lines.append(f"PER: {per_str} | PBR: {full.pbr:.2f}")
         if full.valuation_warning:
             lines.append(f"⚠️ 밸류: {full.valuation_warning}")
+
+        # 뉴스 감성분석
+        if full.news_score != 0 or full.news_summary:
+            emoji = "📈" if full.news_score > 0 else ("📉" if full.news_score < 0 else "📊")
+            lines.append(f"\n{emoji} 뉴스: {full.news_score:+.0f}점")
+            if full.news_summary:
+                lines.append(f"  {full.news_summary}")
 
         lines.append("")
         lines.append(f"기관: {m.inst_streak:+d}일 ({m.inst_streak_amount:+.0f}억)")
@@ -673,6 +690,64 @@ class BodyHunterBot:
             await update.message.reply_text(f"유니버스 갱신 실패: {e}")
 
     # ═══════════════════════════════════════
+    #  뉴스
+    # ═══════════════════════════════════════
+
+    async def cmd_news(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """종목 뉴스 + Grok 감성분석"""
+        if not self._is_authorized(update):
+            return
+        text = update.message.text.strip()
+        parts = text.split()
+
+        if len(parts) < 2:
+            await update.message.reply_text("사용법: 뉴스 삼성전자\n또는: 뉴스 005930")
+            return
+
+        query = parts[1]
+        code, name = resolve_stock(query)
+        if code is None:
+            await update.message.reply_text(f"종목을 찾을 수 없습니다: {query}")
+            return
+
+        await update.message.reply_text(f"📰 {name}({code}) 뉴스 수집중...")
+
+        def _run():
+            from data.news_collector import NewsCollector
+            nc = NewsCollector()
+            return nc.get_news_score(code, name, use_grok=True)
+
+        result = await asyncio.to_thread(_run)
+
+        headlines = result.get("headlines", [])
+        score = result.get("score", 0)
+        summary = result.get("summary", "")
+        sentiment = result.get("sentiment", "neutral")
+        key_factor = result.get("key_factor", "")
+
+        emoji = "📈" if score > 0 else ("📉" if score < 0 else "📊")
+        sent_kr = {"positive": "긍정", "negative": "부정", "neutral": "중립"}.get(sentiment, "중립")
+
+        lines = [
+            f"📰 {name}({code}) 뉴스분석",
+            "━" * 25,
+            f"{emoji} 감성점수: {score:+d}점 ({sent_kr})",
+        ]
+        if summary:
+            lines.append(f"요약: {summary}")
+        if key_factor:
+            lines.append(f"핵심: {key_factor}")
+
+        lines.append(f"\n[최신 헤드라인]")
+        if headlines:
+            for h in headlines[:5]:
+                lines.append(f"  · {h['title']}")
+        else:
+            lines.append("  뉴스 없음")
+
+        await update.message.reply_text("\n".join(lines))
+
+    # ═══════════════════════════════════════
     #  자동매매
     # ═══════════════════════════════════════
 
@@ -766,6 +841,9 @@ class BodyHunterBot:
             MessageHandler(filters.Regex(r"^분석\s+.+"), self.cmd_analyze)
         )
         app.add_handler(
+            MessageHandler(filters.Regex(r"^뉴스\s+.+"), self.cmd_news)
+        )
+        app.add_handler(
             MessageHandler(filters.Regex(r"^매수\s+.+"), self.cmd_buy)
         )
         app.add_handler(
@@ -775,11 +853,17 @@ class BodyHunterBot:
             MessageHandler(filters.Regex(r"^일지\s+.+"), self.cmd_journal)
         )
 
-        # 인자 없는 "분석" → 안내
+        # 인자 없는 "분석" / "뉴스" → 안내
         app.add_handler(
             MessageHandler(
                 filters.Regex(r"^분석$"),
                 lambda u, c: u.message.reply_text("사용법: 분석 삼성전자"),
+            )
+        )
+        app.add_handler(
+            MessageHandler(
+                filters.Regex(r"^뉴스$"),
+                lambda u, c: u.message.reply_text("사용법: 뉴스 삼성전자"),
             )
         )
 

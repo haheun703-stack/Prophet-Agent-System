@@ -195,6 +195,61 @@ class SupplyStability:
 
 
 @dataclass
+class TechHealth:
+    """6D 기술건강도 — 일봉 기술적 상태 (가격 기반 지표)
+
+    3D~5D = 수급 기반, 6D = 가격/기술 기반
+    MA정배열 + RSI구간 + MACD방향 + 볼린저위치 + 거래량추세 + MA교차
+    """
+    code: str
+
+    # 개별 점수
+    ma_score: float       # MA 정배열 (25점)
+    rsi_score: float      # RSI 적정구간 (20점)
+    macd_score: float     # MACD 방향 (20점)
+    bb_score: float       # 볼린저 위치 (15점)
+    volume_score: float   # 거래량 추세 (10점)
+    cross_score: float    # MA 교차 (10점)
+
+    # 원시 값
+    rsi_value: float = 0.0
+    bb_position: float = 0.0
+    vol_ratio: float = 0.0
+    ma_status: str = ""
+
+    @property
+    def tech_score(self) -> float:
+        return self.ma_score + self.rsi_score + self.macd_score + self.bb_score + self.volume_score + self.cross_score
+
+    @property
+    def tech_grade(self) -> str:
+        s = self.tech_score
+        if s >= 80:
+            return "S"
+        elif s >= 65:
+            return "A"
+        elif s >= 50:
+            return "B"
+        else:
+            return "C"
+
+    @property
+    def rsi_zone(self) -> str:
+        if self.rsi_value >= 70:
+            return "과매수"
+        elif self.rsi_value <= 30:
+            return "과매도"
+        return "적정"
+
+    def __str__(self):
+        return (
+            f"[6D:{self.tech_grade}] {self.tech_score:.0f}점 "
+            f"MA:{self.ma_status} RSI:{self.rsi_value:.0f}({self.rsi_zone}) "
+            f"MACD:{self.macd_score:.0f} BB:{self.bb_position:.0%}"
+        )
+
+
+@dataclass
 class SupplyFull:
     """3D + 4D + 5D 통합 수급 판정"""
     score: SupplyScore                          # 3D 정적 등급
@@ -203,6 +258,9 @@ class SupplyFull:
     valuation_warning: Optional[str] = None      # 밸류에이션 경고 (적자/고PER/저PBR)
     per: float = 0.0
     pbr: float = 0.0
+    tech_health: Optional['TechHealth'] = None   # 6D 기술건강도
+    news_score: float = 0.0                       # 뉴스 감성점수 (-10~+10)
+    news_summary: str = ""                        # 뉴스 한줄 요약
 
     @property
     def grade_3d(self) -> str:
@@ -262,6 +320,14 @@ class SupplyFull:
         # 밸류에이션 경고 태그 (점수 불변, 라벨만)
         if self.valuation_warning:
             label += f" [{self.valuation_warning}]"
+
+        # 6D 기술건강도 태그
+        if self.tech_health:
+            tg = self.tech_health.tech_grade
+            if tg in ("S", "A"):
+                label += f" [기술{tg}]"
+            elif tg == "C":
+                label += " [기술약]"
         return label
 
     @property
@@ -285,11 +351,14 @@ class SupplyFull:
         stab = ""
         if self.stability:
             stab = f" [5D:{self.stability_grade} {self.stability.stability_score:.0f}]"
+        tech = ""
+        if self.tech_health:
+            tech = f" [6D:{self.tech_health.tech_grade} {self.tech_health.tech_score:.0f}]"
         return (
             f"{self.score.code} "
             f"[3D:{self.grade_3d} {self.score.total_score:.0f}] "
             f"[4D:{self.signal_4d} {self.momentum.momentum_score:.0f}]"
-            f"{stab} "
+            f"{stab}{tech} "
             f"=> {self.risk_label} ({self.disk_thickness})"
         )
 
@@ -821,11 +890,141 @@ class SupplyAnalyzer:
         return score, count
 
     # ============================================================
-    #  3D + 4D + 5D 통합 분석
+    #  6D 기술건강도 — 일봉 기술 지표 기반
     # ============================================================
 
-    def analyze_full(self, code: str, as_of: str = None) -> Optional[SupplyFull]:
-        """3D + 4D + 5D 통합 분석"""
+    def analyze_6d(self, code: str, day_df: pd.DataFrame = None) -> Optional[TechHealth]:
+        """6D 기술건강도 — 일봉 OHLCV에서 기술 지표 계산
+
+        MA정배열(25) + RSI(20) + MACD(20) + 볼린저(15) + 거래량(10) + MA교차(10) = 100점
+        """
+        if day_df is None:
+            self._load(code)
+            day_df = self._cache_daily.get(code)
+
+        if day_df is None or len(day_df) < 60:
+            return None
+
+        from data.indicator_calc import IndicatorCalc as IC
+
+        close = day_df["close"].astype(float)
+        volume = day_df["volume"].astype(float)
+        price = float(close.iloc[-1])
+
+        # ── 1. MA 정배열 (25점) ──
+        ma5 = float(IC.sma(close, 5).iloc[-1])
+        ma20 = float(IC.sma(close, 20).iloc[-1])
+        ma60 = float(IC.sma(close, 60).iloc[-1])
+
+        if price > ma5 > ma20 > ma60:
+            ma_score, ma_status = 25, "정배열"
+        elif price > ma20 > ma60:
+            ma_score, ma_status = 18, "부분정배열"
+        elif ma5 > ma20 > ma60:
+            ma_score, ma_status = 15, "부분정배열"
+        elif price > ma20:
+            ma_score, ma_status = 10, "중립"
+        elif price > ma60:
+            ma_score, ma_status = 5, "하락"
+        else:
+            ma_score, ma_status = 0, "역배열"
+
+        # ── 2. RSI 적정구간 (20점) ──
+        rsi_series = IC.rsi(close, 14)
+        rsi = float(rsi_series.iloc[-1]) if not pd.isna(rsi_series.iloc[-1]) else 50.0
+
+        if 45 <= rsi <= 65:
+            rsi_score = 20      # 최적 구간
+        elif 40 <= rsi <= 70:
+            rsi_score = 15      # 양호
+        elif 35 <= rsi <= 75:
+            rsi_score = 10      # 보통
+        elif rsi > 75:
+            rsi_score = 3       # 과매수 위험
+        else:
+            rsi_score = 2       # 과매도
+
+        # ── 3. MACD 방향 (20점) ──
+        macd_line, signal_line, hist = IC.macd(close)
+        hist_now = float(hist.iloc[-1]) if not pd.isna(hist.iloc[-1]) else 0
+        hist_prev = float(hist.iloc[-2]) if not pd.isna(hist.iloc[-2]) else 0
+        macd_val = float(macd_line.iloc[-1]) if not pd.isna(macd_line.iloc[-1]) else 0
+
+        if macd_val > 0 and hist_now > hist_prev:
+            macd_score = 20     # 상승 + 히스토그램 확대
+        elif macd_val > 0:
+            macd_score = 14     # 상승 유지
+        elif hist_now > hist_prev:
+            macd_score = 10     # 하락이지만 수렴 중 (골든크로스 임박)
+        elif hist_now > 0:
+            macd_score = 8      # 히스토그램 양수
+        else:
+            macd_score = 3      # 하락 + 확대
+
+        # ── 4. 볼린저 위치 (15점) ──
+        upper, middle, lower = IC.bollinger_bands(close)
+        u = float(upper.iloc[-1]) if not pd.isna(upper.iloc[-1]) else price
+        l = float(lower.iloc[-1]) if not pd.isna(lower.iloc[-1]) else price
+        bb_pos = (price - l) / (u - l) if u != l else 0.5
+
+        if 0.6 <= bb_pos <= 0.85:
+            bb_score = 15       # 상승 모멘텀 구간
+        elif 0.45 <= bb_pos <= 0.95:
+            bb_score = 10       # 중상단
+        elif 0.3 <= bb_pos <= 0.6:
+            bb_score = 7        # 중간
+        elif bb_pos > 0.95:
+            bb_score = 3        # 과열 위험
+        else:
+            bb_score = 2        # 하단
+
+        # ── 5. 거래량 추세 (10점) ──
+        vol_r = float(IC.volume_ratio(volume).iloc[-1]) if not pd.isna(IC.volume_ratio(volume).iloc[-1]) else 1.0
+
+        if vol_r >= 2.0:
+            vol_score = 10      # 거래량 급증
+        elif vol_r >= 1.5:
+            vol_score = 8
+        elif vol_r >= 1.2:
+            vol_score = 6
+        elif vol_r >= 0.8:
+            vol_score = 4
+        else:
+            vol_score = 2       # 거래량 감소
+
+        # ── 6. MA 교차 신호 (10점) ──
+        fast_ma = IC.sma(close, 5)
+        slow_ma = IC.sma(close, 20)
+        cross = IC.ma_crossover_signal(fast_ma, slow_ma)
+
+        if cross == "golden_cross":
+            cross_score = 10    # 골든크로스!
+        elif cross == "dead_cross":
+            cross_score = 0     # 데드크로스
+        else:
+            cross_score = 5 if ma_score >= 15 else 3  # 정배열이면 보너스
+
+        return TechHealth(
+            code=code,
+            ma_score=ma_score, rsi_score=rsi_score,
+            macd_score=macd_score, bb_score=bb_score,
+            volume_score=vol_score, cross_score=cross_score,
+            rsi_value=rsi, bb_position=bb_pos,
+            vol_ratio=vol_r, ma_status=ma_status,
+        )
+
+    # ============================================================
+    #  3D + 4D + 5D + 6D 통합 분석
+    # ============================================================
+
+    def analyze_full(self, code: str, as_of: str = None,
+                     with_news: bool = False, name: str = "") -> Optional[SupplyFull]:
+        """3D + 4D + 5D + 6D 통합 분석
+
+        Args:
+            with_news: True면 네이버증권+Grok 뉴스 분석 포함 (개별분석용)
+            name: 종목명 (뉴스 분석시 필요)
+        """
         score = self.analyze(code, as_of)
         momentum = self.analyze_4d(code, as_of)
 
@@ -837,6 +1036,9 @@ class SupplyAnalyzer:
 
         # 5D 사냥 에너지 (momentum 전달 → 신호 일치도 계산)
         stability = self.analyze_5d(code, as_of, momentum=momentum)
+
+        # 6D 기술건강도 (일봉 기술 지표)
+        tech = self.analyze_6d(code)
 
         # 밸류에이션 경고 (universe.json에서 PER/PBR 조회)
         val_warning = None
@@ -851,9 +1053,24 @@ class SupplyAnalyzer:
         except Exception:
             pass
 
+        # 뉴스 가산점 (개별 분석 시만 — 배치 스캔에서는 느려서 생략)
+        news_score = 0.0
+        news_summary = ""
+        if with_news:
+            try:
+                from data.news_collector import NewsCollector
+                nc = NewsCollector()
+                news = nc.get_news_score(code, name, use_grok=True)
+                news_score = news["score"]
+                news_summary = news.get("summary", "")
+            except Exception as e:
+                logger.debug(f"뉴스 수집 실패 {code}: {e}")
+
         return SupplyFull(
             score=score, momentum=momentum, stability=stability,
             valuation_warning=val_warning, per=per_val, pbr=pbr_val,
+            tech_health=tech,
+            news_score=news_score, news_summary=news_summary,
         )
 
     # ── 4D 내부 계산 함수들 ──────────────────────────
