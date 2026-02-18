@@ -86,8 +86,9 @@ class BodyHunterV2:
       - 시간대: 장중 시간에 따라 진입 허용/차단
     """
 
-    # 수익잠금 테이블: (RR 도달, 바닥 RR)
+    # 수익잠금 테이블: (RR 도달, 바닥 RR) — v2.2: 더 촘촘하게
     PROFIT_LOCK_TABLE = [
+        (0.8, 0.3),   # 작은 이익이라도 보호 시작
         (1.0, 0.5),
         (1.5, 0.8),
         (2.0, 1.2),
@@ -110,6 +111,7 @@ class BodyHunterV2:
         volume_drop_ratio: float = 0.65,
         wick_ratio_min:    float = 0.003,
         choppy_max_attempts: int = 3,
+        sl_ratio:          float = 0.7,    # v2.2: SL 위치 (0=low, 1=mid) — 0.7 = mid의 70%
         cutoff_time:       str   = "15:00",
         golden_start:      str   = "09:20",
         golden_end:        str   = "11:30",
@@ -127,6 +129,7 @@ class BodyHunterV2:
         self.volume_drop_ratio  = volume_drop_ratio
         self.wick_ratio_min     = wick_ratio_min
         self.choppy_max_attempts = choppy_max_attempts
+        self.sl_ratio           = sl_ratio
         self.cutoff_time        = pd.Timestamp(f"2000-01-01 {cutoff_time}").time()
         self.golden_start       = pd.Timestamp(f"2000-01-01 {golden_start}").time()
         self.golden_end         = pd.Timestamp(f"2000-01-01 {golden_end}").time()
@@ -277,9 +280,14 @@ class BodyHunterV2:
         return dict(action="WAIT", reason="리테스트대기중")
 
     def _enter(self, candle: pd.Series, entry_price: float) -> dict:
-        """진입"""
+        """진입 (v2.2: SL 위치 조절 가능)"""
         lv  = self.levels
-        sl  = lv.mid
+        # v2.2: sl_ratio로 SL 위치 조절 — 기존 mid 대신 high↔low 사이를 비율로
+        # sl_ratio=1.0 → mid (기존), sl_ratio=0.7 → high에서 range*0.7 아래
+        if self.direction == "LONG":
+            sl = lv.high - lv.range_size * self.sl_ratio
+        else:
+            sl = lv.low + lv.range_size * self.sl_ratio
 
         self.position = BodyPosition(
             direction   = self.direction,

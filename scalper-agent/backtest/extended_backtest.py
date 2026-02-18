@@ -202,9 +202,10 @@ def _simulate_day(day_date, etf_df, stock_data, daily_whitelist, code_to_name, r
         hunter = BodyHunterV2(
             ticker=code, name=cand["name"], direction="LONG",
             retest_required=False, close_only_breakout=True,
-            volume_surge_min=1.0, trailing_atr_mult=2.0,
-            breakeven_rr=0.3, trailing_rr=1.0,
+            volume_surge_min=1.0, trailing_atr_mult=1.5,
+            breakeven_rr=0.3, trailing_rr=0.8,
             exhaustion_bars=3, wick_ratio_min=0.005,
+            sl_ratio=0.7,
         )
         hunter.set_levels(first_candle, avg_volume=float(day_df.iloc[:4]["volume"].mean()))
 
