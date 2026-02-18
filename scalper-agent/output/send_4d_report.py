@@ -69,95 +69,71 @@ def action_to_tier(action):
     return m.get(action, "SKIP")
 
 
-def format_stock_block(f, rank_note=""):
-    """SupplyFull → 텔레그램 메시지 블록"""
+def format_stock_line(f, idx=0):
+    """SupplyFull → 한 줄 요약"""
     s = f.score
     m = f.momentum
-    st = f.stability
     code = s.code
     name = NAMES.get(code, code)
-    action = f.action
+    eicon = energy_icon(f.stability_grade)
+    th = f.tech_health
 
-    # 5D 에너지
-    sg = f.stability_grade
-    eicon = energy_icon(sg)
-    energy_line = ""
-    if st:
-        energy_line = f"5D: {sg}({st.stability_score:.0f})"
-        if st.atr_pct > 0:
-            energy_line += f" | ATR:{st.atr_pct:.1f}%"
-        if st.smart_money_ratio != 0:
-            energy_line += f" | SM:{st.smart_money_ratio:+.1f}%"
-        if st.signal_count > 0:
-            energy_line += f" | \uC2E0\uD638:{st.signal_count}/4"
+    # 6D 기술등급
+    tech = f"{th.tech_grade}({th.tech_score:.0f})" if th else "-"
 
-    # 가격 정보 (daily CSV에서)
-    from data.supply_analyzer import DAILY_DIR
-    import pandas as pd
-    price_line = ""
-    try:
-        daily_path = DAILY_DIR / f"{code}.csv"
-        if daily_path.exists():
-            df = pd.read_csv(daily_path, index_col=0, parse_dates=True)
-            # 한글 컬럼 → 영문 매핑
-            if "종가" in df.columns:
-                df = df.rename(columns={"종가": "close"})
-            if len(df) > 0 and "close" in df.columns:
-                last = df.iloc[-1]
-                price = int(last["close"])
-                price_line = f"\U0001F4B0 {price:,}\uC6D0 ({df.index[-1].date()})"
-    except Exception:
-        pass
-
-    # 수급 정보
-    flow_lines = []
+    # 기관 수급
     if m.inst_streak > 0:
-        fire = "\U0001F525" * min(4, max(1, abs(m.inst_streak) // 2))
-        flow_lines.append(f"\u251C \uAE30\uAD00: {m.inst_streak}일 \uC5F0\uC18D\uB9E4\uC218 ({m.inst_streak_amount:+.0f}\uC5B5) {fire}")
+        inst = f"기관+{m.inst_streak}일({m.inst_streak_amount:+.0f}억)"
     elif m.inst_streak < 0:
-        flow_lines.append(f"\u251C \uAE30\uAD00: {abs(m.inst_streak)}일 \uC5F0\uC18D\uB9E4\uB3C4 ({m.inst_streak_amount:+.0f}\uC5B5)")
+        inst = f"기관{m.inst_streak}일({m.inst_streak_amount:+.0f}억)"
     else:
-        flow_lines.append(f"\u251C \uAE30\uAD00: \uC911\uB9BD")
+        inst = "기관중립"
 
-    inflection_icon = "\u2191" if m.foreign_inflection == "UP_TURN" else ("\u2193" if m.foreign_inflection == "DOWN_TURN" else "\u2192")
-    flow_lines.append(f"\u251C \uC678\uC778\uBCC0\uACE1: {m.foreign_inflection} {inflection_icon}")
+    # 가감점 화살표
+    arrow = ""
+    base = f._base_action
+    final = f.action
+    if final != base:
+        ranks = f._ACTION_RANKS
+        diff = ranks.index(base) - ranks.index(final)
+        arrow = "↑" * diff if diff > 0 else "↓" * (-diff)
 
-    contra_mark = "\u2705" if m.retail_contrarian else ""
-    flow_lines.append(f"\u2514 \uAC1C\uC778\uC5ED\uC9C0\uD45C: {'O' if m.retail_contrarian else 'X'} {contra_mark}")
+    # 밸류 경고
+    warn = f" ⚠{f.valuation_warning}" if f.valuation_warning else ""
 
-    # 조합
-    emoji = grade_emoji(action)
-    tier = action_to_tier(action)
-    title = f"{emoji} {tier} \u2014 {name} ({code})"
-    if rank_note:
-        title += f" {rank_note}"
-    if eicon:
-        title += f" {eicon}"
+    num = f"{idx}." if idx else "•"
+    return (
+        f"{num} {name}({code}) {eicon}\n"
+        f"   3D:{s.grade}({s.total_score:.0f}) 4D:{m.signal}({m.momentum_score:.0f}) "
+        f"6D:{tech} {arrow}\n"
+        f"   {inst} | 외인:{m.foreign_inflection}{warn}"
+    )
 
-    lines = [
-        "\u2501" * 28,
-        title,
-        "\u2501" * 28,
-        f"{f.risk_label} | 3D: {s.grade}({s.total_score:.0f}) | 4D: {m.signal}({m.momentum_score:.0f})",
-    ]
-    if energy_line:
-        lines.append(energy_line)
-    if price_line:
-        lines.append(price_line)
-    lines.append("")
-    lines.append("\U0001F4CA \uC218\uAE09 \uC0C1\uC138")
-    lines.extend(flow_lines)
 
+def _build_group_message(title, stocks, max_items=20):
+    """등급별 종목 리스트 → 하나의 메시지 텍스트
+
+    텔레그램 4096자 제한 고려하여 max_items로 제한
+    """
+    lines = [title, "\u2501" * 28]
+    for i, f in enumerate(stocks[:max_items], 1):
+        lines.append(format_stock_line(f, i))
+    if len(stocks) > max_items:
+        lines.append(f"\n... 외 {len(stocks) - max_items}개")
     return "\n".join(lines)
 
 
 def generate_report():
-    """5D 스캔 실행 후 텔레그램 메시지 리스트 생성"""
+    """6D 스캔 실행 후 텔레그램 메시지 리스트 생성
+
+    등급별 묶음 전송: 헤더 1장 + S등급 1장 + A등급 1장 + B/WATCH 1장 + 요약 1장
+    = 최대 5장
+    """
     from data.supply_analyzer import SupplyAnalyzer
 
     analyzer = SupplyAnalyzer()
 
-    # ETF, 순환매 ETF 제외
+    # ETF 제외
     exclude_prefixes = ("069500", "371160", "102780", "305720")
     codes = [c for c in UNIVERSE.keys()
              if c not in exclude_prefixes
@@ -184,93 +160,104 @@ def generate_report():
 
     msgs = []
 
-    # ━━━ Part 1: Header ━━━
+    # ━━━ 1장: 헤더 + 요약 통계 ━━━
     header_lines = [
-        f"\U0001F52E Body Hunter v3 (5D \uB514\uC2A4\uD06C\uBC95) | {now}",
+        f"\U0001F52E Body Hunter v3 (6D) | {now}",
         "\u2501" * 28,
         "",
-        f"\U0001F4CA 5D \uC218\uAE09 \uC2A4\uCE94 ({len(fulls)}\uC885\uBAA9 | {date_str})",
-        f"\u251C STRONG_BUY: {len(strong_buys)} | BUY: {len(buys)} | ENTER: {len(enters)}",
-        f"\u251C WATCH: {len(watches)} | CAUTION: {len(cautions)} | SKIP: {len(skips)}",
-        f"\u2514 \uC5D0\uB108\uC9C0: " + " / ".join(
+        f"\U0001F4CA 6D \uC218\uAE09 \uC2A4\uCE94 ({len(fulls)}\uC885\uBAA9 | {date_str})",
+        f"\U0001F525 STRONG_BUY: {len(strong_buys)}",
+        f"\u2B50 BUY: {len(buys)}",
+        f"\U0001F539 ENTER: {len(enters)}",
+        f"\u26A0\uFE0F CAUTION: {len(cautions)} | \U0001F50D WATCH: {len(watches)}",
+        f"\u26D4 SKIP: {len(skips)}",
+        "",
+        "\uC5D0\uB108\uC9C0: " + " / ".join(
             f"{g}({stab_counts.get(g, 0)})"
             for g in ["EXPLOSIVE", "HUNTABLE", "MODERATE", "SLUGGISH"]
             if stab_counts.get(g, 0) > 0
         ),
         "",
-        "\U0001F3AF\U0001F525=\uD3ED\uBC1C\uC801 | \U0001F3AF=\uC0AC\uB0E5\uAC10 | \U0001F40C=\uB454\uAC10",
+        "\U0001F3AF\U0001F525=\uD3ED\uBC1C | \U0001F3AF=\uC0AC\uB0E5\uAC10 | \u2191=6D/\uB274\uC2A4 \uC0C1\uD5A5",
     ]
     msgs.append("\n".join(header_lines))
 
-    # ━━━ Part 2+: STRONG_BUY 종목들 (각각 별도 메시지) ━━━
-    for f in strong_buys:
-        msgs.append(format_stock_block(f))
+    # ━━━ 2장: S등급 (STRONG_BUY) ━━━
+    if strong_buys:
+        msgs.append(_build_group_message(
+            f"\U0001F525 S\uB4F1\uAE09 STRONG_BUY ({len(strong_buys)}\uAC1C)",
+            strong_buys, max_items=15
+        ))
 
-    # ━━━ BUY 종목들 ━━━
-    for i, f in enumerate(buys):
-        note = ""
-        if i == 0 and f.momentum.momentum_score >= 90:
-            note = "\U0001F3C6 4D 1\uC704"
-        msgs.append(format_stock_block(f, note))
+    # ━━━ 3장: A등급 (BUY) ━━━
+    if buys:
+        msgs.append(_build_group_message(
+            f"\u2B50 A\uB4F1\uAE09 BUY ({len(buys)}\uAC1C)",
+            buys, max_items=20
+        ))
 
-    # ━━━ ENTER + CAUTION + WATCH (하나로 묶기) ━━━
+    # ━━━ 4장: B등급 + WATCH + CAUTION ━━━
     other_lines = []
     if enters:
+        other_lines.append(f"\U0001F539 B\uB4F1\uAE09 ENTER ({len(enters)}\uAC1C)")
         other_lines.append("\u2500" * 28)
-        other_lines.append(f"\U0001F539 B\uB4F1\uAE09 (ENTER)")
-        other_lines.append("\u2500" * 28)
-        for f in enters:
+        for i, f in enumerate(enters[:15], 1):
             name = NAMES.get(f.score.code, f.score.code)
-            shield = energy_icon(f.stability_grade)
-            stab = f.stability.stability_score if f.stability else 0
+            eicon = energy_icon(f.stability_grade)
+            th = f.tech_health
+            tech = f"6D:{th.tech_grade}({th.tech_score:.0f})" if th else ""
             other_lines.append(
-                f"{name}({f.score.code}) {f.risk_label} "
-                f"| 3D:{f.score.grade}({f.score.total_score:.0f}) "
-                f"4D:{f.momentum.signal}({f.momentum.momentum_score:.0f}) "
-                f"5D:{f.stability_grade}({stab:.0f}) {shield}"
+                f"{i}. {name} | 3D:{f.score.grade}({f.score.total_score:.0f}) "
+                f"4D:{f.momentum.signal}({f.momentum.momentum_score:.0f}) {tech} {eicon}"
+            )
+        if len(enters) > 15:
+            other_lines.append(f"... \uC678 {len(enters) - 15}\uAC1C")
+
+    if watches:
+        other_lines.append("")
+        other_lines.append(f"\U0001F50D \uAD00\uCC30 WATCH ({len(watches)}\uAC1C)")
+        for f in watches[:10]:
+            name = NAMES.get(f.score.code, f.score.code)
+            other_lines.append(
+                f"\u251C {name} | 3D:{f.score.grade}({f.score.total_score:.0f}) "
+                f"4D:{f.momentum.signal}({f.momentum.momentum_score:.0f})"
             )
 
     if cautions:
         other_lines.append("")
-        other_lines.append(f"\u26A0\uFE0F C\uB4F1\uAE09 (\uD568\uC815\uC8FC\uC758)")
-        for f in cautions:
+        other_lines.append(f"\u26A0\uFE0F \uD568\uC815\uC8FC\uC758 CAUTION ({len(cautions)}\uAC1C)")
+        for f in cautions[:10]:
             name = NAMES.get(f.score.code, f.score.code)
-            other_lines.append(f"\u251C {name}: CAUTION ({f.score.grade}/{f.momentum.signal})")
-
-    if watches:
-        other_lines.append("")
-        other_lines.append(f"\U0001F50D \uAD00\uCC30\uC885\uBAA9 (WATCH)")
-        for f in watches:
-            name = NAMES.get(f.score.code, f.score.code)
-            shield = energy_icon(f.stability_grade)
-            other_lines.append(
-                f"\u251C {name}({f.score.code}) "
-                f"3D:{f.score.grade}({f.score.total_score:.0f}) "
-                f"4D:{f.momentum.signal}({f.momentum.momentum_score:.0f}) {shield}"
-            )
+            other_lines.append(f"\u251C {name}: {f.score.grade}/{f.momentum.signal}")
 
     if other_lines:
         msgs.append("\n".join(other_lines))
 
-    # ━━━ 전략 요약 ━━━
+    # ━━━ 5장: 전략 요약 (S+A 한줄씩) ━━━
     summary_lines = [
         "\u2501" * 28,
-        f"\U0001F4CB \uC624\uB298\uC758 \uC804\uB7B5 \uC694\uC57D",
+        f"\U0001F4CB \uC624\uB298\uC758 \uC804\uB7B5 \uC694\uC57D ({len(strong_buys)+len(buys)}\uC885\uBAA9)",
         "\u2501" * 28,
     ]
-
     all_active = strong_buys + buys
-    for i, f in enumerate(all_active, 1):
+    for i, f in enumerate(all_active[:20], 1):
         name = NAMES.get(f.score.code, f.score.code)
         eic = energy_icon(f.stability_grade)
         tier = "S" if f.action == "STRONG_BUY" else "A"
-        summary_lines.append(f"{i}\uFE0F\u20E3 {name} [{tier}] {f.risk_label} {eic}")
+        # 가감점 표시
+        arrow = ""
+        if f._base_action != f.action:
+            ranks = f._ACTION_RANKS
+            diff = ranks.index(f._base_action) - ranks.index(f.action)
+            arrow = "\u2191" * diff if diff > 0 else "\u2193" * (-diff)
+        summary_lines.append(f"{i}. [{tier}] {name} {f.risk_label} {eic}{arrow}")
+
+    if len(all_active) > 20:
+        summary_lines.append(f"... \uC678 {len(all_active) - 20}\uAC1C")
 
     summary_lines.append("")
-    summary_lines.append("V = \u03C0\u222B[f(x)]\u00B2dx")
-    summary_lines.append("3D=\uBC18\uC9C0\uB984 | 4D=\uD31D\uCC3D\uC18D\uB3C4 | 5D=\uC5D0\uB108\uC9C0(\uC0AC\uB0E5\uC801\uD569\uB3C4)")
-    summary_lines.append("")
-    summary_lines.append(f"\U0001F52E Body Hunter v3 | 3D+4D+5D \uB514\uC2A4\uD06C\uBC95")
+    summary_lines.append("3D=\uC218\uAE09 | 4D=\uBAA8\uBA58\uD140 | 5D=\uC5D0\uB108\uC9C0 | 6D=\uAE30\uC220")
+    summary_lines.append(f"\U0001F52E Body Hunter v3 | 6D \uB514\uC2A4\uD06C\uBC95")
 
     msgs.append("\n".join(summary_lines))
 
