@@ -1,17 +1,26 @@
 """
-몸통 포착 엔진 v2.1 (Body Hunter v2.1)
+몸통 포착 엔진 v2.3 (Body Hunter v2.3) — Prop Firm Edition
 
-v2 대비 개선사항 (First Candle Strategy 참조):
+v2.3 (Prop Firm):
+  9. Fixed TP 모드: 고정 2:1 TP (trailing/소진감지 대신 단순 청산)
+ 10. SL 축소: sl_ratio 0.6 (range의 60% → 더 타이트한 손절)
+ 11. DrawdownShield 연동: 연패 기반 리스크 자동 축소
+
+v2.2:
+  - sl_ratio 조절 (SL 위치 커스텀)
+  - 수익잠금 테이블 촘촘화
+
+v2.1 (First Candle Strategy):
   6. 박스권(Choppy) 감지: 이탈 시도 3회+ 실패 시 자동 포기
   7. FOMO 방지 로그: 리테스트 미확인 상태 명시 경고
   8. 소진감지 수익보호: 소진감지 시 수익잠금 가격 보장
 
-v1 대비 개선사항:
-  1. LONG ONLY 기본 (SHORT은 한국시장 현실상 비효율)
-  2. RR 1.0 도달 시 수익바닥 0.5로 잠금 (본전청산 방지)
-  3. 시간대 인식 (9:30~11:30 골든타임 우대)
-  4. 첫봉 기준 3~4번째 봉(9:15~9:20)으로 변경 가능
-  5. 트레일링 SL 개선: 수익 구간별 점진적 잠금
+v1:
+  1. LONG ONLY 기본
+  2. RR 기반 수익잠금
+  3. 시간대 인식
+  4. 첫봉 기준 변경 가능
+  5. 트레일링 SL 개선
 
 상태 머신:
   READY -> WATCHING -> RETEST_WAIT -> IN_BODY -> DONE
@@ -36,6 +45,7 @@ class BodyState(Enum):
 
 class ExitReason(Enum):
     STOP_LOSS      = "손절"
+    TAKE_PROFIT    = "익절"          # v2.3: 고정 TP
     EXHAUSTION     = "소진감지"
     TRAILING_STOP  = "트레일링"
     PROFIT_LOCK    = "수익잠금"
@@ -78,11 +88,16 @@ class ExhaustionSignal:
 
 class BodyHunterV2:
     """
-    몸통 포착 엔진 v2
+    몸통 포착 엔진 v2.3 — Prop Firm Edition
 
-    핵심 개선:
+    v2.3 핵심:
+      - fixed_tp_rr > 0 이면 고정 TP 모드 (trailing/소진감지 비활성)
+        → win +2.0R, lose -0.6R → 27%승률에서도 기대값 +0.10
+      - sl_ratio=0.6 (range의 60%, 더 타이트)
+
+    v2 핵심:
       - 수익잠금: RR 1.0 → 바닥 0.5, RR 2.0 → 바닥 1.2, RR 3.0 → 바닥 2.0
-      - RR 기반 본전이동: RR 0.3 도달 후에만 SL을 진입가로 이동 (시간 아닌 성과 기준)
+      - RR 기반 본전이동: RR 0.3 도달 후에만 SL을 진입가로 이동
       - 시간대: 장중 시간에 따라 진입 허용/차단
     """
 
@@ -111,7 +126,8 @@ class BodyHunterV2:
         volume_drop_ratio: float = 0.65,
         wick_ratio_min:    float = 0.003,
         choppy_max_attempts: int = 3,
-        sl_ratio:          float = 0.7,    # v2.2: SL 위치 (0=low, 1=mid) — 0.7 = mid의 70%
+        sl_ratio:          float = 0.6,    # v2.3: SL 위치 (range의 60%) — 0.7→0.6 축소
+        fixed_tp_rr:       float = 0.0,    # v2.3: 고정 TP (0=비활성, 2.0=2:1 TP)
         cutoff_time:       str   = "15:00",
         golden_start:      str   = "09:20",
         golden_end:        str   = "11:30",
@@ -130,6 +146,7 @@ class BodyHunterV2:
         self.wick_ratio_min     = wick_ratio_min
         self.choppy_max_attempts = choppy_max_attempts
         self.sl_ratio           = sl_ratio
+        self.fixed_tp_rr        = fixed_tp_rr
         self.cutoff_time        = pd.Timestamp(f"2000-01-01 {cutoff_time}").time()
         self.golden_start       = pd.Timestamp(f"2000-01-01 {golden_start}").time()
         self.golden_end         = pd.Timestamp(f"2000-01-01 {golden_end}").time()
@@ -308,7 +325,7 @@ class BodyHunterV2:
         return dict(action="ENTER", reason=f"{self.direction} 진입", position=self.position)
 
     def _manage_position(self, candle: pd.Series) -> dict:
-        """포지션 관리 (v2: 수익잠금 + 개선된 트레일링)"""
+        """포지션 관리 (v2.3: Fixed TP 모드 / v2: 수익잠금+트레일링)"""
         pos = self.position
         pos.hold_bars += 1
         c, h, l = candle["close"], candle["high"], candle["low"]
@@ -318,9 +335,16 @@ class BodyHunterV2:
         if risk > 0:
             if self.direction == "LONG":
                 pos.rr_current = (c - pos.entry_price) / risk
+                rr_peak = (h - pos.entry_price) / risk  # 장중 최고 RR
             else:
                 pos.rr_current = (pos.entry_price - c) / risk
+                rr_peak = (pos.entry_price - l) / risk
 
+        # ── v2.3: Fixed TP 모드 (단순 2:1 청산) ──
+        if self.fixed_tp_rr > 0:
+            return self._manage_fixed_tp(candle, pos, risk, rr_peak)
+
+        # ── 기존 v2 모드: 수익잠금 + 트레일링 ──
         # v2: 수익잠금 업데이트
         self._update_profit_lock(pos)
 
@@ -360,6 +384,39 @@ class BodyHunterV2:
             action="HOLD",
             reason=f"몸통탑승 RR:{pos.rr_current:+.2f} 바닥:{pos.rr_floor:+.2f} ({pos.hold_bars}봉)",
             position=pos, exhaustion=exhaustion,
+        )
+
+    def _manage_fixed_tp(self, candle: pd.Series, pos, risk, rr_peak) -> dict:
+        """v2.3: 고정 TP 모드 — SL or TP, 그 외 없음
+
+        장중 고가/저가로 TP/SL 히트 판정 (봉 내 동시 히트 시 불리한 쪽 우선)
+        """
+        c, h, l = candle["close"], candle["high"], candle["low"]
+
+        # TP 가격 계산
+        if self.direction == "LONG":
+            tp_price = pos.entry_price + risk * self.fixed_tp_rr
+            tp_hit = h >= tp_price
+            sl_hit = l <= pos.stop_loss
+        else:
+            tp_price = pos.entry_price - risk * self.fixed_tp_rr
+            tp_hit = l <= tp_price
+            sl_hit = h >= pos.stop_loss
+
+        # 동시 히트: SL 우선 (보수적 — 봉 내에서 SL 먼저 맞았을 가능성)
+        if sl_hit and tp_hit:
+            return self._exit(candle, ExitReason.STOP_LOSS, pos.stop_loss)
+
+        if tp_hit:
+            return self._exit(candle, ExitReason.TAKE_PROFIT, tp_price)
+
+        if sl_hit:
+            return self._exit(candle, ExitReason.STOP_LOSS, pos.stop_loss)
+
+        return dict(
+            action="HOLD",
+            reason=f"Fixed TP RR:{pos.rr_current:+.2f} TP@{self.fixed_tp_rr:.1f}R ({pos.hold_bars}봉)",
+            position=pos, exhaustion=None,
         )
 
     def _update_profit_lock(self, pos: BodyPosition):
@@ -493,9 +550,10 @@ class BodyHunterV2:
         self.state = BodyState.DONE
 
         icon_map = {
-            ExitReason.STOP_LOSS: "X", ExitReason.EXHAUSTION: "!",
-            ExitReason.TRAILING_STOP: "T", ExitReason.TIME_LIMIT: "C",
-            ExitReason.PROFIT_LOCK: "$", ExitReason.CHOPPY: "~",
+            ExitReason.STOP_LOSS: "X", ExitReason.TAKE_PROFIT: "$",
+            ExitReason.EXHAUSTION: "!", ExitReason.TRAILING_STOP: "T",
+            ExitReason.TIME_LIMIT: "C", ExitReason.PROFIT_LOCK: "L",
+            ExitReason.CHOPPY: "~",
         }
         logger.info(
             f"[{icon_map.get(reason, '?')}] [{self.ticker}] 청산 [{reason.value}] "
