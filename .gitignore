@@ -38,6 +38,11 @@ docs/.bkit-memory.json
 docs/.pdca-snapshots/
 docs/.pdca-status.json
 
+# 수집 데이터 (용량 큼, 로컬 캐시)
+scalper-agent/data_store/
+token.dat
+scalper-agent/token.dat
+
 # Logs & Results
 scalper-agent/logs/
 scalper-agent/results/
