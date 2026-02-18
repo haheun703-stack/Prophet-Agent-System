@@ -200,6 +200,9 @@ class SupplyFull:
     score: SupplyScore                          # 3D 정적 등급
     momentum: SupplyMomentum                    # 4D 동적 모멘텀
     stability: Optional[SupplyStability] = None  # 5D 안정성
+    valuation_warning: Optional[str] = None      # 밸류에이션 경고 (적자/고PER/저PBR)
+    per: float = 0.0
+    pbr: float = 0.0
 
     @property
     def grade_3d(self) -> str:
@@ -244,15 +247,22 @@ class SupplyFull:
         """action + 5D 에너지 조합 사냥 라벨"""
         action = self.action
         if self.stability is None:
-            return action
-        grade = self.stability.stability_grade
-        if grade == "EXPLOSIVE":
-            return f"EXPLOSIVE {action}"   # 폭발적 사냥감!
-        elif grade == "HUNTABLE":
-            return f"HUNT {action}"        # 추적 가치
-        elif grade == "SLUGGISH":
-            return f"SLOW {action}"        # 느림보
-        return action  # MODERATE → 접두사 없음
+            label = action
+        else:
+            grade = self.stability.stability_grade
+            if grade == "EXPLOSIVE":
+                label = f"EXPLOSIVE {action}"   # 폭발적 사냥감!
+            elif grade == "HUNTABLE":
+                label = f"HUNT {action}"        # 추적 가치
+            elif grade == "SLUGGISH":
+                label = f"SLOW {action}"        # 느림보
+            else:
+                label = action  # MODERATE → 접두사 없음
+
+        # 밸류에이션 경고 태그 (점수 불변, 라벨만)
+        if self.valuation_warning:
+            label += f" [{self.valuation_warning}]"
+        return label
 
     @property
     def disk_thickness(self) -> str:
@@ -828,7 +838,23 @@ class SupplyAnalyzer:
         # 5D 사냥 에너지 (momentum 전달 → 신호 일치도 계산)
         stability = self.analyze_5d(code, as_of, momentum=momentum)
 
-        return SupplyFull(score=score, momentum=momentum, stability=stability)
+        # 밸류에이션 경고 (universe.json에서 PER/PBR 조회)
+        val_warning = None
+        per_val = 0.0
+        pbr_val = 0.0
+        try:
+            from data.universe_builder import get_valuation
+            val = get_valuation(code)
+            per_val = val["per"]
+            pbr_val = val["pbr"]
+            val_warning = val["warning"]
+        except Exception:
+            pass
+
+        return SupplyFull(
+            score=score, momentum=momentum, stability=stability,
+            valuation_warning=val_warning, per=per_val, pbr=pbr_val,
+        )
 
     # ── 4D 내부 계산 함수들 ──────────────────────────
 
@@ -975,10 +1001,23 @@ class SupplyAnalyzer:
 
     def scan_all_full(self, codes: list, as_of: str = None) -> List[SupplyFull]:
         """전 종목 3D+4D+5D 통합 스캔 -> action 우선순위 정렬"""
+        # 밸류에이션 일괄 로드 (JSON 1회만 읽기)
+        try:
+            from data.universe_builder import get_valuation_warnings
+            val_map = get_valuation_warnings(codes)
+        except Exception:
+            val_map = {}
+
         results = []
         for code in codes:
             full = self.analyze_full(code, as_of)
             if full:
+                # 일괄 로드된 밸류에이션 덮어쓰기 (analyze_full의 개별 조회보다 효율적)
+                if code in val_map:
+                    v = val_map[code]
+                    full.per = v["per"]
+                    full.pbr = v["pbr"]
+                    full.valuation_warning = v["warning"]
                 results.append(full)
 
         # 정렬: action 우선순위 -> 3D 점수 -> 5D 안정성 -> 4D 점수

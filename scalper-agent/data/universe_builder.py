@@ -76,6 +76,19 @@ def build_universe(min_cap_억: int = 10000) -> dict:
     # KOSPI 목록 1번만 조회 (성능)
     kospi_set = set(stock.get_market_ticker_list(date, market="KOSPI"))
 
+    # PER/PBR 한 번에 수집 (밸류에이션 안전장치용)
+    fund_df = None
+    for offset in range(5):
+        fund_date = (datetime.strptime(date, "%Y%m%d") - timedelta(days=offset)).strftime("%Y%m%d")
+        try:
+            _fund = stock.get_market_fundamental_by_ticker(fund_date, market="ALL")
+            if _fund is not None and (_fund["PER"] > 0).sum() > 100:
+                fund_df = _fund
+                print(f"  PER/PBR 기준일: {fund_date}")
+                break
+        except Exception:
+            continue
+
     # 우선주/스팩 제거
     exclude_keywords = ["스팩", "SPAC", "리츠"]
     universe = {}
@@ -106,6 +119,13 @@ def build_universe(min_cap_억: int = 10000) -> dict:
         suffix = ".KS" if market == "KOSPI" else ".KQ"
         mkt_code = "J" if market == "KOSPI" else "Q"
 
+        # PER/PBR 조회
+        per_val = 0.0
+        pbr_val = 0.0
+        if fund_df is not None and code in fund_df.index:
+            per_val = float(fund_df.loc[code, "PER"])
+            pbr_val = float(fund_df.loc[code, "PBR"])
+
         universe[code] = {
             "name": name,
             "market": market,
@@ -113,6 +133,8 @@ def build_universe(min_cap_억: int = 10000) -> dict:
             "mkt_code": mkt_code,
             "cap_억": int(cap_억),
             "volume": int(vol),
+            "per": round(per_val, 1),
+            "pbr": round(pbr_val, 2),
         }
 
         time.sleep(0.05)  # KRX 속도 제한
@@ -125,6 +147,9 @@ def build_universe(min_cap_억: int = 10000) -> dict:
     print(f"  필터 후 유니버스: {len(universe)}개")
     print(f"  KOSPI: {sum(1 for v in universe.values() if v['market']=='KOSPI')}개")
     print(f"  KOSDAQ: {sum(1 for v in universe.values() if v['market']=='KOSDAQ')}개")
+    per_zero = sum(1 for v in universe.values() if v.get("per", 0) == 0)
+    per_high = sum(1 for v in universe.values() if v.get("per", 0) > 200)
+    print(f"  PER=0(적자): {per_zero}개 | PER>200(고평가): {per_high}개")
 
     # 저장
     _ensure_dirs()
@@ -243,6 +268,63 @@ def get_universe_dict() -> dict:
         code: (info["name"], info["suffix"], info["mkt_code"])
         for code, info in uni.items()
     }
+
+
+def get_valuation(code: str) -> dict:
+    """종목의 PER/PBR 밸류에이션 조회
+
+    Returns: {"per": float, "pbr": float, "warning": str or None}
+    """
+    uni = load_universe()
+    if not uni or code not in uni:
+        return {"per": 0, "pbr": 0, "warning": None}
+
+    info = uni[code]
+    per = info.get("per", 0)
+    pbr = info.get("pbr", 0)
+
+    warning = None
+    if per == 0:
+        warning = "적자"
+    elif per > 200:
+        warning = "고PER"
+    if pbr > 0 and pbr < 0.3:
+        warning = "저PBR"  # 좀비/구조조정 리스크
+
+    return {"per": per, "pbr": pbr, "warning": warning}
+
+
+def get_valuation_warnings(codes: list = None) -> dict:
+    """여러 종목의 밸류에이션 경고 일괄 조회
+
+    Returns: {code: {"per": float, "pbr": float, "warning": str or None}}
+    """
+    uni = load_universe()
+    if not uni:
+        return {}
+
+    if codes is None:
+        codes = list(uni.keys())
+
+    result = {}
+    for code in codes:
+        if code not in uni:
+            continue
+        info = uni[code]
+        per = info.get("per", 0)
+        pbr = info.get("pbr", 0)
+
+        warning = None
+        if per == 0:
+            warning = "적자"
+        elif per > 200:
+            warning = "고PER"
+        if pbr > 0 and pbr < 0.3:
+            warning = "저PBR"
+
+        result[code] = {"per": per, "pbr": pbr, "warning": warning}
+
+    return result
 
 
 # ============================================================

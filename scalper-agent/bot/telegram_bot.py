@@ -287,6 +287,13 @@ class BodyHunterBot:
             lines.append(f"  SM강도: {st.intensity_score:.0f} | 신호: {st.alignment_score:.0f}")
             lines.append(f"  ATR: {st.atr_pct:.1f}% | SM비율: {st.smart_money_ratio:+.1f}%")
 
+        # PER/PBR 밸류에이션
+        if full.per > 0 or full.pbr > 0:
+            per_str = f"{full.per:.1f}" if full.per > 0 else "적자"
+            lines.append(f"PER: {per_str} | PBR: {full.pbr:.2f}")
+        if full.valuation_warning:
+            lines.append(f"⚠️ 밸류: {full.valuation_warning}")
+
         lines.append("")
         lines.append(f"기관: {m.inst_streak:+d}일 ({m.inst_streak_amount:+.0f}억)")
         lines.append(f"외인변곡: {m.foreign_inflection}")
