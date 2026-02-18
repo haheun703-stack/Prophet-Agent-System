@@ -1,5 +1,10 @@
 """
-몸통 포착 엔진 v2 (Body Hunter v2)
+몸통 포착 엔진 v2.1 (Body Hunter v2.1)
+
+v2 대비 개선사항 (First Candle Strategy 참조):
+  6. 박스권(Choppy) 감지: 이탈 시도 3회+ 실패 시 자동 포기
+  7. FOMO 방지 로그: 리테스트 미확인 상태 명시 경고
+  8. 소진감지 수익보호: 소진감지 시 수익잠금 가격 보장
 
 v1 대비 개선사항:
   1. LONG ONLY 기본 (SHORT은 한국시장 현실상 비효율)
@@ -35,6 +40,7 @@ class ExitReason(Enum):
     TRAILING_STOP  = "트레일링"
     PROFIT_LOCK    = "수익잠금"
     TIME_LIMIT     = "시간초과"
+    CHOPPY         = "박스권"
 
 
 @dataclass
@@ -102,6 +108,7 @@ class BodyHunterV2:
         exhaustion_bars:   int   = 2,
         volume_drop_ratio: float = 0.65,
         wick_ratio_min:    float = 0.003,
+        choppy_max_attempts: int = 3,
         cutoff_time:       str   = "15:00",
         golden_start:      str   = "09:20",
         golden_end:        str   = "11:30",
@@ -117,6 +124,7 @@ class BodyHunterV2:
         self.exhaustion_bars    = exhaustion_bars
         self.volume_drop_ratio  = volume_drop_ratio
         self.wick_ratio_min     = wick_ratio_min
+        self.choppy_max_attempts = choppy_max_attempts
         self.cutoff_time        = pd.Timestamp(f"2000-01-01 {cutoff_time}").time()
         self.golden_start       = pd.Timestamp(f"2000-01-01 {golden_start}").time()
         self.golden_end         = pd.Timestamp(f"2000-01-01 {golden_end}").time()
@@ -126,6 +134,10 @@ class BodyHunterV2:
         self.position: Optional[BodyPosition]  = None
         self._recent_candles: List[pd.Series]  = []
         self._avg_volume:     Optional[float]  = None
+
+        # v2.1: 박스권 감지 카운터
+        self._breakout_attempts: int  = 0   # 이탈 시도 횟수 (꼬리만 닿고 복귀)
+        self._retest_fails:      int  = 0   # 리테스트 실패 횟수
 
     def set_levels(self, first_candle: pd.Series, avg_volume: float = None):
         """첫봉으로 레벨 마킹"""
@@ -166,29 +178,53 @@ class BodyHunterV2:
         return result
 
     def _check_breakout(self, candle: pd.Series) -> dict:
-        """이탈 확인"""
+        """이탈 확인 (v2.1: 박스권 감지 포함)"""
         lv = self.levels
         o, c = candle["open"], candle["close"]
+        h, l = candle["high"], candle["low"]
         v    = candle["volume"]
+
+        # v2.1: 박스권 감지 — 이탈 시도만 반복하고 확인 못 하면 포기
+        if self._breakout_attempts >= self.choppy_max_attempts:
+            self.state = BodyState.DONE
+            logger.warning(
+                f"[{self.ticker}] 박스권 감지: 이탈 시도 {self._breakout_attempts}회 실패 → 진입 포기"
+            )
+            return dict(action="WAIT", reason=f"박스권({self._breakout_attempts}회 실패)")
 
         vol_surge = v / self._avg_volume >= self.volume_surge_min if self._avg_volume > 0 else False
 
         if self.close_only_breakout:
-            # 완화: 종가만 레벨 상회/하회하면 이탈 인정
             if self.direction == "LONG":
                 body_outside = c > lv.high
             else:
                 body_outside = c < lv.low
         else:
-            # 엄격: 몸통 전체(시가+종가)가 레벨 밖
             if self.direction == "LONG":
                 body_outside = min(o, c) > lv.high
             else:
                 body_outside = max(o, c) < lv.low
 
+        # 꼬리만 닿고 마감은 안쪽 = 이탈 시도 실패 (박스권 카운트)
+        if self.direction == "LONG":
+            wick_touched = h > lv.high and c <= lv.high
+        else:
+            wick_touched = l < lv.low and c >= lv.low
+
+        if wick_touched:
+            self._breakout_attempts += 1
+            logger.info(
+                f"[{self.ticker}] 이탈 시도 실패 ({self._breakout_attempts}/{self.choppy_max_attempts}) "
+                f"꼬리:{h:,.0f} > 레벨:{lv.high:,.0f} but 마감:{c:,.0f}"
+            )
+
         if body_outside and vol_surge:
             if self.retest_required:
                 self.state = BodyState.RETEST_WAIT
+                logger.warning(
+                    f"[{self.ticker}] FOMO 방지: 이탈 확인됐지만 리테스트 대기 필수! "
+                    f"마감:{c:,.0f} > 레벨:{lv.high:,.0f}"
+                )
                 return dict(action="WAIT", reason="이탈확인-리테스트대기")
             else:
                 return self._enter(candle, c)
@@ -196,7 +232,7 @@ class BodyHunterV2:
         return dict(action="WAIT", reason="이탈대기중")
 
     def _check_retest(self, candle: pd.Series) -> dict:
-        """리테스트 확인"""
+        """리테스트 확인 (v2.1: 실패 카운트 + FOMO 경고)"""
         lv   = self.levels
         o, c = candle["open"], candle["close"]
         h, l = candle["high"],  candle["low"]
@@ -204,13 +240,38 @@ class BodyHunterV2:
         if self.direction == "LONG":
             touched     = l <= lv.high
             valid_close = c > lv.high
+            # 리테스트 실패: 레벨 아래로 완전히 복귀
+            fell_back   = c < lv.mid
         else:
             touched     = h >= lv.low
             valid_close = c < lv.low
+            fell_back   = c > lv.mid
 
         if touched and valid_close:
             return self._enter(candle, c)
 
+        # v2.1: 리테스트 실패 추적 → 박스권으로 전환
+        if fell_back:
+            self._retest_fails += 1
+            self._breakout_attempts += 1  # 박스권 카운터에도 반영
+            self.state = BodyState.WATCHING  # 다시 이탈 대기로 복귀
+            logger.info(
+                f"[{self.ticker}] 리테스트 실패 ({self._retest_fails}회) "
+                f"마감:{c:,.0f} < MID:{lv.mid:,.0f} → 이탈 대기 복귀"
+            )
+
+            if self._breakout_attempts >= self.choppy_max_attempts:
+                self.state = BodyState.DONE
+                logger.warning(
+                    f"[{self.ticker}] 박스권 확정: 리테스트 포함 {self._breakout_attempts}회 실패 → 진입 포기"
+                )
+                return dict(action="WAIT", reason=f"박스권({self._breakout_attempts}회 실패)")
+
+            return dict(action="WAIT", reason=f"리테스트실패→재감시({self._retest_fails}회)")
+
+        logger.debug(
+            f"[{self.ticker}] FOMO 방지: 리테스트 대기 중 — 아직 레벨 터치 안 됨"
+        )
         return dict(action="WAIT", reason="리테스트대기중")
 
     def _enter(self, candle: pd.Series, entry_price: float) -> dict:
@@ -275,7 +336,15 @@ class BodyHunterV2:
         # 소진 감지
         exhaustion = self._detect_exhaustion(candle)
         if exhaustion.detected and exhaustion.urgency >= self.exhaustion_bars:
-            return self._exit(candle, ExitReason.EXHAUSTION, c, exhaustion)
+            # v2.1: 소진감지 시 수익잠금 가격 보장
+            exit_price = c
+            if pos.rr_floor > 0:
+                lock_price = self._calc_profit_lock_price(pos)
+                if self.direction == "LONG":
+                    exit_price = max(c, lock_price)
+                else:
+                    exit_price = min(c, lock_price)
+            return self._exit(candle, ExitReason.EXHAUSTION, exit_price, exhaustion)
 
         return dict(
             action="HOLD",
@@ -413,7 +482,7 @@ class BodyHunterV2:
         icon_map = {
             ExitReason.STOP_LOSS: "X", ExitReason.EXHAUSTION: "!",
             ExitReason.TRAILING_STOP: "T", ExitReason.TIME_LIMIT: "C",
-            ExitReason.PROFIT_LOCK: "$",
+            ExitReason.PROFIT_LOCK: "$", ExitReason.CHOPPY: "~",
         }
         logger.info(
             f"[{icon_map.get(reason, '?')}] [{self.ticker}] 청산 [{reason.value}] "
@@ -433,3 +502,5 @@ class BodyHunterV2:
         self.levels = None
         self.position = None
         self._recent_candles = []
+        self._breakout_attempts = 0
+        self._retest_fails = 0
