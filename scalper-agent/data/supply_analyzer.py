@@ -276,9 +276,12 @@ class SupplyFull:
             return "UNKNOWN"
         return self.stability.stability_grade
 
+    # 액션 등급 순서 (상향/하향 가감점용)
+    _ACTION_RANKS = ["STRONG_BUY", "BUY", "ENTER", "CAUTION", "WATCH", "SKIP"]
+
     @property
-    def action(self) -> str:
-        """3D + 4D 조합 진입 판정"""
+    def _base_action(self) -> str:
+        """3D + 4D 조합 기본 진입 판정"""
         g = self.score.grade
         s = self.momentum.signal
 
@@ -299,6 +302,37 @@ class SupplyFull:
             return "WATCH"
         # 나머지
         return "SKIP"
+
+    @property
+    def action(self) -> str:
+        """3D+4D 기본판정 + 6D/뉴스 가감점 최종 판정"""
+        ranks = self._ACTION_RANKS
+        base = self._base_action
+        idx = ranks.index(base)
+
+        # SKIP은 수급 기반 탈락 → 기술/뉴스로 구제 불가
+        if base == "SKIP":
+            return "SKIP"
+
+        shift = 0
+
+        # 6D 기술건강도 가감점
+        if self.tech_health:
+            tg = self.tech_health.tech_grade
+            if tg == "S":
+                shift -= 1  # 상향 (idx 감소 = 등급 상승)
+            elif tg == "C":
+                shift += 1  # 하향
+
+        # 뉴스 감성 가감점
+        if self.news_score >= 5:
+            shift -= 1  # 호재 → 상향
+        elif self.news_score <= -5:
+            shift += 1  # 악재 → 하향
+
+        # 최대 ±2 제한, SKIP(5) 미만으로만
+        new_idx = max(0, min(len(ranks) - 2, idx + shift))
+        return ranks[new_idx]
 
     @property
     def risk_label(self) -> str:
@@ -328,6 +362,16 @@ class SupplyFull:
                 label += f" [기술{tg}]"
             elif tg == "C":
                 label += " [기술약]"
+
+        # 가감점 적용 표시
+        base = self._base_action
+        final = self.action
+        if final != base:
+            ranks = self._ACTION_RANKS
+            diff = ranks.index(base) - ranks.index(final)
+            arrow = "↑" * diff if diff > 0 else "↓" * (-diff)
+            label += f" {arrow}"
+
         return label
 
     @property
