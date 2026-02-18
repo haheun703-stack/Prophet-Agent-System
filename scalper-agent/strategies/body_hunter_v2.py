@@ -96,6 +96,7 @@ class BodyHunterV2:
         direction:         str   = "LONG",
         volume_surge_min:  float = 1.5,
         retest_required:   bool  = True,
+        close_only_breakout: bool = False,
         trailing_atr_mult: float = 1.2,
         breakeven_bars:    int   = 3,
         exhaustion_bars:   int   = 2,
@@ -110,6 +111,7 @@ class BodyHunterV2:
         self.direction          = direction
         self.volume_surge_min   = volume_surge_min
         self.retest_required    = retest_required
+        self.close_only_breakout = close_only_breakout
         self.trailing_atr_mult  = trailing_atr_mult
         self.breakeven_bars     = breakeven_bars
         self.exhaustion_bars    = exhaustion_bars
@@ -171,10 +173,18 @@ class BodyHunterV2:
 
         vol_surge = v / self._avg_volume >= self.volume_surge_min if self._avg_volume > 0 else False
 
-        if self.direction == "LONG":
-            body_outside = min(o, c) > lv.high
+        if self.close_only_breakout:
+            # 완화: 종가만 레벨 상회/하회하면 이탈 인정
+            if self.direction == "LONG":
+                body_outside = c > lv.high
+            else:
+                body_outside = c < lv.low
         else:
-            body_outside = max(o, c) < lv.low
+            # 엄격: 몸통 전체(시가+종가)가 레벨 밖
+            if self.direction == "LONG":
+                body_outside = min(o, c) > lv.high
+            else:
+                body_outside = max(o, c) < lv.low
 
         if body_outside and vol_surge:
             if self.retest_required:
