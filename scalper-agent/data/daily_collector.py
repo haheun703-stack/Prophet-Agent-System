@@ -44,45 +44,9 @@ DATA_DIR = Path(__file__).resolve().parent.parent / "data_store"
 MIN5_DIR = DATA_DIR / "5min"
 LOG_FILE = DATA_DIR / "collection_log.csv"
 
-UNIVERSE = {
-    # KOSPI
-    "005930": ("삼성전자", ".KS"),
-    "000660": ("SK하이닉스", ".KS"),
-    "005380": ("현대차", ".KS"),
-    "035420": ("NAVER", ".KS"),
-    "000270": ("기아", ".KS"),
-    "006400": ("삼성SDI", ".KS"),
-    "051910": ("LG화학", ".KS"),
-    "035720": ("카카오", ".KS"),
-    "003670": ("포스코퓨처엠", ".KS"),
-    "028260": ("삼성물산", ".KS"),
-    "066570": ("LG전자", ".KS"),
-    "003550": ("LG", ".KS"),
-    "055550": ("신한지주", ".KS"),
-    "105560": ("KB금융", ".KS"),
-    "086790": ("하나금융지주", ".KS"),
-    "096770": ("SK이노베이션", ".KS"),
-    "032830": ("삼성생명", ".KS"),
-    "017670": ("SK텔레콤", ".KS"),
-    "030200": ("KT", ".KS"),
-    "010950": ("S-Oil", ".KS"),
-    "005830": ("DB손해보험", ".KS"),
-    "034730": ("SK", ".KS"),
-    "036570": ("엔씨소프트", ".KS"),
-    "012330": ("현대모비스", ".KS"),
-    "011200": ("HMM", ".KS"),
-    "009540": ("HD한국조선해양", ".KS"),
-    "012450": ("한화에어로스페이스", ".KS"),
-    "011170": ("롯데케미칼", ".KS"),
-    # KOSDAQ
-    "247540": ("에코프로비엠", ".KQ"),
-    "086520": ("에코프로", ".KQ"),
-    "403870": ("HPSP", ".KQ"),
-    "041510": ("에스엠", ".KQ"),
-    "293490": ("카카오게임즈", ".KQ"),
-    # ETF
-    "069500": ("KODEX200", ".KS"),
-}
+# 동적 유니버스 (시총 1조+ 자동 필터)
+from data.universe_builder import get_universe_dict
+UNIVERSE = get_universe_dict()
 
 
 def _ensure_dirs():
@@ -160,7 +124,8 @@ def collect_today_kis() -> int:
     total_candles = 0
     collected = 0
 
-    for code, (name, _) in UNIVERSE.items():
+    for code, info in UNIVERSE.items():
+        name = info[0]
         try:
             resp = broker.fetch_today_1m_ohlcv(code)
             data = resp.get("output2", [])
@@ -230,7 +195,8 @@ def collect_naver_recent() -> int:
     collected = 0
     dates_set = set()
 
-    for code, (name, _) in UNIVERSE.items():
+    for code, info in UNIVERSE.items():
+        name = info[0]
         try:
             url = f"https://api.stock.naver.com/chart/domestic/item/{code}/minute5"
             headers = {"User-Agent": "Mozilla/5.0"}
@@ -298,7 +264,8 @@ def backfill_yfinance() -> int:
 
     all_tickers = []
     code_list = []
-    for code, (name, suffix) in UNIVERSE.items():
+    for code, info in UNIVERSE.items():
+        name, suffix = info[0], info[1]
         all_tickers.append(f"{code}{suffix}")
         code_list.append(code)
 
@@ -356,7 +323,8 @@ def show_status():
     latest = None
 
     rows = []
-    for code, (name, _) in sorted(UNIVERSE.items()):
+    for code, info in sorted(UNIVERSE.items()):
+        name = info[0]
         f = MIN5_DIR / f"{code}.csv"
         if not f.exists():
             rows.append((code, name, 0, "-", "-", 0))

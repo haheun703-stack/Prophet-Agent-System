@@ -73,17 +73,20 @@ def build_universe(min_cap_억: int = 10000) -> dict:
     min_cap_won = min_cap_억 * 1_0000_0000  # 억 → 원
     filtered = nonzero[nonzero["시가총액"] >= min_cap_won].copy()
 
+    # KOSPI 목록 1번만 조회 (성능)
+    kospi_set = set(stock.get_market_ticker_list(date, market="KOSPI"))
+
     # 우선주/스팩 제거
-    exclude_keywords = ["우", "스팩", "SPAC", "리츠"]
+    exclude_keywords = ["스팩", "SPAC", "리츠"]
     universe = {}
 
     for code in filtered.index:
-        name = stock.get_market_ticker_name(code)
-        if not name:
-            continue
-
         # 우선주 제거 (코드 끝자리 5,7,8,9 = 우선주)
         if code[-1] in ("5", "7", "8", "9") and len(code) == 6:
+            continue
+
+        name = stock.get_market_ticker_name(code)
+        if not name:
             continue
 
         # 스팩/리츠 제거
@@ -98,9 +101,8 @@ def build_universe(min_cap_억: int = 10000) -> dict:
         cap_억 = filtered.loc[code, "시가총액"] / 1_0000_0000
         vol = filtered.loc[code, "거래량"]
 
-        # KOSPI vs KOSDAQ 판별
-        kospi_list = stock.get_market_ticker_list(date, market="KOSPI")
-        market = "KOSPI" if code in kospi_list else "KOSDAQ"
+        # KOSPI vs KOSDAQ 판별 (캐시된 set 사용)
+        market = "KOSPI" if code in kospi_set else "KOSDAQ"
         suffix = ".KS" if market == "KOSPI" else ".KQ"
         mkt_code = "J" if market == "KOSPI" else "Q"
 

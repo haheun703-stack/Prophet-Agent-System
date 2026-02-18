@@ -175,6 +175,11 @@ risk:
   take_profit_pct: 0.05
   trailing_stop: false
   trailing_stop_pct: 0.015
+  split_count: 3                    # 분할 주문 횟수 (매수/매도)
+  max_volume_pct: 0.10              # 내 주문/당일거래량 최대 비율 (10%)
+  danger_hours:                     # 매수 차단 시간대 (알고리즘 장난 구간)
+    start: "14:00"
+    end: "14:50"
 
 # --- Market Hours ---
 market:

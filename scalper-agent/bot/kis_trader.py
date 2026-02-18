@@ -11,11 +11,18 @@ KIS API 실매매 래퍼 — mojito2 기반
 """
 
 import os
+import json
 import time
 import logging
+from pathlib import Path
+from datetime import datetime, date
 from typing import Dict, List, Optional
 
 logger = logging.getLogger("BH.KISTrader")
+
+# 매매일지 저장 경로
+JOURNAL_DIR = Path(__file__).resolve().parent.parent / "logs"
+JOURNAL_DIR.mkdir(parents=True, exist_ok=True)
 
 # 종목명 매핑
 from data.kis_collector import UNIVERSE
@@ -175,54 +182,233 @@ class KISTrader:
             return {"success": False, "message": f"미체결 조회 실패: {e}"}
 
     # ═══════════════════════════════════════
-    #  주문
+    #  위험시간 / 거래량 체크
     # ═══════════════════════════════════════
 
-    def buy_market(self, code: str, qty: int) -> dict:
-        """시장가 매수"""
+    def _check_danger_time(self) -> Optional[str]:
+        """위험 시간대 체크 — 14:00~14:50은 매수 금지 (알고리즘 장난 구간)"""
+        now = datetime.now()
+        danger = self.config.get("risk", {}).get("danger_hours", {"start": "14:00", "end": "14:50"})
+        start_h, start_m = map(int, danger["start"].split(":"))
+        end_h, end_m = map(int, danger["end"].split(":"))
+        t = now.hour * 60 + now.minute
+        ds = start_h * 60 + start_m
+        de = end_h * 60 + end_m
+        if ds <= t <= de:
+            return f"위험 시간대 ({danger['start']}~{danger['end']}) — 매수 차단"
+        return None
+
+    def _check_volume_ratio(self, code: str, qty: int) -> Optional[str]:
+        """내 주문이 당일 거래량의 10% 넘으면 경고"""
+        max_pct = self.risk.get("max_volume_pct", 0.10)
+        price_info = self.fetch_price(code)
+        if not price_info.get("success"):
+            return None  # 조회 실패 시 통과
+        vol = price_info.get("volume", 0)
+        if vol > 0 and qty / vol > max_pct:
+            return f"거래량 비중 초과: {qty}주/{vol:,}주 = {qty/vol*100:.1f}% (한도 {max_pct*100:.0f}%)"
+        return None
+
+    # ═══════════════════════════════════════
+    #  주문 (분할 매수/매도)
+    # ═══════════════════════════════════════
+
+    def buy_market(self, code: str, qty: int, split: int = None) -> dict:
+        """시장가 매수 — 분할 주문 지원
+
+        Args:
+            split: 분할 횟수 (None=config 기본값, 1=원샷)
+        """
+        if split is None:
+            split = self.config.get("risk", {}).get("split_count", 3)
+        split = max(1, min(split, 10))
+
+        name = CODE_TO_NAME.get(code, code)
+
+        if split <= 1 or qty <= 1:
+            return self._execute_buy(code, qty, name)
+
+        # 분할 주문
+        chunk = qty // split
+        remainder = qty - chunk * split
+        results = []
+        total_filled = 0
+
+        for i in range(split):
+            q = chunk + (1 if i < remainder else 0)
+            if q <= 0:
+                continue
+            r = self._execute_buy(code, q, name)
+            results.append(r)
+            if r.get("success"):
+                total_filled += q
+            else:
+                break  # 실패 시 중단
+            if i < split - 1:
+                time.sleep(0.3)  # 호가 안정화 대기
+
+        success = total_filled > 0
+        msg = f"분할 매수 {'완료' if success else '실패'}\n{name}({code}) {total_filled}/{qty}주 ({split}분할)"
+        if total_filled < qty:
+            msg += f"\n미체결: {qty - total_filled}주"
+
+        self._log_trade("BUY", code, name, total_filled, split)
+        return {"success": success, "message": msg}
+
+    def _execute_buy(self, code: str, qty: int, name: str) -> dict:
+        """단건 시장가 매수"""
         try:
             broker = self._get_broker()
             resp = broker.create_market_buy_order(symbol=code, quantity=qty)
-            logger.info(f"시장가 매수 주문: {code} {qty}주 → {resp}")
+            logger.info(f"시장가 매수: {code} {qty}주 → {resp}")
 
             if resp and resp.get("rt_cd") == "0":
                 order_no = resp.get("output", {}).get("ODNO", "?")
-                name = CODE_TO_NAME.get(code, code)
-                return {
-                    "success": True,
-                    "order_no": order_no,
-                    "message": f"매수 주문 완료\n{name}({code}) {qty}주\n주문번호: {order_no}",
-                }
+                return {"success": True, "order_no": order_no,
+                        "message": f"매수 {name}({code}) {qty}주 #{order_no}"}
             else:
                 msg = resp.get("msg1", "알 수 없는 오류") if resp else "응답 없음"
-                return {"success": False, "message": f"매수 주문 실패: {msg}"}
-
+                return {"success": False, "message": f"매수 실패: {msg}"}
         except Exception as e:
             logger.error(f"매수 실패 {code}: {e}")
-            return {"success": False, "message": f"매수 주문 실패: {e}"}
+            return {"success": False, "message": f"매수 실패: {e}"}
 
-    def sell_market(self, code: str, qty: int) -> dict:
-        """시장가 매도"""
+    def sell_market(self, code: str, qty: int, split: int = None) -> dict:
+        """시장가 매도 — 분할 주문 지원"""
+        if split is None:
+            split = self.config.get("risk", {}).get("split_count", 3)
+        split = max(1, min(split, 10))
+
+        name = CODE_TO_NAME.get(code, code)
+
+        if split <= 1 or qty <= 1:
+            return self._execute_sell(code, qty, name)
+
+        # 분할 주문
+        chunk = qty // split
+        remainder = qty - chunk * split
+        results = []
+        total_filled = 0
+
+        for i in range(split):
+            q = chunk + (1 if i < remainder else 0)
+            if q <= 0:
+                continue
+            r = self._execute_sell(code, q, name)
+            results.append(r)
+            if r.get("success"):
+                total_filled += q
+            else:
+                break
+            if i < split - 1:
+                time.sleep(0.3)
+
+        success = total_filled > 0
+        msg = f"분할 매도 {'완료' if success else '실패'}\n{name}({code}) {total_filled}/{qty}주 ({split}분할)"
+        if total_filled < qty:
+            msg += f"\n미체결: {qty - total_filled}주"
+
+        self._log_trade("SELL", code, name, total_filled, split)
+        return {"success": success, "message": msg}
+
+    def _execute_sell(self, code: str, qty: int, name: str) -> dict:
+        """단건 시장가 매도"""
         try:
             broker = self._get_broker()
             resp = broker.create_market_sell_order(symbol=code, quantity=qty)
-            logger.info(f"시장가 매도 주문: {code} {qty}주 → {resp}")
+            logger.info(f"시장가 매도: {code} {qty}주 → {resp}")
 
             if resp and resp.get("rt_cd") == "0":
                 order_no = resp.get("output", {}).get("ODNO", "?")
-                name = CODE_TO_NAME.get(code, code)
-                return {
-                    "success": True,
-                    "order_no": order_no,
-                    "message": f"매도 주문 완료\n{name}({code}) {qty}주\n주문번호: {order_no}",
-                }
+                return {"success": True, "order_no": order_no,
+                        "message": f"매도 {name}({code}) {qty}주 #{order_no}"}
             else:
                 msg = resp.get("msg1", "알 수 없는 오류") if resp else "응답 없음"
-                return {"success": False, "message": f"매도 주문 실패: {msg}"}
-
+                return {"success": False, "message": f"매도 실패: {msg}"}
         except Exception as e:
             logger.error(f"매도 실패 {code}: {e}")
-            return {"success": False, "message": f"매도 주문 실패: {e}"}
+            return {"success": False, "message": f"매도 실패: {e}"}
+
+    # ═══════════════════════════════════════
+    #  매매 일지
+    # ═══════════════════════════════════════
+
+    def _log_trade(self, side: str, code: str, name: str, qty: int, split: int):
+        """매매 기록을 일지 파일(JSON)에 저장"""
+        today = date.today().isoformat()
+        journal_file = JOURNAL_DIR / f"journal_{today}.json"
+
+        entry = {
+            "time": datetime.now().strftime("%H:%M:%S"),
+            "side": side,
+            "code": code,
+            "name": name,
+            "qty": qty,
+            "split": split,
+        }
+
+        # 현재가 정보 추가
+        price_info = self.fetch_price(code)
+        if price_info.get("success"):
+            entry["price"] = price_info["current_price"]
+            entry["est_amount"] = price_info["current_price"] * qty
+
+        # 기존 일지 로드
+        entries = []
+        if journal_file.exists():
+            try:
+                with open(journal_file, "r", encoding="utf-8") as f:
+                    entries = json.load(f)
+            except (json.JSONDecodeError, Exception):
+                entries = []
+
+        entries.append(entry)
+
+        with open(journal_file, "w", encoding="utf-8") as f:
+            json.dump(entries, f, ensure_ascii=False, indent=2)
+
+        logger.info(f"매매일지 기록: {side} {name}({code}) {qty}주 (분할{split})")
+
+    def get_trade_journal(self, target_date: str = None) -> dict:
+        """매매 일지 조회
+
+        Args:
+            target_date: "2026-02-19" 형식. None이면 오늘.
+
+        Returns:
+            {success, date, trades: [...], summary: {buy_count, sell_count, total_amount}}
+        """
+        if target_date is None:
+            target_date = date.today().isoformat()
+
+        journal_file = JOURNAL_DIR / f"journal_{target_date}.json"
+
+        if not journal_file.exists():
+            return {"success": True, "date": target_date, "trades": [], "summary": {
+                "buy_count": 0, "sell_count": 0, "total_buy_amount": 0, "total_sell_amount": 0}}
+
+        try:
+            with open(journal_file, "r", encoding="utf-8") as f:
+                trades = json.load(f)
+        except (json.JSONDecodeError, Exception):
+            return {"success": False, "message": "일지 파일 손상"}
+
+        buy_count = sum(1 for t in trades if t["side"] == "BUY")
+        sell_count = sum(1 for t in trades if t["side"] == "SELL")
+        total_buy = sum(t.get("est_amount", 0) for t in trades if t["side"] == "BUY")
+        total_sell = sum(t.get("est_amount", 0) for t in trades if t["side"] == "SELL")
+
+        return {
+            "success": True,
+            "date": target_date,
+            "trades": trades,
+            "summary": {
+                "buy_count": buy_count,
+                "sell_count": sell_count,
+                "total_buy_amount": total_buy,
+                "total_sell_amount": total_sell,
+            },
+        }
 
     def cancel_order(self, order_no: str) -> dict:
         """주문 취소"""
@@ -246,15 +432,22 @@ class KISTrader:
     # ═══════════════════════════════════════
 
     def safe_buy(self, code: str, amount: int) -> dict:
-        """금액 기반 안전 매수
+        """금액 기반 안전 매수 (7단계 리스크 체크)
 
-        1. 현금 잔고 확인
-        2. 포지션 수 확인 (max_positions)
-        3. 비중 확인 (max_position_ratio)
-        4. 현재가로 수량 계산
-        5. 시장가 매수
+        1. 위험시간대 차단 (14:00~14:50)
+        2. 현금 잔고 확인
+        3. 포지션 수 확인 (max_positions)
+        4. 비중 확인 (max_position_ratio)
+        5. 현재가로 수량 계산
+        6. 거래량 대비 비중 확인 (10% 이하)
+        7. 분할 시장가 매수
         """
-        # 잔고 조회
+        # 1. 위험시간 체크
+        danger_msg = self._check_danger_time()
+        if danger_msg:
+            return {"success": False, "message": f"⚠️ {danger_msg}"}
+
+        # 2. 잔고 조회
         bal = self.fetch_balance()
         if not bal.get("success"):
             return {"success": False, "message": f"잔고 조회 실패: {bal.get('message')}"}
@@ -263,7 +456,7 @@ class KISTrader:
         total_eval = bal["total_eval"] or cash
         positions = bal["positions"]
 
-        # 리스크 체크
+        # 3. 포지션 수 체크
         max_positions = self.risk.get("max_positions", 5)
         max_ratio = self.risk.get("max_position_ratio", 0.30)
         min_cash = self.risk.get("min_cash_ratio", 0.10)
@@ -271,7 +464,7 @@ class KISTrader:
         if len(positions) >= max_positions:
             return {"success": False, "message": f"최대 보유 종목({max_positions}개) 초과"}
 
-        # 현금 잔고 여유 확인
+        # 4. 현금 잔고 여유 확인
         min_cash_amount = int(total_eval * min_cash)
         available = cash - min_cash_amount
         if available < amount:
@@ -280,11 +473,10 @@ class KISTrader:
                 "message": f"현금 부족\n가용: {available:,}원 (최소 현금 {min_cash_amount:,}원 유지)\n요청: {amount:,}원",
             }
 
-        # 비중 확인
+        # 5. 비중 확인 + 수량 계산
         max_amount = int(total_eval * max_ratio)
         buy_amount = min(amount, max_amount)
 
-        # 현재가 조회
         price_info = self.fetch_price(code)
         if not price_info.get("success"):
             return {"success": False, "message": f"현재가 조회 실패: {price_info.get('message')}"}
@@ -297,12 +489,25 @@ class KISTrader:
         if qty <= 0:
             return {"success": False, "message": f"매수 가능 수량 없음 (현재가: {current_price:,}원, 금액: {buy_amount:,}원)"}
 
+        # 6. 거래량 대비 비중 체크
+        vol_warn = self._check_volume_ratio(code, qty)
+        if vol_warn:
+            # 비중 초과 시 거래량의 10%로 수량 조정
+            vol = price_info.get("volume", 0)
+            max_pct = self.risk.get("max_volume_pct", 0.10)
+            if vol > 0:
+                max_qty = int(vol * max_pct)
+                if max_qty <= 0:
+                    return {"success": False, "message": f"⚠️ {vol_warn}\n거래량 부족으로 매수 불가"}
+                qty = max_qty
+                logger.warning(f"거래량 비중 조정: {qty}주로 축소 ({vol_warn})")
+
         name = CODE_TO_NAME.get(code, code)
         est_cost = qty * current_price
 
         logger.info(f"안전 매수: {name}({code}) {qty}주 @ {current_price:,}원 ≈ {est_cost:,}원")
 
-        # 실제 매수
+        # 7. 분할 시장가 매수
         return self.buy_market(code, qty)
 
     def liquidate_one(self, code: str) -> dict:

@@ -53,7 +53,8 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
         ["스캔", "ETF", "리포트"],
         ["현재잔고", "체결내역", "포트폴리오"],
         ["시작", "정지", "상태"],
-        ["청산", "로그", "도움"],
+        ["유니버스", "일지", "도움"],
+        ["청산", "로그"],
     ],
     resize_keyboard=True,
 )
@@ -79,8 +80,14 @@ HELP_TEXT = """
   시작 — 자동매매 ON
   정지 — 자동매매 OFF
 
+[복기]
+  일지 — 오늘 매매 일지
+  일지 2026-02-18 — 특정일 일지
+
 [시스템]
   상태 — 봇 상태
+  유니버스 — 유니버스 종목 현황
+  유니버스갱신 — 시총 1조+ 리빌드
   로그 — 최근 로그
   도움 — 이 메시지
 """.strip()
@@ -529,6 +536,136 @@ class BodyHunterBot:
         )
 
     # ═══════════════════════════════════════
+    #  매매 일지
+    # ═══════════════════════════════════════
+
+    async def cmd_journal(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """매매 일지 조회"""
+        if not self._is_authorized(update):
+            return
+
+        text = update.message.text.strip()
+        parts = text.split()
+        target_date = parts[1] if len(parts) >= 2 else None
+
+        journal = await asyncio.to_thread(self.trader.get_trade_journal, target_date)
+
+        if not journal.get("success"):
+            await update.message.reply_text(f"❌ {journal.get('message')}")
+            return
+
+        trades = journal["trades"]
+        summary = journal["summary"]
+        d = journal["date"]
+
+        if not trades:
+            await update.message.reply_text(f"📋 {d} 매매 기록 없음")
+            return
+
+        lines = [
+            f"📋 매매 일지 ({d})",
+            "━" * 25,
+        ]
+
+        for i, t in enumerate(trades, 1):
+            side_icon = "🔴" if t["side"] == "BUY" else "🔵"
+            price_str = f" @ {t['price']:,}원" if "price" in t else ""
+            amt_str = f" ≈ {t.get('est_amount', 0):,}원" if t.get("est_amount") else ""
+            split_str = f" ({t['split']}분할)" if t.get("split", 1) > 1 else ""
+            lines.append(
+                f"{side_icon} {t['time']} {t['side']} {t['name']}({t['code']}) "
+                f"{t['qty']}주{price_str}{amt_str}{split_str}"
+            )
+
+        lines.append("")
+        lines.append("━" * 25)
+        lines.append(f"매수: {summary['buy_count']}건 ({summary['total_buy_amount']:,}원)")
+        lines.append(f"매도: {summary['sell_count']}건 ({summary['total_sell_amount']:,}원)")
+        net = summary['total_sell_amount'] - summary['total_buy_amount']
+        lines.append(f"순매매: {net:+,}원")
+
+        await update.message.reply_text("\n".join(lines))
+
+    # ═══════════════════════════════════════
+    #  유니버스
+    # ═══════════════════════════════════════
+
+    async def cmd_universe(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """유니버스 현황 조회"""
+        if not self._is_authorized(update):
+            return
+        try:
+            from data.universe_builder import load_universe, UNIVERSE_FILE
+            uni = load_universe()
+            if not uni:
+                await update.message.reply_text("유니버스 미생성\n'유니버스갱신' 으로 빌드하세요")
+                return
+
+            kospi = sum(1 for v in uni.values() if v["market"] == "KOSPI")
+            kosdaq = sum(1 for v in uni.values() if v["market"] == "KOSDAQ")
+            top5 = list(uni.items())[:5]
+            bottom5 = list(uni.items())[-5:]
+
+            # 파일 수정시간
+            import os
+            mtime = datetime.fromtimestamp(os.path.getmtime(UNIVERSE_FILE))
+            date_str = mtime.strftime("%Y-%m-%d %H:%M")
+
+            top_str = "\n".join(
+                f"  {c} {v['name']} ({v['cap_億']:,}억)" if 'cap_億' in v
+                else f"  {c} {v['name']} ({v.get('cap_억', 0):,}억)"
+                for c, v in top5
+            )
+            bot_str = "\n".join(
+                f"  {c} {v['name']} ({v.get('cap_억', 0):,}억)"
+                for c, v in bottom5
+            )
+
+            msg = (
+                f"📊 유니버스 현황\n"
+                f"{'━' * 25}\n"
+                f"총 {len(uni)}종목 (KOSPI {kospi} + KOSDAQ {kosdaq})\n"
+                f"기준: 시총 1조원 이상\n"
+                f"갱신: {date_str}\n\n"
+                f"[시총 상위 5]\n{top_str}\n\n"
+                f"[시총 하위 5]\n{bot_str}"
+            )
+            await update.message.reply_text(msg)
+        except Exception as e:
+            logger.error(f"유니버스 조회 에러: {e}")
+            await update.message.reply_text(f"유니버스 조회 실패: {e}")
+
+    async def cmd_universe_rebuild(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """유니버스 재빌드 (시총 1조+)"""
+        if not self._is_authorized(update):
+            return
+        await update.message.reply_text("🔄 유니버스 리빌드중... (1~2분)")
+        try:
+            from data.universe_builder import build_universe
+            uni = await asyncio.to_thread(build_universe, 10000)
+
+            # kis_collector 모듈의 UNIVERSE도 갱신
+            import data.kis_collector as kc
+            from data.universe_builder import get_universe_dict
+            kc.UNIVERSE = get_universe_dict()
+
+            # kis_trader의 NAME_TO_CODE, CODE_TO_NAME도 갱신
+            import bot.kis_trader as kt
+            kt.NAME_TO_CODE = {info[0]: code for code, info in kc.UNIVERSE.items()}
+            kt.CODE_TO_NAME = {code: info[0] for code, info in kc.UNIVERSE.items()}
+
+            kospi = sum(1 for v in uni.values() if v["market"] == "KOSPI")
+            kosdaq = sum(1 for v in uni.values() if v["market"] == "KOSDAQ")
+            await update.message.reply_text(
+                f"✅ 유니버스 갱신 완료\n"
+                f"총 {len(uni)}종목 (KOSPI {kospi} + KOSDAQ {kosdaq})\n"
+                f"시총 1조원 이상 필터 적용"
+            )
+        except Exception as e:
+            logger.error(f"유니버스 갱신 에러: {e}")
+            await update.message.reply_text(f"유니버스 갱신 실패: {e}")
+
+    # ═══════════════════════════════════════
     #  자동매매
     # ═══════════════════════════════════════
 
@@ -606,6 +743,9 @@ class BodyHunterBot:
             r"^체결내역$": self.cmd_executions,
             r"^포트폴리오$": self.cmd_portfolio,
             r"^청산$": self.cmd_liquidate,
+            r"^일지$": self.cmd_journal,
+            r"^유니버스$": self.cmd_universe,
+            r"^유니버스갱신$": self.cmd_universe_rebuild,
             r"^시작$": self.cmd_auto_start,
             r"^정지$": self.cmd_auto_stop,
             r"^확인$": self.cmd_confirm,
@@ -623,6 +763,9 @@ class BodyHunterBot:
         )
         app.add_handler(
             MessageHandler(filters.Regex(r"^매도\s+.+"), self.cmd_sell)
+        )
+        app.add_handler(
+            MessageHandler(filters.Regex(r"^일지\s+.+"), self.cmd_journal)
         )
 
         # 인자 없는 "분석" → 안내
