@@ -26,6 +26,8 @@ logger = logging.getLogger(__name__)
 DATA_DIR = Path(__file__).resolve().parent.parent / "data_store"
 DAILY_DIR = DATA_DIR / "daily"
 MIN5_DIR = DATA_DIR / "5min"
+MIN15_DIR = DATA_DIR / "15min"
+MIN1_DIR = DATA_DIR / "1min"
 
 
 # 동적 유니버스 (시총 1조+ 자동 필터, universe_builder.py에서 생성)
@@ -36,6 +38,8 @@ UNIVERSE = get_universe_dict()
 def _ensure_dirs():
     DAILY_DIR.mkdir(parents=True, exist_ok=True)
     MIN5_DIR.mkdir(parents=True, exist_ok=True)
+    MIN15_DIR.mkdir(parents=True, exist_ok=True)
+    MIN1_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _get_broker():
@@ -268,15 +272,101 @@ def collect_5min_yfinance(
 
 
 # ============================================================
-#  KIS 당일 1분봉 → 5분봉 변환 수집
+#  KIS 당일 1분봉 → 5분봉 + 15분봉 수집 (매일 누적)
 # ============================================================
 
-def collect_today_5min_kis(
-    codes: List[str] = None,
-) -> Dict[str, pd.DataFrame]:
-    """KIS API 당일 1분봉 → 5분봉으로 집계
+def _fetch_1min_safe(broker, code: str) -> Optional[pd.DataFrame]:
+    """KIS 당일 1분봉 수집 — rate limit 포함 자체 페이징
 
-    향후 매일 실행하여 분봉 데이터 축적용
+    mojito의 fetch_today_1m_ohlcv 내부 루프에 sleep이 없어서
+    직접 _fetch_today_1m_ohlcv를 호출하며 rate limit 적용
+    """
+    now = datetime.now()
+    to = now.strftime("%H%M%S")
+    if to > "153000":
+        to = "153000"
+
+    all_rows = []
+    for page in range(20):  # 최대 20페이지 (안전장치)
+        try:
+            resp = broker._fetch_today_1m_ohlcv(code, to)
+            data = resp.get("output2", [])
+            if not data:
+                break
+
+            all_rows.extend(data)
+
+            last_hour = data[-1].get("stck_cntg_hour", "090000")
+            if last_hour <= "090100":
+                break
+
+            # 다음 페이지: 마지막 시각 - 1분
+            h, m = int(last_hour[:2]), int(last_hour[2:4])
+            dt = datetime(now.year, now.month, now.day, h, m) - timedelta(minutes=1)
+            to = dt.strftime("%H%M%S")
+
+            time.sleep(0.08)  # KIS rate limit (초당 ~12회)
+
+        except Exception as e:
+            logger.warning(f"[{code}] 1분봉 페이지 {page} 실패: {e}")
+            break
+
+    if not all_rows:
+        return None
+
+    return _parse_1min_data(all_rows)
+
+
+def _resample_minutes(df_1m: pd.DataFrame, freq: str) -> Optional[pd.DataFrame]:
+    """1분봉 → N분봉 리샘플링"""
+    if df_1m is None or len(df_1m) < 2:
+        return None
+
+    df = df_1m.resample(freq).agg({
+        "open": "first",
+        "high": "max",
+        "low": "min",
+        "close": "last",
+        "volume": "sum",
+    }).dropna()
+
+    # 장중만 (09:00 ~ 15:25)
+    df = df.between_time("09:00", "15:25")
+    return df if len(df) > 0 else None
+
+
+def _append_csv(df: pd.DataFrame, filepath: Path):
+    """기존 CSV에 append (중복 제거, 날짜순 정렬)
+
+    기존 yfinance 데이터(UTC)와 KIS 데이터(naive KST) 혼합 처리:
+    모든 데이터를 timezone-naive KST로 통일
+    """
+    if filepath.exists():
+        existing = pd.read_csv(filepath, index_col=0, parse_dates=True)
+        # 기존 데이터가 tz-aware(UTC)이면 KST 변환 후 tz 제거
+        if existing.index.tz is not None:
+            existing.index = existing.index.tz_convert("Asia/Seoul").tz_localize(None)
+        combined = pd.concat([existing, df])
+        combined = combined[~combined.index.duplicated(keep="last")]
+        combined = combined.sort_index()
+        combined.to_csv(filepath)
+    else:
+        df.to_csv(filepath)
+
+
+def collect_today_minutes(
+    codes: List[str] = None,
+    save_1min: bool = True,
+) -> Dict[str, dict]:
+    """KIS API 당일 1분봉 수집 → 5분봉 + 15분봉 리샘플 + CSV 누적
+
+    매일 장 마감 후(15:40) 실행하여 분봉 데이터 축적.
+
+    Args:
+        codes: 종목코드 리스트 (None이면 전체 UNIVERSE)
+        save_1min: True면 원본 1분봉도 저장
+
+    Returns: {code: {"1min": n, "5min": n, "15min": n}}
     """
     _ensure_dirs()
     broker = _get_broker()
@@ -285,47 +375,57 @@ def collect_today_5min_kis(
         codes = list(UNIVERSE.keys())
 
     results = {}
-    for code in codes:
+    ok_count = 0
+    fail_count = 0
+
+    for i, code in enumerate(codes):
+        name = UNIVERSE.get(code, (code,))[0]
+
         try:
-            resp = broker.fetch_today_1m_ohlcv(code)
-            data = resp.get("output2", [])
-            if not data:
-                continue
-
-            df_1m = _parse_1min_data(data)
+            df_1m = _fetch_1min_safe(broker, code)
             if df_1m is None or len(df_1m) < 5:
+                fail_count += 1
                 continue
 
-            # 1분봉 → 5분봉 리샘플
-            df_5m = df_1m.resample("5min").agg({
-                "open": "first",
-                "high": "max",
-                "low": "min",
-                "close": "last",
-                "volume": "sum",
-            }).dropna()
+            stats = {"1min": len(df_1m), "5min": 0, "15min": 0}
 
-            if len(df_5m) > 0:
-                results[code] = df_5m
-                # 기존 파일에 append
-                cache_file = MIN5_DIR / f"{code}.csv"
-                if cache_file.exists():
-                    existing = pd.read_csv(cache_file, index_col=0, parse_dates=True)
-                    combined = pd.concat([existing, df_5m])
-                    combined = combined[~combined.index.duplicated(keep="last")]
-                    combined = combined.sort_index()
-                    combined.to_csv(cache_file)
-                else:
-                    df_5m.to_csv(cache_file)
+            # 1분봉 저장
+            if save_1min:
+                _append_csv(df_1m, MIN1_DIR / f"{code}.csv")
 
-            time.sleep(0.15)
+            # 5분봉
+            df_5m = _resample_minutes(df_1m, "5min")
+            if df_5m is not None:
+                _append_csv(df_5m, MIN5_DIR / f"{code}.csv")
+                stats["5min"] = len(df_5m)
+
+            # 15분봉
+            df_15m = _resample_minutes(df_1m, "15min")
+            if df_15m is not None:
+                _append_csv(df_15m, MIN15_DIR / f"{code}.csv")
+                stats["15min"] = len(df_15m)
+
+            results[code] = stats
+            ok_count += 1
+
+            if (i + 1) % 20 == 0:
+                logger.info(f"분봉 수집 진행: {i+1}/{len(codes)} ({ok_count}성공)")
+
+            time.sleep(0.2)  # 종목 간 대기
 
         except Exception as e:
-            logger.warning(f"1분봉 수집 실패 {code}: {e}")
+            logger.warning(f"분봉 수집 실패 {code}({name}): {e}")
+            fail_count += 1
             continue
 
-    print(f"  당일 5분봉 수집: {len(results)}종목")
+    logger.info(f"분봉 수집 완료: {ok_count}성공 / {fail_count}실패 / {len(codes)}종목")
     return results
+
+
+# 하위호환 별칭
+def collect_today_5min_kis(codes=None):
+    """기존 호환용 — collect_today_minutes() 사용 권장"""
+    return collect_today_minutes(codes, save_1min=False)
 
 
 def _parse_1min_data(rows: List[dict]) -> Optional[pd.DataFrame]:
@@ -364,28 +464,25 @@ def _parse_1min_data(rows: List[dict]) -> Optional[pd.DataFrame]:
 # ============================================================
 
 def collect_all(months: int = 8, force: bool = False):
-    """전체 데이터 수집 (일봉 + 5분봉)"""
+    """전체 데이터 수집 (일봉 + 5분봉/15분봉)"""
     print("=" * 60)
     print("  하이브리드 데이터 수집기")
-    print(f"  KIS 일봉: {months}개월 | yfinance 5분봉: ~60일")
+    print(f"  KIS 일봉: {months}개월 | KIS 분봉: 당일 (5분/15분)")
     print("=" * 60)
 
-    codes = [c for c in UNIVERSE.keys() if c != "069500"]
+    codes = list(UNIVERSE.keys())
 
     # 1. KIS 일봉
     print(f"\n[1/2] KIS API 일봉 수집 ({months}개월)...")
     daily_data = collect_daily_kis(
-        codes=list(UNIVERSE.keys()),
+        codes=codes,
         months=months,
         force=force,
     )
 
-    # 2. yfinance 5분봉
-    print(f"\n[2/2] yfinance 5분봉 수집 (~60일)...")
-    etf_df, stock_5min = collect_5min_yfinance(
-        codes=codes,
-        force=force,
-    )
+    # 2. KIS 당일 분봉 (5분 + 15분)
+    print(f"\n[2/2] KIS API 당일 분봉 수집 (5분+15분)...")
+    minute_results = collect_today_minutes(codes=codes)
 
     print(f"\n{'='*60}")
     print(f"  수집 결과")
@@ -396,12 +493,10 @@ def collect_all(months: int = 8, force: bool = False):
             all_dates.update(df.index.date)
         print(f"  일봉 기간: {min(all_dates)} ~ {max(all_dates)} ({len(all_dates)}거래일)")
 
-    print(f"  5분봉: {len(stock_5min)}종목")
-    if etf_df is not None:
-        print(f"  ETF 5분봉: {len(etf_df)}봉")
+    print(f"  분봉: {len(minute_results)}종목 (5분+15분)")
     print(f"{'='*60}")
 
-    return daily_data, etf_df, stock_5min
+    return daily_data, minute_results
 
 
 if __name__ == "__main__":
@@ -409,4 +504,13 @@ if __name__ == "__main__":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
     logging.basicConfig(level=logging.WARNING)
 
-    daily, etf, stocks = collect_all(months=8, force=False)
+    if "--minutes" in sys.argv:
+        # 분봉만 수집
+        print("분봉 수집 시작...")
+        results = collect_today_minutes()
+        print(f"\n수집 완료: {len(results)}종목")
+        for code, stats in list(results.items())[:5]:
+            name = UNIVERSE.get(code, (code,))[0]
+            print(f"  {name}({code}): 1분={stats['1min']}봉 5분={stats['5min']}봉 15분={stats['15min']}봉")
+    else:
+        daily, minutes = collect_all(months=8, force=False)

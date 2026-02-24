@@ -1,0 +1,38 @@
+# Data files (large, regeneratable)
+data_store/daily/
+data_store/investor/
+data_store/short_balance/
+data_store/short_vol/
+data_store/5min/
+data_store/1min/
+data_store/15min/
+data_store/minute5/
+data_store/ticks/
+data_store/news/
+
+# Keep these config/result files
+!data_store/universe.json
+!data_store/today_gainers.json
+!data_store/today_gainers_analyzed.json
+!data_store/collection_log.csv
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Credentials
+config.yaml
+token.dat
+*.env
+*.key
+
+# Logs
+logs/
+
+# IDE
+.vscode/
+.idea/
+
+# Results (generated)
+results/

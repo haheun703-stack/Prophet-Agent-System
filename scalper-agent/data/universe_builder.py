@@ -50,11 +50,11 @@ def _find_latest_trading_day():
     return today.strftime("%Y%m%d")
 
 
-def build_universe(min_cap_억: int = 10000) -> dict:
+def build_universe(min_cap_억: int = 1000) -> dict:
     """시총 기준 유니버스 자동 생성
 
     Args:
-        min_cap_억: 최소 시가총액 (억원). 기본 10000 = 1조
+        min_cap_억: 최소 시가총액 (억원). 기본 1000 = 천억
 
     Returns:
         {code: {"name": ..., "market": ..., "cap": ...}}
@@ -89,15 +89,11 @@ def build_universe(min_cap_억: int = 10000) -> dict:
         except Exception:
             continue
 
-    # 우선주/스팩 제거
+    # 스팩/리츠 제거 (우선주는 포함 — 미래에셋증권우 같은 유동성 높은 우선주 포착용)
     exclude_keywords = ["스팩", "SPAC", "리츠"]
     universe = {}
 
     for code in filtered.index:
-        # 우선주 제거 (코드 끝자리 5,7,8,9 = 우선주)
-        if code[-1] in ("5", "7", "8", "9") and len(code) == 6:
-            continue
-
         name = stock.get_market_ticker_name(code)
         if not name:
             continue
@@ -210,7 +206,7 @@ def collect_daily_pykrx(codes: list, months: int = 6, force: bool = False):
     return collected
 
 
-def collect_all_universe(min_cap_억: int = 10000, months: int = 6, force: bool = False):
+def collect_all_universe(min_cap_억: int = 1000, months: int = 6, force: bool = False):
     """유니버스 빌드 + 전체 데이터 수집"""
     # 1. 유니버스 빌드
     universe = build_universe(min_cap_억)
@@ -337,7 +333,7 @@ if __name__ == "__main__":
 
     import argparse
     parser = argparse.ArgumentParser(description="유니버스 빌더")
-    parser.add_argument("--min-cap", type=int, default=10000, help="최소 시총 (억원)")
+    parser.add_argument("--min-cap", type=int, default=1000, help="최소 시총 (억원, 기본 1000=천억)")
     parser.add_argument("--force", action="store_true", help="캐시 무시")
     parser.add_argument("--months", type=int, default=6, help="수집 기간 (월)")
     parser.add_argument("--build-only", action="store_true", help="유니버스만 빌드 (수집X)")

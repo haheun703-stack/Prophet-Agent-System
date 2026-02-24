@@ -126,6 +126,68 @@ class IndicatorCalc:
 
         return {'support': support, 'resistance': resistance}
 
+    # ──────────────────────────────────────────────
+    #  OBV (On Balance Volume)
+    # ──────────────────────────────────────────────
+
+    @staticmethod
+    def obv(close: pd.Series, volume: pd.Series) -> pd.Series:
+        """OBV 계산 — 가격 방향에 따라 거래량 누적"""
+        direction = close.diff().apply(lambda x: 1 if x > 0 else (-1 if x < 0 else 0))
+        return (direction * volume).cumsum()
+
+    @staticmethod
+    def obv_trend(close: pd.Series, volume: pd.Series,
+                  lookback: int = 10) -> str:
+        """OBV 추세 판정 (선형회귀 기울기)
+
+        Returns: 'UP' | 'DOWN' | 'FLAT'
+        """
+        obv_series = IndicatorCalc.obv(close, volume)
+        recent = obv_series.dropna().tail(lookback)
+        if len(recent) < lookback:
+            return 'FLAT'
+
+        x = np.arange(len(recent), dtype=float)
+        y = recent.values.astype(float)
+        slope = np.polyfit(x, y, 1)[0]
+
+        # 기울기를 OBV 범위 대비 정규화
+        obv_range = max(y.max() - y.min(), 1)
+        norm_slope = slope * lookback / obv_range
+
+        if norm_slope > 0.15:
+            return 'UP'
+        elif norm_slope < -0.15:
+            return 'DOWN'
+        return 'FLAT'
+
+    @staticmethod
+    def obv_divergence(close: pd.Series, volume: pd.Series,
+                       lookback: int = 20) -> str:
+        """OBV 다이버전스 감지
+
+        Returns: 'BEARISH_DIV' | 'BULLISH_DIV' | 'NONE'
+        """
+        obv_series = IndicatorCalc.obv(close, volume)
+        recent_close = close.tail(lookback)
+        recent_obv = obv_series.tail(lookback)
+
+        if len(recent_close) < lookback:
+            return 'NONE'
+
+        price_new_high = recent_close.iloc[-1] >= recent_close.max() * 0.98
+        obv_new_high = recent_obv.iloc[-1] >= recent_obv.max() * 0.98
+
+        price_new_low = recent_close.iloc[-1] <= recent_close.min() * 1.02
+        obv_new_low = recent_obv.iloc[-1] <= recent_obv.min() * 1.02
+
+        if price_new_high and not obv_new_high:
+            return 'BEARISH_DIV'
+        if price_new_low and not obv_new_low:
+            return 'BULLISH_DIV'
+        return 'NONE'
+
     @staticmethod
     def ma_crossover_signal(fast_ma: pd.Series, slow_ma: pd.Series) -> str:
         """

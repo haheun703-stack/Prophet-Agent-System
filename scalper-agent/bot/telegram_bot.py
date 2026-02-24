@@ -50,23 +50,30 @@ def _split_message(text: str, limit: int = TG_MAX) -> list:
 # 한글 키보드 레이아웃
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
-        ["스캔", "ETF", "리포트"],
+        ["스윙스캔", "이상거래", "스캔"],
+        ["건전성", "이벤트", "워치리스트"],
         ["현재잔고", "체결내역", "포트폴리오"],
         ["시작", "정지", "상태"],
-        ["유니버스", "일지", "도움"],
-        ["청산", "로그"],
+        ["유니버스", "시그널", "일지"],
+        ["청산", "로그", "도움"],
     ],
     resize_keyboard=True,
 )
-# 참고: "분석 종목명", "뉴스 종목명"은 키보드 없이 텍스트 입력
+# 참고: "분석 종목명", "뉴스 종목명", "스윙 종목명"은 키보드 없이 텍스트 입력
 
 HELP_TEXT = """
 🔮 Body Hunter v3 명령어
 
+[스윙매매]
+  스윙스캔 — 4층 파이프라인 (수급+기술+이상거래→TOP10)
+  이상거래 — 이상거래 감지기 (조용한 매집/큰손 포착)
+  건전성 — 시장 수급 건전성 진단
+  이벤트 — DART+뉴스 이벤트 감지
+  스윙 삼성전자 — 개별 종목 스윙 분석
+  워치리스트 — 최근 스윙 워치리스트
+
 [분석]
   스캔 — 5D 전종목 수급 스캔
-  ETF — ETF 유니버스 스캔
-  리포트 — 5D 리포트 전송
   분석 삼성전자 — 개별 종목 6D 분석
   뉴스 삼성전자 — 뉴스 + Grok 감성분석
 
@@ -86,10 +93,17 @@ HELP_TEXT = """
   일지 — 오늘 매매 일지
   일지 2026-02-18 — 특정일 일지
 
+[시그널]
+  시그널 — 일간 1D~4D 시그널 요약
+  (자동 16:30 — 전종목 시그널 기록)
+
+[데이터]
+  분봉수집 — 당일 5분/15분봉 수집 (자동 15:40)
+  유니버스 — 유니버스 종목 현황
+  유니버스갱신 — 시총 1000억+ 리빌드
+
 [시스템]
   상태 — 봇 상태
-  유니버스 — 유니버스 종목 현황
-  유니버스갱신 — 시총 1조+ 리빌드
   로그 — 최근 로그
   도움 — 이 메시지
 """.strip()
@@ -649,7 +663,7 @@ class BodyHunterBot:
                 f"📊 유니버스 현황\n"
                 f"{'━' * 25}\n"
                 f"총 {len(uni)}종목 (KOSPI {kospi} + KOSDAQ {kosdaq})\n"
-                f"기준: 시총 1조원 이상\n"
+                f"기준: 시총 1000억 이상\n"
                 f"갱신: {date_str}\n\n"
                 f"[시총 상위 5]\n{top_str}\n\n"
                 f"[시총 하위 5]\n{bot_str}"
@@ -683,11 +697,70 @@ class BodyHunterBot:
             await update.message.reply_text(
                 f"✅ 유니버스 갱신 완료\n"
                 f"총 {len(uni)}종목 (KOSPI {kospi} + KOSDAQ {kosdaq})\n"
-                f"시총 1조원 이상 필터 적용"
+                f"시총 1000억 이상 필터 적용"
             )
         except Exception as e:
             logger.error(f"유니버스 갱신 에러: {e}")
             await update.message.reply_text(f"유니버스 갱신 실패: {e}")
+
+    # ═══════════════════════════════════════
+    #  분봉 수집
+    # ═══════════════════════════════════════
+
+    async def cmd_collect_minutes(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """수동 분봉(5분/15분) 수집"""
+        if not self._is_authorized(update):
+            return
+        await update.message.reply_text("📊 분봉 수집 시작... (전종목 5분+15분, 10~15분 소요)")
+
+        try:
+            from data.kis_collector import collect_today_minutes, UNIVERSE
+            results = await asyncio.to_thread(collect_today_minutes)
+
+            total = len(UNIVERSE)
+            ok = len(results)
+            fail = total - ok
+
+            lines = [
+                f"✅ 분봉 수집 완료",
+                f"   {ok}/{total}종목 성공 ({fail}실패)",
+                "",
+            ]
+            if results:
+                # 상위 5개 샘플
+                for code, st in list(results.items())[:5]:
+                    name = UNIVERSE.get(code, (code,))[0]
+                    lines.append(f"  {name}: 5분={st['5min']}봉 15분={st['15min']}봉")
+                if ok > 5:
+                    lines.append(f"  ... 외 {ok - 5}종목")
+
+            await update.message.reply_text("\n".join(lines))
+
+        except Exception as e:
+            logger.error(f"분봉 수집 에러: {e}")
+            await update.message.reply_text(f"⚠️ 분봉 수집 실패: {str(e)[:200]}")
+
+    # ═══════════════════════════════════════
+    #  시그널
+    # ═══════════════════════════════════════
+
+    async def cmd_signal_summary(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """일간 시그널 요약"""
+        if not self._is_authorized(update):
+            return
+        await update.message.reply_text("📋 시그널 요약 조회 중...")
+
+        try:
+            from data.signal_analyzer import SignalAnalyzer
+            sa = SignalAnalyzer()
+            summary = sa.format_daily_summary()
+
+            for chunk in _split_message(summary):
+                await update.message.reply_text(chunk)
+
+        except Exception as e:
+            logger.error(f"시그널 요약 에러: {e}")
+            await update.message.reply_text(f"⚠️ 시그널 요약 실패: {str(e)[:200]}")
 
     # ═══════════════════════════════════════
     #  뉴스
@@ -779,6 +852,167 @@ class BodyHunterBot:
         await update.message.reply_text("🔴 자동매매 정지")
 
     # ═══════════════════════════════════════
+    #  스윙매매 명령
+    # ═══════════════════════════════════════
+
+    async def cmd_swing_scan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """스윙 4층 파이프라인 스캔"""
+        if not self._is_authorized(update):
+            return
+        await update.message.reply_text("📊 스윙 4층 파이프라인 실행중... (2~5분 소요)")
+
+        try:
+            from tools.swing_scan import run_pipeline, format_report
+            ranked = await asyncio.to_thread(run_pipeline, 10)
+            if ranked:
+                report = format_report(ranked)
+                for chunk in _split_message(report):
+                    await update.message.reply_text(chunk)
+            else:
+                await update.message.reply_text("스윙 스캔 결과 없음 (통과 종목 0개)")
+        except Exception as e:
+            logger.error(f"스윙스캔 실패: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ 스윙스캔 실패: {e}")
+
+    async def cmd_volume_scan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """이상거래 감지기"""
+        if not self._is_authorized(update):
+            return
+        await update.message.reply_text("🔍 이상거래 감지중... (1~2분 소요)")
+
+        try:
+            from data.volume_scanner import scan_universe, save_results, format_results
+            results = await asyncio.to_thread(scan_universe, 20)
+            if results:
+                await asyncio.to_thread(save_results, results)
+                report = format_results(results)
+                for chunk in _split_message(report):
+                    await update.message.reply_text(chunk)
+            else:
+                await update.message.reply_text("이상거래 감지 없음")
+        except Exception as e:
+            logger.error(f"이상거래 감지 실패: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ 이상거래 감지 실패: {e}")
+
+    async def cmd_swing_analyze(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """개별 종목 스윙 분석 (예: '스윙 삼성전자')"""
+        if not self._is_authorized(update):
+            return
+        text = update.message.text.strip()
+        parts = text.split(maxsplit=1)
+        if len(parts) < 2:
+            await update.message.reply_text("사용법: 스윙 삼성전자")
+            return
+
+        query = parts[1].strip()
+        code, name = resolve_stock(query)
+        if not code:
+            await update.message.reply_text(f"'{query}' 종목을 찾을 수 없습니다")
+            return
+
+        await update.message.reply_text(f"📊 {name}({code}) 스윙 분석중...")
+
+        try:
+            from tools.swing_scan import analyze_single
+            cand = await asyncio.to_thread(analyze_single, code)
+            if not cand:
+                await update.message.reply_text(f"데이터 부족 — 일봉 수집 필요")
+                return
+
+            lines = []
+            lines.append(f"📊 {cand.name}({cand.code}) 스윙 분석")
+            lines.append(f"━━━━━━━━━━━━━━━━━━━")
+            lines.append(f"최종: {cand.final_score:.0f}점 [{cand.source}]")
+            lines.append(f"")
+            lines.append(f"[수급 5D]")
+            lines.append(f"  등급: {cand.supply_grade}({cand.supply_score:.0f}) | 4D: {cand.momentum_signal}({cand.momentum_score:.0f})")
+            lines.append(f"  에너지: {cand.energy_grade}({cand.energy_score:.0f}) | 판정: {cand.action}")
+            lines.append(f"")
+            lines.append(f"[기술]")
+            lines.append(f"  시그널: {cand.tech_signal}({cand.tech_score:.0f})")
+            lines.append(f"  추세: {cand.ema_trend} | RSI: {cand.rsi:.0f} | OBV: {cand.obv_trend}")
+            if cand.hist_direction:
+                lines.append(f"  히스토그램: {cand.hist_direction} ({cand.hist_strength})")
+            lines.append(f"")
+            lines.append(f"[매매 레벨]")
+            lines.append(f"  종가: {cand.close:,.0f}원 | ATR: {cand.atr_14:,.0f}원")
+            lines.append(f"  SL: {cand.swing_sl:,.0f}원({cand.risk_pct:.1f}%) | TP: {cand.swing_tp:,.0f}원")
+            if cand.spike_patterns:
+                lines.append(f"")
+                lines.append(f"[이상거래] {', '.join(cand.spike_patterns)} ({cand.spike_score:.0f}점)")
+            if cand.per > 0:
+                lines.append(f"")
+                lines.append(f"PER: {cand.per:.1f} | PBR: {cand.pbr:.2f}")
+
+            await update.message.reply_text("\n".join(lines))
+        except Exception as e:
+            logger.error(f"스윙 분석 실패: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ 스윙 분석 실패: {e}")
+
+    async def cmd_watchlist(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """워치리스트 조회"""
+        if not self._is_authorized(update):
+            return
+        import json
+        wl_path = Path(__file__).resolve().parent.parent / "data_store" / "watchlist.json"
+        if not wl_path.exists():
+            await update.message.reply_text("워치리스트 없음 — '스윙스캔' 먼저 실행")
+            return
+
+        with open(wl_path, "r", encoding="utf-8") as f:
+            wl = json.load(f)
+
+        if not wl:
+            await update.message.reply_text("워치리스트 비어있음")
+            return
+
+        lines = ["📋 스윙 워치리스트"]
+        lines.append(f"📅 {wl[0].get('scanned_at', '')}")
+        lines.append(f"━━━━━━━━━━━━━━━━━━━")
+
+        for i, w in enumerate(wl, 1):
+            lines.append(f"{i}. {w['name']}({w['code']}) — {w['final_score']:.0f}점")
+            lines.append(f"   {w['supply_grade']}/{w['momentum']} | {w['tech_signal']} | {w['ema_trend']}")
+            if w.get('swing_sl'):
+                lines.append(f"   SL:{w['swing_sl']:,.0f} → TP:{w['swing_tp']:,.0f}")
+
+        await update.message.reply_text("\n".join(lines))
+
+    async def cmd_event_scan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """이벤트 감지기 (DART + 뉴스 테마)"""
+        if not self._is_authorized(update):
+            return
+        await update.message.reply_text("🛰 이벤트 감지중... (1~2분 소요)")
+
+        try:
+            from data.event_detector import run_event_scan, format_event_report
+            result = await asyncio.to_thread(run_event_scan)
+            if result["beneficiaries"]:
+                report = format_event_report(result)
+                for chunk in _split_message(report):
+                    await update.message.reply_text(chunk)
+            else:
+                await update.message.reply_text("이벤트 감지 없음")
+        except Exception as e:
+            logger.error(f"이벤트 감지 실패: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ 이벤트 감지 실패: {e}")
+
+    async def cmd_market_health(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """시장 수급 건전성 진단"""
+        if not self._is_authorized(update):
+            return
+        await update.message.reply_text("🛡 시장 건전성 진단중...")
+
+        try:
+            from data.market_health import diagnose, format_health_report
+            report = await asyncio.to_thread(diagnose)
+            msg = format_health_report(report)
+            await update.message.reply_text(msg)
+        except Exception as e:
+            logger.error(f"건전성 진단 실패: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ 건전성 진단 실패: {e}")
+
+    # ═══════════════════════════════════════
     #  봇 빌드 & 실행
     # ═══════════════════════════════════════
 
@@ -828,15 +1062,25 @@ class BodyHunterBot:
             r"^일지$": self.cmd_journal,
             r"^유니버스$": self.cmd_universe,
             r"^유니버스갱신$": self.cmd_universe_rebuild,
+            r"^분봉수집$": self.cmd_collect_minutes,
+            r"^시그널$": self.cmd_signal_summary,
             r"^시작$": self.cmd_auto_start,
             r"^정지$": self.cmd_auto_stop,
             r"^확인$": self.cmd_confirm,
+            r"^스윙스캔$": self.cmd_swing_scan,
+            r"^이상거래$": self.cmd_volume_scan,
+            r"^이벤트$": self.cmd_event_scan,
+            r"^워치리스트$": self.cmd_watchlist,
+            r"^건전성$": self.cmd_market_health,
         }
 
         for pattern, handler in exact_commands.items():
             app.add_handler(MessageHandler(filters.Regex(pattern), handler))
 
         # 인자 있는 명령어
+        app.add_handler(
+            MessageHandler(filters.Regex(r"^스윙\s+.+"), self.cmd_swing_analyze)
+        )
         app.add_handler(
             MessageHandler(filters.Regex(r"^분석\s+.+"), self.cmd_analyze)
         )
@@ -905,6 +1149,197 @@ class BodyHunterBot:
         h2, m2 = map(int, eod_str.split(":"))
         jq.run_daily(self.auto_trader.job_eod_close, time=dtime(h2, m2))
         logger.info(f"장마감 청산 등록: {eod_str}")
+
+        # 장마감 후 분봉 수집 (15:40)
+        minute_str = bot_conf.get("minute_collect_time", "15:40")
+        h3, m3 = map(int, minute_str.split(":"))
+        jq.run_daily(self._job_collect_minutes, time=dtime(h3, m3))
+        logger.info(f"분봉 수집 등록: {minute_str}")
+
+        # 일봉 + 수급 수집 (16:00)
+        daily_str = bot_conf.get("daily_collect_time", "16:00")
+        h4, m4 = map(int, daily_str.split(":"))
+        jq.run_daily(self._job_collect_daily, time=dtime(h4, m4))
+        logger.info(f"일봉 수집 등록: {daily_str}")
+
+        # 체결 스냅샷 폴링 — 장 시작 시 자동 시작 (09:01)
+        tick_enabled = self.config.get("schedule", {}).get(
+            "tick_collect", {}
+        ).get("enabled", True)
+        if tick_enabled:
+            jq.run_daily(self._job_start_tick_polling, time=dtime(9, 1))
+            logger.info("체결 폴링 등록: 09:01 시작 (1분 간격, 장중)")
+
+        # 유니버스 리빌드 (08:30)
+        uni_str = bot_conf.get("universe_rebuild_time", "08:30")
+        h5, m5 = map(int, uni_str.split(":"))
+        jq.run_daily(self._job_rebuild_universe, time=dtime(h5, m5))
+        logger.info(f"유니버스 리빌드 등록: {uni_str}")
+
+        # 일간 시그널 기록 (16:30 — 일봉 수집 후)
+        jq.run_daily(self._job_record_signals, time=dtime(16, 30))
+        logger.info("일간 시그널 기록 등록: 16:30")
+
+    async def _job_start_tick_polling(self, context):
+        """장 시작 시 체결 스냅샷 폴링 시작 (백그라운드 스레드)"""
+        from datetime import date
+        if date.today().weekday() >= 5:
+            return
+
+        chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        logger.info("체결 폴링 시작 (09:01~15:30, 1분 간격)...")
+
+        try:
+            from data.tick_collector import TickCollector
+            from data.kis_collector import UNIVERSE
+
+            codes = list(UNIVERSE.keys())
+            interval = self.config.get("schedule", {}).get(
+                "tick_collect", {}
+            ).get("interval_sec", 60)
+
+            tc = TickCollector()
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"📡 체결 폴링 시작: {len(codes)}종목 / {interval}초 간격",
+            )
+
+            # 블로킹 루프를 별도 스레드에서 실행
+            cycles = await asyncio.to_thread(
+                tc.run_market_hours, codes, interval
+            )
+
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"📡 체결 폴링 종료: {cycles}사이클 완료",
+            )
+
+        except Exception as e:
+            logger.error(f"체결 폴링 에러: {e}")
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"⚠️ 체결 폴링 에러: {str(e)[:200]}",
+            )
+
+    async def _job_collect_minutes(self, context):
+        """장마감 후 자동 분봉(5분/15분) 수집"""
+        from datetime import date
+        if date.today().weekday() >= 5:  # 주말 스킵
+            return
+        logger.info("분봉 자동 수집 시작...")
+        chat_id = os.getenv("TELEGRAM_CHAT_ID")
+
+        try:
+            from data.kis_collector import collect_today_minutes, UNIVERSE
+            results = await asyncio.to_thread(collect_today_minutes)
+
+            msg = (
+                f"📊 분봉 수집 완료\n"
+                f"  {len(results)}/{len(UNIVERSE)}종목 성공\n"
+            )
+            if results:
+                sample = list(results.items())[:3]
+                for code, st in sample:
+                    name = UNIVERSE.get(code, (code,))[0]
+                    msg += f"  {name}: 5분={st['5min']}봉 15분={st['15min']}봉\n"
+
+            await context.bot.send_message(chat_id=chat_id, text=msg)
+            logger.info(f"분봉 수집 완료: {len(results)}종목")
+
+        except Exception as e:
+            logger.error(f"분봉 수집 실패: {e}")
+            await context.bot.send_message(
+                chat_id=chat_id, text=f"⚠️ 분봉 수집 실패: {str(e)[:200]}"
+            )
+
+    async def _job_collect_daily(self, context):
+        """장마감 후 일봉 + 수급 데이터 수집"""
+        from datetime import date
+        if date.today().weekday() >= 5:
+            return
+        logger.info("일봉 자동 수집 시작...")
+        chat_id = os.getenv("TELEGRAM_CHAT_ID")
+
+        try:
+            from data.kis_collector import collect_daily_kis, UNIVERSE
+
+            results = await asyncio.to_thread(
+                collect_daily_kis, list(UNIVERSE.keys()), 8, False
+            )
+
+            msg = f"📈 일봉 수집 완료: {len(results)}/{len(UNIVERSE)}종목"
+            await context.bot.send_message(chat_id=chat_id, text=msg)
+            logger.info(f"일봉 수집 완료: {len(results)}종목")
+
+        except Exception as e:
+            logger.error(f"일봉 수집 실패: {e}")
+            await context.bot.send_message(
+                chat_id=chat_id, text=f"⚠️ 일봉 수집 실패: {str(e)[:200]}"
+            )
+
+    async def _job_rebuild_universe(self, context):
+        """장전 유니버스 리빌드 (시총 변동 반영)"""
+        from datetime import date
+        # 평일만 실행
+        if date.today().weekday() >= 5:
+            return
+
+        logger.info("유니버스 자동 리빌드 시작...")
+        chat_id = os.getenv("TELEGRAM_CHAT_ID")
+
+        try:
+            from data.universe_builder import build_universe
+            uni = await asyncio.to_thread(build_universe)
+
+            kospi = sum(1 for v in uni.values() if v.get("market") == "KOSPI")
+            kosdaq = len(uni) - kospi
+
+            msg = (
+                f"🔄 유니버스 리빌드 완료\n"
+                f"  총 {len(uni)}종목 (KOSPI {kospi} + KOSDAQ {kosdaq})"
+            )
+            await context.bot.send_message(chat_id=chat_id, text=msg)
+            logger.info(f"유니버스 리빌드 완료: {len(uni)}종목")
+
+        except Exception as e:
+            logger.error(f"유니버스 리빌드 실패: {e}")
+            await context.bot.send_message(
+                chat_id=chat_id, text=f"⚠️ 유니버스 리빌드 실패: {str(e)[:200]}"
+            )
+
+    async def _job_record_signals(self, context):
+        """일간 1D~4D 시그널 기록 (16:30 — 일봉 수집 완료 후)"""
+        from datetime import date
+        if date.today().weekday() >= 5:
+            return
+
+        logger.info("일간 시그널 기록 시작...")
+        chat_id = os.getenv("TELEGRAM_CHAT_ID")
+
+        try:
+            from data.signal_analyzer import SignalAnalyzer
+            from data.kis_collector import UNIVERSE
+
+            exclude = {"069500", "371160", "102780", "305720"}
+            codes = [c for c in UNIVERSE.keys() if c not in exclude]
+            names = {c: UNIVERSE[c][0] for c in codes if c in UNIVERSE}
+
+            sa = SignalAnalyzer()
+            count = await asyncio.to_thread(sa.record_daily, codes, names)
+
+            summary = sa.format_daily_summary()
+            msg = f"📋 일간 시그널 기록 완료: {count}종목\n\n{summary}"
+
+            for chunk in _split_message(msg):
+                await context.bot.send_message(chat_id=chat_id, text=chunk)
+
+            logger.info(f"일간 시그널 기록 완료: {count}종목")
+
+        except Exception as e:
+            logger.error(f"시그널 기록 실패: {e}")
+            await context.bot.send_message(
+                chat_id=chat_id, text=f"⚠️ 시그널 기록 실패: {str(e)[:200]}"
+            )
 
     async def _error_handler(self, update, context):
         import traceback

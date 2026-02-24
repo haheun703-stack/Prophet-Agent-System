@@ -31,7 +31,6 @@ import pandas as pd
 import numpy as np
 import requests
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 logger = logging.getLogger(__name__)
@@ -42,6 +41,7 @@ logger = logging.getLogger(__name__)
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data_store"
 MIN5_DIR = DATA_DIR / "5min"
+MIN15_DIR = DATA_DIR / "15min"
 LOG_FILE = DATA_DIR / "collection_log.csv"
 
 # 동적 유니버스 (시총 1조+ 자동 필터)
@@ -51,6 +51,7 @@ UNIVERSE = get_universe_dict()
 
 def _ensure_dirs():
     MIN5_DIR.mkdir(parents=True, exist_ok=True)
+    MIN15_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _load_existing(code: str) -> Optional[pd.DataFrame]:
@@ -389,25 +390,61 @@ def run_daily():
     print(f"{'='*60}")
 
     # 1. KIS API 당일 1분봉 → 5분봉
-    print(f"\n[1/2] KIS API 당일 분봉 수집...")
+    print(f"\n[1/3] KIS API 당일 분봉 수집...")
     try:
         collect_today_kis()
     except Exception as e:
         print(f"  [KIS] 실패: {e}")
 
     # 2. 네이버 최근 6일 보충
-    print(f"\n[2/2] 네이버 최근 분봉 보충...")
+    print(f"\n[2/3] 네이버 최근 분봉 보충...")
     try:
         collect_naver_recent()
     except Exception as e:
         print(f"  [네이버] 실패: {e}")
 
+    # 3. 15분봉 리샘플
+    print(f"\n[3/3] 5분봉 → 15분봉 리샘플...")
+    resample_5min_to_15min()
+
     print(f"\n수집 완료!")
     show_status()
 
 
+def resample_5min_to_15min():
+    """5분봉 → 15분봉 리샘플링 (전종목)"""
+    _ensure_dirs()
+
+    files = sorted(MIN5_DIR.glob("*.csv"))
+    total = 0
+    for f in files:
+        code = f.stem
+        try:
+            df = pd.read_csv(f, index_col=0, parse_dates=True)
+            if len(df) < 10:
+                continue
+
+            df15 = df.resample("15min").agg({
+                "open": "first", "high": "max",
+                "low": "min", "close": "last",
+                "volume": "sum",
+            }).dropna()
+
+            # 장중만 (09:00 ~ 15:25)
+            df15 = df15.between_time("09:00", "15:25")
+
+            if len(df15) > 0:
+                df15.to_csv(MIN15_DIR / f"{code}.csv")
+                total += 1
+        except Exception:
+            continue
+
+    print(f"  [15분봉] {total}/{len(files)}종목 리샘플 완료")
+    return total
+
+
 def run_backfill():
-    """초기 백필 (yfinance 60일 + 네이버 + KIS)"""
+    """초기 백필 (yfinance 60일 + 네이버 + KIS + 15분봉)"""
     _ensure_dirs()
 
     print(f"\n{'='*60}")
@@ -415,30 +452,37 @@ def run_backfill():
     print(f"{'='*60}")
 
     # 1. yfinance ~60일
-    print(f"\n[1/3] yfinance 60일 백필...")
+    print(f"\n[1/4] yfinance 60일 백필...")
     backfill_yfinance()
 
     # 2. 네이버 최근 6일
-    print(f"\n[2/3] 네이버 최근 분봉...")
+    print(f"\n[2/4] 네이버 최근 분봉...")
     collect_naver_recent()
 
     # 3. KIS 당일
-    print(f"\n[3/3] KIS 당일 분봉...")
+    print(f"\n[3/4] KIS 당일 분봉...")
     try:
         collect_today_kis()
     except Exception as e:
         print(f"  [KIS] 건너뜀: {e}")
+
+    # 4. 5분봉 → 15분봉 리샘플
+    print(f"\n[4/4] 5분봉 → 15분봉 리샘플...")
+    resample_5min_to_15min()
 
     print(f"\n백필 완료!")
     show_status()
 
 
 if __name__ == "__main__":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
     logging.basicConfig(level=logging.WARNING)
 
     if "--backfill" in sys.argv:
         run_backfill()
     elif "--status" in sys.argv:
         show_status()
+    elif "--resample-15m" in sys.argv:
+        resample_5min_to_15min()
     else:
         run_daily()
