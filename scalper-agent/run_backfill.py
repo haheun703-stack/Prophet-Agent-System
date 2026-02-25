@@ -37,7 +37,7 @@ def main():
     parser.add_argument("--stock", type=str, help="개별 종목 테스트")
     parser.add_argument("--start", type=str, default="20250301", help="백필 시작일")
     parser.add_argument("--end", type=str, default=datetime.now().strftime("%Y%m%d"), help="백필 종료일")
-    parser.add_argument("--months", type=int, default=11, help="pykrx 수집 기간 (월)")
+    parser.add_argument("--months", type=int, default=24, help="pykrx 수집 기간 (월)")
     parser.add_argument("--min-cap", type=int, default=3000, help="최소 시총 (억원)")
     args = parser.parse_args()
 

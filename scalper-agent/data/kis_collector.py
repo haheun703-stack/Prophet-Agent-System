@@ -2,7 +2,7 @@
 KIS API + yfinance 하이브리드 데이터 수집기
 
 데이터 소스:
-- KIS API: 일봉 OHLCV 6개월+ (페이지네이션)
+- KIS API: 일봉 OHLCV 24개월 (페이지네이션)
 - yfinance: 5분봉 OHLCV ~60일
 - KIS API: 당일 1분봉 (실시간 수집용)
 
@@ -63,7 +63,7 @@ def _get_broker():
 
 def collect_daily_kis(
     codes: List[str] = None,
-    months: int = 8,
+    months: int = 24,
     force: bool = False,
 ) -> Dict[str, pd.DataFrame]:
     """KIS API에서 일봉 데이터 수집 (6개월+)
@@ -463,7 +463,7 @@ def _parse_1min_data(rows: List[dict]) -> Optional[pd.DataFrame]:
 #  통합 수집
 # ============================================================
 
-def collect_all(months: int = 8, force: bool = False):
+def collect_all(months: int = 24, force: bool = False):
     """전체 데이터 수집 (일봉 + 5분봉/15분봉)"""
     print("=" * 60)
     print("  하이브리드 데이터 수집기")
@@ -513,4 +513,4 @@ if __name__ == "__main__":
             name = UNIVERSE.get(code, (code,))[0]
             print(f"  {name}({code}): 1분={stats['1min']}봉 5분={stats['5min']}봉 15분={stats['15min']}봉")
     else:
-        daily, minutes = collect_all(months=8, force=False)
+        daily, minutes = collect_all(months=24, force=False)

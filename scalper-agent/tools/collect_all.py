@@ -24,27 +24,27 @@ t0 = time.time()
 
 # 1. 일봉
 print("[1/5] 일봉 OHLCV 수집...")
-collect_daily_pykrx(codes, months=6, force=False)
+collect_daily_pykrx(codes, months=24, force=False)
 print(f"  경과: {time.time()-t0:.0f}초\n")
 
 # 2. 투자자별 순매수
 print("[2/5] 투자자별 순매수 (기관/외인)...")
-collect_investor_flow(codes, months=6, force=False)
+collect_investor_flow(codes, months=24, force=False)
 print(f"  경과: {time.time()-t0:.0f}초\n")
 
 # 3. 외국인 소진율
 print("[3/5] 외국인 소진율...")
-collect_foreign_exhaustion(codes, months=6, force=False)
+collect_foreign_exhaustion(codes, months=24, force=False)
 print(f"  경과: {time.time()-t0:.0f}초\n")
 
 # 4. 공매도 잔고
 print("[4/5] 공매도 잔고...")
-collect_short_balance(codes, months=6, force=False)
+collect_short_balance(codes, months=24, force=False)
 print(f"  경과: {time.time()-t0:.0f}초\n")
 
 # 5. 공매도 거래량
 print("[5/5] 공매도 거래량...")
-collect_short_volume(codes, months=6, force=False)
+collect_short_volume(codes, months=24, force=False)
 
 total = time.time() - t0
 print(f"\n{'='*60}")

@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data_store"
+MACRO_THEMES_PATH = DATA_DIR / "macro_themes.json"
 
 
 # ═══════════════════════════════════════════════════
@@ -192,6 +193,143 @@ BENEFICIARY_DB = {
     "market_risk": [],   # 리스크 경고 (매수 수혜주 없음)
     "tariff_risk": [],   # 리스크 경고
 }
+
+
+# ═══════════════════════════════════════════════════
+#  매크로 테마 동적 로드
+# ═══════════════════════════════════════════════════
+
+def load_macro_themes():
+    """macro_themes.json에서 ACTIVE 테마를 THEME_KEYWORDS/BENEFICIARY_DB에 merge"""
+    if not MACRO_THEMES_PATH.exists():
+        return 0
+
+    try:
+        with open(MACRO_THEMES_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, IOError) as e:
+        logger.warning(f"macro_themes.json 로드 실패: {e}")
+        return 0
+
+    merged = 0
+    for theme in data.get("themes", []):
+        if theme.get("status") != "ACTIVE":
+            continue
+
+        tag = theme.get("tag", "")
+        name = theme.get("name", tag)
+        if not tag:
+            continue
+
+        # THEME_KEYWORDS에 추가 (이미 있으면 스킵)
+        if name not in THEME_KEYWORDS:
+            THEME_KEYWORDS[name] = {
+                "keywords": theme.get("keywords", []),
+                "impact": theme.get("impact", 70),
+                "direction": theme.get("direction", "NEUTRAL"),
+                "tag": tag,
+            }
+
+        # BENEFICIARY_DB에 추가
+        if tag not in BENEFICIARY_DB:
+            BENEFICIARY_DB[tag] = []
+
+        existing_tickers = {t[0] for t in BENEFICIARY_DB[tag]}
+        for b in theme.get("beneficiaries", []):
+            if b["ticker"] not in existing_tickers:
+                BENEFICIARY_DB[tag].append(
+                    (b["ticker"], b["name"], b["relevance"], b["metric"])
+                )
+
+        merged += 1
+
+    if merged:
+        logger.info(f"매크로 테마 {merged}개 merge 완료")
+    return merged
+
+
+def get_macro_themes() -> list:
+    """macro_themes.json 전체 반환 (텔레그램 명령용)"""
+    if not MACRO_THEMES_PATH.exists():
+        return []
+    try:
+        with open(MACRO_THEMES_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data.get("themes", [])
+    except (json.JSONDecodeError, IOError):
+        return []
+
+
+def update_macro_theme_status(theme_id: str, new_status: str) -> bool:
+    """테마 상태 변경 (ACTIVE/WATCH/ARCHIVE)"""
+    if new_status not in ("ACTIVE", "WATCH", "ARCHIVE"):
+        return False
+    if not MACRO_THEMES_PATH.exists():
+        return False
+    try:
+        with open(MACRO_THEMES_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        for theme in data.get("themes", []):
+            if theme.get("id") == theme_id:
+                theme["status"] = new_status
+                data["_meta"]["updated_at"] = datetime.now().strftime("%Y-%m-%d")
+                with open(MACRO_THEMES_PATH, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                return True
+        return False
+    except (json.JSONDecodeError, IOError):
+        return False
+
+
+def add_macro_theme(name: str, keywords: list, tag: str,
+                    impact: int = 75, direction: str = "POSITIVE",
+                    beneficiaries: list = None) -> str:
+    """새 매크로 테마 추가, theme_id 반환"""
+    theme_id = tag + "_" + datetime.now().strftime("%Y%m%d")
+
+    if MACRO_THEMES_PATH.exists():
+        with open(MACRO_THEMES_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    else:
+        data = {"_meta": {"description": "매크로 테마 시나리오", "updated_at": "", "usage": "ACTIVE만 merge"}, "themes": []}
+
+    new_theme = {
+        "id": theme_id,
+        "name": name,
+        "status": "ACTIVE",
+        "created": datetime.now().strftime("%Y-%m-%d"),
+        "keywords": keywords,
+        "impact": impact,
+        "direction": direction,
+        "tag": tag,
+        "beneficiaries": beneficiaries or [],
+    }
+    data["themes"].append(new_theme)
+    data["_meta"]["updated_at"] = datetime.now().strftime("%Y-%m-%d")
+
+    with open(MACRO_THEMES_PATH, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+    return theme_id
+
+
+def remove_macro_theme(theme_id: str) -> bool:
+    """테마 삭제"""
+    if not MACRO_THEMES_PATH.exists():
+        return False
+    try:
+        with open(MACRO_THEMES_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        before = len(data.get("themes", []))
+        data["themes"] = [t for t in data.get("themes", []) if t.get("id") != theme_id]
+        if len(data["themes"]) == before:
+            return False
+        data["_meta"]["updated_at"] = datetime.now().strftime("%Y-%m-%d")
+        with open(MACRO_THEMES_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        return True
+    except (json.JSONDecodeError, IOError):
+        return False
 
 
 # ═══════════════════════════════════════════════════
@@ -421,6 +559,11 @@ def run_event_scan(scan_dart: bool = True, scan_news: bool = True) -> dict:
     print(f"\n🛰  이벤트 감지기")
     print(f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     print("=" * 50)
+
+    # 0. 매크로 테마 동적 로드
+    merged = load_macro_themes()
+    if merged:
+        print(f"  매크로 테마 {merged}개 로드 (ACTIVE)")
 
     all_events = []
 

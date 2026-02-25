@@ -204,9 +204,57 @@ bot:
   scan_interval_sec: 30         # 포지션 감시 주기 (초)
   morning_scan_time: "09:20"    # 아침 5D 스캔 시각
   eod_close_time: "15:10"       # 장마감 청산 시각
+  minute_collect_time: "15:40"  # 분봉(5분/15분) 수집 시각
+  daily_collect_time: "16:00"   # 일봉 + 수급 데이터 수집 시각
+  universe_rebuild_time: "08:30"  # 유니버스 리빌드 (시총 변동 반영)
   max_auto_positions: 3         # 자동매매 최대 동시 보유
   auto_buy_amount: 500000       # 자동매수 1회 금액 (원)
   confirm_real_order: true      # 실주문 전 확인 메시지 요구
+
+# --- 데이터 수집 스케줄 ---
+# ┌────────────┬──────────────────────────────────────────────────────┐
+# │ 시각       │ 작업                                                 │
+# ├────────────┼──────────────────────────────────────────────────────┤
+# │ 08:30      │ 유니버스 리빌드 (pykrx 시총 1조+ 재스캔)            │
+# │ 09:01~15:30│ 체결 스냅샷 폴링 (354종목×3API, 1분 간격, ~11분/회) │
+# │ 09:20      │ 아침 6D 스캔 → TOP5 텔레그램 리포트                 │
+# │ 09:00~     │ 포지션 감시 (30초 간격, 장중 내내)                   │
+# │ 15:10      │ 장마감 자동청산                                      │
+# │ 15:40      │ KIS API 분봉 수집 (전종목 1분→5분+15분, ~30분)      │
+# │ 16:00      │ KIS API 일봉 수집 (전종목 OHLCV 증분 업데이트)      │
+# │ 16:30      │ 일간 1D~4D 시그널 기록 (전종목)                     │
+# │ 주말       │ 전부 스킵 (평일만 실행)                              │
+# └────────────┴──────────────────────────────────────────────────────┘
+schedule:
+  # 분봉 수집 — KIS API 당일 1분봉 → 5분/15분 리샘플 저장
+  minute_collect:
+    enabled: true
+    time: "15:40"               # 장마감 10분 후
+    target: "all"               # all=전종목 354개, top=BUY+종목만
+    save_1min: true             # 원본 1분봉도 보관
+    # 저장 경로: data_store/1min/, data_store/5min/, data_store/15min/
+
+  # 일봉 수집 — KIS API OHLCV
+  daily_collect:
+    enabled: true
+    time: "16:00"               # 분봉 수집 끝나고
+    months: 8                   # 최초 8개월, 이후 증분 업데이트
+
+  # 체결 스냅샷 폴링 — 장중 1분 간격 REST API
+  tick_collect:
+    enabled: true
+    start: "09:01"              # 장 시작
+    end: "15:30"                # 장 마감
+    interval_sec: 60            # 1분 간격
+    # 3 API/종목(시세+체결+호가) × 354종목 = ~1,062콜/분 (18콜/초)
+    # 저장 경로: data_store/ticks/YYYYMMDD/{code}.csv
+    # 필드: 시간,현재가,전일대비,등락률,매도호가1,매수호가1,체결강도,거래량,체결량
+
+  # 유니버스 리빌드 — pykrx 시총 기준
+  universe_rebuild:
+    enabled: true
+    time: "08:30"               # 장전
+    min_cap_billion: 3000       # 시총 3000억원 이상 (우선주 포함)
 
 # --- Backtest / Paper Trading ---
 backtest:

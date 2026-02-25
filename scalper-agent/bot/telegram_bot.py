@@ -54,8 +54,9 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
         ["건전성", "이벤트", "워치리스트"],
         ["현재잔고", "체결내역", "포트폴리오"],
         ["시작", "정지", "상태"],
-        ["유니버스", "시그널", "일지"],
-        ["청산", "로그", "도움"],
+        ["유니버스", "시나리오", "시그널"],
+        ["일지", "로그", "도움"],
+        ["청산"],
     ],
     resize_keyboard=True,
 )
@@ -96,6 +97,12 @@ HELP_TEXT = """
 [시그널]
   시그널 — 일간 1D~4D 시그널 요약
   (자동 16:30 — 전종목 시그널 기록)
+
+[시나리오]
+  시나리오 — 매크로 테마 시나리오 목록
+  시나리오활성 ID — 테마 ACTIVE 전환
+  시나리오대기 ID — 테마 WATCH 전환
+  시나리오삭제 ID — 테마 삭제
 
 [데이터]
   분봉수집 — 당일 5분/15분봉 수집 (자동 15:40)
@@ -997,6 +1004,81 @@ class BodyHunterBot:
             logger.error(f"이벤트 감지 실패: {e}", exc_info=True)
             await update.message.reply_text(f"❌ 이벤트 감지 실패: {e}")
 
+    # ═══════════════════════════════════════
+    #  시나리오 (매크로 테마)
+    # ═══════════════════════════════════════
+
+    async def cmd_scenario_list(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """매크로 테마 시나리오 목록"""
+        if not self._is_authorized(update):
+            return
+        try:
+            from data.event_detector import get_macro_themes
+            themes = get_macro_themes()
+            if not themes:
+                await update.message.reply_text("시나리오 없음\nmacro_themes.json 미생성")
+                return
+
+            lines = ["📋 매크로 테마 시나리오", "━━━━━━━━━━━━━━━━━━━"]
+            status_icon = {"ACTIVE": "🟢", "WATCH": "🟡", "ARCHIVE": "⚫"}
+            for t in themes:
+                icon = status_icon.get(t["status"], "⚪")
+                direction = {"POSITIVE": "↑", "NEGATIVE": "↓", "NEUTRAL": "→"}.get(t.get("direction", ""), "?")
+                bens = t.get("beneficiaries", [])
+                ben_names = ", ".join(b["name"] for b in bens[:3])
+                lines.append(f"\n{icon} {t['name']} ({t['status']})")
+                lines.append(f"  ID: {t['id']}")
+                lines.append(f"  {direction} impact:{t.get('impact',0)} | 키워드: {len(t.get('keywords',[]))}개")
+                if ben_names:
+                    lines.append(f"  수혜주: {ben_names}")
+            lines.append("\n━━━━━━━━━━━━━━━━━━━")
+            lines.append("시나리오활성/시나리오대기/시나리오삭제 + ID")
+            await update.message.reply_text("\n".join(lines))
+        except Exception as e:
+            await update.message.reply_text(f"❌ 시나리오 조회 실패: {e}")
+
+    async def cmd_scenario_activate(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """시나리오 ACTIVE 전환"""
+        if not self._is_authorized(update):
+            return
+        theme_id = update.message.text.replace("시나리오활성", "").strip()
+        if not theme_id:
+            await update.message.reply_text("사용법: 시나리오활성 theme_id")
+            return
+        from data.event_detector import update_macro_theme_status
+        if update_macro_theme_status(theme_id, "ACTIVE"):
+            await update.message.reply_text(f"🟢 {theme_id} → ACTIVE 전환 완료")
+        else:
+            await update.message.reply_text(f"❌ ID '{theme_id}' 찾을 수 없음")
+
+    async def cmd_scenario_watch(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """시나리오 WATCH 전환"""
+        if not self._is_authorized(update):
+            return
+        theme_id = update.message.text.replace("시나리오대기", "").strip()
+        if not theme_id:
+            await update.message.reply_text("사용법: 시나리오대기 theme_id")
+            return
+        from data.event_detector import update_macro_theme_status
+        if update_macro_theme_status(theme_id, "WATCH"):
+            await update.message.reply_text(f"🟡 {theme_id} → WATCH 전환 완료")
+        else:
+            await update.message.reply_text(f"❌ ID '{theme_id}' 찾을 수 없음")
+
+    async def cmd_scenario_delete(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """시나리오 삭제"""
+        if not self._is_authorized(update):
+            return
+        theme_id = update.message.text.replace("시나리오삭제", "").strip()
+        if not theme_id:
+            await update.message.reply_text("사용법: 시나리오삭제 theme_id")
+            return
+        from data.event_detector import remove_macro_theme
+        if remove_macro_theme(theme_id):
+            await update.message.reply_text(f"🗑 {theme_id} 삭제 완료")
+        else:
+            await update.message.reply_text(f"❌ ID '{theme_id}' 찾을 수 없음")
+
     async def cmd_market_health(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """시장 수급 건전성 진단"""
         if not self._is_authorized(update):
@@ -1072,6 +1154,7 @@ class BodyHunterBot:
             r"^이벤트$": self.cmd_event_scan,
             r"^워치리스트$": self.cmd_watchlist,
             r"^건전성$": self.cmd_market_health,
+            r"^시나리오$": self.cmd_scenario_list,
         }
 
         for pattern, handler in exact_commands.items():
@@ -1095,6 +1178,16 @@ class BodyHunterBot:
         )
         app.add_handler(
             MessageHandler(filters.Regex(r"^일지\s+.+"), self.cmd_journal)
+        )
+        # 시나리오 인자 있는 명령어
+        app.add_handler(
+            MessageHandler(filters.Regex(r"^시나리오활성\s+.+"), self.cmd_scenario_activate)
+        )
+        app.add_handler(
+            MessageHandler(filters.Regex(r"^시나리오대기\s+.+"), self.cmd_scenario_watch)
+        )
+        app.add_handler(
+            MessageHandler(filters.Regex(r"^시나리오삭제\s+.+"), self.cmd_scenario_delete)
         )
 
         # 인자 없는 "분석" / "뉴스" → 안내
@@ -1264,7 +1357,7 @@ class BodyHunterBot:
             from data.kis_collector import collect_daily_kis, UNIVERSE
 
             results = await asyncio.to_thread(
-                collect_daily_kis, list(UNIVERSE.keys()), 8, False
+                collect_daily_kis, list(UNIVERSE.keys()), 24, False
             )
 
             msg = f"📈 일봉 수집 완료: {len(results)}/{len(UNIVERSE)}종목"

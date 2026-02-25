@@ -1,0 +1,123 @@
+{
+  "_meta": {
+    "description": "매크로 테마 시나리오 — 이벤트 감지기에 동적 연동",
+    "updated_at": "2026-02-25",
+    "usage": "ACTIVE 상태 테마만 event_detector에 merge됨"
+  },
+  "themes": [
+    {
+      "id": "tariff_war_2026",
+      "name": "美관세전쟁 2기",
+      "status": "ACTIVE",
+      "created": "2026-02-25",
+      "keywords": [
+        "트럼프 관세",
+        "25% 관세",
+        "보복관세",
+        "무역전쟁 확대",
+        "관세 유예"
+      ],
+      "impact": 80,
+      "direction": "NEGATIVE",
+      "tag": "tariff_risk_2",
+      "beneficiaries": [
+        {
+          "ticker": "010140",
+          "name": "삼성중공업",
+          "relevance": 75,
+          "metric": "LNG선 수혜"
+        },
+        {
+          "ticker": "009540",
+          "name": "HD한국조선해양",
+          "relevance": 80,
+          "metric": "조선 관세 면제"
+        },
+        {
+          "ticker": "042660",
+          "name": "한화오션",
+          "relevance": 75,
+          "metric": "방산+조선"
+        }
+      ]
+    },
+    {
+      "id": "ai_capex_boom",
+      "name": "AI CAPEX 투자 확대",
+      "status": "ACTIVE",
+      "created": "2026-02-25",
+      "keywords": [
+        "AI 설비투자",
+        "데이터센터 건설",
+        "전력 인프라",
+        "AI 전력",
+        "GPU 수요 폭증"
+      ],
+      "impact": 85,
+      "direction": "POSITIVE",
+      "tag": "ai_capex",
+      "beneficiaries": [
+        {
+          "ticker": "267260",
+          "name": "HD현대일렉트릭",
+          "relevance": 90,
+          "metric": "변압기 세계 수요"
+        },
+        {
+          "ticker": "298040",
+          "name": "효성중공업",
+          "relevance": 85,
+          "metric": "전력기기"
+        },
+        {
+          "ticker": "003490",
+          "name": "대한항공",
+          "relevance": 60,
+          "metric": "화물 운송 수혜"
+        },
+        {
+          "ticker": "034020",
+          "name": "두산에너빌리티",
+          "relevance": 80,
+          "metric": "가스터빈+원전"
+        }
+      ]
+    },
+    {
+      "id": "korea_value_up",
+      "name": "코리아 밸류업",
+      "status": "WATCH",
+      "created": "2026-02-25",
+      "keywords": [
+        "밸류업",
+        "주주환원",
+        "자사주 소각",
+        "배당 확대",
+        "PBR 1배"
+      ],
+      "impact": 75,
+      "direction": "POSITIVE",
+      "tag": "value_up",
+      "beneficiaries": [
+        {
+          "ticker": "055550",
+          "name": "신한지주",
+          "relevance": 85,
+          "metric": "PBR 0.4배"
+        },
+        {
+          "ticker": "105560",
+          "name": "KB금융",
+          "relevance": 85,
+          "metric": "PBR 0.5배"
+        },
+        {
+          "ticker": "086790",
+          "name": "하나금융지주",
+          "relevance": 80,
+          "metric": "PBR 0.4배"
+        }
+      ]
+    }
+  ]
+}

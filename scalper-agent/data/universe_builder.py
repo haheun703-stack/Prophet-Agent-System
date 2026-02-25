@@ -164,7 +164,7 @@ def load_universe() -> dict:
     return {}
 
 
-def collect_daily_pykrx(codes: list, months: int = 6, force: bool = False):
+def collect_daily_pykrx(codes: list, months: int = 24, force: bool = False):
     """pykrx로 일봉 데이터 수집"""
     from pykrx import stock
 
@@ -206,7 +206,7 @@ def collect_daily_pykrx(codes: list, months: int = 6, force: bool = False):
     return collected
 
 
-def collect_all_universe(min_cap_억: int = 1000, months: int = 6, force: bool = False):
+def collect_all_universe(min_cap_억: int = 1000, months: int = 24, force: bool = False):
     """유니버스 빌드 + 전체 데이터 수집"""
     # 1. 유니버스 빌드
     universe = build_universe(min_cap_억)
@@ -335,7 +335,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="유니버스 빌더")
     parser.add_argument("--min-cap", type=int, default=1000, help="최소 시총 (억원, 기본 1000=천억)")
     parser.add_argument("--force", action="store_true", help="캐시 무시")
-    parser.add_argument("--months", type=int, default=6, help="수집 기간 (월)")
+    parser.add_argument("--months", type=int, default=24, help="수집 기간 (월)")
     parser.add_argument("--build-only", action="store_true", help="유니버스만 빌드 (수집X)")
     args = parser.parse_args()
 

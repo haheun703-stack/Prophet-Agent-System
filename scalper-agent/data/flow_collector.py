@@ -41,7 +41,7 @@ def _ensure_dirs():
 
 def collect_investor_flow(
     codes: List[str],
-    months: int = 6,
+    months: int = 24,
     force: bool = False,
 ) -> Dict[str, pd.DataFrame]:
     """투자자별 순매수 금액+수량 수집 (pykrx)
@@ -112,7 +112,7 @@ def collect_investor_flow(
 
 def collect_foreign_exhaustion(
     codes: List[str],
-    months: int = 6,
+    months: int = 24,
     force: bool = False,
 ) -> Dict[str, pd.DataFrame]:
     """외국인 보유비율(소진율) 수집
@@ -171,7 +171,7 @@ def collect_foreign_exhaustion(
 
 def collect_short_balance(
     codes: List[str],
-    months: int = 6,
+    months: int = 24,
     force: bool = False,
 ) -> Dict[str, pd.DataFrame]:
     """공매도 잔고 수집
@@ -228,7 +228,7 @@ def collect_short_balance(
 
 def collect_short_volume(
     codes: List[str],
-    months: int = 6,
+    months: int = 24,
     force: bool = False,
 ) -> Dict[str, pd.DataFrame]:
     """공매도 거래량/거래대금 수집
@@ -280,7 +280,7 @@ def collect_short_volume(
 
 def collect_all_flow(
     codes: List[str] = None,
-    months: int = 6,
+    months: int = 24,
     force: bool = False,
 ):
     """전체 수급 데이터 수집"""
@@ -369,4 +369,4 @@ if __name__ == "__main__":
         "028260", "032830", "035420", "035720", "066570",
     ]
 
-    collect_all_flow(codes=top_codes, months=6, force=False)
+    collect_all_flow(codes=top_codes, months=24, force=False)
