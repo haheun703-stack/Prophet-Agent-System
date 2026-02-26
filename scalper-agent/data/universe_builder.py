@@ -50,6 +50,51 @@ def _find_latest_trading_day():
     return today.strftime("%Y%m%d")
 
 
+def _build_sector_mapping(date: str) -> dict:
+    """pykrx 업종지수 → 종목코드 섹터 매핑 생성
+
+    Returns:
+        {code: sector_name}  예: {"005930": "전기전자", "035420": "일반서비스"}
+    """
+    from pykrx import stock
+
+    # KOSPI 업종지수 (1005~1026)
+    KOSPI_SECTORS = {
+        "1005": "음식료", "1006": "섬유의류", "1007": "종이목재",
+        "1008": "화학", "1009": "제약", "1010": "비금속",
+        "1011": "금속", "1012": "기계장비", "1013": "전기전자",
+        "1014": "의료정밀", "1015": "운송장비", "1016": "유통",
+        "1017": "전기가스", "1018": "건설", "1019": "운송창고",
+        "1020": "통신", "1021": "금융", "1024": "증권",
+        "1025": "보험", "1026": "일반서비스",
+    }
+    # KOSDAQ 업종지수 (2012~2077)
+    KOSDAQ_SECTORS = {
+        "2012": "일반서비스", "2026": "건설", "2027": "유통",
+        "2029": "운송창고", "2031": "금융", "2037": "오락문화",
+        "2056": "음식료", "2058": "섬유의류", "2062": "종이목재",
+        "2063": "출판매체", "2065": "화학", "2066": "제약",
+        "2067": "비금속", "2068": "금속", "2070": "기계장비",
+        "2072": "전기전자", "2074": "의료정밀", "2075": "운송장비",
+        "2077": "기타제조", "2114": "통신", "2118": "IT서비스",
+    }
+
+    mapping = {}
+    all_sectors = {**KOSPI_SECTORS, **KOSDAQ_SECTORS}
+
+    for idx_code, sector_name in all_sectors.items():
+        try:
+            codes = stock.get_index_portfolio_deposit_file(idx_code, date)
+            for c in codes:
+                if c not in mapping:  # 첫 매핑 우선
+                    mapping[c] = sector_name
+        except Exception:
+            continue
+
+    print(f"  섹터 매핑: {len(mapping)}종목 완료")
+    return mapping
+
+
 def build_universe(min_cap_억: int = 1000) -> dict:
     """시총 기준 유니버스 자동 생성
 
@@ -89,6 +134,9 @@ def build_universe(min_cap_억: int = 1000) -> dict:
         except Exception:
             continue
 
+    # 섹터 매핑 (KRX 업종지수 기반)
+    sector_map = _build_sector_mapping(date)
+
     # 스팩/리츠 제거 (우선주는 포함 — 미래에셋증권우 같은 유동성 높은 우선주 포착용)
     exclude_keywords = ["스팩", "SPAC", "리츠"]
     universe = {}
@@ -127,6 +175,7 @@ def build_universe(min_cap_억: int = 1000) -> dict:
             "market": market,
             "suffix": suffix,
             "mkt_code": mkt_code,
+            "sector": sector_map.get(code, "기타"),
             "cap_억": int(cap_억),
             "volume": int(vol),
             "per": round(per_val, 1),

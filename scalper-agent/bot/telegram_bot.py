@@ -10,6 +10,7 @@ Body Hunter v3 텔레그램 봇
 
 import os
 import sys
+import time
 import asyncio
 import logging
 from pathlib import Path
@@ -52,6 +53,7 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         ["스윙스캔", "이상거래", "스캔"],
         ["건전성", "이벤트", "워치리스트"],
+        ["해외이벤트", "종목선정", "MACD스캔"],
         ["현재잔고", "체결내역", "포트폴리오"],
         ["시작", "정지", "상태"],
         ["유니버스", "시나리오", "시그널"],
@@ -70,6 +72,9 @@ HELP_TEXT = """
   이상거래 — 이상거래 감지기 (조용한 매집/큰손 포착)
   건전성 — 시장 수급 건전성 진단
   이벤트 — DART+뉴스 이벤트 감지
+  해외이벤트 — 해외 실적발표/경제지표 D-3 알림
+  종목선정 — 7팩터 스윙 종목 선정 (TOP 10)
+  MACD스캔 — MACD 제로선 크로스 + 수급폭발 스캔
   스윙 삼성전자 — 개별 종목 스윙 분석
   워치리스트 — 최근 스윙 워치리스트
 
@@ -1004,6 +1009,57 @@ class BodyHunterBot:
             logger.error(f"이벤트 감지 실패: {e}", exc_info=True)
             await update.message.reply_text(f"❌ 이벤트 감지 실패: {e}")
 
+    async def cmd_global_event(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """해외 이벤트 캘린더 (실적발표 + 경제지표 D-3)"""
+        if not self._is_authorized(update):
+            return
+        await update.message.reply_text("🌍 해외 이벤트 스캔중... (30초~1분)")
+
+        try:
+            from data.global_event_calendar import scan_global_events, format_telegram_message
+            result = await asyncio.to_thread(scan_global_events)
+            msg = format_telegram_message(result)
+            for chunk in _split_message(msg):
+                await update.message.reply_text(chunk)
+        except Exception as e:
+            logger.error(f"해외 이벤트 실패: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ 해외 이벤트 실패: {e}")
+
+    async def cmd_swing_pick(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """스윙 종목 선정 (6팩터 스코어링 TOP N)"""
+        if not self._is_authorized(update):
+            return
+        await update.message.reply_text("📊 스윙 종목 선정중... (1~2분)")
+
+        try:
+            from data.swing_picker import run_picker, format_telegram_message as fmt_swing
+            result = await asyncio.to_thread(run_picker)
+            msg = fmt_swing(result)
+            for chunk in _split_message(msg):
+                await update.message.reply_text(chunk)
+        except Exception as e:
+            logger.error(f"종목 선정 실패: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ 종목 선정 실패: {e}")
+
+    async def cmd_macd_scan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """MACD 제로선 크로스 + 수급폭발 스캔"""
+        if not self._is_authorized(update):
+            return
+        await update.message.reply_text("MACD 제로선 크로스 스캔중... (1~2분)")
+
+        try:
+            from strategies.macd_zero_scanner import (
+                run_daily_scan,
+                format_telegram_message as fmt_macd,
+            )
+            result = await asyncio.to_thread(run_daily_scan)
+            msg = fmt_macd(result)
+            for chunk in _split_message(msg):
+                await update.message.reply_text(chunk)
+        except Exception as e:
+            logger.error(f"MACD 스캔 실패: {e}", exc_info=True)
+            await update.message.reply_text(f"MACD 스캔 실패: {e}")
+
     # ═══════════════════════════════════════
     #  시나리오 (매크로 테마)
     # ═══════════════════════════════════════
@@ -1154,6 +1210,9 @@ class BodyHunterBot:
             r"^이벤트$": self.cmd_event_scan,
             r"^워치리스트$": self.cmd_watchlist,
             r"^건전성$": self.cmd_market_health,
+            r"^해외이벤트$": self.cmd_global_event,
+            r"^종목선정$": self.cmd_swing_pick,
+            r"^MACD스캔$": self.cmd_macd_scan,
             r"^시나리오$": self.cmd_scenario_list,
         }
 
@@ -1273,6 +1332,18 @@ class BodyHunterBot:
         jq.run_daily(self._job_record_signals, time=dtime(16, 30))
         logger.info("일간 시그널 기록 등록: 16:30")
 
+        # 해외 이벤트 캘린더 스캔 (08:00 — 장 전 D-3 알림)
+        jq.run_daily(self._job_global_event_scan, time=dtime(8, 0))
+        logger.info("해외 이벤트 스캔 등록: 08:00")
+
+        # 스윙 종목 선정 (16:35 — 시그널 기록 후)
+        jq.run_daily(self._job_swing_picker, time=dtime(16, 35))
+        logger.info("스윙 종목 선정 등록: 16:35")
+
+        # MACD 제로선 크로스 스캔 (16:40 — 일봉+수급 수집 후)
+        jq.run_daily(self._job_macd_scan, time=dtime(16, 40))
+        logger.info("MACD 크로스 스캔 등록: 16:40")
+
     async def _job_start_tick_polling(self, context):
         """장 시작 시 체결 스냅샷 폴링 시작 (백그라운드 스레드)"""
         from datetime import date
@@ -1346,32 +1417,61 @@ class BodyHunterBot:
             )
 
     async def _job_collect_daily(self, context):
-        """장마감 후 일봉(KIS) + 수급(pykrx) 데이터 수집"""
+        """장마감 후 일봉(pykrx+KIS) + 수급(pykrx) 데이터 수집
+
+        force=True로 캐시 무시 — 당일 데이터 확실히 갱신
+        """
         from datetime import date
         if date.today().weekday() >= 5:
             return
         logger.info("일봉+수급 자동 수집 시작...")
         chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        t0 = time.time()
 
-        # 1. 일봉 (KIS API)
+        # 1-A. 일봉 pykrx (핵심 — 종가/시가/고가/저가/거래량)
+        pykrx_cnt = 0
+        try:
+            from data.universe_builder import collect_daily_pykrx
+            from data.kis_collector import UNIVERSE
+
+            codes = list(UNIVERSE.keys())
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"📈 일봉+수급 수집 시작: {len(codes)}종목 (force=True)",
+            )
+
+            pykrx_cnt = await asyncio.to_thread(
+                collect_daily_pykrx, codes, 24, True
+            )
+            logger.info(f"pykrx 일봉 수집 완료: {pykrx_cnt}종목")
+
+        except Exception as e:
+            logger.error(f"pykrx 일봉 수집 실패: {e}")
+            await context.bot.send_message(
+                chat_id=chat_id, text=f"⚠️ pykrx 일봉 실패: {str(e)[:200]}"
+            )
+
+        # 1-B. 일봉 KIS API (보조 — 분봉 병합 등)
+        kis_cnt = 0
         try:
             from data.kis_collector import collect_daily_kis, UNIVERSE
 
             results = await asyncio.to_thread(
-                collect_daily_kis, list(UNIVERSE.keys()), 24, False
+                collect_daily_kis, list(UNIVERSE.keys()), 24, True
             )
+            kis_cnt = len(results) if isinstance(results, dict) else results
 
-            msg = f"📈 일봉 수집 완료: {len(results)}/{len(UNIVERSE)}종목"
-            await context.bot.send_message(chat_id=chat_id, text=msg)
-            logger.info(f"일봉 수집 완료: {len(results)}종목")
+            logger.info(f"KIS 일봉 수집 완료: {kis_cnt}종목")
 
         except Exception as e:
-            logger.error(f"일봉 수집 실패: {e}")
-            await context.bot.send_message(
-                chat_id=chat_id, text=f"⚠️ 일봉 수집 실패: {str(e)[:200]}"
-            )
+            logger.error(f"KIS 일봉 수집 실패: {e}")
 
-        # 2. 수급 데이터 (pykrx — 투자자순매수, 외인소진율, 공매도)
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"📈 일봉 수집 완료: pykrx={pykrx_cnt} / KIS={kis_cnt}",
+        )
+
+        # 2. 수급 데이터 (pykrx — 투자자순매수, 외인소진율, 공매도) force=True
         try:
             from data.kis_collector import UNIVERSE
             from data.flow_collector import (
@@ -1380,19 +1480,22 @@ class BodyHunterBot:
             )
             codes = list(UNIVERSE.keys())
 
-            await context.bot.send_message(
-                chat_id=chat_id, text=f"📊 수급 데이터 수집 시작: {len(codes)}종목"
-            )
+            r1 = await asyncio.to_thread(collect_investor_flow, codes, 24, True)
+            r2 = await asyncio.to_thread(collect_foreign_exhaustion, codes, 24, True)
+            r3 = await asyncio.to_thread(collect_short_balance, codes, 24, True)
+            r4 = await asyncio.to_thread(collect_short_volume, codes, 24, True)
 
-            await asyncio.to_thread(collect_investor_flow, codes, 24, False)
-            await asyncio.to_thread(collect_foreign_exhaustion, codes, 24, False)
-            await asyncio.to_thread(collect_short_balance, codes, 24, False)
-            await asyncio.to_thread(collect_short_volume, codes, 24, False)
-
+            elapsed = int(time.time() - t0)
+            cnt = (len(r1), len(r2), len(r3), len(r4))
             await context.bot.send_message(
-                chat_id=chat_id, text="📊 수급 데이터 수집 완료 (투자자+외인+공매도)"
+                chat_id=chat_id,
+                text=(
+                    f"📊 수급 수집 완료 ({elapsed}초)\n"
+                    f"  투자자: {cnt[0]} | 외인소진: {cnt[1]}\n"
+                    f"  공매도잔고: {cnt[2]} | 공매도거래량: {cnt[3]}"
+                ),
             )
-            logger.info("수급 수집 완료")
+            logger.info(f"수급 수집 완료: {cnt}")
 
         except Exception as e:
             logger.error(f"수급 수집 실패: {e}")
@@ -1462,6 +1565,87 @@ class BodyHunterBot:
             logger.error(f"시그널 기록 실패: {e}")
             await context.bot.send_message(
                 chat_id=chat_id, text=f"⚠️ 시그널 기록 실패: {str(e)[:200]}"
+            )
+
+    async def _job_global_event_scan(self, context):
+        """해외 이벤트 캘린더 스캔 (08:00 — D-3 알림)"""
+        from datetime import date
+        if date.today().weekday() >= 5:
+            return
+
+        logger.info("해외 이벤트 캘린더 스캔 시작...")
+        chat_id = os.getenv("TELEGRAM_CHAT_ID")
+
+        try:
+            from data.global_event_calendar import scan_global_events, format_telegram_message
+            result = await asyncio.to_thread(scan_global_events)
+            msg = format_telegram_message(result)
+
+            for chunk in _split_message(msg):
+                await context.bot.send_message(chat_id=chat_id, text=chunk)
+
+            logger.info("해외 이벤트 스캔 완료")
+
+        except Exception as e:
+            logger.error(f"해외 이벤트 스캔 실패: {e}", exc_info=True)
+            await context.bot.send_message(
+                chat_id=chat_id, text=f"⚠️ 해외 이벤트 스캔 실패: {str(e)[:200]}"
+            )
+
+    async def _job_swing_picker(self, context):
+        """스윙 종목 선정 (16:35 — 시그널 기록 후)"""
+        from datetime import date
+        if date.today().weekday() >= 5:
+            return
+
+        logger.info("스윙 종목 선정 시작...")
+        chat_id = os.getenv("TELEGRAM_CHAT_ID")
+
+        try:
+            from data.swing_picker import run_picker, format_telegram_message as fmt_swing
+            result = await asyncio.to_thread(run_picker)
+            msg = fmt_swing(result)
+
+            for chunk in _split_message(msg):
+                await context.bot.send_message(chat_id=chat_id, text=chunk)
+
+            n = len(result.get("candidates", []))
+            logger.info(f"스윙 종목 선정 완료: {n}종목")
+
+        except Exception as e:
+            logger.error(f"스윙 종목 선정 실패: {e}", exc_info=True)
+            await context.bot.send_message(
+                chat_id=chat_id, text=f"⚠️ 스윙 종목 선정 실패: {str(e)[:200]}"
+            )
+
+    async def _job_macd_scan(self, context):
+        """MACD 제로선 크로스 스캔 (16:40 — 일봉+수급 수집 후)"""
+        from datetime import date
+        if date.today().weekday() >= 5:
+            return
+
+        logger.info("MACD 크로스 스캔 시작...")
+        chat_id = os.getenv("TELEGRAM_CHAT_ID")
+
+        try:
+            from strategies.macd_zero_scanner import (
+                run_daily_scan,
+                format_telegram_message as fmt_macd,
+            )
+            result = await asyncio.to_thread(run_daily_scan)
+            msg = fmt_macd(result)
+
+            for chunk in _split_message(msg):
+                await context.bot.send_message(chat_id=chat_id, text=chunk)
+
+            p1 = len(result.get("phase1_new", []))
+            p2 = len(result.get("phase2_entries", []))
+            logger.info(f"MACD 스캔 완료: 신규{p1} 진입{p2}")
+
+        except Exception as e:
+            logger.error(f"MACD 스캔 실패: {e}", exc_info=True)
+            await context.bot.send_message(
+                chat_id=chat_id, text=f"MACD 스캔 실패: {str(e)[:200]}"
             )
 
     async def _error_handler(self, update, context):
