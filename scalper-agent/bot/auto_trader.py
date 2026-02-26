@@ -58,28 +58,43 @@ class AutoTrader:
     # ═══════════════════════════════════════
 
     async def job_morning_scan(self, context):
-        """아침 5D 스캔 → 자동 매수 (JobQueue 호출)"""
-        if not self.is_running:
+        """아침 5D 스캔 → 리포트 전송 (항상) + 자동 매수 (is_running일 때만)
+
+        자동매매 OFF 상태에서도 스캔 리포트는 텔레그램으로 전송됨.
+        """
+        from datetime import date
+        if date.today().weekday() >= 5:
             return
 
+        # _send_alert이 없으면 context에서 직접 전송
+        chat_id = None
+        if not self._send_alert:
+            import os
+            chat_id = os.getenv("TELEGRAM_CHAT_ID")
+
+        async def _send(text):
+            if self._send_alert:
+                await self._send_alert(text)
+            elif chat_id:
+                await context.bot.send_message(chat_id=chat_id, text=text)
+
         logger.info("아침 5D 스캔 시작")
-        await self._alert("🌅 아침 5D 스캔 시작...")
+        await _send("🌅 아침 5D 스캔 시작...")
 
         try:
             candidates = await asyncio.to_thread(self._scan_and_filter)
         except Exception as e:
             logger.error(f"스캔 실패: {e}")
-            await self._alert(f"❌ 스캔 실패: {e}")
+            await _send(f"❌ 스캔 실패: {e}")
             return
 
         if not candidates:
-            await self._alert("스캔 결과: 매수 후보 없음")
+            await _send("스캔 결과: 매수 후보 없음")
             return
 
-        # 매수 후보 리포트
+        # 매수 후보 리포트 (항상 전송)
         lines = ["🎯 매수 후보"]
         for f in candidates:
-            name = f.score.code
             from bot.kis_trader import CODE_TO_NAME
             name = CODE_TO_NAME.get(f.score.code, f.score.code)
             lines.append(
@@ -87,9 +102,15 @@ class AutoTrader:
                 f"5D:{f.stability_grade}({f.stability.stability_score:.0f})"
             )
 
-        await self._alert("\n".join(lines))
+        if not self.is_running:
+            lines.append("\n⏸ 자동매매 OFF — 리포트만 전송")
 
-        # 자동 매수 실행
+        await _send("\n".join(lines))
+
+        # 자동 매수 실행 (is_running일 때만)
+        if not self.is_running:
+            return
+
         bot_conf = self.config.get("bot", {})
         max_pos = bot_conf.get("max_auto_positions", 3)
         buy_amount = bot_conf.get("auto_buy_amount", 500000)
@@ -99,7 +120,7 @@ class AutoTrader:
         slots = max_pos - current_positions
 
         if slots <= 0:
-            await self._alert(f"보유 종목 {current_positions}개 — 추가 매수 불가")
+            await _send(f"보유 종목 {current_positions}개 — 추가 매수 불가")
             return
 
         bought = 0
@@ -123,11 +144,11 @@ class AutoTrader:
                         "take_profit": int(cp * (1 + tp_pct)),
                     }
 
-                await self._alert(f"✅ 자동 매수: {result.get('message')}")
+                await _send(f"✅ 자동 매수: {result.get('message')}")
             else:
-                await self._alert(f"❌ 매수 실패 {code}: {result.get('message')}")
+                await _send(f"❌ 매수 실패 {code}: {result.get('message')}")
 
-        await self._alert(f"아침 스캔 완료: {bought}/{len(candidates[:slots])} 매수")
+        await _send(f"아침 스캔 완료: {bought}/{len(candidates[:slots])} 매수")
 
     async def job_monitor(self, context):
         """포지션 감시 — 손절/익절 체크 (JobQueue 반복 호출)"""

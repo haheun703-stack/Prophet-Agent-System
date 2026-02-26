@@ -1346,13 +1346,14 @@ class BodyHunterBot:
             )
 
     async def _job_collect_daily(self, context):
-        """장마감 후 일봉 + 수급 데이터 수집"""
+        """장마감 후 일봉(KIS) + 수급(pykrx) 데이터 수집"""
         from datetime import date
         if date.today().weekday() >= 5:
             return
-        logger.info("일봉 자동 수집 시작...")
+        logger.info("일봉+수급 자동 수집 시작...")
         chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
+        # 1. 일봉 (KIS API)
         try:
             from data.kis_collector import collect_daily_kis, UNIVERSE
 
@@ -1368,6 +1369,35 @@ class BodyHunterBot:
             logger.error(f"일봉 수집 실패: {e}")
             await context.bot.send_message(
                 chat_id=chat_id, text=f"⚠️ 일봉 수집 실패: {str(e)[:200]}"
+            )
+
+        # 2. 수급 데이터 (pykrx — 투자자순매수, 외인소진율, 공매도)
+        try:
+            from data.kis_collector import UNIVERSE
+            from data.flow_collector import (
+                collect_investor_flow, collect_foreign_exhaustion,
+                collect_short_balance, collect_short_volume,
+            )
+            codes = list(UNIVERSE.keys())
+
+            await context.bot.send_message(
+                chat_id=chat_id, text=f"📊 수급 데이터 수집 시작: {len(codes)}종목"
+            )
+
+            await asyncio.to_thread(collect_investor_flow, codes, 24, False)
+            await asyncio.to_thread(collect_foreign_exhaustion, codes, 24, False)
+            await asyncio.to_thread(collect_short_balance, codes, 24, False)
+            await asyncio.to_thread(collect_short_volume, codes, 24, False)
+
+            await context.bot.send_message(
+                chat_id=chat_id, text="📊 수급 데이터 수집 완료 (투자자+외인+공매도)"
+            )
+            logger.info("수급 수집 완료")
+
+        except Exception as e:
+            logger.error(f"수급 수집 실패: {e}")
+            await context.bot.send_message(
+                chat_id=chat_id, text=f"⚠️ 수급 수집 실패: {str(e)[:200]}"
             )
 
     async def _job_rebuild_universe(self, context):
