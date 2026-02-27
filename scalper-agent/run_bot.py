@@ -1,19 +1,26 @@
 # -*- coding: utf-8 -*-
 """
-Body Hunter v3 텔레그램 봇 실행
-================================
-python run_bot.py
+Body Hunter v4 텔레그램 봇 실행 (자동 재시작)
+==============================================
+python run_bot.py          # 일반 실행 (크래시 시 자동 재시작)
+python run_bot.py --once   # 1회 실행 (재시작 없음)
 """
 
 import sys
 import os
 import io
+import time
 import logging
+import traceback
 from pathlib import Path
 from datetime import datetime
 
 # Windows UTF-8
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+if sys.stdout and hasattr(sys.stdout, 'buffer'):
+    try:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+    except Exception:
+        pass
 
 # 프로젝트 경로
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -23,11 +30,21 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 import yaml
 
+# 자동 재시작 설정
+MAX_RESTARTS = 50          # 최대 재시작 횟수 (하루)
+RESTART_DELAY_SEC = 30     # 재시작 대기 시간 (초)
+CRASH_LOG = Path(__file__).parent / "logs" / "crash.log"
+
 
 def setup_logging():
     log_dir = Path(__file__).parent / "logs"
     log_dir.mkdir(exist_ok=True)
     today = datetime.now().strftime("%Y%m%d")
+
+    # 기존 핸들러 제거 (재시작 시 중복 방지)
+    root = logging.getLogger()
+    for h in root.handlers[:]:
+        root.removeHandler(h)
 
     logging.basicConfig(
         level=logging.INFO,
@@ -74,13 +91,14 @@ def verify_kis():
     return True
 
 
-def main():
+def _run_bot_once():
+    """봇 1회 실행 (크래시 시 예외 전파)"""
     setup_logging()
     logger = logging.getLogger("BotMain")
 
     print("=" * 50)
-    print("  🔮 Body Hunter v3 텔레그램 봇")
-    print("  5D 디스크법 + KIS 실매매")
+    print("  Body Hunter v4 텔레그램 봇")
+    print("  동적 목표가 + KIS 실매매")
     print(f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 50)
 
@@ -91,7 +109,7 @@ def main():
     ]
     missing = [k for k in required if not os.getenv(k)]
     if missing:
-        print(f"\n  ❌ 환경변수 누락: {', '.join(missing)}")
+        print(f"\n  환경변수 누락: {', '.join(missing)}")
         print("  .env 파일을 확인하세요")
         sys.exit(1)
 
@@ -100,7 +118,7 @@ def main():
 
     # KIS API 연결 테스트
     if not verify_kis():
-        print("  ⚠️ KIS API 연결 실패 — 조회 기능만 사용 가능")
+        print("  KIS API 연결 실패 — 조회 기능만 사용 가능")
 
     # config 로드
     config = load_config()
@@ -110,16 +128,61 @@ def main():
 
     bot = BodyHunterBot(config)
     logger.info("텔레그램 봇 시작")
-    print("  📡 텔레그램 봇 시작됨 — Ctrl+C로 종료")
+    print("  텔레그램 봇 시작됨 — Ctrl+C로 종료")
     print("  텔레그램에서 '도움말' 입력으로 명령어 확인\n")
 
-    try:
-        bot.run()
-    except KeyboardInterrupt:
-        print("\n  봇 종료됨")
-    except Exception as e:
-        logger.error(f"봇 치명적 오류: {e}")
-        print(f"\n  ❌ 봇 오류: {e}")
+    bot.run()  # 예외는 상위로 전파
+
+
+def main():
+    """자동 재시작 래퍼"""
+    once_mode = "--once" in sys.argv
+
+    if once_mode:
+        try:
+            _run_bot_once()
+        except KeyboardInterrupt:
+            print("\n  봇 종료됨")
+        except Exception as e:
+            print(f"\n  봇 오류: {e}")
+            sys.exit(1)
+        return
+
+    # ═══ 자동 재시작 모드 ═══
+    restart_count = 0
+
+    while restart_count < MAX_RESTARTS:
+        try:
+            _run_bot_once()
+            # 정상 종료 (run_polling이 끝남) → 재시작 필요 없음
+            break
+
+        except KeyboardInterrupt:
+            print("\n  봇 수동 종료됨")
+            break
+
+        except Exception as e:
+            restart_count += 1
+            tb = traceback.format_exc()
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            # 크래시 로그 기록
+            crash_msg = f"[{now}] 크래시 #{restart_count}: {e}\n{tb}\n{'='*60}\n"
+            try:
+                CRASH_LOG.parent.mkdir(exist_ok=True)
+                with open(CRASH_LOG, "a", encoding="utf-8") as f:
+                    f.write(crash_msg)
+            except Exception:
+                pass
+
+            print(f"\n  봇 크래시 #{restart_count}/{MAX_RESTARTS}: {e}")
+            print(f"  {RESTART_DELAY_SEC}초 후 자동 재시작...")
+
+            time.sleep(RESTART_DELAY_SEC)
+            print(f"  재시작 중...\n")
+
+    if restart_count >= MAX_RESTARTS:
+        print(f"\n  최대 재시작 횟수({MAX_RESTARTS}) 초과 — 봇 완전 종료")
         sys.exit(1)
 
 

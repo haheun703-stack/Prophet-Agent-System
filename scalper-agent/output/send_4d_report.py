@@ -208,6 +208,15 @@ def generate_report():
                 news_line += f" | {f.news_summary[:25]}"
             lines.append(news_line)
 
+        # 기준선
+        if f.baseline:
+            b = f.baseline
+            ic = f" \uAE30\uAD00\uC6D0\uAC00:{b.inst_cost:,.0f}" if b.inst_cost > 0 else ""
+            lines.append(
+                f"   \U0001F4CD SL:{b.invalidation:,.0f}({b.invalidation_source})"
+                f" TP1:{b.target_1:,.0f} TP2:{b.target_2:,.0f}{ic}"
+            )
+
         # 특이태그
         tags = _get_tags(f)
         if tags:

@@ -1,21 +1,27 @@
 # -*- coding: utf-8 -*-
 """
-스윙 종목 선정기 — 6팩터 멀티스코어링 + TOP N
+스윙 종목 선정기 — 7팩터 멀티스코어링 + TOP 5
 ===============================================
-매일 16:30 실행 → 내일 진입 후보 TOP 5~10 확정
+매일 16:30 실행 → 내일 진입 후보 TOP 5 확정
 → swing_candidates.json 저장 → 다음날 아침 스캔 대상
 
-6팩터:
-  ① 수급 (30%) — 외국인+기관 동반 순매수, 연속일
-  ② 기술 (25%) — 6D 스캔 등급 (supply_analyzer)
-  ③ 모멘텀 (15%) — 스캐너v3 점수 (STO+볼린저+거래량)
-  ④ 이벤트 (15%) — 해외캘린더 + DART 공시 가중치
-  ⑤ 변동성 (10%) — ATR% 적정 범위 (2~5% 선호)
-  ⑥ 밸류 (5%) — PER/PBR 저평가 가산
+7팩터:
+  ① 수급 (25%) — 외국인+기관 동반 순매수, 연속일
+  ② 기술 (20%) — MA정배열 + RSI + 거래량 등
+  ③ 괴리율 (20%) — 기관 매집원가 대비 현재가 위치
+  ④ 모멘텀 (10%) — STO+볼린저+등락률
+  ⑤ 이벤트 (10%) — 해외캘린더 + DART 공시 가중치
+  ⑥ 변동성 (10%) — ATR% 적정 범위 (2~5% 선호)
+  ⑦ 밸류 (5%) — PER/PBR 저평가 가산
+
+필터:
+  - 추세필터: MA20 위 + MA20 상승 중
+  - 과열필터: 10일 수익률 >25% 제외
+  - 전일급등필터: 전일 등락률 >10% 제외
 
 사용법:
-  python -m data.swing_picker                   # TOP 10 선정
-  python -m data.swing_picker --top 5           # TOP 5
+  python -m data.swing_picker                   # TOP 5 선정
+  python -m data.swing_picker --top 3           # TOP 3
   python -m data.swing_picker --telegram        # 텔레그램 전송
 """
 
@@ -54,7 +60,7 @@ WEIGHTS = {
     "value": 0.05,      # 밸류
 }
 
-TOP_N = 10
+TOP_N = 5
 MAX_SAME_SECTOR = 2
 
 
@@ -545,13 +551,18 @@ def pick_swing_candidates(
 
     print(f"  거래대금 필터: {len(filtered)}종목 (10억+)")
 
-    # 7팩터 스코어링
+    # 7팩터 스코어링 (추세+과열+전일급등 필터 포함)
     scored = []
+    _filtered_trend = 0
+    _filtered_overheat = 0
+    _filtered_dayjump = 0
     for i, code in enumerate(filtered):
         if (i + 1) % 100 == 0:
             print(f"    스코어링 {i+1}/{len(filtered)}...", flush=True)
 
         # ── 추세 필터: MA20 위 + 상승 중인 종목만 ──
+        # ── 과열 필터: 10일 수익률 >25% 제외 ──
+        # ── 전일 급등 필터: 전일 등락률 >10% 제외 ──
         try:
             _df = pd.read_csv(DAILY_DIR / f"{code}.csv", index_col=0, parse_dates=True)
             _c = _df["종가"].values.astype(float)
@@ -561,10 +572,24 @@ def pick_swing_candidates(
             _ma20_prev = _c[-25:-5].mean()  # 5일 전 MA20
             # 현재가 > MA20 이어야 함 (상승 추세)
             if _c[-1] < _ma20:
+                _filtered_trend += 1
                 continue
             # MA20 자체가 상승 중이어야 함 (추세 방향)
             if _ma20 < _ma20_prev:
+                _filtered_trend += 1
                 continue
+            # 과열 필터: 10일 수익률 >25% → 차익실현 리스크 높음
+            if len(_c) >= 11:
+                _ret10 = (_c[-1] / _c[-11] - 1) * 100
+                if _ret10 > 25:
+                    _filtered_overheat += 1
+                    continue
+            # 전일 급등 필터: 전일 등락률 >10% → 다음날 눌림 확률 높음
+            if len(_c) >= 2:
+                _ret1 = (_c[-1] / _c[-2] - 1) * 100
+                if _ret1 > 10:
+                    _filtered_dayjump += 1
+                    continue
         except Exception:
             continue
 
@@ -627,6 +652,11 @@ def pick_swing_candidates(
             "sl": sl,
             "tp": tp,
         })
+
+    print(f"  추세 필터 제외: {_filtered_trend}종목")
+    print(f"  과열 필터 제외: {_filtered_overheat}종목 (10일 >25%)")
+    print(f"  전일급등 필터 제외: {_filtered_dayjump}종목 (전일 >10%)")
+    print(f"  스코어링 통과: {len(scored)}종목")
 
     scored.sort(key=lambda x: -x["total_score"])
 
@@ -724,7 +754,7 @@ def format_telegram_message(result: Dict) -> str:
     lines.append("━" * 24)
     lines.append("⚠️ 아침 스캔에서 STRONG_BUY/BUY만 실제 진입")
     lines.append("⚠️ SL 도달시 즉시 손절 | D+2 미도달시 시간청산")
-    lines.append("Prophet 예언자 | 6팩터 스윙")
+    lines.append("Prophet 예언자 | 7팩터 스윙")
 
     return "\n".join(lines)
 

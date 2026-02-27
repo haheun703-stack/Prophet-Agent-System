@@ -89,6 +89,10 @@ for f in buy_list:
     per_str = f"PER:{f.per:.1f}" if f.per > 0 else "PER:적자"
     warn = f" ⚠{f.valuation_warning}" if f.valuation_warning else ""
     print(f"  → {name}({f.score.code}) {f.risk_label} | 3D:{f.score.grade}({f.score.total_score:.0f}) 4D:{f.momentum.signal}({f.momentum.momentum_score:.0f}) 5D:{energy} {tech} | 기관:{f.momentum.inst_streak:+d}일({f.momentum.inst_streak_amount:+.0f}억) | {per_str}{warn}")
+    if f.baseline:
+        b = f.baseline
+        ic = f"기관원가:{b.inst_cost:,.0f}" if b.inst_cost > 0 else ""
+        print(f"    📍 진입:{b.close:,.0f} SL:{b.invalidation:,.0f}({b.invalidation_source}) TP1:{b.target_1:,.0f} TP2:{b.target_2:,.0f} | {ic}")
 
 print(f"\n★ ENTER (진입대기): {len(enter_list)}개")
 for f in enter_list:
@@ -100,3 +104,7 @@ for f in enter_list:
     per_str = f"PER:{f.per:.1f}" if f.per > 0 else "PER:적자"
     warn = f" ⚠{f.valuation_warning}" if f.valuation_warning else ""
     print(f"  → {name}({f.score.code}) {f.risk_label} | 3D:{f.score.grade}({f.score.total_score:.0f}) 4D:{f.momentum.signal}({f.momentum.momentum_score:.0f}) 5D:{energy} {tech} | {per_str}{warn}")
+    if f.baseline:
+        b = f.baseline
+        ic = f"기관원가:{b.inst_cost:,.0f}" if b.inst_cost > 0 else ""
+        print(f"    📍 진입:{b.close:,.0f} SL:{b.invalidation:,.0f}({b.invalidation_source}) TP1:{b.target_1:,.0f} TP2:{b.target_2:,.0f} | {ic}")

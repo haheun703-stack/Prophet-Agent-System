@@ -337,6 +337,14 @@ class BodyHunterBot:
             if full.news_summary:
                 lines.append(f"  {full.news_summary}")
 
+        # 기준선 (SL/TP)
+        if full.baseline:
+            b = full.baseline
+            ic = f" 기관원가:{b.inst_cost:,.0f}" if b.inst_cost > 0 else ""
+            lines.append(f"\n📍 기준선 ({b.invalidation_source} 기반)")
+            lines.append(f"  SL: {b.invalidation:,.0f}원 | TP1: {b.target_1:,.0f}원 | TP2: {b.target_2:,.0f}원")
+            lines.append(f"  리스크: {b.risk_per_share:,.0f}원/주 ({b.atr_pct:.1f}% ATR){ic}")
+
         lines.append("")
         lines.append(f"기관: {m.inst_streak:+d}일 ({m.inst_streak_amount:+.0f}억)")
         lines.append(f"외인변곡: {m.foreign_inflection}")
@@ -1417,9 +1425,11 @@ class BodyHunterBot:
             )
 
     async def _job_collect_daily(self, context):
-        """장마감 후 일봉(pykrx+KIS) + 수급(pykrx) 데이터 수집
+        """장마감 후 일봉(pykrx) + 수급(pykrx) 데이터 수집
 
         force=True로 캐시 무시 — 당일 데이터 확실히 갱신
+        NOTE: KIS 일봉은 영문 컬럼(open/close)이라 한글 컬럼(시가/종가) CSV를
+              덮어쓰는 버그가 있어 제거함. pykrx만 사용.
         """
         from datetime import date
         if date.today().weekday() >= 5:
@@ -1428,7 +1438,7 @@ class BodyHunterBot:
         chat_id = os.getenv("TELEGRAM_CHAT_ID")
         t0 = time.time()
 
-        # 1-A. 일봉 pykrx (핵심 — 종가/시가/고가/저가/거래량)
+        # 1. 일봉 pykrx (한글 컬럼: 시가/고가/저가/종가/거래량)
         pykrx_cnt = 0
         try:
             from data.universe_builder import collect_daily_pykrx
@@ -1451,24 +1461,9 @@ class BodyHunterBot:
                 chat_id=chat_id, text=f"⚠️ pykrx 일봉 실패: {str(e)[:200]}"
             )
 
-        # 1-B. 일봉 KIS API (보조 — 분봉 병합 등)
-        kis_cnt = 0
-        try:
-            from data.kis_collector import collect_daily_kis, UNIVERSE
-
-            results = await asyncio.to_thread(
-                collect_daily_kis, list(UNIVERSE.keys()), 24, True
-            )
-            kis_cnt = len(results) if isinstance(results, dict) else results
-
-            logger.info(f"KIS 일봉 수집 완료: {kis_cnt}종목")
-
-        except Exception as e:
-            logger.error(f"KIS 일봉 수집 실패: {e}")
-
         await context.bot.send_message(
             chat_id=chat_id,
-            text=f"📈 일봉 수집 완료: pykrx={pykrx_cnt} / KIS={kis_cnt}",
+            text=f"📈 일봉 수집 완료: {pykrx_cnt}종목",
         )
 
         # 2. 수급 데이터 (pykrx — 투자자순매수, 외인소진율, 공매도) force=True

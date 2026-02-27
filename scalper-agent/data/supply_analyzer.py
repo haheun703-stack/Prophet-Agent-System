@@ -250,6 +250,28 @@ class TechHealth:
 
 
 @dataclass
+class BaselineLevels:
+    """기준선 — 6D 스캔의 가격 맥락 (WHERE to enter)"""
+    close: float              # 현재 종가
+    atr_14: float             # ATR(14) 원화
+    atr_pct: float            # ATR% (close 대비)
+
+    # 기준 가격
+    entry_zone_low: float     # 진입 하단 (close - ATR*0.3)
+    entry_zone_high: float    # 진입 상단 (close + ATR*0.3)
+    invalidation: float       # 무효화선 (이 가격 깨지면 시나리오 폐기)
+    target_1: float           # 1차 목표 (2R)
+    target_2: float           # 2차 목표 (3R)
+    risk_per_share: float     # 1주당 리스크 (원)
+
+    # 근거 레벨
+    nearest_support: float = 0.0    # 가장 가까운 지지선
+    nearest_resistance: float = 0.0 # 가장 가까운 저항선
+    inst_cost: float = 0.0          # 기관 매집원가 (스마트머니 방어선)
+    invalidation_source: str = ""   # "ATR" / "SUPPORT" / "INST_COST"
+
+
+@dataclass
 class SupplyFull:
     """3D + 4D + 5D 통합 수급 판정"""
     score: SupplyScore                          # 3D 정적 등급
@@ -261,6 +283,7 @@ class SupplyFull:
     tech_health: Optional['TechHealth'] = None   # 6D 기술건강도
     news_score: float = 0.0                       # 뉴스 감성점수 (-10~+10)
     news_summary: str = ""                        # 뉴스 한줄 요약
+    baseline: Optional['BaselineLevels'] = None   # 기준선 (진입/무효화/목표)
 
     @property
     def grade_3d(self) -> str:
@@ -1077,6 +1100,150 @@ class SupplyAnalyzer:
         )
 
     # ============================================================
+    #  기준선 (BaselineLevels) — 진입/무효화/목표가
+    # ============================================================
+
+    def _calc_inst_cost(self, code: str) -> float:
+        """기관+외인 매집원가 (20일 VWAP, 순매수 양수일만)"""
+        inv_df = self._cache_investor.get(code)
+        day_df = self._cache_daily.get(code)
+        if inv_df is None or day_df is None:
+            return 0.0
+        if len(inv_df) < 20 or len(day_df) < 20:
+            return 0.0
+
+        try:
+            close_20 = day_df["close"].values[-20:].astype(float)
+
+            # 기관_수량 또는 기관_금액 사용
+            if "기관_수량" in inv_df.columns:
+                inst = inv_df["기관_수량"].values[-20:].astype(float)
+            elif "기관_금액" in inv_df.columns:
+                inst = inv_df["기관_금액"].values[-20:].astype(float)
+            else:
+                return 0.0
+
+            if "외국인_수량" in inv_df.columns:
+                frgn = inv_df["외국인_수량"].values[-20:].astype(float)
+            elif "외국인_금액" in inv_df.columns:
+                frgn = inv_df["외국인_금액"].values[-20:].astype(float)
+            else:
+                frgn = np.zeros(20)
+
+            # 길이 맞추기 (daily와 flow 날짜 수 다를 수 있음)
+            min_len = min(len(close_20), len(inst), len(frgn))
+            close_20 = close_20[-min_len:]
+            net_qty = (inst[-min_len:] + frgn[-min_len:])
+
+            buy_mask = net_qty > 0
+            if buy_mask.sum() < 3:
+                return 0.0
+
+            vwap = float(np.sum(close_20[buy_mask] * net_qty[buy_mask]) / np.sum(net_qty[buy_mask]))
+            return vwap
+        except Exception:
+            return 0.0
+
+    def calc_baseline(self, code: str, as_of: str = None) -> Optional[BaselineLevels]:
+        """기준선 계산 — ATR + 지지/저항 + 매집원가"""
+        self._load(code)
+        day_df = self._cache_daily.get(code)
+        if day_df is None or len(day_df) < 20:
+            return None
+
+        if as_of:
+            day_df = day_df[day_df.index <= pd.Timestamp(as_of)]
+            if len(day_df) < 20:
+                return None
+
+        close = float(day_df["close"].iloc[-1])
+        if close <= 0:
+            return None
+
+        # 1. ATR(14)
+        high = day_df["high"]
+        low = day_df["low"]
+        cl = day_df["close"]
+        prev_close = cl.shift(1)
+        tr1 = high - low
+        tr2 = (high - prev_close).abs()
+        tr3 = (low - prev_close).abs()
+        tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+        atr_val = float(tr.rolling(14).mean().iloc[-1])
+        if np.isnan(atr_val) or atr_val <= 0:
+            atr_val = float(tr.iloc[-14:].mean())
+        atr_pct = (atr_val / close) * 100
+
+        # 2. 지지/저항 (스윙 피봇)
+        nearest_support = 0.0
+        nearest_resistance = 0.0
+        lookback_df = day_df.tail(60)
+        if len(lookback_df) >= 10:
+            highs = lookback_df["high"].values
+            lows = lookback_df["low"].values
+            swing_highs = []
+            swing_lows = []
+            for i in range(2, len(highs) - 2):
+                if (highs[i] > highs[i-1] and highs[i] > highs[i-2] and
+                        highs[i] > highs[i+1] and highs[i] > highs[i+2]):
+                    swing_highs.append(float(highs[i]))
+                if (lows[i] < lows[i-1] and lows[i] < lows[i-2] and
+                        lows[i] < lows[i+1] and lows[i] < lows[i+2]):
+                    swing_lows.append(float(lows[i]))
+            supports = sorted([l for l in swing_lows if l < close], reverse=True)
+            resistances = sorted([h for h in swing_highs if h > close])
+            if supports:
+                nearest_support = supports[0]
+            if resistances:
+                nearest_resistance = resistances[0]
+
+        # 3. 기관 매집원가
+        inst_cost = self._calc_inst_cost(code)
+
+        # 4. 무효화선 결정 (3후보 중 가장 타이트한 걸 채택)
+        atr_sl = close - atr_val * 0.8
+        candidates = [(atr_sl, "ATR")]
+
+        if nearest_support > 0 and nearest_support < close:
+            support_sl = nearest_support * 0.99
+            candidates.append((support_sl, "SUPPORT"))
+
+        if inst_cost > 0 and inst_cost < close:
+            inst_cost_sl = inst_cost * 0.97
+            candidates.append((inst_cost_sl, "INST_COST"))
+
+        # 가장 높은(타이트한) SL 채택
+        best = max(candidates, key=lambda x: x[0])
+        invalidation = best[0]
+        inv_source = best[1]
+
+        # 최대 손실 -8% 캡
+        floor = close * 0.92
+        if invalidation < floor:
+            invalidation = floor
+            inv_source = "CAP_8%"
+
+        risk = close - invalidation
+        if risk <= 0:
+            risk = atr_val * 0.5  # fallback
+
+        return BaselineLevels(
+            close=close,
+            atr_14=atr_val,
+            atr_pct=atr_pct,
+            entry_zone_low=close - atr_val * 0.3,
+            entry_zone_high=close + atr_val * 0.3,
+            invalidation=invalidation,
+            target_1=close + risk * 2,
+            target_2=close + risk * 3,
+            risk_per_share=risk,
+            nearest_support=nearest_support,
+            nearest_resistance=nearest_resistance,
+            inst_cost=inst_cost,
+            invalidation_source=inv_source,
+        )
+
+    # ============================================================
     #  3D + 4D + 5D + 6D 통합 분석
     # ============================================================
 
@@ -1129,11 +1296,15 @@ class SupplyAnalyzer:
             except Exception as e:
                 logger.debug(f"뉴스 수집 실패 {code}: {e}")
 
+        # 기준선 (진입/무효화/목표)
+        baseline = self.calc_baseline(code, as_of)
+
         return SupplyFull(
             score=score, momentum=momentum, stability=stability,
             valuation_warning=val_warning, per=per_val, pbr=pbr_val,
             tech_health=tech,
             news_score=news_score, news_summary=news_summary,
+            baseline=baseline,
         )
 
     # ── 4D 내부 계산 함수들 ──────────────────────────
