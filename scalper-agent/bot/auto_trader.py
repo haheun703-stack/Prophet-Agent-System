@@ -41,6 +41,9 @@ class AutoTrader:
         self._send_alert: Optional[Callable] = None
         self._positions = {}  # {code: {entry_price, stop_loss, take_profit, target_state, ...}}
 
+        # 돌파 대기 워치리스트: {code: {name, resistance, avg_vol, sl, tp, ...}}
+        self._breakout_watch = {}
+
         # 모드: "day" or "swing"
         self.mode = config.get("bot", {}).get("trade_mode", "swing")
 
@@ -187,6 +190,7 @@ class AutoTrader:
 
         bought = 0
         skipped = 0
+        watching = 0
         for c in candidates[:slots]:
             code = c["code"]
             if code in self._positions:
@@ -217,7 +221,44 @@ class AutoTrader:
             except Exception as e:
                 logger.warning(f"진입필터 오류 {code}: {e} — 기본 매수")
                 actual_amount = buy_amount
+                entry_check = {"pass": True, "size_mult": 1.0}
 
+            # ── 저항대 감지: 고점 근접 시 돌파 대기 ──
+            try:
+                resistance = await asyncio.to_thread(
+                    self._detect_resistance, code
+                )
+                if resistance:
+                    res_price = resistance["resistance"]
+                    res_dist = resistance["distance_pct"]
+
+                    # 현재가가 저항대의 3% 이내 → 돌파 대기 모드
+                    if res_dist <= 3.0:
+                        watching += 1
+                        self._breakout_watch[code] = {
+                            "name": c["name"],
+                            "resistance": res_price,
+                            "avg_volume": resistance["avg_volume"],
+                            "buy_amount": actual_amount,
+                            "sl": c["sl"],
+                            "tp": c["tp"],
+                            "tp1_quick": c.get("tp1_quick", c["tp"]),
+                            "registered_at": datetime.now().strftime("%H:%M"),
+                            "premove_score": c["total_score"],
+                            "checks": 0,        # 모니터링 횟수
+                            "max_checks": 720,   # 최대 6시간 (30초 * 720)
+                        }
+                        await _send(
+                            f"👁 돌파 대기: {c['name']}({code})\n"
+                            f"   저항: {res_price:,}원 (현재가 대비 {res_dist:+.1f}%)\n"
+                            f"   조건: 종가 {res_price:,}원 돌파 + 거래량 1.5배\n"
+                            f"   30초마다 KIS API로 감시 중..."
+                        )
+                        continue  # 즉시 매수 안 하고 돌파 대기
+            except Exception as e:
+                logger.warning(f"저항대 감지 오류 {code}: {e} — 즉시 매수")
+
+            # ── 즉시 매수 (저항대 없거나 멀리 떨어진 경우) ──
             result = self.trader.safe_buy(code, actual_amount)
             if result.get("success"):
                 bought += 1
@@ -254,9 +295,185 @@ class AutoTrader:
                 await _send(f"❌ 매수 실패 {code}: {result.get('message')}")
 
         summary = f"아침 스캔 완료: {bought}매수"
+        if watching:
+            summary += f" / {watching}돌파대기"
         if skipped:
             summary += f" / {skipped}거부(차트필터)"
         await _send(summary)
+
+    # ═══════════════════════════════════════
+    #  저항대 감지 + 돌파 대기 매수
+    # ═══════════════════════════════════════
+
+    def _detect_resistance(self, code: str) -> dict | None:
+        """최근 N일 고점 기반 저항대 감지
+
+        Returns: {resistance, distance_pct, avg_volume} or None (저항 없음)
+        """
+        from pykrx import stock as pykrx_stock
+        from datetime import timedelta
+
+        try:
+            end = datetime.now().strftime("%Y%m%d")
+            start = (datetime.now() - timedelta(days=60)).strftime("%Y%m%d")
+            df = pykrx_stock.get_market_ohlcv(start, end, code)
+
+            if df is None or len(df) < 10:
+                return None
+
+            close = df["종가"].astype(float)
+            high = df["고가"].astype(float)
+            volume = df["거래량"].astype(float)
+            current = float(close.iloc[-1])
+
+            # 최근 20일 고점 (오늘 제외)
+            recent_high = float(high.iloc[-21:-1].max()) if len(high) > 21 else float(high.iloc[:-1].max())
+
+            # 평균 거래량 (20일)
+            avg_vol = float(volume.iloc[-20:].mean())
+
+            # 저항대까지 거리 (%)
+            dist_pct = (recent_high / current - 1) * 100
+
+            # 고점이 현재가 위에 있고, 5% 이내면 저항대
+            if 0 < dist_pct <= 5.0:
+                return {
+                    "resistance": int(recent_high),
+                    "distance_pct": round(dist_pct, 1),
+                    "avg_volume": int(avg_vol),
+                }
+
+            # 현재가가 고점 부근(위아래 3% 이내)이면 돌파 시도 중
+            if abs(dist_pct) <= 3.0:
+                return {
+                    "resistance": int(recent_high),
+                    "distance_pct": round(dist_pct, 1),
+                    "avg_volume": int(avg_vol),
+                }
+
+            return None  # 저항대 없음 (멀리 떨어짐)
+
+        except Exception as e:
+            logger.warning(f"저항대 감지 실패 {code}: {e}")
+            return None
+
+    async def _check_breakout_watch(self):
+        """돌파 대기 워치리스트 모니터링 (30초마다 job_monitor에서 호출)
+
+        돌파 조건:
+          1. 현재가 > 저항대 (종가 기준 돌파)
+          2. 당일 거래량 > 평균 거래량 * 1.3 (거래량 동반)
+        """
+        if not self._breakout_watch:
+            return
+
+        expired = []
+        for code, watch in list(self._breakout_watch.items()):
+            watch["checks"] += 1
+
+            # 최대 감시 시간 초과 → 만료
+            if watch["checks"] > watch["max_checks"]:
+                expired.append(code)
+                await self._alert(
+                    f"⏰ 돌파 대기 만료: {watch['name']}({code})\n"
+                    f"   {watch['resistance']:,}원 돌파 실패 — 오늘 매수 안 함"
+                )
+                continue
+
+            # 14:30 이후면 더 이상 안 삼 (장마감 가까움)
+            now = datetime.now()
+            if now.hour >= 14 and now.minute >= 30:
+                expired.append(code)
+                await self._alert(
+                    f"⏰ 돌파 대기 종료: {watch['name']}({code})\n"
+                    f"   14:30 이후 — 오늘 매수 안 함"
+                )
+                continue
+
+            # KIS API로 현재가 조회
+            try:
+                price_info = self.trader.fetch_price(code)
+                if not price_info.get("success"):
+                    continue
+
+                cp = price_info["current_price"]
+                today_vol = price_info["volume"]
+                today_high = price_info["high"]
+                resistance = watch["resistance"]
+                avg_vol = watch["avg_volume"]
+
+                # 돌파 조건 체크
+                vol_ratio = today_vol / avg_vol if avg_vol > 0 else 0
+                broke_resistance = cp > resistance
+                volume_confirm = vol_ratio >= 1.3
+
+                # 10분마다 상태 로그 (매 20회차 = 30초 * 20 = 10분)
+                if watch["checks"] % 20 == 0:
+                    logger.info(
+                        f"돌파감시 {watch['name']}: "
+                        f"현재{cp:,} vs 저항{resistance:,} | "
+                        f"거래량 {vol_ratio:.1f}x | "
+                        f"돌파{'O' if broke_resistance else 'X'} "
+                        f"거래량{'O' if volume_confirm else 'X'}"
+                    )
+
+                # ── 돌파 확인! → 매수 실행 ──
+                if broke_resistance and volume_confirm:
+                    buy_amount = watch["buy_amount"]
+                    result = self.trader.safe_buy(code, buy_amount)
+
+                    if result.get("success"):
+                        # 매수 성공 → 포지션 등록
+                        target_state = self._init_dynamic_target(
+                            code, watch["name"], cp
+                        )
+                        sl = target_state.dynamic_sl if target_state else watch["sl"]
+                        tp = target_state.dynamic_tp if target_state else watch["tp"]
+
+                        self._positions[code] = {
+                            "entry_price": cp,
+                            "stop_loss": sl,
+                            "take_profit": tp,
+                            "entry_date": datetime.now().strftime("%Y-%m-%d"),
+                            "name": watch["name"],
+                            "target_state": target_state,
+                        }
+
+                        try:
+                            rtm = self._get_rt_monitor()
+                            rtm.register_position(code, watch["name"], cp, sl, tp)
+                        except Exception:
+                            pass
+
+                        await self._alert(
+                            f"🚀 돌파 매수 성공!\n"
+                            f"   {watch['name']}({code}) @ {cp:,}원\n"
+                            f"   저항 {resistance:,}원 돌파 확인\n"
+                            f"   거래량 {vol_ratio:.1f}x (평균 대비)\n"
+                            f"   SL:{sl:,} TP:{tp:,}"
+                        )
+                    else:
+                        await self._alert(
+                            f"❌ 돌파 매수 실패: {watch['name']}({code})\n"
+                            f"   {result.get('message')}"
+                        )
+
+                    expired.append(code)
+
+                # ── 저항대 아래로 크게 하락 (-3%) → 오늘 포기 ──
+                elif cp < resistance * 0.97:
+                    expired.append(code)
+                    await self._alert(
+                        f"📉 돌파 포기: {watch['name']}({code})\n"
+                        f"   현재 {cp:,}원 — 저항대 대비 -3% 이탈"
+                    )
+
+            except Exception as e:
+                logger.error(f"돌파 감시 오류 {code}: {e}")
+
+        # 만료/완료 항목 제거
+        for code in expired:
+            self._breakout_watch.pop(code, None)
 
     async def _morning_day(self, context, _send):
         """데이 모드 아침 스캔: 기존 5D + 고정 SL/TP"""
@@ -325,9 +542,14 @@ class AutoTrader:
 
     async def job_monitor(self, context):
         """포지션 감시 — AI 4팩터 실시간 분석 (JobQueue 반복 호출)"""
-        if not self.is_running:
-            return
         if not self._is_market_hours():
+            return
+
+        # ── 돌파 대기 워치리스트 체크 (자동매매 ON/OFF 무관) ──
+        if self._breakout_watch:
+            await self._check_breakout_watch()
+
+        if not self.is_running:
             return
         if not self._positions:
             return
