@@ -1,13 +1,19 @@
 """
-강화 백테스트 v2 — 5가지 개선 적용
+강화 백테스트 v3 — 8가지 개선 적용
 ════════════════════════════════════
+v2 (5가지):
 1. BUY만 진입 (STRONG_BUY 제외 — 승률 48% vs 33%)
 2. 눌림목 진입 — 종가 진입 → 다음 2일 내 저가가 종가*0.98 이하면 그 가격으로 진입
 3. 분할 익절 — TP1에서 50% 청산 + 나머지 트레일링(SL=진입가, TP2까지)
 4. 보유일 컷오프 5일 (10일 → 5일)
 5. 사전감지 필터 — premove 신호 2개 이상인 종목만 진입
 
-+ 기존(v1) 대비 비교 결과 출력
+v3 추가 (3가지):
+6. INST_COST SL 제거 — 25% 승률, 유일한 마이너스 EV SL 유형
+7. 눌림목 진입 비활성화 — 종가 진입이 +6.36% vs 눌림목 +2.49%
+8. RSI 필터 — RSI 35~65 범위만 진입 (과열/과매도 제외)
+
++ v1/v2 대비 비교 결과 출력
 """
 import sys, os, warnings
 warnings.filterwarnings("ignore")
@@ -25,9 +31,14 @@ from data.universe_builder import load_universe
 # ── 설정 ──
 HOLD_DAYS = 5          # 개선4: 5일 컷오프
 TOP_N = 30
-PULLBACK_DAYS = 2      # 개선2: 눌림목 대기일
-PULLBACK_DEPTH = 0.98  # 개선2: 종가 대비 2% 눌림
-MIN_PREMOVE_SIGNALS = 2  # 개선5: 최소 사전감지 신호
+PULLBACK_ENABLED = True   # 눌림목 유지 (품질 필터 역할)
+PULLBACK_DAYS = 2
+PULLBACK_DEPTH = 0.98
+MIN_PREMOVE_SIGNALS = 3  # 개선5: 최소 사전감지 신호 (2→3 강화)
+EXCLUDE_SL_SOURCES = {"INST_COST"}  # 개선6: INST_COST SL만 제거 (25%승률)
+RSI_FILTER = False       # 개선8: 비활성화 (42건 제거 → 과도한 필터)
+RSI_MIN = 25
+RSI_MAX = 75
 
 def get_trading_days_from_cache(analyzer, lookback=60):
     for code in list(analyzer._cache_daily.keys())[:5]:
@@ -116,7 +127,8 @@ def find_pullback_entry(df_future, scan_close, pullback_days=2, pullback_depth=0
 
 
 def forward_check_enhanced(analyzer, code, entry_date, baseline, full,
-                           hold_days=5, pullback_days=2, pullback_depth=0.98):
+                           hold_days=5, pullback_enabled=False,
+                           pullback_days=2, pullback_depth=0.98):
     """
     강화 포워드 체크:
     - 눌림목 진입 (2일 대기)
@@ -141,18 +153,17 @@ def forward_check_enhanced(analyzer, code, entry_date, baseline, full,
     tp1 = baseline.target_1
     tp2 = baseline.target_2
 
-    # ── 개선2: 눌림목 진입 ──
-    pullback_entry, pullback_day = find_pullback_entry(
-        future_all, scan_close, pullback_days, pullback_depth
-    )
+    # ── 개선2/7: 눌림목 진입 (v3: 비활성화 가능) ──
+    pullback_entry = None
+    if pullback_enabled:
+        pullback_entry, pullback_day = find_pullback_entry(
+            future_all, scan_close, pullback_days, pullback_depth
+        )
 
     if pullback_entry is not None:
         entry = pullback_entry
-        # 진입일 이후부터 보유 시작
         trade_start_idx = pullback_day + 1
     else:
-        # 눌림목 없으면 진입 안함 → 패스 OR 종가 진입
-        # 여기서는 종가 진입 폴백 (눌림목 없어도 기회 놓치지 않게)
         entry = scan_close
         trade_start_idx = 0
 
@@ -276,14 +287,13 @@ def forward_check_enhanced(analyzer, code, entry_date, baseline, full,
 
 def run_backtest():
     print("=" * 70)
-    print("  강화 백테스트 v2 — 5가지 개선 적용")
+    print("  강화 백테스트 v3 — 8가지 개선 적용")
     print("=" * 70)
     print()
-    print("  [개선1] BUY만 진입 (STRONG_BUY 제외)")
-    print("  [개선2] 눌림목 진입 (2일 내 -2% 눌림 대기)")
-    print("  [개선3] 분할 익절 (TP1:50% + 나머지 트레일링)")
-    print("  [개선4] 보유일 컷오프 5일")
-    print("  [개선5] 사전감지 신호 2개+ 필터")
+    print("  [v2] BUY만 / 분할익절 / 5일컷오프 / 사전감지2+")
+    print("  [v3-6] INST_COST SL 제거 (25%승률 → 마이너스EV)")
+    print("  [v3-7] 눌림목 비활성화 (종가진입 +6.36% > 눌림 +2.49%)")
+    print("  [v3-8] RSI 35~65 필터 (과열/과매도 제외)")
     print()
 
     print(f"보유기간: 최대 {HOLD_DAYS}일")
@@ -347,6 +357,32 @@ def run_backtest():
                         filter_stats['premove_fail'] += 1
                         continue
                     filter_stats['premove_pass'] += 1
+
+                    # ── 개선6: INST_COST SL 제거 ──
+                    if full.baseline.invalidation_source in EXCLUDE_SL_SOURCES:
+                        filter_stats.setdefault('sl_excluded', 0)
+                        filter_stats['sl_excluded'] += 1
+                        continue
+
+                    # ── 개선8: RSI 필터 (35~65) ──
+                    if RSI_FILTER:
+                        try:
+                            close_col = "close" if "close" in day_df_filtered.columns else "종가"
+                            prices = day_df_filtered[close_col].astype(float)
+                            if len(prices) >= 15:
+                                delta = prices.diff()
+                                gain = delta.clip(lower=0).rolling(14).mean()
+                                loss = (-delta.clip(upper=0)).rolling(14).mean()
+                                rs = gain / loss.replace(0, np.nan)
+                                rsi = 100 - (100 / (1 + rs))
+                                rsi_val = float(rsi.iloc[-1])
+                                if not (RSI_MIN <= rsi_val <= RSI_MAX):
+                                    filter_stats.setdefault('rsi_excluded', 0)
+                                    filter_stats['rsi_excluded'] += 1
+                                    continue
+                        except:
+                            pass  # RSI 계산 실패 시 통과
+
                 else:
                     filter_stats['premove_fail'] += 1
                     continue
@@ -367,6 +403,7 @@ def run_backtest():
             result = forward_check_enhanced(
                 analyzer, code, scan_date, f.baseline, f,
                 hold_days=HOLD_DAYS,
+                pullback_enabled=PULLBACK_ENABLED,
                 pullback_days=PULLBACK_DAYS,
                 pullback_depth=PULLBACK_DEPTH,
             )
@@ -394,6 +431,8 @@ def run_backtest():
     print(f"  BUY 후보: {filter_stats['total_buy']}건")
     print(f"  사전감지 통과: {filter_stats['premove_pass']}건")
     print(f"  사전감지 탈락: {filter_stats['premove_fail']}건")
+    print(f"  INST_COST SL 제거: {filter_stats.get('sl_excluded', 0)}건")
+    print(f"  RSI 범위 제외: {filter_stats.get('rsi_excluded', 0)}건")
 
     # 히트 분포
     outcomes = df['outcome'].value_counts()
@@ -468,18 +507,18 @@ def run_backtest():
               f"{r['exit_price']:>10,.0f} {r['pnl_pct']:>+7.2f}% {r['r_multiple']:>+5.2f}R "
               f"{r['exit_day']:>3}  {r.get('premove_signals',0):>2}  {pb:>3}")
 
-    # ── v1 대비 비교 ──
-    print(f"\n{'='*70}")
-    print(f"  v1(기존) vs v2(강화) 비교")
-    print(f"{'='*70}")
-    print(f"  {'지표':>16} {'v1(기존)':>12} {'v2(강화)':>12} {'변화':>12}")
-    print(f"  {'─'*52}")
-    print(f"  {'승률':>16} {'36.0%':>12} {f'{win_rate:.1f}%':>12} {f'{win_rate-36:+.1f}%':>12}")
-    print(f"  {'기대값(EV)':>16} {'+1.43%':>12} {f'{avg_pnl:+.2f}%':>12} {f'{avg_pnl-1.43:+.2f}%':>12}")
-    print(f"  {'평균 R배수':>16} {'+0.30R':>12} {f'{avg_r:+.2f}R':>12} {f'{avg_r-0.30:+.2f}R':>12}")
-    print(f"  {'평균 보유일':>16} {'3.6일':>12} {f'{avg_days:.1f}일':>12} {f'{avg_days-3.6:+.1f}일':>12}")
-    print(f"  {'총 건수':>16} {'100건':>12} {f'{total}건':>12}")
-    print(f"{'='*70}")
+    # ── v1 vs v2 vs v3 비교 ──
+    print(f"\n{'='*80}")
+    print(f"  v1(기존) vs v2(5개선) vs v3(8개선) 비교")
+    print(f"{'='*80}")
+    print(f"  {'지표':>16} {'v1(기존)':>12} {'v2(5개선)':>12} {'v3(8개선)':>12} {'v2→v3':>10}")
+    print(f"  {'─'*62}")
+    print(f"  {'승률':>16} {'36.0%':>12} {'48.6%':>12} {f'{win_rate:.1f}%':>12} {f'{win_rate-48.6:+.1f}%':>10}")
+    print(f"  {'기대값(EV)':>16} {'+1.43%':>12} {'+3.46%':>12} {f'{avg_pnl:+.2f}%':>12} {f'{avg_pnl-3.46:+.2f}%':>10}")
+    print(f"  {'평균 R배수':>16} {'+0.30R':>12} {'+1.45R':>12} {f'{avg_r:+.2f}R':>12} {f'{avg_r-1.45:+.2f}R':>10}")
+    print(f"  {'평균 보유일':>16} {'3.6일':>12} {'3.0일':>12} {f'{avg_days:.1f}일':>12} {f'{avg_days-3.0:+.1f}일':>10}")
+    print(f"  {'총 건수':>16} {'100건':>12} {'35건':>12} {f'{total}건':>12}")
+    print(f"{'='*80}")
 
     ev = avg_pnl
     if ev > 3:

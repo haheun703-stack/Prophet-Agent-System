@@ -54,7 +54,7 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
         ["사전감지", "스윙스캔", "스캔"],
         ["이상거래", "건전성", "이벤트"],
         ["종목선정", "MACD스캔", "워치리스트"],
-        ["해외이벤트", "AI모니터"],
+        ["해외이벤트", "AI모니터", "뉴스AI"],
         ["현재잔고", "체결내역", "포트폴리오"],
         ["시작", "정지", "상태"],
         ["유니버스", "시나리오", "시그널"],
@@ -71,6 +71,7 @@ HELP_TEXT = """
 [사전감지 + AI모니터]
   사전감지 — 폭발 직전 종목 포착 (3Gate+10신호)
   AI모니터 — 보유종목 실시간 4팩터 분석
+  뉴스AI — Claude AI 뉴스 분석 (전자신문+네이버+DART)
 
 [스윙매매]
   스윙스캔 — 4층 파이프라인 (수급+기술+이상거래→TOP10)
@@ -923,6 +924,45 @@ class BodyHunterBot:
             logger.error(f"AI 모니터 실패: {e}", exc_info=True)
             await update.message.reply_text(f"AI 모니터 실패: {e}")
 
+    async def cmd_news_ai(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """뉴스 AI 분석 — 후보 종목 다중소스 뉴스 + Claude AI"""
+        if not self._is_authorized(update):
+            return
+
+        # 인자가 있으면 특정 종목, 없으면 사전감지 후보
+        args = context.args if context.args else []
+        await update.message.reply_text("📰 뉴스 AI 분석 중... (1~2분 소요)")
+
+        try:
+            from data.news_ai_scanner import scan_news_ai, format_news_ai_report
+
+            if args:
+                # 특정 종목
+                from bot.kis_trader import resolve_stock
+                stock = resolve_stock(args[0])
+                if not stock:
+                    await update.message.reply_text(f"종목 '{args[0]}' 찾을 수 없음")
+                    return
+                targets = [{"code": stock["code"], "name": stock["name"]}]
+            else:
+                # 사전감지 후보에서 가져오기
+                candidates_path = Path(__file__).parent.parent / "data_store" / "premove_candidates.json"
+                if candidates_path.exists():
+                    import json
+                    with open(candidates_path, "r", encoding="utf-8") as f:
+                        targets = json.load(f)[:5]
+                else:
+                    await update.message.reply_text("사전감지 후보 없음 — 먼저 '사전감지' 실행")
+                    return
+
+            results = await asyncio.to_thread(scan_news_ai, targets, True)
+            report = format_news_ai_report(results)
+            for chunk in _split_message(report):
+                await update.message.reply_text(chunk)
+        except Exception as e:
+            logger.error(f"뉴스AI 실패: {e}", exc_info=True)
+            await update.message.reply_text(f"뉴스AI 실패: {e}")
+
     # ═══════════════════════════════════════
     #  스윙매매 명령
     # ═══════════════════════════════════════
@@ -1267,6 +1307,7 @@ class BodyHunterBot:
             r"^확인$": self.cmd_confirm,
             r"^사전감지$": self.cmd_premove_scan,
             r"^AI모니터$": self.cmd_ai_monitor,
+            r"^뉴스AI$": self.cmd_news_ai,
             r"^스윙스캔$": self.cmd_swing_scan,
             r"^이상거래$": self.cmd_volume_scan,
             r"^이벤트$": self.cmd_event_scan,

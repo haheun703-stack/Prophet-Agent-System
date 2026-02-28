@@ -76,6 +76,12 @@ class PreMoveCandidate:
     inst_streak: int
     inst_streak_amount: float     # 억원
 
+    # 뉴스 AI 분석
+    news_score: float = 0.0       # -100 ~ +100
+    news_grade: str = "UNKNOWN"   # STRONG_POSITIVE ~ STRONG_NEGATIVE
+    news_summary: str = ""        # AI 요약
+    news_recommendation: str = "" # AI 추천
+
 
 def detect_premove_signals(code: str, name: str,
                            supply_full: SupplyFull,
@@ -285,6 +291,10 @@ def scan_premove(top_n: int = 5, as_of: str = None) -> List[PreMoveCandidate]:
         if not baseline:
             continue
 
+        # v3: INST_COST SL 제거 (백테스트 25% 승률 → 마이너스 EV)
+        if baseline.invalidation_source == "INST_COST":
+            continue
+
         sl_pct = (baseline.invalidation - baseline.close) / baseline.close * 100
 
         # RSI
@@ -331,9 +341,51 @@ def scan_premove(top_n: int = 5, as_of: str = None) -> List[PreMoveCandidate]:
 
     print(f"\n필터 통과: G1={len(gate1_pass)} → G2={len(gate2_pass)} → G3={len(gate3_pass)} → 신호3+={len(candidates)}")
 
-    # 점수 순 정렬
+    # 점수 순 정렬 (1차: 사전감지 점수)
     candidates.sort(key=lambda c: c.premove_score, reverse=True)
-    result = candidates[:top_n]
+
+    # 상위 후보만 뉴스 AI 분석 (API 비용 절약)
+    ai_candidates = candidates[:top_n + 3]  # 여유분 포함
+
+    # ── 뉴스 AI 분석 (Gate 4) ──
+    try:
+        from data.news_ai_scanner import scan_news_ai
+        print(f"\n📰 뉴스 AI 분석 ({len(ai_candidates)}종목)...")
+        news_results = scan_news_ai(ai_candidates, save=True)
+
+        # 뉴스 결과를 후보에 반영
+        news_map = {r.code: r for r in news_results}
+        filtered = []
+        for c in ai_candidates:
+            nr = news_map.get(c.code)
+            if nr:
+                c.news_score = nr.news_score
+                c.news_grade = nr.news_grade
+                c.news_summary = nr.ai_summary
+                c.news_recommendation = nr.ai_recommendation
+
+                # 뉴스 악재 필터: NEGATIVE 이하 → 제외
+                if nr.news_grade in ("NEGATIVE", "STRONG_NEGATIVE"):
+                    print(f"  ⚠️ {c.name}: 뉴스 악재 제외 ({nr.news_grade}, {nr.news_score:+d})")
+                    continue
+
+                # 사전감지 점수에 뉴스 보너스 반영 (최대 ±15점)
+                news_bonus = max(-15, min(15, nr.news_score * 0.15))
+                c.premove_score = round(c.premove_score + news_bonus, 1)
+
+            filtered.append(c)
+
+        # 뉴스 반영 후 재정렬
+        filtered.sort(key=lambda c: c.premove_score, reverse=True)
+        result = filtered[:top_n]
+
+        news_filtered = len(ai_candidates) - len(filtered)
+        if news_filtered > 0:
+            print(f"  뉴스 악재 필터: {news_filtered}종목 제외")
+
+    except Exception as e:
+        logger.warning(f"뉴스 AI 분석 실패 (폴백: 뉴스 없이 진행): {e}")
+        result = candidates[:top_n]
 
     print(f"최종 후보: {len(result)}개\n")
     return result
@@ -363,6 +415,14 @@ def format_premove_report(candidates: List[PreMoveCandidate]) -> str:
         # 기관
         if c.inst_streak != 0:
             lines.append(f"  기관: {c.inst_streak:+d}일 ({c.inst_streak_amount:+.0f}억)")
+
+        # 뉴스 AI
+        if c.news_grade != "UNKNOWN":
+            news_emoji = {"STRONG_POSITIVE": "🔥", "POSITIVE": "✅",
+                          "NEUTRAL": "⚪", "NEGATIVE": "⚠️", "STRONG_NEGATIVE": "🚨"}
+            lines.append(f"  뉴스: {news_emoji.get(c.news_grade, '⚪')} {c.news_grade}({c.news_score:+.0f})")
+            if c.news_summary:
+                lines.append(f"  AI: {c.news_summary[:80]}")
 
         # 신호 목록
         sig_names = [s["type"].replace("_", " ").title() for s in c.signals]
