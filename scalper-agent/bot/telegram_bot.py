@@ -51,9 +51,10 @@ def _split_message(text: str, limit: int = TG_MAX) -> list:
 # 한글 키보드 레이아웃
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
-        ["스윙스캔", "이상거래", "스캔"],
-        ["건전성", "이벤트", "워치리스트"],
-        ["해외이벤트", "종목선정", "MACD스캔"],
+        ["사전감지", "스윙스캔", "스캔"],
+        ["이상거래", "건전성", "이벤트"],
+        ["종목선정", "MACD스캔", "워치리스트"],
+        ["해외이벤트", "AI모니터"],
         ["현재잔고", "체결내역", "포트폴리오"],
         ["시작", "정지", "상태"],
         ["유니버스", "시나리오", "시그널"],
@@ -66,6 +67,10 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
 
 HELP_TEXT = """
 🔮 Body Hunter v3 명령어
+
+[사전감지 + AI모니터]
+  사전감지 — 폭발 직전 종목 포착 (3Gate+10신호)
+  AI모니터 — 보유종목 실시간 4팩터 분석
 
 [스윙매매]
   스윙스캔 — 4층 파이프라인 (수급+기술+이상거래→TOP10)
@@ -872,6 +877,53 @@ class BodyHunterBot:
         await update.message.reply_text("🔴 자동매매 정지")
 
     # ═══════════════════════════════════════
+    #  사전감지 + AI 모니터
+    # ═══════════════════════════════════════
+
+    async def cmd_premove_scan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """사전감지 스캔 — 폭발 직전 종목 포착"""
+        if not self._is_authorized(update):
+            return
+        await update.message.reply_text("사전감지 스캔 실행중... (3~5분 소요)")
+
+        try:
+            from data.premove_scanner import scan_premove, format_premove_report
+            candidates = await asyncio.to_thread(scan_premove, 5)
+            report = format_premove_report(candidates)
+            for chunk in _split_message(report):
+                await update.message.reply_text(chunk)
+        except Exception as e:
+            logger.error(f"사전감지 실패: {e}", exc_info=True)
+            await update.message.reply_text(f"사전감지 실패: {e}")
+
+    async def cmd_ai_monitor(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """AI 모니터 — 보유종목 실시간 4팩터 분석"""
+        if not self._is_authorized(update):
+            return
+
+        try:
+            from data.realtime_monitor import RealtimeMonitor
+            rtm = self.auto_trader._get_rt_monitor()
+            positions = rtm.get_positions()
+
+            if not positions:
+                await update.message.reply_text("AI 모니터: 등록된 포지션 없음")
+                return
+
+            await update.message.reply_text(f"AI 분석 중... ({len(positions)}종목)")
+            snapshots = await asyncio.to_thread(rtm.evaluate_all)
+
+            if snapshots:
+                report = rtm.format_snapshot_report(snapshots)
+                for chunk in _split_message(report):
+                    await update.message.reply_text(chunk)
+            else:
+                await update.message.reply_text("AI 모니터: 스냅샷 수집 실패 (장외시간?)")
+        except Exception as e:
+            logger.error(f"AI 모니터 실패: {e}", exc_info=True)
+            await update.message.reply_text(f"AI 모니터 실패: {e}")
+
+    # ═══════════════════════════════════════
     #  스윙매매 명령
     # ═══════════════════════════════════════
 
@@ -1213,6 +1265,8 @@ class BodyHunterBot:
             r"^시작$": self.cmd_auto_start,
             r"^정지$": self.cmd_auto_stop,
             r"^확인$": self.cmd_confirm,
+            r"^사전감지$": self.cmd_premove_scan,
+            r"^AI모니터$": self.cmd_ai_monitor,
             r"^스윙스캔$": self.cmd_swing_scan,
             r"^이상거래$": self.cmd_volume_scan,
             r"^이벤트$": self.cmd_event_scan,
@@ -1351,6 +1405,10 @@ class BodyHunterBot:
         # MACD 제로선 크로스 스캔 (16:40 — 일봉+수급 수집 후)
         jq.run_daily(self._job_macd_scan, time=dtime(16, 40))
         logger.info("MACD 크로스 스캔 등록: 16:40")
+
+        # 사전감지 스캔 (08:50 — 장 시작 전)
+        jq.run_daily(self._job_premove_scan, time=dtime(8, 50))
+        logger.info("사전감지 스캔 등록: 08:50")
 
     async def _job_start_tick_polling(self, context):
         """장 시작 시 체결 스냅샷 폴링 시작 (백그라운드 스레드)"""
@@ -1641,6 +1699,34 @@ class BodyHunterBot:
             logger.error(f"MACD 스캔 실패: {e}", exc_info=True)
             await context.bot.send_message(
                 chat_id=chat_id, text=f"MACD 스캔 실패: {str(e)[:200]}"
+            )
+
+    async def _job_premove_scan(self, context):
+        """사전감지 스캔 (08:50 — 장 시작 전)"""
+        from datetime import date
+        if date.today().weekday() >= 5:
+            return
+
+        logger.info("사전감지 스캔 시작...")
+        chat_id = os.getenv("TELEGRAM_CHAT_ID")
+
+        try:
+            from data.premove_scanner import scan_premove, format_premove_report, save_premove_candidates
+            candidates = await asyncio.to_thread(scan_premove, 5)
+            report = format_premove_report(candidates)
+
+            for chunk in _split_message(report):
+                await context.bot.send_message(chat_id=chat_id, text=chunk)
+
+            if candidates:
+                await asyncio.to_thread(save_premove_candidates, candidates)
+
+            logger.info(f"사전감지 완료: {len(candidates)}개 후보")
+
+        except Exception as e:
+            logger.error(f"사전감지 실패: {e}", exc_info=True)
+            await context.bot.send_message(
+                chat_id=chat_id, text=f"사전감지 실패: {str(e)[:200]}"
             )
 
     async def _error_handler(self, update, context):

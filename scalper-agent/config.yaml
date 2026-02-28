@@ -219,6 +219,7 @@ bot:
 # │ 시각       │ 작업                                                 │
 # ├────────────┼──────────────────────────────────────────────────────┤
 # │ 08:30      │ 유니버스 리빌드 (pykrx 시총 1조+ 재스캔)            │
+# │ 08:50      │ 사전감지 스캔 → 폭발 직전 종목 TOP5 리포트          │
 # │ 09:01~15:30│ 체결 스냅샷 폴링 (354종목×3API, 1분 간격, ~11분/회) │
 # │ 09:20      │ 아침 6D 스캔 → TOP5 텔레그램 리포트                 │
 # │ 09:00~     │ 포지션 감시 (30초 간격, 장중 내내)                   │
@@ -258,6 +259,21 @@ schedule:
     enabled: true
     time: "08:30"               # 장전
     min_cap_billion: 3000       # 시총 3000억원 이상 (우선주 포함)
+
+# --- 사전감지 + AI 모니터 ---
+premove:
+  min_signal_count: 3            # 최소 신호 개수
+  max_candidates: 5              # 최대 후보 종목
+  max_10d_return: 25             # 과열 방지: 10D 수익률 상한(%)
+  sl_priority: ["SUPPORT", "INST_COST", "ATR"]  # SL 우선순위
+  atr_sl_multiplier: 1.5         # ATR SL 배수
+  tp1_atr_multiplier: 1.0        # 퀵 TP ATR 배수
+
+  # AI 실시간 모니터
+  realtime_monitor: true
+  trailing_breakeven_pct: 5.0    # 본절 SL 발동 수익률(%)
+  trailing_start_pct: 10.0       # 트레일링 시작 수익률(%)
+  trailing_distance_pct: 3.0     # 트레일링 거리(%)
 
 # --- Backtest / Paper Trading ---
 backtest:

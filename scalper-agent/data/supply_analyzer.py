@@ -269,6 +269,7 @@ class BaselineLevels:
     nearest_resistance: float = 0.0 # 가장 가까운 저항선
     inst_cost: float = 0.0          # 기관 매집원가 (스마트머니 방어선)
     invalidation_source: str = ""   # "ATR" / "SUPPORT" / "INST_COST"
+    target_1_quick: float = 0.0     # 퀵 TP (ATR*1.0, ~5-7%)
 
 
 @dataclass
@@ -1200,22 +1201,25 @@ class SupplyAnalyzer:
         # 3. 기관 매집원가
         inst_cost = self._calc_inst_cost(code)
 
-        # 4. 무효화선 결정 (3후보 중 가장 타이트한 걸 채택)
-        atr_sl = close - atr_val * 0.8
-        candidates = [(atr_sl, "ATR")]
+        # 4. 무효화선 결정 — 승률 기반 우선순위 (백테스트 검증)
+        #    SUPPORT(67%) > INST_COST(40%) > ATR(29%)
+        #    단, 지지선이 -10% 이상 멀면 건너뛰고 INST_COST 사용
+        atr_sl = close - atr_val * 1.5  # ATR 승수 확대 (0.8→1.5)
 
-        if nearest_support > 0 and nearest_support < close:
-            support_sl = nearest_support * 0.99
-            candidates.append((support_sl, "SUPPORT"))
+        support_usable = (nearest_support > 0 and nearest_support < close
+                          and (close - nearest_support) / close < 0.10)
+        instcost_usable = (inst_cost > 0 and inst_cost < close
+                           and (close - inst_cost) / close < 0.10)
 
-        if inst_cost > 0 and inst_cost < close:
-            inst_cost_sl = inst_cost * 0.97
-            candidates.append((inst_cost_sl, "INST_COST"))
-
-        # 가장 높은(타이트한) SL 채택
-        best = max(candidates, key=lambda x: x[0])
-        invalidation = best[0]
-        inv_source = best[1]
+        if support_usable:
+            invalidation = nearest_support * 0.99
+            inv_source = "SUPPORT"        # 67% 승률
+        elif instcost_usable:
+            invalidation = inst_cost * 0.97
+            inv_source = "INST_COST"      # 40% 승률
+        else:
+            invalidation = atr_sl
+            inv_source = "ATR"            # 29% 승률 (폴백)
 
         # 최대 손실 -8% 캡
         floor = close * 0.92
@@ -1226,6 +1230,9 @@ class SupplyAnalyzer:
         risk = close - invalidation
         if risk <= 0:
             risk = atr_val * 0.5  # fallback
+
+        # 퀵 TP (ATR*1.0 ≈ 5~7%)
+        target_1_quick = close + atr_val * 1.0
 
         return BaselineLevels(
             close=close,
@@ -1241,6 +1248,7 @@ class SupplyAnalyzer:
             nearest_resistance=nearest_resistance,
             inst_cost=inst_cost,
             invalidation_source=inv_source,
+            target_1_quick=target_1_quick,
         )
 
     # ============================================================

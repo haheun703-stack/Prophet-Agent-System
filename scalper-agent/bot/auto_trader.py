@@ -32,7 +32,7 @@ CANDIDATES_PATH = BASE_DIR / "data_store" / "swing_candidates.json"
 
 
 class AutoTrader:
-    """Body Hunter v4 자동매매 — 동적 목표가 통합"""
+    """Body Hunter v4 자동매매 — 사전감지 + AI 모니터 통합"""
 
     def __init__(self, config: dict, trader):
         self.config = config
@@ -43,6 +43,16 @@ class AutoTrader:
 
         # 모드: "day" or "swing"
         self.mode = config.get("bot", {}).get("trade_mode", "swing")
+
+        # AI 실시간 모니터
+        self._rt_monitor = None
+
+    def _get_rt_monitor(self):
+        """RealtimeMonitor lazy init"""
+        if self._rt_monitor is None:
+            from data.realtime_monitor import RealtimeMonitor
+            self._rt_monitor = RealtimeMonitor(self.config)
+        return self._rt_monitor
 
     def start(self, send_alert_func: Callable):
         """자동매매 시작"""
@@ -103,17 +113,43 @@ class AutoTrader:
             await self._morning_day(context, _send)
 
     async def _morning_swing(self, context, _send):
-        """스윙 모드 아침 스캔: swing_candidates.json 기반 매수"""
-        # swing_candidates.json 로드
-        candidates = self._load_swing_candidates()
+        """스윙 모드 아침 스캔: 사전감지 우선 → 7팩터 폴백"""
+        candidates = []
+
+        # 1) 사전감지 스캐너 우선
+        try:
+            await _send("사전감지 스캔 실행 중...")
+            from data.premove_scanner import scan_premove
+            premove = await asyncio.to_thread(scan_premove, 5)
+            if premove:
+                candidates = [
+                    {
+                        "code": c.code, "name": c.name,
+                        "total_score": c.premove_score,
+                        "entry": int(c.entry), "sl": int(c.sl),
+                        "tp": int(c.tp2),
+                        "tp1_quick": int(c.tp1_quick),
+                        "source": "premove",
+                    }
+                    for c in premove
+                ]
+                await _send(f"사전감지: {len(candidates)}개 후보 발견")
+        except Exception as e:
+            logger.error(f"사전감지 실패: {e}")
+            await _send(f"사전감지 실패 — 7팩터 폴백: {e}")
+
+        # 2) 사전감지 결과 없으면 기존 swing_candidates 폴백
         if not candidates:
-            # 후보가 없으면 swing_picker 실행
+            candidates = self._load_swing_candidates()
+
+        # 3) 그래도 없으면 swing_picker 실행
+        if not candidates:
             try:
                 await _send("스윙 후보 없음 — 7팩터 스캔 실행 중...")
                 candidates = await asyncio.to_thread(self._run_swing_picker)
             except Exception as e:
                 logger.error(f"스윙 피커 실패: {e}")
-                await _send(f"❌ 스윙 피커 실패: {e}")
+                await _send(f"스윙 피커 실패: {e}")
                 return
 
         if not candidates:
@@ -121,7 +157,8 @@ class AutoTrader:
             return
 
         # 리포트 전송
-        lines = ["🎯 스윙 매수 후보"]
+        src_label = candidates[0].get("source", "swing")
+        lines = [f"매수 후보 ({src_label})"]
         for c in candidates:
             lines.append(
                 f"  {c['name']}({c['code']}) 점수:{c['total_score']:.0f} "
@@ -163,19 +200,27 @@ class AutoTrader:
                 # 동적 목표가 엔진으로 초기 설정
                 target_state = self._init_dynamic_target(code, c["name"], cp)
 
+                sl = target_state.dynamic_sl if target_state else c["sl"]
+                tp = target_state.dynamic_tp if target_state else c["tp"]
+
                 self._positions[code] = {
                     "entry_price": cp,
-                    "stop_loss": target_state.dynamic_sl if target_state else c["sl"],
-                    "take_profit": target_state.dynamic_tp if target_state else c["tp"],
+                    "stop_loss": sl,
+                    "take_profit": tp,
                     "entry_date": datetime.now().strftime("%Y-%m-%d"),
                     "name": c["name"],
                     "target_state": target_state,
                 }
 
-                sl = self._positions[code]["stop_loss"]
-                tp = self._positions[code]["take_profit"]
+                # AI 모니터에 포지션 등록
+                try:
+                    rtm = self._get_rt_monitor()
+                    rtm.register_position(code, c["name"], cp, sl, tp)
+                except Exception as e:
+                    logger.warning(f"AI 모니터 등록 실패 {code}: {e}")
+
                 await _send(
-                    f"✅ 스윙 매수: {result.get('message')}\n"
+                    f"스윙 매수: {result.get('message')}\n"
                     f"   SL:{sl:,} TP:{tp:,} (동적)"
                 )
             else:
@@ -249,7 +294,7 @@ class AutoTrader:
         await _send(f"아침 스캔 완료: {bought}/{len(candidates[:slots])} 매수")
 
     async def job_monitor(self, context):
-        """포지션 감시 — 손절/익절 체크 (JobQueue 반복 호출)"""
+        """포지션 감시 — AI 4팩터 실시간 분석 (JobQueue 반복 호출)"""
         if not self.is_running:
             return
         if not self._is_market_hours():
@@ -257,6 +302,50 @@ class AutoTrader:
         if not self._positions:
             return
 
+        try:
+            rtm = self._get_rt_monitor()
+            snapshots = await asyncio.to_thread(rtm.evaluate_all)
+        except Exception as e:
+            logger.error(f"AI 모니터 평가 실패: {e}")
+            # 폴백: 기존 단순 SL/TP 체크
+            await self._job_monitor_fallback()
+            return
+
+        for snap in snapshots:
+            code = snap.code
+            pos = self._positions.get(code)
+            if not pos:
+                continue
+
+            try:
+                # SL 동기화 (트레일링 반영)
+                pos["stop_loss"] = snap.current_sl
+
+                if snap.decision == "FULL_SELL":
+                    logger.info(f"AI 전량매도: {code} @ {snap.price:,} ({snap.decision_reason})")
+                    result = self.trader.liquidate_one(code)
+                    self._positions.pop(code, None)
+                    rtm.unregister_position(code)
+                    await self._alert(rtm.format_decision_alert(snap))
+
+                elif snap.decision == "PARTIAL_SELL":
+                    logger.info(f"AI 부분매도: {code} @ {snap.price:,} ({snap.decision_reason})")
+                    bal = self.trader.fetch_balance()
+                    for p in bal.get("positions", []):
+                        if p["code"] == code:
+                            half = max(1, p["qty"] // 2)
+                            self.trader.sell_market(code, half)
+                            await self._alert(rtm.format_decision_alert(snap))
+                            break
+
+                # 10분마다 전체 리포트 (매 20회차)
+                # (30초 * 20 = 10분)
+
+            except Exception as e:
+                logger.error(f"AI 모니터 처리 실패 {code}: {e}")
+
+    async def _job_monitor_fallback(self):
+        """AI 모니터 실패 시 폴백: 단순 SL/TP 체크"""
         for code, pos in list(self._positions.items()):
             try:
                 price_info = self.trader.fetch_price(code)
@@ -265,31 +354,26 @@ class AutoTrader:
 
                 cp = price_info["current_price"]
 
-                # 손절
                 if cp <= pos["stop_loss"]:
-                    logger.info(f"손절 트리거: {code} @ {cp:,} (SL: {pos['stop_loss']:,})")
                     result = self.trader.liquidate_one(code)
                     self._positions.pop(code, None)
                     loss = cp - pos["entry_price"]
                     await self._alert(
-                        f"🔴 손절\n{pos.get('name', code)}({code}) @ {cp:,}원\n"
-                        f"진입: {pos['entry_price']:,} → 현재: {cp:,} ({loss:+,})"
+                        f"손절\n{pos.get('name', code)}({code}) @ {cp:,}원\n"
+                        f"진입: {pos['entry_price']:,} -> 현재: {cp:,} ({loss:+,})"
                     )
-                    continue
 
-                # 익절 (데이 모드에서만 TP 고정 매도)
-                if self.mode == "day" and cp >= pos["take_profit"]:
-                    logger.info(f"익절 트리거: {code} @ {cp:,} (TP: {pos['take_profit']:,})")
+                elif self.mode == "day" and cp >= pos["take_profit"]:
                     result = self.trader.liquidate_one(code)
                     self._positions.pop(code, None)
                     gain = cp - pos["entry_price"]
                     await self._alert(
-                        f"🟢 익절\n{pos.get('name', code)}({code}) @ {cp:,}원\n"
-                        f"진입: {pos['entry_price']:,} → 현재: {cp:,} (+{gain:,})"
+                        f"익절\n{pos.get('name', code)}({code}) @ {cp:,}원\n"
+                        f"진입: {pos['entry_price']:,} -> 현재: {cp:,} (+{gain:,})"
                     )
 
             except Exception as e:
-                logger.error(f"감시 실패 {code}: {e}")
+                logger.error(f"폴백 감시 실패 {code}: {e}")
 
     async def job_daily_reeval(self, context):
         """스윙 모드: 장마감 전 동적 목표가 재평가 (15:00)
