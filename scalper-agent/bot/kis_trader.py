@@ -330,6 +330,270 @@ class KISTrader:
             return {"success": False, "message": f"매도 실패: {e}"}
 
     # ═══════════════════════════════════════
+    #  스마트 지정가 매수/매도
+    # ═══════════════════════════════════════
+
+    @staticmethod
+    def _tick_size(price: int) -> int:
+        """한국 주식 호가 단위"""
+        if price < 2000: return 1
+        if price < 5000: return 5
+        if price < 20000: return 10
+        if price < 50000: return 50
+        if price < 200000: return 100
+        if price < 500000: return 500
+        return 1000
+
+    @staticmethod
+    def _round_to_tick(price: float, tick: int, direction: str = "down") -> int:
+        """호가 단위로 반올림 (down=매수유리, up=매도유리)"""
+        if direction == "down":
+            return int(price // tick) * tick
+        else:
+            return int(-(-price // tick)) * tick  # ceil
+
+    def smart_buy(self, code: str, qty: int, max_wait_sec: int = 90) -> dict:
+        """스마트 지정가 매수 — 3단계 에스컬레이션
+
+        1단계: 현재가 -0.5% 지정가 → 30초 대기
+        2단계: 미체결 시 현재가 -0.2% 수정 → 30초 대기
+        3단계: 미체결 시 현재가로 수정 (사실상 시장가)
+
+        시장가 대비 평균 0.2~0.5% 절약 효과
+        """
+        name = CODE_TO_NAME.get(code, code)
+
+        # 현재가 조회
+        price_info = self.fetch_price(code)
+        if not price_info.get("success"):
+            return {"success": False, "message": f"현재가 조회 실패"}
+
+        current = price_info["current_price"]
+        tick = self._tick_size(current)
+
+        # ── 1단계: -0.5% 지정가 ──
+        price_1 = self._round_to_tick(current * 0.995, tick, "down")
+        logger.info(f"스마트매수 1단계: {name} {qty}주 @ {price_1:,}원 (-0.5%)")
+
+        try:
+            broker = self._get_broker()
+            resp = broker.create_limit_buy_order(symbol=code, price=price_1, quantity=qty)
+
+            if not resp or resp.get("rt_cd") != "0":
+                msg = resp.get("msg1", "알 수 없는 오류") if resp else "응답 없음"
+                logger.warning(f"스마트매수 1단계 실패: {msg} → 시장가 폴백")
+                return self.buy_market(code, qty, split=1)
+
+            order_no = resp.get("output", {}).get("ODNO", "")
+            org_no = resp.get("output", {}).get("KRX_FWDG_ORD_ORGNO", "")
+
+        except Exception as e:
+            logger.error(f"스마트매수 주문 실패: {e} → 시장가 폴백")
+            return self.buy_market(code, qty, split=1)
+
+        # ── 체결 대기 (1단계: 30초) ──
+        wait_per_step = max_wait_sec // 3
+        filled = self._wait_for_fill(order_no, wait_per_step)
+
+        if filled:
+            self._log_trade("SMART_BUY", code, name, qty, 1)
+            return {
+                "success": True, "order_no": order_no,
+                "message": f"스마트매수 {name}({code}) {qty}주 @ {price_1:,}원 (-0.5%)",
+                "saved_pct": 0.5,
+            }
+
+        # ── 2단계: -0.2%로 수정 ──
+        price_info2 = self.fetch_price(code)
+        current2 = price_info2["current_price"] if price_info2.get("success") else current
+        price_2 = self._round_to_tick(current2 * 0.998, tick, "down")
+        logger.info(f"스마트매수 2단계: {name} 수정 @ {price_2:,}원 (-0.2%)")
+
+        try:
+            broker.modify_order(
+                org_no=org_no, order_no=order_no,
+                order_type="00", price=price_2, quantity=qty, total=True,
+            )
+        except Exception as e:
+            logger.warning(f"주문 수정 실패: {e}")
+
+        filled = self._wait_for_fill(order_no, wait_per_step)
+
+        if filled:
+            self._log_trade("SMART_BUY", code, name, qty, 2)
+            return {
+                "success": True, "order_no": order_no,
+                "message": f"스마트매수 {name}({code}) {qty}주 @ {price_2:,}원 (-0.2%)",
+                "saved_pct": 0.2,
+            }
+
+        # ── 3단계: 현재가로 수정 (사실상 시장가) ──
+        price_info3 = self.fetch_price(code)
+        current3 = price_info3["current_price"] if price_info3.get("success") else current2
+        price_3 = self._round_to_tick(current3 * 1.002, tick, "up")  # 약간 높게 (체결 보장)
+        logger.info(f"스마트매수 3단계: {name} 수정 @ {price_3:,}원 (현재가)")
+
+        try:
+            broker.modify_order(
+                org_no=org_no, order_no=order_no,
+                order_type="00", price=price_3, quantity=qty, total=True,
+            )
+        except Exception as e:
+            logger.warning(f"주문 수정 실패: {e} → 취소 후 시장가")
+            self.cancel_order(order_no)
+            return self.buy_market(code, qty, split=1)
+
+        filled = self._wait_for_fill(order_no, wait_per_step)
+
+        if filled:
+            self._log_trade("SMART_BUY", code, name, qty, 3)
+            return {
+                "success": True, "order_no": order_no,
+                "message": f"스마트매수 {name}({code}) {qty}주 @ {price_3:,}원 (3단계)",
+                "saved_pct": 0,
+            }
+
+        # 최종 실패 → 취소
+        self.cancel_order(order_no)
+        self._log_trade("SMART_BUY_FAIL", code, name, 0, 3)
+        return {"success": False, "message": f"스마트매수 실패 — {max_wait_sec}초 내 미체결 ({name})"}
+
+    def smart_sell(self, code: str, qty: int, max_wait_sec: int = 60) -> dict:
+        """스마트 지정가 매도 — 3단계 에스컬레이션
+
+        1단계: 현재가 +0.5% 지정가 → 20초 대기
+        2단계: 미체결 시 현재가 +0.2% 수정 → 20초 대기
+        3단계: 미체결 시 현재가로 수정 (사실상 시장가)
+
+        긴급 매도(SL)에는 사용하지 않음 — 시장가 직행
+        """
+        name = CODE_TO_NAME.get(code, code)
+
+        price_info = self.fetch_price(code)
+        if not price_info.get("success"):
+            return {"success": False, "message": f"현재가 조회 실패"}
+
+        current = price_info["current_price"]
+        tick = self._tick_size(current)
+
+        # ── 1단계: +0.5% 지정가 ──
+        price_1 = self._round_to_tick(current * 1.005, tick, "up")
+        logger.info(f"스마트매도 1단계: {name} {qty}주 @ {price_1:,}원 (+0.5%)")
+
+        try:
+            broker = self._get_broker()
+            resp = broker.create_limit_sell_order(symbol=code, price=price_1, quantity=qty)
+
+            if not resp or resp.get("rt_cd") != "0":
+                msg = resp.get("msg1", "알 수 없는 오류") if resp else "응답 없음"
+                logger.warning(f"스마트매도 1단계 실패: {msg} → 시장가 폴백")
+                return self.sell_market(code, qty, split=1)
+
+            order_no = resp.get("output", {}).get("ODNO", "")
+            org_no = resp.get("output", {}).get("KRX_FWDG_ORD_ORGNO", "")
+
+        except Exception as e:
+            logger.error(f"스마트매도 주문 실패: {e} → 시장가 폴백")
+            return self.sell_market(code, qty, split=1)
+
+        # ── 체결 대기 ──
+        wait_per_step = max_wait_sec // 3
+        filled = self._wait_for_fill(order_no, wait_per_step)
+
+        if filled:
+            self._log_trade("SMART_SELL", code, name, qty, 1)
+            return {
+                "success": True, "order_no": order_no,
+                "message": f"스마트매도 {name}({code}) {qty}주 @ {price_1:,}원 (+0.5%)",
+                "saved_pct": 0.5,
+            }
+
+        # ── 2단계: +0.2% ──
+        price_info2 = self.fetch_price(code)
+        current2 = price_info2["current_price"] if price_info2.get("success") else current
+        price_2 = self._round_to_tick(current2 * 1.002, tick, "up")
+        logger.info(f"스마트매도 2단계: {name} 수정 @ {price_2:,}원 (+0.2%)")
+
+        try:
+            broker.modify_order(
+                org_no=org_no, order_no=order_no,
+                order_type="00", price=price_2, quantity=qty, total=True,
+            )
+        except Exception as e:
+            logger.warning(f"주문 수정 실패: {e}")
+
+        filled = self._wait_for_fill(order_no, wait_per_step)
+
+        if filled:
+            self._log_trade("SMART_SELL", code, name, qty, 2)
+            return {
+                "success": True, "order_no": order_no,
+                "message": f"스마트매도 {name}({code}) {qty}주 @ {price_2:,}원 (+0.2%)",
+                "saved_pct": 0.2,
+            }
+
+        # ── 3단계: 현재가 ──
+        price_info3 = self.fetch_price(code)
+        current3 = price_info3["current_price"] if price_info3.get("success") else current2
+        price_3 = self._round_to_tick(current3 * 0.998, tick, "down")
+        logger.info(f"스마트매도 3단계: {name} 수정 @ {price_3:,}원 (현재가)")
+
+        try:
+            broker.modify_order(
+                org_no=org_no, order_no=order_no,
+                order_type="00", price=price_3, quantity=qty, total=True,
+            )
+        except Exception as e:
+            logger.warning(f"주문 수정 실패: {e} → 취소 후 시장가")
+            self.cancel_order(order_no)
+            return self.sell_market(code, qty, split=1)
+
+        filled = self._wait_for_fill(order_no, wait_per_step)
+
+        if filled:
+            self._log_trade("SMART_SELL", code, name, qty, 3)
+            return {
+                "success": True, "order_no": order_no,
+                "message": f"스마트매도 {name}({code}) {qty}주 @ {price_3:,}원 (3단계)",
+                "saved_pct": 0,
+            }
+
+        # 최종 → 시장가 폴백
+        self.cancel_order(order_no)
+        logger.warning(f"스마트매도 실패 → 시장가 매도 폴백")
+        return self.sell_market(code, qty, split=1)
+
+    def _wait_for_fill(self, order_no: str, wait_sec: int) -> bool:
+        """주문 체결 대기 (polling)"""
+        check_interval = 3  # 3초마다 체크
+        elapsed = 0
+
+        while elapsed < wait_sec:
+            time.sleep(check_interval)
+            elapsed += check_interval
+
+            try:
+                orders = self.fetch_open_orders()
+                if not orders.get("success"):
+                    continue
+
+                # 미체결 목록에 없으면 → 체결 완료
+                pending = [o for o in orders["orders"] if o["order_no"] == order_no]
+                if not pending:
+                    logger.info(f"주문 {order_no} 체결 완료 ({elapsed}초)")
+                    return True
+
+                # 부분 체결 확인
+                if pending[0]["filled_qty"] > 0:
+                    logger.info(f"주문 {order_no} 부분 체결: {pending[0]['filled_qty']}주")
+
+            except Exception as e:
+                logger.warning(f"체결 확인 실패: {e}")
+
+        logger.info(f"주문 {order_no} 미체결 ({wait_sec}초 초과)")
+        return False
+
+    # ═══════════════════════════════════════
     #  매매 일지
     # ═══════════════════════════════════════
 
@@ -507,8 +771,8 @@ class KISTrader:
 
         logger.info(f"안전 매수: {name}({code}) {qty}주 @ {current_price:,}원 ≈ {est_cost:,}원")
 
-        # 7. 분할 시장가 매수
-        return self.buy_market(code, qty)
+        # 7. 스마트 지정가 매수 (시장가 대비 0.2~0.5% 절약)
+        return self.smart_buy(code, qty)
 
     def liquidate_one(self, code: str) -> dict:
         """특정 종목 전량 청산"""

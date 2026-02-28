@@ -417,8 +417,33 @@ class AutoTrader:
                         f"거래량{'O' if volume_confirm else 'X'}"
                     )
 
-                # ── 돌파 확인! → 매수 실행 ──
+                # ── 돌파 확인! → AI EYE 검증 후 매수 ──
                 if broke_resistance and volume_confirm:
+
+                    # 👁 AI 눈(EYE): 4팩터 실시간 점수 확인
+                    ai_score = -1
+                    try:
+                        rtm = self._get_rt_monitor()
+                        rtm.register_position(
+                            code, watch["name"], cp, watch["sl"], watch["tp"]
+                        )
+                        snap = await asyncio.to_thread(rtm.evaluate_position, code)
+                        if snap:
+                            ai_score = snap.realtime_score
+                        rtm.unregister_position(code)
+                    except Exception as e:
+                        logger.warning(f"AI EYE 실패 {code}: {e}")
+
+                    # AI 점수 40 미만 → 허위 돌파 가능성 → 매수 보류
+                    if 0 <= ai_score < 40:
+                        await self._alert(
+                            f"👁 AI EYE 거부: {watch['name']}({code})\n"
+                            f"   가격 돌파 OK + 거래량 {vol_ratio:.1f}x OK\n"
+                            f"   BUT AI 점수 {ai_score}/100 (체결강도/호가 약함)\n"
+                            f"   → 허위 돌파 의심, 계속 감시 중"
+                        )
+                        continue  # 매수 안 하고 다음 체크에서 재시도
+
                     buy_amount = watch["buy_amount"]
                     result = self.trader.safe_buy(code, buy_amount)
 
@@ -445,11 +470,12 @@ class AutoTrader:
                         except Exception:
                             pass
 
+                        ai_msg = f" | AI {ai_score}점" if ai_score >= 0 else ""
                         await self._alert(
                             f"🚀 돌파 매수 성공!\n"
                             f"   {watch['name']}({code}) @ {cp:,}원\n"
                             f"   저항 {resistance:,}원 돌파 확인\n"
-                            f"   거래량 {vol_ratio:.1f}x (평균 대비)\n"
+                            f"   거래량 {vol_ratio:.1f}x{ai_msg}\n"
                             f"   SL:{sl:,} TP:{tp:,}"
                         )
                     else:
@@ -586,7 +612,7 @@ class AutoTrader:
                     for p in bal.get("positions", []):
                         if p["code"] == code:
                             half = max(1, p["qty"] // 2)
-                            self.trader.sell_market(code, half)
+                            self.trader.smart_sell(code, half)  # 스마트 매도
                             await self._alert(rtm.format_decision_alert(snap))
                             break
 
@@ -708,12 +734,12 @@ class AutoTrader:
                     self._positions.pop(code, None)
                     await self._alert(f"🔴 동적 전량매도: {name}({code}) @ {cp:,} ({reason})")
                 elif action == ACTION_PARTIAL_SELL:
-                    # 부분매도: 보유수량의 50%
+                    # 부분매도: 보유수량의 50% (스마트 지정가)
                     bal = self.trader.fetch_balance()
                     for p in bal.get("positions", []):
                         if p["code"] == code:
                             half = max(1, p["qty"] // 2)
-                            self.trader.sell_market(code, half)
+                            self.trader.smart_sell(code, half)
                             await self._alert(f"🟡 부분매도: {name}({code}) {half}주 @ {cp:,}")
                             break
 
