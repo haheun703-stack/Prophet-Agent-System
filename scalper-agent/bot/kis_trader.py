@@ -564,7 +564,11 @@ class KISTrader:
         return self.sell_market(code, qty, split=1)
 
     def _wait_for_fill(self, order_no: str, wait_sec: int) -> bool:
-        """주문 체결 대기 (polling)"""
+        """주문 체결 대기 (polling)
+
+        부분 체결 시에도 잔량이 0이 되면 True 반환.
+        타임아웃 시 부분 체결된 수량이 있으면 잔량 취소 후 True 반환.
+        """
         check_interval = 3  # 3초마다 체크
         elapsed = 0
 
@@ -584,14 +588,76 @@ class KISTrader:
                     return True
 
                 # 부분 체결 확인
-                if pending[0]["filled_qty"] > 0:
-                    logger.info(f"주문 {order_no} 부분 체결: {pending[0]['filled_qty']}주")
+                filled = pending[0]["filled_qty"]
+                total = pending[0]["qty"]
+                if filled > 0:
+                    logger.info(f"주문 {order_no} 부분 체결: {filled}/{total}주")
 
             except Exception as e:
                 logger.warning(f"체결 확인 실패: {e}")
 
+        # 타임아웃 — 부분 체결 확인
+        try:
+            orders = self.fetch_open_orders()
+            if orders.get("success"):
+                pending = [o for o in orders["orders"] if o["order_no"] == order_no]
+                if pending and pending[0]["filled_qty"] > 0:
+                    # 부분 체결 있음 → 잔량 취소, 체결분만 인정
+                    filled = pending[0]["filled_qty"]
+                    logger.info(f"주문 {order_no} 부분 체결 {filled}주 → 잔량 취소")
+                    self.cancel_order(order_no)
+                    return True  # 부분이라도 체결됐으면 성공 처리
+        except Exception:
+            pass
+
         logger.info(f"주문 {order_no} 미체결 ({wait_sec}초 초과)")
         return False
+
+    def check_spread(self, code: str) -> dict:
+        """호가 스프레드 체크
+
+        Returns: {ok, spread_pct, ask, bid, message}
+        """
+        try:
+            broker = self._get_broker()
+            headers = {
+                "content-type": "application/json; charset=utf-8",
+                "authorization": broker.access_token,
+                "appKey": broker.api_key,
+                "appSecret": broker.api_secret,
+                "tr_id": "FHKST01010200",
+            }
+            params = {"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code}
+            import requests
+            resp = requests.get(
+                f"{broker.base_url}/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn",
+                headers=headers, params=params, timeout=5,
+            )
+            d = resp.json().get("output1", {})
+            ask1 = int(d.get("askp1", 0))
+            bid1 = int(d.get("bidp1", 0))
+
+            if ask1 <= 0 or bid1 <= 0:
+                return {"ok": True, "spread_pct": 0, "message": "호가 조회 실패 — 통과"}
+
+            mid = (ask1 + bid1) / 2
+            spread_pct = (ask1 - bid1) / mid * 100
+
+            max_spread = self.risk.get("max_spread_pct", 0.5)
+            if spread_pct > max_spread:
+                return {
+                    "ok": False, "spread_pct": round(spread_pct, 2),
+                    "ask": ask1, "bid": bid1,
+                    "message": f"스프레드 {spread_pct:.2f}% > {max_spread}% — 주문 보류",
+                }
+            return {
+                "ok": True, "spread_pct": round(spread_pct, 2),
+                "ask": ask1, "bid": bid1,
+                "message": f"스프레드 {spread_pct:.2f}% OK",
+            }
+        except Exception as e:
+            logger.warning(f"스프레드 체크 실패 {code}: {e}")
+            return {"ok": True, "spread_pct": 0, "message": f"스프레드 체크 실패: {e} — 통과"}
 
     # ═══════════════════════════════════════
     #  매매 일지
@@ -696,20 +762,26 @@ class KISTrader:
     # ═══════════════════════════════════════
 
     def safe_buy(self, code: str, amount: int) -> dict:
-        """금액 기반 안전 매수 (7단계 리스크 체크)
+        """금액 기반 안전 매수 (8단계 리스크 체크)
 
         1. 위험시간대 차단 (14:00~14:50)
-        2. 현금 잔고 확인
-        3. 포지션 수 확인 (max_positions)
-        4. 비중 확인 (max_position_ratio)
-        5. 현재가로 수량 계산
-        6. 거래량 대비 비중 확인 (10% 이하)
-        7. 분할 시장가 매수
+        2. 호가 스프레드 체크 (0.5% 초과 시 보류)
+        3. 현금 잔고 확인
+        4. 포지션 수 확인 (max_positions)
+        5. 비중 확인 (max_position_ratio)
+        6. 현재가로 수량 계산
+        7. 거래량 대비 비중 확인 (10% 이하)
+        8. 스마트 지정가 매수
         """
         # 1. 위험시간 체크
         danger_msg = self._check_danger_time()
         if danger_msg:
             return {"success": False, "message": f"⚠️ {danger_msg}"}
+
+        # 2. 호가 스프레드 체크
+        spread = self.check_spread(code)
+        if not spread["ok"]:
+            return {"success": False, "message": f"⚠️ {spread['message']}"}
 
         # 2. 잔고 조회
         bal = self.fetch_balance()

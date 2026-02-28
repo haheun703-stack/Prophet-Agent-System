@@ -100,6 +100,11 @@ class RealtimeMonitor:
         self._trailing_start_pct = bot.get("trailing_start_pct", 10.0)
         self._trailing_distance_pct = bot.get("trailing_distance_pct", 3.0)
 
+        # API 장애 감지
+        self._consecutive_failures = 0
+        self._max_failures = 5        # 5회 연속 실패 시 경고
+        self._feed_suspended = False   # 데이터 피드 중단 플래그
+
     # ── 브로커 ──
 
     def _get_broker(self):
@@ -115,6 +120,12 @@ class RealtimeMonitor:
             mock=False,
         )
         return self._broker
+
+    def _reset_broker(self):
+        """브로커 재생성 (토큰 갱신/재연결)"""
+        self._broker = None
+        logger.info("KIS 브로커 재생성 (토큰 갱신)")
+        return self._get_broker()
 
     # ── 포지션 관리 ──
 
@@ -204,10 +215,25 @@ class RealtimeMonitor:
             row["ask1"] = int(d3.get("askp1", 0))
             row["bid1"] = int(d3.get("bidp1", 0))
 
+            # 성공 → 실패 카운터 리셋
+            self._consecutive_failures = 0
+            self._feed_suspended = False
             return row
 
         except Exception as e:
-            logger.warning(f"[{code}] 스냅샷 실패: {e}")
+            self._consecutive_failures += 1
+            logger.warning(f"[{code}] 스냅샷 실패 ({self._consecutive_failures}연속): {e}")
+
+            # 연속 실패 시 브로커 재생성 (토큰 만료 가능성)
+            if self._consecutive_failures == 3:
+                logger.info("3연속 실패 → 브로커 재생성 시도")
+                self._reset_broker()
+
+            # 5회 연속 → 데이터 피드 중단 경고
+            if self._consecutive_failures >= self._max_failures:
+                self._feed_suspended = True
+                logger.error(f"데이터 피드 중단 감지: {self._consecutive_failures}회 연속 실패")
+
             return None
 
     # ── 4팩터 스코어링 ──

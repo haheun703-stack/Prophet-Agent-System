@@ -192,6 +192,10 @@ class BodyHunterBot:
             lines.append(f"현금: {bal['cash']:,}원")
             lines.append(f"보유: {len(bal['positions'])}종목")
 
+        # 리스크 게이트 상태
+        lines.append("━" * 25)
+        lines.append(self.auto_trader.get_risk_status())
+
         await update.message.reply_text("\n".join(lines))
 
     async def cmd_log(self, update: Update, context: ContextTypes.DEFAULT_TYPE):

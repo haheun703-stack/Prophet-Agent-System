@@ -169,6 +169,7 @@ risk:
   min_cash_ratio: 0.10
   max_loss_per_trade_pct: 0.02
   daily_loss_limit: 500000
+  mdd_limit_pct: 4.5              # MDD 한도 (%) — 초과 시 매매 정지
   max_positions: 5
   max_position_ratio: 0.30
   stop_loss_pct: 0.02
@@ -177,6 +178,7 @@ risk:
   trailing_stop_pct: 0.015
   split_count: 3                    # 분할 주문 횟수 (매수/매도)
   max_volume_pct: 0.10              # 내 주문/당일거래량 최대 비율 (10%)
+  max_spread_pct: 0.5               # 호가 스프레드 한도 (%) — 초과 시 주문 보류
   danger_hours:                     # 매수 차단 시간대 (알고리즘 장난 구간)
     start: "14:00"
     end: "14:50"

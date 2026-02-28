@@ -37,14 +37,25 @@ CRASH_LOG = Path(__file__).parent / "logs" / "crash.log"
 
 
 def setup_logging():
+    from logging.handlers import TimedRotatingFileHandler
+
     log_dir = Path(__file__).parent / "logs"
     log_dir.mkdir(exist_ok=True)
-    today = datetime.now().strftime("%Y%m%d")
 
     # 기존 핸들러 제거 (재시작 시 중복 방지)
     root = logging.getLogger()
     for h in root.handlers[:]:
         root.removeHandler(h)
+
+    # TimedRotatingFileHandler: 매일 자동 로테이션, 30일 보관
+    file_handler = TimedRotatingFileHandler(
+        log_dir / "bot.log",
+        when="midnight",
+        interval=1,
+        backupCount=30,      # 30일치 보관 후 자동 삭제
+        encoding="utf-8",
+    )
+    file_handler.suffix = "%Y%m%d"
 
     logging.basicConfig(
         level=logging.INFO,
@@ -52,7 +63,7 @@ def setup_logging():
         datefmt="%H:%M:%S",
         handlers=[
             logging.StreamHandler(),
-            logging.FileHandler(log_dir / f"bot_{today}.log", encoding="utf-8"),
+            file_handler,
         ],
     )
 

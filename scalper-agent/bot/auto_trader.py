@@ -21,7 +21,7 @@ JobQueue (python-telegram-bot)로 스케줄:
 import asyncio
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, date
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -29,6 +29,7 @@ logger = logging.getLogger("BH.AutoTrader")
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 CANDIDATES_PATH = BASE_DIR / "data_store" / "swing_candidates.json"
+RISK_STATE_PATH = BASE_DIR / "data_store" / "risk_state.json"
 
 
 class AutoTrader:
@@ -50,12 +51,133 @@ class AutoTrader:
         # AI 실시간 모니터
         self._rt_monitor = None
 
+        # ── 리스크 게이트 (일일손실한도 + MDD) ──
+        risk = config.get("risk", {})
+        self._daily_loss_limit = risk.get("daily_loss_limit", 500000)
+        self._mdd_limit_pct = risk.get("mdd_limit_pct", 4.5)
+        self._risk_state = self._load_risk_state()
+        self._risk_blocked = False  # True면 신규 매수 차단
+
     def _get_rt_monitor(self):
         """RealtimeMonitor lazy init"""
         if self._rt_monitor is None:
             from data.realtime_monitor import RealtimeMonitor
             self._rt_monitor = RealtimeMonitor(self.config)
         return self._rt_monitor
+
+    # ═══════════════════════════════════════
+    #  리스크 게이트 (일일 손실 한도 + MDD)
+    # ═══════════════════════════════════════
+
+    def _load_risk_state(self) -> dict:
+        """리스크 상태 파일 로드 (일일 리셋)"""
+        today = date.today().isoformat()
+        default = {
+            "date": today,
+            "daily_realized_loss": 0,
+            "peak_equity": 0,
+            "current_mdd_pct": 0.0,
+            "blocked_reason": "",
+        }
+        try:
+            if RISK_STATE_PATH.exists():
+                with open(RISK_STATE_PATH, "r", encoding="utf-8") as f:
+                    state = json.load(f)
+                if state.get("date") == today:
+                    return state
+                # 날짜 변경 → 일일 손실 리셋, MDD peak은 유지
+                state["date"] = today
+                state["daily_realized_loss"] = 0
+                state["blocked_reason"] = ""
+                return state
+        except Exception as e:
+            logger.warning(f"리스크 상태 로드 실패: {e}")
+        return default
+
+    def _save_risk_state(self):
+        """리스크 상태 저장"""
+        try:
+            RISK_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with open(RISK_STATE_PATH, "w", encoding="utf-8") as f:
+                json.dump(self._risk_state, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"리스크 상태 저장 실패: {e}")
+
+    def record_realized_loss(self, loss_amount: int):
+        """실현 손실 기록 (매도 시 호출)"""
+        if loss_amount >= 0:
+            return  # 이익이면 무시
+        self._risk_state["daily_realized_loss"] += abs(loss_amount)
+        self._save_risk_state()
+        logger.info(f"일일 실현 손실 누적: {self._risk_state['daily_realized_loss']:,}원")
+
+    def check_risk_gate(self) -> tuple[bool, str]:
+        """리스크 게이트 체크 → (통과여부, 사유)
+
+        1. 일일 손실 한도 체크
+        2. MDD 체크
+        """
+        # 날짜 변경 체크
+        today = date.today().isoformat()
+        if self._risk_state.get("date") != today:
+            self._risk_state = self._load_risk_state()
+            self._risk_blocked = False
+
+        # 1) 일일 손실 한도
+        daily_loss = self._risk_state.get("daily_realized_loss", 0)
+        if daily_loss >= self._daily_loss_limit:
+            self._risk_blocked = True
+            reason = f"일일 손실 한도 초과: {daily_loss:,}원 / {self._daily_loss_limit:,}원"
+            self._risk_state["blocked_reason"] = reason
+            self._save_risk_state()
+            return False, reason
+
+        # 2) MDD 체크
+        try:
+            bal = self.trader.fetch_balance()
+            if bal.get("success"):
+                equity = bal["total_eval"]
+                peak = self._risk_state.get("peak_equity", 0)
+
+                if equity > peak:
+                    self._risk_state["peak_equity"] = equity
+                    peak = equity
+                    self._save_risk_state()
+
+                if peak > 0:
+                    mdd = (peak - equity) / peak * 100
+                    self._risk_state["current_mdd_pct"] = round(mdd, 2)
+                    self._save_risk_state()
+
+                    if mdd >= self._mdd_limit_pct:
+                        self._risk_blocked = True
+                        reason = f"MDD 한도 초과: -{mdd:.1f}% (한도 -{self._mdd_limit_pct}%)"
+                        self._risk_state["blocked_reason"] = reason
+                        self._save_risk_state()
+                        return False, reason
+        except Exception as e:
+            logger.warning(f"MDD 체크 실패: {e}")
+
+        return True, ""
+
+    def get_risk_status(self) -> str:
+        """리스크 상태 리포트"""
+        s = self._risk_state
+        daily_loss = s.get("daily_realized_loss", 0)
+        mdd = s.get("current_mdd_pct", 0)
+        peak = s.get("peak_equity", 0)
+        blocked = s.get("blocked_reason", "")
+
+        lines = [
+            f"일일 손실: {daily_loss:,}원 / {self._daily_loss_limit:,}원",
+            f"MDD: -{mdd:.1f}% (한도 -{self._mdd_limit_pct}%)",
+            f"고점 자산: {peak:,}원",
+        ]
+        if blocked:
+            lines.append(f"차단: {blocked}")
+        else:
+            lines.append("상태: 정상 (매수 가능)")
+        return "\n".join(lines)
 
     def start(self, send_alert_func: Callable):
         """자동매매 시작"""
@@ -76,11 +198,25 @@ class AutoTrader:
         return 900 <= h <= 1520
 
     async def _alert(self, text: str):
+        """텔레그램 알림 (실패 시 로컬 로그 폴백)"""
+        sent = False
         if self._send_alert:
             try:
                 await self._send_alert(text)
+                sent = True
             except Exception as e:
-                logger.error(f"알림 전송 실패: {e}")
+                logger.error(f"텔레그램 알림 전송 실패: {e}")
+
+        if not sent:
+            # 폴백: 로컬 알림 로그 파일에 저장
+            try:
+                alert_log = BASE_DIR / "logs" / "alert_fallback.log"
+                alert_log.parent.mkdir(parents=True, exist_ok=True)
+                with open(alert_log, "a", encoding="utf-8") as f:
+                    f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {text}\n{'='*50}\n")
+                logger.info(f"알림 폴백 저장: {alert_log}")
+            except Exception as e2:
+                logger.error(f"알림 폴백도 실패: {e2}")
 
     # ═══════════════════════════════════════
     #  스케줄 Job 핸들러
@@ -173,6 +309,12 @@ class AutoTrader:
         await _send("\n".join(lines))
 
         if not self.is_running:
+            return
+
+        # ── 리스크 게이트 체크 (일일손실한도 + MDD) ──
+        risk_ok, risk_reason = self.check_risk_gate()
+        if not risk_ok:
+            await _send(f"⛔ 리스크 게이트 차단 — 신규 매수 불가\n{risk_reason}")
             return
 
         # 자동 매수 실행
@@ -582,6 +724,18 @@ class AutoTrader:
 
         try:
             rtm = self._get_rt_monitor()
+
+            # 데이터 피드 중단 감지
+            if rtm._feed_suspended:
+                await self._alert(
+                    "⚠️ 데이터 피드 중단 감지!\n"
+                    f"   {rtm._consecutive_failures}회 연속 API 실패\n"
+                    "   신규 매매 중지, SL/TP 폴백으로 전환"
+                )
+                self._risk_blocked = True
+                await self._job_monitor_fallback()
+                return
+
             snapshots = await asyncio.to_thread(rtm.evaluate_all)
         except Exception as e:
             logger.error(f"AI 모니터 평가 실패: {e}")
@@ -601,6 +755,15 @@ class AutoTrader:
 
                 if snap.decision == "FULL_SELL":
                     logger.info(f"AI 전량매도: {code} @ {snap.price:,} ({snap.decision_reason})")
+                    # 실현 손익 기록
+                    pnl_amount = snap.price - pos["entry_price"]
+                    bal_info = self.trader.fetch_balance()
+                    for p in bal_info.get("positions", []):
+                        if p["code"] == code:
+                            pnl_amount = p.get("pnl_amount", pnl_amount)
+                            break
+                    self.record_realized_loss(pnl_amount)
+
                     result = self.trader.liquidate_one(code)
                     self._positions.pop(code, None)
                     rtm.unregister_position(code)
@@ -633,9 +796,12 @@ class AutoTrader:
                 cp = price_info["current_price"]
 
                 if cp <= pos["stop_loss"]:
+                    # 실현 손실 기록
+                    loss = cp - pos["entry_price"]
+                    self.record_realized_loss(loss)
+
                     result = self.trader.liquidate_one(code)
                     self._positions.pop(code, None)
-                    loss = cp - pos["entry_price"]
                     await self._alert(
                         f"손절\n{pos.get('name', code)}({code}) @ {cp:,}원\n"
                         f"진입: {pos['entry_price']:,} -> 현재: {cp:,} ({loss:+,})"
