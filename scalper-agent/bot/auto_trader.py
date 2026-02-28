@@ -186,12 +186,39 @@ class AutoTrader:
             return
 
         bought = 0
+        skipped = 0
         for c in candidates[:slots]:
             code = c["code"]
             if code in self._positions:
                 continue
 
-            result = self.trader.safe_buy(code, buy_amount)
+            # ── 진입 필터: 차트 기반 최종 확인 ──
+            try:
+                from data.swing_indicators import check_entry_filter
+                entry_check = await asyncio.to_thread(
+                    check_entry_filter, code, c["name"]
+                )
+
+                if not entry_check["pass"]:
+                    skipped += 1
+                    await _send(
+                        f"⛔ 진입 거부: {c['name']}({code})\n"
+                        f"   {entry_check['reason']}"
+                    )
+                    continue
+
+                # 절반 매수 (size_mult=0.5)
+                actual_amount = int(buy_amount * entry_check["size_mult"])
+                if entry_check["size_mult"] < 1.0:
+                    await _send(
+                        f"⚠️ {c['name']}: 절반 매수 ({actual_amount:,}원)\n"
+                        f"   {entry_check['reason']}"
+                    )
+            except Exception as e:
+                logger.warning(f"진입필터 오류 {code}: {e} — 기본 매수")
+                actual_amount = buy_amount
+
+            result = self.trader.safe_buy(code, actual_amount)
             if result.get("success"):
                 bought += 1
                 price_info = self.trader.fetch_price(code)
@@ -226,7 +253,10 @@ class AutoTrader:
             else:
                 await _send(f"❌ 매수 실패 {code}: {result.get('message')}")
 
-        await _send(f"아침 스캔 완료: {bought}/{min(len(candidates), slots)} 매수")
+        summary = f"아침 스캔 완료: {bought}매수"
+        if skipped:
+            summary += f" / {skipped}거부(차트필터)"
+        await _send(summary)
 
     async def _morning_day(self, context, _send):
         """데이 모드 아침 스캔: 기존 5D + 고정 SL/TP"""

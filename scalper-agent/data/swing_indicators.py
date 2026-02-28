@@ -328,3 +328,160 @@ def analyze_stock(df: pd.DataFrame) -> dict:
         composite["swing_tp"] = 0
 
     return composite
+
+
+# ═══════════════════════════════════════════════════
+#  5. 스토캐스틱 (5,3,3)
+# ═══════════════════════════════════════════════════
+
+def calc_stochastic(high: pd.Series, low: pd.Series, close: pd.Series,
+                    k_period: int = 5, d_period: int = 3, smooth: int = 3) -> pd.DataFrame:
+    """스토캐스틱 %K, %D 계산"""
+    lowest = low.rolling(k_period).min()
+    highest = high.rolling(k_period).max()
+    raw_k = 100 * (close - lowest) / (highest - lowest).replace(0, np.nan)
+    k = raw_k.rolling(smooth).mean()
+    d = k.rolling(d_period).mean()
+    return pd.DataFrame({"k": k, "d": d})
+
+
+# ═══════════════════════════════════════════════════
+#  6. 볼린저밴드 (20, 2)
+# ═══════════════════════════════════════════════════
+
+def calc_bollinger(close: pd.Series, period: int = 20, std_mult: float = 2.0) -> pd.DataFrame:
+    """볼린저밴드 상/중/하단"""
+    mid = close.rolling(period).mean()
+    std = close.rolling(period).std()
+    return pd.DataFrame({
+        "upper": mid + std * std_mult,
+        "mid": mid,
+        "lower": mid - std * std_mult,
+        "pct_b": (close - (mid - std * std_mult)) / ((mid + std * std_mult) - (mid - std * std_mult)).replace(0, np.nan),
+    })
+
+
+# ═══════════════════════════════════════════════════
+#  7. 장중 진입 필터 (매수 직전 최종 확인)
+# ═══════════════════════════════════════════════════
+
+def check_entry_filter(code: str, name: str = "") -> dict:
+    """매수 직전 차트 기반 최종 확인
+
+    Returns:
+        {
+            "pass": True/False,
+            "reason": "통과 사유 / 거부 사유",
+            "rsi": float,
+            "stoch_k": float, "stoch_d": float,
+            "bb_pct_b": float,
+            "size_mult": float (1.0=풀, 0.5=절반, 0.0=패스)
+        }
+    """
+    from pykrx import stock as pykrx_stock
+    from datetime import datetime, timedelta
+
+    result = {
+        "pass": True, "reason": "통과", "rsi": 0, "stoch_k": 0, "stoch_d": 0,
+        "bb_pct_b": 0, "size_mult": 1.0, "checks": [],
+    }
+
+    try:
+        # 최근 60일 일봉 데이터 가져오기
+        end = datetime.now().strftime("%Y%m%d")
+        start = (datetime.now() - timedelta(days=120)).strftime("%Y%m%d")
+        df = pykrx_stock.get_market_ohlcv(start, end, code)
+
+        if df is None or len(df) < 30:
+            result["reason"] = "데이터 부족 — 필터 통과 (데이터 없음)"
+            result["checks"].append("DATA_INSUFFICIENT")
+            return result
+
+        close = df["종가"].astype(float)
+        high = df["고가"].astype(float)
+        low = df["저가"].astype(float)
+
+        # ── RSI 체크 ──
+        rsi_series = calc_rsi(close, 14)
+        rsi = float(rsi_series.iloc[-1])
+        result["rsi"] = round(rsi, 1)
+
+        # ── 스토캐스틱 체크 ──
+        stoch = calc_stochastic(high, low, close)
+        k_val = float(stoch["k"].iloc[-1]) if not pd.isna(stoch["k"].iloc[-1]) else 50
+        d_val = float(stoch["d"].iloc[-1]) if not pd.isna(stoch["d"].iloc[-1]) else 50
+        k_prev = float(stoch["k"].iloc[-2]) if len(stoch) > 1 and not pd.isna(stoch["k"].iloc[-2]) else k_val
+        d_prev = float(stoch["d"].iloc[-2]) if len(stoch) > 1 and not pd.isna(stoch["d"].iloc[-2]) else d_val
+        result["stoch_k"] = round(k_val, 1)
+        result["stoch_d"] = round(d_val, 1)
+
+        # 스토캐스틱 데드크로스: 이전에는 K>D였는데 지금 K<D
+        stoch_death_cross = (k_prev > d_prev) and (k_val < d_val)
+
+        # ── 볼린저밴드 체크 ──
+        bb = calc_bollinger(close)
+        pct_b = float(bb["pct_b"].iloc[-1]) if not pd.isna(bb["pct_b"].iloc[-1]) else 0.5
+        result["bb_pct_b"] = round(pct_b, 3)
+
+        # ═══════════════════════════════════════════
+        #  필터 규칙 (3단계: 거부 → 절반 → 통과)
+        # ═══════════════════════════════════════════
+
+        reject_reasons = []
+        caution_reasons = []
+
+        # 규칙1: RSI 80+ → 극단적 과매수 → 거부
+        if rsi > 80:
+            reject_reasons.append(f"RSI {rsi:.0f} 극과매수")
+
+        # 규칙2: RSI 75+ AND 스토캐스틱 데드크로스 → 과매수 + 하락 전환 → 거부
+        if rsi > 75 and stoch_death_cross:
+            reject_reasons.append(f"RSI {rsi:.0f} + 스토캐스틱 데드크로스")
+
+        # 규칙3: 볼린저 %B > 1.05 → 밴드 이탈 → 거부
+        if pct_b > 1.05:
+            reject_reasons.append(f"볼린저밴드 이탈 (%B={pct_b:.2f})")
+
+        # 규칙4: 스토캐스틱 K,D 모두 95+ → 극단적 과매수 → 거부
+        if k_val > 95 and d_val > 95:
+            reject_reasons.append(f"스토캐스틱 극과매수 (K={k_val:.0f}, D={d_val:.0f})")
+
+        # 규칙5: RSI 70~80 → 과열 주의 → 절반 매수
+        if 70 < rsi <= 80 and not reject_reasons:
+            caution_reasons.append(f"RSI {rsi:.0f} 과열주의")
+
+        # 규칙6: 볼린저 %B > 0.95 → 상단 근접 → 절반 매수
+        if 0.95 < pct_b <= 1.05 and not reject_reasons:
+            caution_reasons.append(f"볼린저 상단 근접 (%B={pct_b:.2f})")
+
+        # 규칙7: 스토캐스틱 데드크로스 (RSI 70 미만이어도) → 절반 매수
+        if stoch_death_cross and not reject_reasons:
+            caution_reasons.append(f"스토캐스틱 데드크로스 (K={k_val:.0f}<D={d_val:.0f})")
+
+        # ── 최종 판정 ──
+        if reject_reasons:
+            result["pass"] = False
+            result["size_mult"] = 0.0
+            result["reason"] = "진입 거부: " + " | ".join(reject_reasons)
+            result["checks"] = reject_reasons
+        elif caution_reasons:
+            result["pass"] = True
+            result["size_mult"] = 0.5
+            result["reason"] = "절반 진입: " + " | ".join(caution_reasons)
+            result["checks"] = caution_reasons
+        else:
+            result["pass"] = True
+            result["size_mult"] = 1.0
+            result["reason"] = f"통과 (RSI={rsi:.0f}, K={k_val:.0f}, %B={pct_b:.2f})"
+            result["checks"] = ["ALL_CLEAR"]
+
+        label = name or code
+        icon = "PASS" if result["pass"] else "REJECT"
+        mult = f"{result['size_mult']:.0%}"
+        print(f"  진입필터 {label}: [{icon}] {mult} — {result['reason']}")
+
+    except Exception as e:
+        result["reason"] = f"필터 오류: {e} — 기본 통과"
+        result["checks"] = [f"ERROR: {e}"]
+
+    return result
