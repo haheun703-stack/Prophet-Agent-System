@@ -206,7 +206,10 @@ class AutoTrader:
         logger.info("자동매매 정지")
 
     def execute_pending_auto_buys(self) -> list[dict]:
-        """대기 중인 자동매수 전부 실행 → 결과 리스트 반환"""
+        """대기 중인 자동매수 전부 실행 → 결과 리스트 반환
+
+        분할매수 시: split_done 카운터 여기서 올림 + 포지션 최초 1회만 생성
+        """
         results = []
         for item in self._pending_auto_buys:
             code, name = item["code"], item["name"]
@@ -214,26 +217,42 @@ class AutoTrader:
 
             result = self.trader.safe_buy(code, amount)
             if result.get("success"):
-                price_info = self.trader.fetch_price(code)
-                cp = price_info.get("current_price", item.get("sl", 0))
-                target_state = self._init_dynamic_target(code, name, cp)
-                sl = target_state.dynamic_sl if target_state else item["sl"]
-                tp = target_state.dynamic_tp if target_state else item["tp"]
+                # 분할매수: entry_watch 상태 업데이트
+                if item.get("_is_split") and code in self._entry_watch:
+                    watch = self._entry_watch[code]
+                    watch["split_done"] = watch.get("split_done", 0) + 1
+                    watch["last_split_check"] = watch.get("checks", 0)
+                    done = watch["split_done"]
+                    total = watch.get("split_count", 3)
+                    logger.info(f"분할매수 체결: {name} {done}/{total}차")
+                    # 전부 완료 → 감시 제거
+                    if done >= total:
+                        self._entry_watch.pop(code, None)
 
-                self._positions[code] = {
-                    "entry_price": cp,
-                    "stop_loss": sl,
-                    "take_profit": tp,
-                    "entry_date": datetime.now().strftime("%Y-%m-%d"),
-                    "name": name,
-                    "target_state": target_state,
-                }
-                try:
-                    rtm = self._get_rt_monitor()
-                    rtm.register_position(code, name, cp, sl, tp)
-                except Exception as e:
-                    logger.warning(f"AI 모니터 등록 실패 {code}: {e}")
+                # 포지션 최초 1회만 생성 (분할매수 시 덮어쓰기 방지)
+                if code not in self._positions:
+                    price_info = self.trader.fetch_price(code)
+                    cp = price_info.get("current_price", item.get("sl", 0))
+                    target_state = self._init_dynamic_target(code, name, cp)
+                    sl = target_state.dynamic_sl if target_state else item["sl"]
+                    tp = target_state.dynamic_tp if target_state else item["tp"]
 
+                    self._positions[code] = {
+                        "entry_price": cp,
+                        "stop_loss": sl,
+                        "take_profit": tp,
+                        "entry_date": datetime.now().strftime("%Y-%m-%d"),
+                        "name": name,
+                        "target_state": target_state,
+                    }
+                    try:
+                        rtm = self._get_rt_monitor()
+                        rtm.register_position(code, name, cp, sl, tp)
+                    except Exception as e:
+                        logger.warning(f"AI 모니터 등록 실패 {code}: {e}")
+
+                sl = self._positions[code]["stop_loss"]
+                tp = self._positions[code]["take_profit"]
                 results.append({"success": True, "name": name, "code": code,
                                 "message": result.get("message"), "sl": sl, "tp": tp})
             else:
@@ -682,12 +701,21 @@ class AutoTrader:
                     split_label = f"[{split_done+1}/{split_count}차]"
 
                     if self._confirm_auto:
+                        # 이미 대기 중인 매수가 있으면 스킵 (중복 방지)
+                        already_pending = any(
+                            p["code"] == code for p in self._pending_auto_buys
+                        )
+                        if already_pending:
+                            continue
+
                         self._pending_auto_buys.append({
                             "code": code, "name": watch["name"],
                             "amount": this_amount, "sl": watch["sl"],
                             "tp": watch["tp"],
                             "tp1_quick": watch.get("tp1_quick", watch["tp"]),
                             "score": watch["score"],
+                            "_is_split": True,
+                            "_split_label": split_label,
                         })
                         await self._alert(
                             f"⚠️ 분할매수 {split_label} 확인 대기\n"
@@ -698,11 +726,8 @@ class AutoTrader:
                             f"(총 {watch['buy_amount']:,}원 중)\n\n"
                             f"   실행: '자동확인' | 취소: '자동취소'"
                         )
-                        # 분할 상태 업데이트
-                        watch["split_done"] = split_done + 1
-                        watch["last_split_check"] = watch["checks"]
-                        if is_last:
-                            expired.append(code)
+                        # split_done은 여기서 안 올림!
+                        # execute_pending_auto_buys에서 실제 체결 후 올림
                     else:
                         result = self.trader.safe_buy(code, this_amount)
                         if result.get("success"):
