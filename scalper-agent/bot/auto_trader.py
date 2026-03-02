@@ -446,6 +446,9 @@ class AutoTrader:
 
             actual_amount = int(buy_amount * size_mult)
 
+            # 분할매수 설정 (config split_count, 기본 3)
+            split_count = self.config.get("risk", {}).get("split_count", 3)
+
             # 진입감시 대기열에 등록
             self._entry_watch[code] = {
                 "name": c["name"],
@@ -467,6 +470,12 @@ class AutoTrader:
                 "ai_scores": [],          # 최근 AI 점수 기록
                 "registered_at": datetime.now().strftime("%H:%M"),
                 "entry_triggered": False,  # 진입 조건 충족 여부
+                # ── 분할매수 상태 ──
+                "split_count": split_count,    # 총 분할 횟수 (기본 3)
+                "split_done": 0,               # 완료된 분할 횟수
+                "split_amount": actual_amount // split_count,  # 1회 매수금액
+                "last_split_check": 0,         # 마지막 분할 매수 시 checks 값
+                "split_interval": 10,          # 분할 간격 (10회 = 5분)
             }
             registered += 1
 
@@ -474,7 +483,8 @@ class AutoTrader:
         for code, w in self._entry_watch.items():
             lines.append(
                 f"  📡 {w['name']}({code}) 점수:{w['score']:.0f} "
-                f"금액:{w['buy_amount']:,}원"
+                f"금액:{w['buy_amount']:,}원 "
+                f"({w['split_count']}분할×{w['split_amount']:,}원)"
             )
         if skipped:
             lines.append(f"  ⛔ {skipped}종목 차트필터 거부")
@@ -504,10 +514,19 @@ class AutoTrader:
             # 최대 관찰 시간 초과 → 만료
             if watch["checks"] > watch["max_checks"]:
                 expired.append(code)
-                await self._alert(
-                    f"⏰ 진입 관찰 만료: {watch['name']}({code})\n"
-                    f"   30분간 진입 조건 미충족 — 오늘 매수 안 함"
-                )
+                split_done = watch.get("split_done", 0)
+                split_count = watch.get("split_count", 3)
+                if split_done > 0:
+                    await self._alert(
+                        f"⏰ 진입 관찰 만료: {watch['name']}({code})\n"
+                        f"   {split_done}/{split_count}차 분할매수 완료 상태로 종료\n"
+                        f"   나머지 {split_count - split_done}차는 시간 초과로 취소"
+                    )
+                else:
+                    await self._alert(
+                        f"⏰ 진입 관찰 만료: {watch['name']}({code})\n"
+                        f"   30분간 진입 조건 미충족 — 오늘 매수 안 함"
+                    )
                 continue
 
             # KIS API로 실시간 조회
@@ -629,60 +648,120 @@ class AutoTrader:
                         f"{' '.join(conditions_detail)}"
                     )
 
-                # ── 진입 조건 충족! (6개 중 3개 이상) → 매수 ──
+                # ── 진입 조건 충족! (6개 중 3개 이상) → 분할매수 ──
                 if conditions_met >= 3:
                     detail_str = " + ".join(conditions_detail)
+                    split_done = watch.get("split_done", 0)
+                    split_count = watch.get("split_count", 3)
+                    split_amount = watch.get("split_amount", watch["buy_amount"])
+                    last_split = watch.get("last_split_check", 0)
+                    split_interval = watch.get("split_interval", 10)
+
+                    # 첫 분할이거나, 이전 분할 후 5분(10회) 경과
+                    can_split = (split_done == 0) or \
+                                (watch["checks"] - last_split >= split_interval)
+
+                    if not can_split:
+                        # 아직 다음 분할 시간 안 됨 → 대기
+                        remaining = split_interval - (watch["checks"] - last_split)
+                        if watch["checks"] % 10 == 0:
+                            logger.info(
+                                f"분할대기 {watch['name']}: "
+                                f"{split_done}/{split_count}차 완료, "
+                                f"다음 분할까지 {remaining * 30}초"
+                            )
+                        continue
+
+                    # 마지막 분할이면 남은 금액 전부 투입
+                    is_last = (split_done + 1 >= split_count)
+                    this_amount = split_amount
+                    if is_last:
+                        used = split_amount * split_done
+                        this_amount = watch["buy_amount"] - used
+
+                    split_label = f"[{split_done+1}/{split_count}차]"
 
                     if self._confirm_auto:
                         self._pending_auto_buys.append({
                             "code": code, "name": watch["name"],
-                            "amount": watch["buy_amount"], "sl": watch["sl"],
+                            "amount": this_amount, "sl": watch["sl"],
                             "tp": watch["tp"],
                             "tp1_quick": watch.get("tp1_quick", watch["tp"]),
                             "score": watch["score"],
                         })
                         await self._alert(
-                            f"⚠️ 진입 조건 충족 — 매수 확인 대기\n"
+                            f"⚠️ 분할매수 {split_label} 확인 대기\n"
                             f"   {watch['name']}({code}) @ {cp:,}원\n"
                             f"   시가 {open_price:,} → 현재 {cp:,} ({from_open:+.1f}%)\n"
                             f"   조건: {detail_str}\n"
-                            f"   금액: {watch['buy_amount']:,}원\n\n"
+                            f"   금액: {this_amount:,}원 "
+                            f"(총 {watch['buy_amount']:,}원 중)\n\n"
                             f"   실행: '자동확인' | 취소: '자동취소'"
                         )
+                        # 분할 상태 업데이트
+                        watch["split_done"] = split_done + 1
+                        watch["last_split_check"] = watch["checks"]
+                        if is_last:
+                            expired.append(code)
                     else:
-                        result = self.trader.safe_buy(code, watch["buy_amount"])
+                        result = self.trader.safe_buy(code, this_amount)
                         if result.get("success"):
-                            target_state = self._init_dynamic_target(
-                                code, watch["name"], cp
-                            )
-                            sl = target_state.dynamic_sl if target_state else watch["sl"]
-                            tp = target_state.dynamic_tp if target_state else watch["tp"]
-                            self._positions[code] = {
-                                "entry_price": cp,
-                                "stop_loss": sl,
-                                "take_profit": tp,
-                                "entry_date": datetime.now().strftime("%Y-%m-%d"),
-                                "name": watch["name"],
-                                "target_state": target_state,
-                            }
-                            try:
-                                rtm = self._get_rt_monitor()
-                                rtm.register_position(code, watch["name"], cp, sl, tp)
-                            except Exception:
-                                pass
+                            watch["split_done"] = split_done + 1
+                            watch["last_split_check"] = watch["checks"]
+
+                            # 포지션 등록/업데이트
+                            if code not in self._positions:
+                                target_state = self._init_dynamic_target(
+                                    code, watch["name"], cp
+                                )
+                                sl = target_state.dynamic_sl if target_state else watch["sl"]
+                                tp = target_state.dynamic_tp if target_state else watch["tp"]
+                                self._positions[code] = {
+                                    "entry_price": cp,
+                                    "stop_loss": sl,
+                                    "take_profit": tp,
+                                    "entry_date": datetime.now().strftime("%Y-%m-%d"),
+                                    "name": watch["name"],
+                                    "target_state": target_state,
+                                }
+                                try:
+                                    rtm = self._get_rt_monitor()
+                                    rtm.register_position(code, watch["name"], cp, sl, tp)
+                                except Exception:
+                                    pass
+
                             await self._alert(
-                                f"✅ 진입 확인 매수!\n"
+                                f"✅ 분할매수 {split_label} 체결!\n"
                                 f"   {watch['name']}({code}) @ {cp:,}원\n"
                                 f"   시가 {open_price:,} → 매수 {cp:,}\n"
                                 f"   조건: {detail_str}\n"
-                                f"   SL:{sl:,} TP:{tp:,}"
-                            )
-                        else:
-                            await self._alert(
-                                f"❌ 매수 실패: {watch['name']}({code})\n"
-                                f"   {result.get('message')}"
+                                f"   금액: {this_amount:,}원 "
+                                f"(총 {watch['buy_amount']:,}원 중)\n"
+                                f"   SL:{watch['sl']:,} TP:{watch['tp']:,}"
                             )
 
+                            if is_last:
+                                await self._alert(
+                                    f"🎯 분할매수 완료: {watch['name']}({code})\n"
+                                    f"   {split_count}차 분할 전량 체결!"
+                                )
+                                expired.append(code)
+                            # 아직 분할 남음 → 감시 유지
+                        else:
+                            await self._alert(
+                                f"❌ 분할매수 {split_label} 실패: "
+                                f"{watch['name']}({code})\n"
+                                f"   {result.get('message')}"
+                            )
+                            # 매수 실패해도 다음 분할 시도 위해 감시 유지
+
+                # 조건 미충족 + 이미 분할 진행 중 → 악화 체크
+                elif watch.get("split_done", 0) > 0 and conditions_met < 2:
+                    await self._alert(
+                        f"⚠️ 분할매수 중단: {watch['name']}({code})\n"
+                        f"   {watch['split_done']}/{watch['split_count']}차까지 완료\n"
+                        f"   조건 악화 ({conditions_met}/6) — 나머지 취소"
+                    )
                     expired.append(code)
 
             except Exception as e:
