@@ -45,6 +45,10 @@ class AutoTrader:
         # 돌파 대기 워치리스트: {code: {name, resistance, avg_vol, sl, tp, ...}}
         self._breakout_watch = {}
 
+        # 진입 감시 대기열: 장 시작 후 실시간으로 관찰 → 조건 충족 시 매수
+        # {code: {name, buy_amount, sl, tp, score, prev_close, checks, ...}}
+        self._entry_watch = {}
+
         # 모드: "day" or "swing"
         self.mode = config.get("bot", {}).get("trade_mode", "swing")
 
@@ -301,7 +305,11 @@ class AutoTrader:
             await self._morning_day(context, _send)
 
     async def _morning_swing(self, context, _send):
-        """스윙 모드 아침 스캔: 사전감지 우선 → 7팩터 폴백"""
+        """스윙 모드 아침: 추천 종목 로드 → 진입감시 대기열 등록
+
+        즉시 매수 X → KIS API로 실시간 관찰 → 조건 충족 시 매수
+        실제 매수 판단은 job_monitor 30초 루프의 _check_entry_watch()에서 처리
+        """
 
         # 0) 위기 모드 체크 (최우선)
         from data.market_health import is_crisis_mode
@@ -312,69 +320,74 @@ class AutoTrader:
 
         candidates = []
 
-        # 1) 사전감지 스캐너 우선
+        # 1) 저녁 추천 파이프라인 결과 우선 (Stage 1~3)
         try:
-            await _send("사전감지 스캔 실행 중...")
-            from data.premove_scanner import scan_premove
-            premove = await asyncio.to_thread(scan_premove, 5)
-            if premove:
+            from data.morning_recommendation import load_recommendation
+            rec = load_recommendation()
+            if rec and rec.stocks:
                 candidates = [
                     {
-                        "code": c.code, "name": c.name,
-                        "total_score": c.premove_score,
-                        "entry": int(c.entry), "sl": int(c.sl),
-                        "tp": int(c.tp2),
-                        "tp1_quick": int(c.tp1_quick),
-                        "source": "premove",
+                        "code": s.code, "name": s.name,
+                        "total_score": s.total_score,
+                        "entry": s.entry, "sl": s.sl, "tp": s.tp,
+                        "tp1_quick": s.tp,
+                        "source": "pipeline",
+                        "confidence": s.confidence,
                     }
-                    for c in premove
+                    for s in rec.stocks
                 ]
-                await _send(f"사전감지: {len(candidates)}개 후보 발견")
+                await _send(f"📊 저녁 추천 {len(candidates)}종목 로드 완료")
+                if rec.warning:
+                    await _send(f"⚠️ {rec.warning}")
         except Exception as e:
-            logger.error(f"사전감지 실패: {e}")
-            await _send(f"사전감지 실패 — 7팩터 폴백: {e}")
+            logger.warning(f"추천 로드 실패: {e}")
 
-        # 2) 사전감지 결과 없으면 기존 swing_candidates 폴백
+        # 2) 추천 없으면 사전감지 폴백
+        if not candidates:
+            try:
+                await _send("추천 없음 → 사전감지 실행...")
+                from data.premove_scanner import scan_premove
+                premove = await asyncio.to_thread(scan_premove, 5)
+                if premove:
+                    candidates = [
+                        {
+                            "code": c.code, "name": c.name,
+                            "total_score": c.premove_score,
+                            "entry": int(c.entry), "sl": int(c.sl),
+                            "tp": int(c.tp2),
+                            "tp1_quick": int(c.tp1_quick),
+                            "source": "premove",
+                        }
+                        for c in premove
+                    ]
+            except Exception as e:
+                logger.error(f"사전감지 실패: {e}")
+
+        # 3) 그래도 없으면 swing_candidates 폴백
         if not candidates:
             candidates = self._load_swing_candidates()
 
-        # 3) 그래도 없으면 swing_picker 실행
         if not candidates:
-            try:
-                await _send("스윙 후보 없음 — 7팩터 스캔 실행 중...")
-                candidates = await asyncio.to_thread(self._run_swing_picker)
-            except Exception as e:
-                logger.error(f"스윙 피커 실패: {e}")
-                await _send(f"스윙 피커 실패: {e}")
-                return
-
-        if not candidates:
-            await _send("스캔 결과: 매수 후보 없음")
+            await _send("매수 후보 없음 — 오늘 관망")
             return
 
-        # 리포트 전송
-        src_label = candidates[0].get("source", "swing")
-        lines = [f"매수 후보 ({src_label})"]
-        for c in candidates:
-            lines.append(
-                f"  {c['name']}({c['code']}) 점수:{c['total_score']:.0f} "
-                f"진입:{c['entry']:,} SL:{c['sl']:,} TP:{c['tp']:,}"
-            )
-
         if not self.is_running:
-            lines.append("\n⏸ 자동매매 OFF — 리포트만 전송")
-        await _send("\n".join(lines))
-
-        if not self.is_running:
+            lines = ["📋 매수 후보 (자동매매 OFF — 리포트만)"]
+            for c in candidates:
+                lines.append(
+                    f"  {c['name']}({c['code']}) 점수:{c['total_score']:.0f} "
+                    f"SL:{c['sl']:,} TP:{c['tp']:,}"
+                )
+            await _send("\n".join(lines))
             return
 
-        # ── 리스크 게이트 체크 (일일손실한도 + MDD) ──
+        # ── 리스크 게이트 체크 ──
         risk_ok, risk_reason = self.check_risk_gate()
         if not risk_ok:
-            await _send(f"⛔ 리스크 게이트 차단 — 신규 매수 불가\n{risk_reason}")
+            await _send(f"⛔ 리스크 게이트 차단\n{risk_reason}")
             return
 
-        # 자동 매수 실행
+        # ── 진입감시 대기열에 등록 (즉시 매수 X) ──
         bot_conf = self.config.get("bot", {})
         max_pos = bot_conf.get("max_auto_positions", 5)
         buy_amount = bot_conf.get("auto_buy_amount", 500000)
@@ -384,138 +397,245 @@ class AutoTrader:
         slots = max_pos - current_positions
 
         if slots <= 0:
-            await _send(f"보유 종목 {current_positions}개 — 추가 매수 불가")
+            await _send(f"보유 {current_positions}종목 — 추가 매수 불가")
             return
 
-        bought = 0
+        registered = 0
         skipped = 0
-        watching = 0
         for c in candidates[:slots]:
             code = c["code"]
-            if code in self._positions:
+            if code in self._positions or code in self._entry_watch:
                 continue
 
-            # ── 진입 필터: 차트 기반 최종 확인 ──
+            # 진입 필터 (차트 기반 사전 체크)
+            size_mult = 1.0
             try:
                 from data.swing_indicators import check_entry_filter
                 entry_check = await asyncio.to_thread(
                     check_entry_filter, code, c["name"]
                 )
-
                 if not entry_check["pass"]:
                     skipped += 1
-                    await _send(
-                        f"⛔ 진입 거부: {c['name']}({code})\n"
-                        f"   {entry_check['reason']}"
+                    await _send(f"⛔ 차트 거부: {c['name']} — {entry_check['reason']}")
+                    continue
+                size_mult = entry_check["size_mult"]
+            except Exception as e:
+                logger.warning(f"진입필터 오류 {code}: {e}")
+
+            actual_amount = int(buy_amount * size_mult)
+
+            # 진입감시 대기열에 등록
+            self._entry_watch[code] = {
+                "name": c["name"],
+                "buy_amount": actual_amount,
+                "sl": c["sl"],
+                "tp": c["tp"],
+                "tp1_quick": c.get("tp1_quick", c["tp"]),
+                "score": c["total_score"],
+                "source": c.get("source", "swing"),
+                "confidence": c.get("confidence", ""),
+                "size_mult": size_mult,
+                # 실시간 감시 상태
+                "prev_close": c["entry"],  # 전일 종가 (기준가)
+                "open_price": 0,           # 시가 (첫 체크에서 기록)
+                "min_price": 999999999,    # 장중 저가
+                "max_price": 0,            # 장중 고가
+                "checks": 0,              # 관찰 횟수 (30초마다 +1)
+                "max_checks": 60,         # 최대 30분 (30초 * 60)
+                "ai_scores": [],          # 최근 AI 점수 기록
+                "registered_at": datetime.now().strftime("%H:%M"),
+                "entry_triggered": False,  # 진입 조건 충족 여부
+            }
+            registered += 1
+
+        lines = [f"👁 장 시작 — {registered}종목 실시간 감시 시작"]
+        for code, w in self._entry_watch.items():
+            lines.append(
+                f"  📡 {w['name']}({code}) 점수:{w['score']:.0f} "
+                f"금액:{w['buy_amount']:,}원"
+            )
+        if skipped:
+            lines.append(f"  ⛔ {skipped}종목 차트필터 거부")
+        lines.append(f"\n30초마다 KIS API로 가격/거래량/체결강도 관찰 중...")
+        lines.append(f"진입 조건 충족 시 자동 매수 (최대 30분 관찰)")
+        await _send("\n".join(lines))
+
+    async def _check_entry_watch(self):
+        """진입감시 대기열 체크 — job_monitor에서 30초마다 호출
+
+        각 종목의 KIS API 실시간 데이터를 확인하고:
+        1. 시가 갭 체크 (갭업 5%+ → 추격 안 함)
+        2. 가격 안정화 (시가 대비 하락 후 반등 or 횡보)
+        3. 거래량 확인 (평균 이상)
+        4. 체결강도 확인 (100 이상 = 매수 우위)
+        5. AI EYE 점수 (40+ = 진입 OK)
+        → 조건 3개 이상 충족 시 매수 실행
+        """
+        if not self._entry_watch:
+            return
+
+        expired = []
+        for code, watch in list(self._entry_watch.items()):
+            watch["checks"] += 1
+
+            # 최대 관찰 시간 초과 → 만료
+            if watch["checks"] > watch["max_checks"]:
+                expired.append(code)
+                await self._alert(
+                    f"⏰ 진입 관찰 만료: {watch['name']}({code})\n"
+                    f"   30분간 진입 조건 미충족 — 오늘 매수 안 함"
+                )
+                continue
+
+            # KIS API로 실시간 조회
+            try:
+                price_info = self.trader.fetch_price(code)
+                if not price_info.get("success"):
+                    continue
+
+                cp = price_info["current_price"]
+                today_vol = price_info.get("volume", 0)
+                today_high = price_info.get("high", cp)
+                today_low = price_info.get("low", cp)
+
+                # 시가 기록 (첫 체크)
+                if watch["open_price"] == 0:
+                    watch["open_price"] = price_info.get("open", cp)
+
+                # 장중 고저 업데이트
+                if cp > watch["max_price"]:
+                    watch["max_price"] = cp
+                if cp < watch["min_price"]:
+                    watch["min_price"] = cp
+
+                prev_close = watch["prev_close"]
+                open_price = watch["open_price"]
+
+                # ── 진입 조건 체크 (5개 중 3개 이상 충족 시 매수) ──
+                conditions_met = 0
+                conditions_detail = []
+
+                # 1) 갭업 과대 체크 → 5% 이상 갭업이면 추격 안 함
+                gap_pct = (open_price / prev_close - 1) * 100 if prev_close > 0 else 0
+                if gap_pct >= 5.0:
+                    expired.append(code)
+                    await self._alert(
+                        f"⛔ 갭업 과대: {watch['name']}({code})\n"
+                        f"   전일 {prev_close:,} → 시가 {open_price:,} ({gap_pct:+.1f}%)\n"
+                        f"   추격 매수 위험 — 오늘 패스"
                     )
                     continue
 
-                # 절반 매수 (size_mult=0.5)
-                actual_amount = int(buy_amount * entry_check["size_mult"])
-                if entry_check["size_mult"] < 1.0:
-                    await _send(
-                        f"⚠️ {c['name']}: 절반 매수 ({actual_amount:,}원)\n"
-                        f"   {entry_check['reason']}"
+                # 2) 가격 안정화: 시가 대비 -2% 이상 하락 안 함
+                from_open = (cp / open_price - 1) * 100 if open_price > 0 else 0
+                if from_open >= -2.0:
+                    conditions_met += 1
+                    conditions_detail.append(f"가격안정({from_open:+.1f}%)")
+
+                # 3) 양봉 (현재가 > 시가)
+                if cp > open_price:
+                    conditions_met += 1
+                    conditions_detail.append("양봉")
+
+                # 4) 체결강도 100+ (매수 우위)
+                strength = price_info.get("strength", 0)
+                if strength >= 100:
+                    conditions_met += 1
+                    conditions_detail.append(f"체결{strength:.0f}")
+
+                # 5) AI EYE 점수 체크
+                ai_score = -1
+                try:
+                    rtm = self._get_rt_monitor()
+                    # 임시 등록 → 평가 → 해제
+                    rtm.register_position(
+                        code, watch["name"], cp, watch["sl"], watch["tp"]
                     )
-            except Exception as e:
-                logger.warning(f"진입필터 오류 {code}: {e} — 기본 매수")
-                actual_amount = buy_amount
-                entry_check = {"pass": True, "size_mult": 1.0}
+                    snap = await asyncio.to_thread(rtm.evaluate_position, code)
+                    if snap:
+                        ai_score = snap.realtime_score
+                        watch["ai_scores"].append(ai_score)
+                    rtm.unregister_position(code)
+                except Exception:
+                    pass
 
-            # ── 저항대 감지: 고점 근접 시 돌파 대기 ──
-            try:
-                resistance = await asyncio.to_thread(
-                    self._detect_resistance, code
-                )
-                if resistance:
-                    res_price = resistance["resistance"]
-                    res_dist = resistance["distance_pct"]
+                if ai_score >= 50:
+                    conditions_met += 1
+                    conditions_detail.append(f"AI{ai_score}")
+                elif ai_score >= 0:
+                    conditions_detail.append(f"AI{ai_score}(약)")
 
-                    # 현재가가 저항대의 3% 이내 → 돌파 대기 모드
-                    if res_dist <= 3.0:
-                        watching += 1
-                        self._breakout_watch[code] = {
-                            "name": c["name"],
-                            "resistance": res_price,
-                            "avg_volume": resistance["avg_volume"],
-                            "buy_amount": actual_amount,
-                            "sl": c["sl"],
-                            "tp": c["tp"],
-                            "tp1_quick": c.get("tp1_quick", c["tp"]),
-                            "registered_at": datetime.now().strftime("%H:%M"),
-                            "premove_score": c["total_score"],
-                            "checks": 0,        # 모니터링 횟수
-                            "max_checks": 720,   # 최대 6시간 (30초 * 720)
-                        }
-                        await _send(
-                            f"👁 돌파 대기: {c['name']}({code})\n"
-                            f"   저항: {res_price:,}원 (현재가 대비 {res_dist:+.1f}%)\n"
-                            f"   조건: 종가 {res_price:,}원 돌파 + 거래량 1.5배\n"
-                            f"   30초마다 KIS API로 감시 중..."
+                # 5분마다 관찰 로그 (매 10회 = 30초 * 10 = 5분)
+                if watch["checks"] % 10 == 0:
+                    logger.info(
+                        f"진입감시 {watch['name']}: "
+                        f"현재{cp:,} 시가{open_price:,} 갭{gap_pct:+.1f}% | "
+                        f"조건 {conditions_met}/4 | "
+                        f"{' '.join(conditions_detail)}"
+                    )
+
+                # ── 진입 조건 충족! (3개 이상) → 매수 ──
+                if conditions_met >= 3:
+                    detail_str = " + ".join(conditions_detail)
+
+                    if self._confirm_auto:
+                        self._pending_auto_buys.append({
+                            "code": code, "name": watch["name"],
+                            "amount": watch["buy_amount"], "sl": watch["sl"],
+                            "tp": watch["tp"],
+                            "tp1_quick": watch.get("tp1_quick", watch["tp"]),
+                            "score": watch["score"],
+                        })
+                        await self._alert(
+                            f"⚠️ 진입 조건 충족 — 매수 확인 대기\n"
+                            f"   {watch['name']}({code}) @ {cp:,}원\n"
+                            f"   시가 {open_price:,} → 현재 {cp:,} ({from_open:+.1f}%)\n"
+                            f"   조건: {detail_str}\n"
+                            f"   금액: {watch['buy_amount']:,}원\n\n"
+                            f"   실행: '자동확인' | 취소: '자동취소'"
                         )
-                        continue  # 즉시 매수 안 하고 돌파 대기
+                    else:
+                        result = self.trader.safe_buy(code, watch["buy_amount"])
+                        if result.get("success"):
+                            target_state = self._init_dynamic_target(
+                                code, watch["name"], cp
+                            )
+                            sl = target_state.dynamic_sl if target_state else watch["sl"]
+                            tp = target_state.dynamic_tp if target_state else watch["tp"]
+                            self._positions[code] = {
+                                "entry_price": cp,
+                                "stop_loss": sl,
+                                "take_profit": tp,
+                                "entry_date": datetime.now().strftime("%Y-%m-%d"),
+                                "name": watch["name"],
+                                "target_state": target_state,
+                            }
+                            try:
+                                rtm = self._get_rt_monitor()
+                                rtm.register_position(code, watch["name"], cp, sl, tp)
+                            except Exception:
+                                pass
+                            await self._alert(
+                                f"✅ 진입 확인 매수!\n"
+                                f"   {watch['name']}({code}) @ {cp:,}원\n"
+                                f"   시가 {open_price:,} → 매수 {cp:,}\n"
+                                f"   조건: {detail_str}\n"
+                                f"   SL:{sl:,} TP:{tp:,}"
+                            )
+                        else:
+                            await self._alert(
+                                f"❌ 매수 실패: {watch['name']}({code})\n"
+                                f"   {result.get('message')}"
+                            )
+
+                    expired.append(code)
+
             except Exception as e:
-                logger.warning(f"저항대 감지 오류 {code}: {e} — 즉시 매수")
+                logger.error(f"진입감시 오류 {code}: {e}")
 
-            # ── 매수 실행 (저항대 없거나 멀리 떨어진 경우) ──
-            if self._confirm_auto:
-                # 확인 모드: 대기열에 추가 → 텔레그램 확인 후 매수
-                self._pending_auto_buys.append({
-                    "code": code, "name": c["name"],
-                    "amount": actual_amount, "sl": c["sl"],
-                    "tp": c["tp"], "tp1_quick": c.get("tp1_quick", c["tp"]),
-                    "score": c["total_score"],
-                })
-                price_info = self.trader.fetch_price(code)
-                cp = price_info.get("current_price", c["entry"])
-                await _send(
-                    f"⚠️ 자동매수 확인 대기\n"
-                    f"종목: {c['name']}({code})\n"
-                    f"금액: {actual_amount:,}원 | 현재가: {cp:,}원\n"
-                    f"SL: {c['sl']:,} → TP: {c['tp']:,}\n"
-                    f"점수: {c['total_score']:.0f}\n\n"
-                    f"실행: '자동확인' 입력 | 취소: '자동취소'"
-                )
-                bought += 1  # pending count
-            else:
-                # 즉시 매수 (확인 없이)
-                result = self.trader.safe_buy(code, actual_amount)
-                if result.get("success"):
-                    bought += 1
-                    price_info = self.trader.fetch_price(code)
-                    cp = price_info.get("current_price", c["entry"])
-                    target_state = self._init_dynamic_target(code, c["name"], cp)
-                    sl = target_state.dynamic_sl if target_state else c["sl"]
-                    tp = target_state.dynamic_tp if target_state else c["tp"]
-                    self._positions[code] = {
-                        "entry_price": cp,
-                        "stop_loss": sl,
-                        "take_profit": tp,
-                        "entry_date": datetime.now().strftime("%Y-%m-%d"),
-                        "name": c["name"],
-                        "target_state": target_state,
-                    }
-                    try:
-                        rtm = self._get_rt_monitor()
-                        rtm.register_position(code, c["name"], cp, sl, tp)
-                    except Exception as e:
-                        logger.warning(f"AI 모니터 등록 실패 {code}: {e}")
-                    await _send(
-                        f"스윙 매수: {result.get('message')}\n"
-                        f"   SL:{sl:,} TP:{tp:,} (동적)"
-                    )
-                else:
-                    await _send(f"❌ 매수 실패 {code}: {result.get('message')}")
-
-        label = "확인대기" if self._confirm_auto else "매수"
-        summary = f"아침 스캔 완료: {bought}{label}"
-        if watching:
-            summary += f" / {watching}돌파대기"
-        if skipped:
-            summary += f" / {skipped}거부(차트필터)"
-        if self._confirm_auto and bought:
-            summary += "\n📱 '자동확인' 입력으로 매수 실행"
-        await _send(summary)
+        # 만료/완료 항목 제거
+        for code in expired:
+            self._entry_watch.pop(code, None)
 
     # ═══════════════════════════════════════
     #  저항대 감지 + 돌파 대기 매수
@@ -800,6 +920,10 @@ class AutoTrader:
         """포지션 감시 — AI 4팩터 실시간 분석 (JobQueue 반복 호출)"""
         if not self._is_market_hours():
             return
+
+        # ── 진입감시 대기열 체크 (장 시작 후 실시간 관찰 → 조건 충족 시 매수) ──
+        if self._entry_watch:
+            await self._check_entry_watch()
 
         # ── 돌파 대기 워치리스트 체크 (자동매매 ON/OFF 무관) ──
         if self._breakout_watch:
