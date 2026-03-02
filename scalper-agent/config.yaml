@@ -211,7 +211,7 @@ bot:
   minute_collect_time: "15:40"  # 분봉(5분/15분) 수집 시각
   daily_collect_time: "16:00"   # 일봉 + 수급 데이터 수집 시각
   universe_rebuild_time: "08:30"  # 유니버스 리빌드 (시총 변동 반영)
-  max_auto_positions: 4         # 자동매매 최대 동시 보유
+  max_auto_positions: 2         # 자동매매 최대 동시 보유 (3/3: 빅텍+풍산 집중)
   max_hold_days: 10             # 스윙 최대 보유일
   # auto_buy_amount: 삭제 — 장 시작 시 실제 잔고 / 종목수로 동적 계산
   # 공식: (가용현금 × (1 - min_cash_ratio)) / 매수종목수
