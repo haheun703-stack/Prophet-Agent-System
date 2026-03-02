@@ -54,11 +54,12 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
         ["사전감지", "스윙스캔", "스캔"],
         ["이상거래", "건전성", "이벤트"],
         ["종목선정", "MACD스캔", "워치리스트"],
-        ["해외이벤트", "AI모니터", "뉴스AI"],
+        ["섹터릴레이", "그룹릴레이", "ETF릴레이"],
+        ["릴레이종합", "AI모니터", "뉴스AI"],
+        ["해외이벤트", "시나리오", "시그널"],
         ["현재잔고", "체결내역", "포트폴리오"],
         ["시작", "정지", "상태"],
-        ["유니버스", "시나리오", "시그널"],
-        ["일지", "로그", "도움"],
+        ["유니버스", "일지", "도움"],
         ["청산"],
     ],
     resize_keyboard=True,
@@ -83,6 +84,12 @@ HELP_TEXT = """
   MACD스캔 — MACD 제로선 크로스 + 수급폭발 스캔
   스윙 삼성전자 — 개별 종목 스윙 분석
   워치리스트 — 최근 스윙 워치리스트
+
+[릴레이 에이전트]
+  섹터릴레이 — 12섹터 순환 감지 (HOT/RELAY)
+  그룹릴레이 — 7대 그룹 순환 감지
+  ETF릴레이 — ETF→종목 후행 감지
+  릴레이종합 — 3개 에이전트 교차 검증 통합
 
 [분석]
   스캔 — 5D 전종목 수급 스캔
@@ -1328,6 +1335,70 @@ class BodyHunterBot:
             await update.message.reply_text(f"❌ 건전성 진단 실패: {e}")
 
     # ═══════════════════════════════════════
+    #  릴레이 에이전트
+    # ═══════════════════════════════════════
+
+    async def cmd_sector_relay(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """섹터 릴레이 스캔"""
+        if not self._is_authorized(update):
+            return
+        await update.message.reply_text("📊 12섹터 릴레이 스캔중... (1~2분)")
+        try:
+            from data.sector_relay import scan_all_sectors, format_sector_report
+            results = await asyncio.to_thread(scan_all_sectors)
+            msg = format_sector_report(results)
+            for chunk in _split_message(msg):
+                await update.message.reply_text(chunk)
+        except Exception as e:
+            logger.error(f"섹터 릴레이 실패: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ 섹터 릴레이 실패: {e}")
+
+    async def cmd_group_relay(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """그룹 릴레이 스캔"""
+        if not self._is_authorized(update):
+            return
+        await update.message.reply_text("🏢 7대 그룹 릴레이 스캔중... (1~2분)")
+        try:
+            from data.group_relay import scan_all_groups, format_group_report
+            results = await asyncio.to_thread(scan_all_groups)
+            msg = format_group_report(results)
+            for chunk in _split_message(msg):
+                await update.message.reply_text(chunk)
+        except Exception as e:
+            logger.error(f"그룹 릴레이 실패: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ 그룹 릴레이 실패: {e}")
+
+    async def cmd_etf_relay(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """ETF 순환 스캔"""
+        if not self._is_authorized(update):
+            return
+        await update.message.reply_text("📈 ETF 순환 스캔중... (1~2분)")
+        try:
+            from data.etf_relay import scan_all_etfs, format_etf_report
+            results = await asyncio.to_thread(scan_all_etfs)
+            msg = format_etf_report(results)
+            for chunk in _split_message(msg):
+                await update.message.reply_text(chunk)
+        except Exception as e:
+            logger.error(f"ETF 릴레이 실패: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ ETF 릴레이 실패: {e}")
+
+    async def cmd_relay_hub(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """릴레이 통합 스캔 (3개 에이전트 교차 검증)"""
+        if not self._is_authorized(update):
+            return
+        await update.message.reply_text("🔄 릴레이 통합 스캔중... (3~5분)\n섹터+그룹+ETF 교차 검증")
+        try:
+            from data.relay_hub import scan_relay_all, format_relay_report
+            report = await asyncio.to_thread(scan_relay_all)
+            msg = format_relay_report(report)
+            for chunk in _split_message(msg):
+                await update.message.reply_text(chunk)
+        except Exception as e:
+            logger.error(f"릴레이 통합 실패: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ 릴레이 통합 실패: {e}")
+
+    # ═══════════════════════════════════════
     #  봇 빌드 & 실행
     # ═══════════════════════════════════════
 
@@ -1398,6 +1469,10 @@ class BodyHunterBot:
             r"^종목선정$": self.cmd_swing_pick,
             r"^MACD스캔$": self.cmd_macd_scan,
             r"^시나리오$": self.cmd_scenario_list,
+            r"^섹터릴레이$": self.cmd_sector_relay,
+            r"^그룹릴레이$": self.cmd_group_relay,
+            r"^ETF릴레이$": self.cmd_etf_relay,
+            r"^릴레이종합$": self.cmd_relay_hub,
         }
 
         for pattern, handler in exact_commands.items():
