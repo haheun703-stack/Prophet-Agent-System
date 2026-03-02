@@ -55,8 +55,8 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
         ["이상거래", "건전성", "이벤트"],
         ["종목선정", "MACD스캔", "워치리스트"],
         ["섹터릴레이", "그룹릴레이", "ETF릴레이"],
-        ["릴레이종합", "AI모니터", "뉴스AI"],
-        ["해외이벤트", "시나리오", "시그널"],
+        ["릴레이종합", "내일추천", "뉴스AI"],
+        ["AI모니터", "해외이벤트", "시나리오"],
         ["현재잔고", "체결내역", "포트폴리오"],
         ["시작", "정지", "상태"],
         ["유니버스", "일지", "도움"],
@@ -90,6 +90,10 @@ HELP_TEXT = """
   그룹릴레이 — 7대 그룹 순환 감지
   ETF릴레이 — ETF→종목 후행 감지
   릴레이종합 — 3개 에이전트 교차 검증 통합
+
+[내일 추천]
+  내일추천 — 5단계 파이프라인 추천 조회/실행
+  (자동 16:45 저녁분석 → 06:30 미국장체크 → 08:50 최종확인)
 
 [분석]
   스캔 — 5D 전종목 수급 스캔
@@ -1398,6 +1402,32 @@ class BodyHunterBot:
             logger.error(f"릴레이 통합 실패: {e}", exc_info=True)
             await update.message.reply_text(f"❌ 릴레이 통합 실패: {e}")
 
+    async def cmd_recommendation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """내일 추천 종목 (최신 저장된 리포트 또는 즉시 실행)"""
+        if not self._is_authorized(update):
+            return
+        await update.message.reply_text("📊 내일 추천 종목 조회 중...")
+        try:
+            from data.morning_recommendation import (
+                load_recommendation, format_recommendation,
+                run_evening_recommendation, save_recommendation,
+            )
+            report = load_recommendation()
+            if report and report.stocks:
+                msg = format_recommendation(report)
+                for chunk in _split_message(msg):
+                    await update.message.reply_text(chunk)
+            else:
+                await update.message.reply_text("저장된 추천 없음 — 5단계 분석 즉시 실행 중... (3~5분)")
+                report = await asyncio.to_thread(run_evening_recommendation)
+                save_recommendation(report)
+                msg = format_recommendation(report)
+                for chunk in _split_message(msg):
+                    await update.message.reply_text(chunk)
+        except Exception as e:
+            logger.error(f"추천 조회 실패: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ 추천 조회 실패: {e}")
+
     # ═══════════════════════════════════════
     #  봇 빌드 & 실행
     # ═══════════════════════════════════════
@@ -1473,6 +1503,7 @@ class BodyHunterBot:
             r"^그룹릴레이$": self.cmd_group_relay,
             r"^ETF릴레이$": self.cmd_etf_relay,
             r"^릴레이종합$": self.cmd_relay_hub,
+            r"^내일추천$": self.cmd_recommendation,
         }
 
         for pattern, handler in exact_commands.items():
@@ -1606,6 +1637,15 @@ class BodyHunterBot:
         # 사전감지 스캔 (08:50 — 장 시작 전)
         jq.run_daily(self._job_premove_scan, time=dtime(8, 50))
         logger.info("사전감지 스캔 등록: 08:50")
+
+        # ── 추천 파이프라인 3-Stage ──
+        # Stage 1: 저녁 분석 (16:45 — 데이터 수집 완료 후)
+        jq.run_daily(self.auto_trader.job_evening_analysis, time=dtime(16, 45))
+        logger.info("저녁 추천 분석 등록: 16:45")
+
+        # Stage 2: 미국장 체크 (06:30 — 다음날 새벽)
+        jq.run_daily(self.auto_trader.job_us_market_check, time=dtime(6, 30))
+        logger.info("미국장 체크 등록: 06:30")
 
     async def _job_start_tick_polling(self, context):
         """장 시작 시 체결 스냅샷 폴링 시작 (백그라운드 스레드)"""

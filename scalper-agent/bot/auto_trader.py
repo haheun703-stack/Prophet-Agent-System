@@ -1038,6 +1038,104 @@ class AutoTrader:
             )
 
     # ═══════════════════════════════════════
+    #  추천 파이프라인 (저녁분석 + 미국장 + 아침확인)
+    # ═══════════════════════════════════════
+
+    async def job_evening_analysis(self, context):
+        """Stage 1: 저녁 분석 (16:45) — 5단계 추천 파이프라인
+
+        한국장 마감 + 데이터 수집 완료 후 실행
+        릴레이 → 사전감지 → 기술필터 → 뉴스AI → 교차검증
+        """
+        from datetime import date
+        if date.today().weekday() >= 5:
+            return
+
+        chat_id = None
+        if not self._send_alert:
+            import os
+            chat_id = os.getenv("TELEGRAM_CHAT_ID")
+
+        async def _send(text):
+            if self._send_alert:
+                await self._send_alert(text)
+            elif chat_id:
+                await context.bot.send_message(chat_id=chat_id, text=text)
+
+        await _send("🌙 저녁 분석 시작 — 5단계 추천 파이프라인...")
+
+        try:
+            from data.morning_recommendation import (
+                run_evening_recommendation, format_recommendation,
+                save_recommendation,
+            )
+            report = await asyncio.to_thread(run_evening_recommendation)
+            save_recommendation(report)
+
+            msg = format_recommendation(report)
+            # 긴 메시지 분할
+            if len(msg) > 4000:
+                for i in range(0, len(msg), 4000):
+                    await _send(msg[i:i + 4000])
+            else:
+                await _send(msg)
+
+            if report.stocks:
+                await _send(
+                    f"💡 06:30 미국장 체크 → 조정 여부 알림\n"
+                    f"   08:50 최종 확인 → 09:20 자동매수"
+                )
+        except Exception as e:
+            logger.error(f"저녁 분석 실패: {e}")
+            await _send(f"❌ 저녁 분석 실패: {e}")
+
+    async def job_us_market_check(self, context):
+        """Stage 2: 미국장 체크 (06:30) — 전일 저녁 추천 조정
+
+        미국 S&P500/나스닥/VIX 체크 → 추천 조정/유지
+        """
+        from datetime import date
+        if date.today().weekday() >= 5:
+            return
+
+        chat_id = None
+        if not self._send_alert:
+            import os
+            chat_id = os.getenv("TELEGRAM_CHAT_ID")
+
+        async def _send(text):
+            if self._send_alert:
+                await self._send_alert(text)
+            elif chat_id:
+                await context.bot.send_message(chat_id=chat_id, text=text)
+
+        try:
+            from data.morning_recommendation import (
+                load_recommendation, run_us_market_check,
+                format_recommendation, save_recommendation,
+            )
+
+            prev = load_recommendation()
+            if not prev or not prev.stocks:
+                await _send("🇺🇸 미국장 체크: 저녁 추천 없음 — 스킵")
+                return
+
+            report = await asyncio.to_thread(run_us_market_check, prev)
+            save_recommendation(report)
+
+            msg = format_recommendation(report)
+            await _send(msg)
+
+            if report.warning:
+                await _send(f"⚠️ 주의: {report.warning}")
+            else:
+                await _send("✅ 미국장 정상 — 저녁 추천 유지")
+
+        except Exception as e:
+            logger.error(f"미국장 체크 실패: {e}")
+            await _send(f"❌ 미국장 체크 실패: {e}")
+
+    # ═══════════════════════════════════════
     #  내부 로직
     # ═══════════════════════════════════════
 
