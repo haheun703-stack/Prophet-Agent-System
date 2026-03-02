@@ -302,6 +302,14 @@ class AutoTrader:
 
     async def _morning_swing(self, context, _send):
         """스윙 모드 아침 스캔: 사전감지 우선 → 7팩터 폴백"""
+
+        # 0) 위기 모드 체크 (최우선)
+        from data.market_health import is_crisis_mode
+        crisis_active, crisis_reason = is_crisis_mode()
+        if crisis_active:
+            await _send(f"🚨 위기 모드 — 스캔 중단\n{crisis_reason}")
+            return
+
         candidates = []
 
         # 1) 사전감지 스캐너 우선

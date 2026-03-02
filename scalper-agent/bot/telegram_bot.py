@@ -102,6 +102,8 @@ HELP_TEXT = """
   정지 — 자동매매 OFF
   자동확인 — 대기 중 자동매수 실행
   자동취소 — 대기 중 자동매수 취소
+  위기모드 [사유] — 매수 완전 차단
+  위기해제 — 위기 모드 해제
 
 [복기]
   일지 — 오늘 매매 일지
@@ -916,6 +918,42 @@ class BodyHunterBot:
         else:
             await update.message.reply_text("대기 중인 자동매수가 없습니다")
 
+    async def cmd_crisis_on(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """위기 모드 활성화 — 모든 매수 차단"""
+        if not self._is_authorized(update):
+            return
+        text = update.message.text.strip()
+        reason = text.replace("위기모드", "").strip() or "수동 위기 모드 활성화"
+        from data.market_health import set_crisis_mode
+        set_crisis_mode(reason)
+        # 자동매매도 정지
+        self.auto_trader.stop()
+        self.auto_trader.cancel_pending_auto_buys()
+        await update.message.reply_text(
+            f"🚨 위기 모드 활성화\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"사유: {reason}\n"
+            f"자동매매: 정지됨\n"
+            f"대기 주문: 전부 취소\n"
+            f"매수: 완전 차단\n\n"
+            f"해제: '위기해제' 입력"
+        )
+
+    async def cmd_crisis_off(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """위기 모드 해제"""
+        if not self._is_authorized(update):
+            return
+        from data.market_health import clear_crisis_mode
+        cleared = clear_crisis_mode()
+        if cleared:
+            await update.message.reply_text(
+                "✅ 위기 모드 해제\n"
+                "매수 차단 해제됨\n"
+                "자동매매 재시작: '시작' 입력"
+            )
+        else:
+            await update.message.reply_text("위기 모드가 활성화되어 있지 않습니다")
+
     # ═══════════════════════════════════════
     #  사전감지 + AI 모니터
     # ═══════════════════════════════════════
@@ -1346,6 +1384,8 @@ class BodyHunterBot:
             r"^확인$": self.cmd_confirm,
             r"^자동확인$": self.cmd_auto_confirm,
             r"^자동취소$": self.cmd_auto_cancel,
+            r"^위기모드": self.cmd_crisis_on,
+            r"^위기해제$": self.cmd_crisis_off,
             r"^사전감지$": self.cmd_premove_scan,
             r"^AI모니터$": self.cmd_ai_monitor,
             r"^뉴스AI$": self.cmd_news_ai,

@@ -220,6 +220,96 @@ def _collect_market_breadth() -> dict:
 #  경보 판정
 # ═══════════════════════════════════════════════════
 
+CRISIS_PATH = DATA_DIR / "crisis_mode.json"
+
+
+def set_crisis_mode(reason: str = "수동 위기 모드 활성화") -> dict:
+    """위기 모드 활성화 — 모든 매수 차단"""
+    state = {
+        "active": True,
+        "reason": reason,
+        "activated_at": datetime.now().isoformat(),
+        "activated_by": "manual",
+    }
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with open(CRISIS_PATH, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+    logger.warning(f"🚨 위기 모드 활성화: {reason}")
+    return state
+
+
+def clear_crisis_mode() -> bool:
+    """위기 모드 해제"""
+    if CRISIS_PATH.exists():
+        CRISIS_PATH.unlink()
+        logger.info("✅ 위기 모드 해제")
+        return True
+    return False
+
+
+def is_crisis_mode() -> tuple[bool, str]:
+    """위기 모드 상태 확인 → (활성여부, 사유)"""
+    if not CRISIS_PATH.exists():
+        return False, ""
+    try:
+        with open(CRISIS_PATH, "r", encoding="utf-8") as f:
+            state = json.load(f)
+        if state.get("active"):
+            return True, state.get("reason", "위기 모드")
+    except Exception:
+        pass
+    return False, ""
+
+
+def _check_global_risk() -> list[dict]:
+    """장전 해외시장 리스크 체크 (유가, VIX, S&P500 선물)"""
+    alerts = []
+    try:
+        import os
+        api_key = os.getenv("FINNHUB_API_KEY")
+        if not api_key:
+            return alerts
+
+        import requests
+        headers = {"X-Finnhub-Token": api_key}
+
+        # WTI 원유 (CL=F 대용: OILWTI on Finnhub)
+        # VIX
+        symbols = {
+            "CBOE:VIX": {"name": "VIX", "warn": 30, "crit": 40},
+        }
+
+        for symbol, cfg in symbols.items():
+            try:
+                resp = requests.get(
+                    f"https://finnhub.io/api/v1/quote?symbol={symbol}",
+                    headers=headers, timeout=5
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    price = data.get("c", 0)
+                    if price > 0:
+                        if price >= cfg["crit"]:
+                            alerts.append({
+                                "level": "critical",
+                                "type": "global",
+                                "message": f"{cfg['name']} {price:.1f} — 극단 공포"
+                            })
+                        elif price >= cfg["warn"]:
+                            alerts.append({
+                                "level": "warning",
+                                "type": "global",
+                                "message": f"{cfg['name']} {price:.1f} — 공포 구간"
+                            })
+            except Exception:
+                continue
+
+    except Exception as e:
+        logger.warning(f"글로벌 리스크 체크 실패: {e}")
+
+    return alerts
+
+
 def diagnose() -> MarketHealthReport:
     """시장 건전성 진단 실행"""
     report = MarketHealthReport(timestamp=datetime.now().isoformat())
@@ -228,6 +318,21 @@ def diagnose() -> MarketHealthReport:
     print(f"\n🛡 시장 수급 건전성 진단")
     print(f"📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     print("=" * 50)
+
+    # 0. 위기 모드 체크 (최우선)
+    crisis_active, crisis_reason = is_crisis_mode()
+    if crisis_active:
+        report.alert_level = "critical"
+        report.position_multiplier = 0.0
+        report.alerts = [{"level": "critical", "type": "crisis",
+                          "message": f"🚨 위기 모드: {crisis_reason}"}]
+        print(f"\n  🚨 위기 모드 활성 — {crisis_reason}")
+        print(f"  → 모든 매수 차단 (position_multiplier = 0.0)")
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        health_path = DATA_DIR / "market_health.json"
+        with open(health_path, "w", encoding="utf-8") as f:
+            json.dump(report.to_dict(), f, ensure_ascii=False, indent=2)
+        return report
 
     # 1. 수급 데이터
     print("\n[1] 투자자 수급 합산...")
@@ -245,8 +350,16 @@ def diagnose() -> MarketHealthReport:
     print(f"  하락비율: {report.decline_ratio*100:.1f}% ({breadth['down_count']}/{breadth['total']})")
     print(f"  시장 5일: {report.kospi_5d_change:+.2f}%")
 
+    # 3. 글로벌 리스크 (VIX 등)
+    print("\n[3] 글로벌 리스크 체크...")
+    global_alerts = _check_global_risk()
+    for ga in global_alerts:
+        print(f"  {ga['message']}")
+    if not global_alerts:
+        print("  해외 리스크 정상")
+
     # ─── 경보 판정 ───────────────────────
-    alerts = []
+    alerts = list(global_alerts)  # 글로벌 리스크 먼저 추가
 
     # 외국인 순매도
     if report.foreign_5d_net <= T["foreign_5d_critical"]:
