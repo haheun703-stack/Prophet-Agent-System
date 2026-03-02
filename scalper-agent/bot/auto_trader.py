@@ -1,20 +1,26 @@
 # -*- coding: utf-8 -*-
 """
-Body Hunter v4 자동매매 루프 — 동적 목표가 통합
-================================================
-3 GAP 해결:
-  GAP 1: ATR 기반 SL/TP (고정% → 동적)
-  GAP 2: 뉴스 감성 → 목표가 보정
-  GAP 3: 매집원가 → SL 하한선
+Body Hunter v4 자동매매 루프 — 동적 목표가 + 보이지않는 목표가 통합
+================================================================
+로직 축적:
+  1. ATR 기반 SL/TP (고정% → 동적)
+  2. 뉴스 감성 → 목표가 보정
+  3. 매집원가 → SL 하한선
+  4. 매수 금액: 실시간 잔고 / 종목수 (동적 계산, 하드코딩 X)
+  5. 갭업 판단: 고정 5% X → TP(보이지않는 목표가) 대비 업사이드 판단
+  6. 추매(ACTION_ADD): 업사이드 8%+ 시 가용현금 30% 추가매수
+  7. MACD 0선 크로스: 진입 조건 6개 중 1개로 통합
+  8. 진입 조건: 6개 중 3개 충족 시 매수
+     (가격안정/양봉/체결강도/AI EYE/MACD 0선/목표가 업사이드)
 
 모드 2개:
-  day  — 당일 매매 (15:10 전량 청산) ← 기존
+  day  — 당일 매매 (15:10 전량 청산)
   swing — 스윙 매매 (동적 목표가 재평가, 최대 N일 보유)
 
 JobQueue (python-telegram-bot)로 스케줄:
-  09:20 → 스캔 + 자동 매수
-  매 30초 → 포지션 SL/TP 감시
-  15:00 → 스윙 모드: 동적 목표가 재평가 + 판정
+  09:00 → 추천종목 로드 + 실시간 관찰 시작
+  매 30초 → 진입감시 + 포지션 SL/TP 감시
+  15:00 → 스윙 모드: 동적 목표가 재평가 + 추매/매도 판정
   15:10 → 데이 모드: 전량 청산 | 스윙 모드: 요약만
 """
 
@@ -390,7 +396,6 @@ class AutoTrader:
         # ── 진입감시 대기열에 등록 (즉시 매수 X) ──
         bot_conf = self.config.get("bot", {})
         max_pos = bot_conf.get("max_auto_positions", 5)
-        buy_amount = bot_conf.get("auto_buy_amount", 500000)
 
         bal = self.trader.fetch_balance()
         current_positions = len(bal.get("positions", [])) if bal.get("success") else 0
@@ -399,6 +404,23 @@ class AutoTrader:
         if slots <= 0:
             await _send(f"보유 {current_positions}종목 — 추가 매수 불가")
             return
+
+        # ── 매수 금액: 실제 잔고 기반 동적 계산 ──
+        # (하드코딩 480000 제거 → 가용 현금 / 매수할 종목수)
+        available_cash = bal.get("cash", 0) if bal.get("success") else 0
+        num_targets = min(len(candidates), slots)
+        cash_reserve_ratio = self.config.get("risk", {}).get("min_cash_ratio", 0.10)
+        usable_cash = int(available_cash * (1 - cash_reserve_ratio))
+        buy_amount = usable_cash // num_targets if num_targets > 0 else 0
+
+        if buy_amount < 50000:
+            await _send(f"가용 현금 부족: {available_cash:,}원 → 매수 불가")
+            return
+
+        await _send(
+            f"💰 자금 배분: 현금 {available_cash:,}원 "
+            f"→ {num_targets}종목 × {buy_amount:,}원"
+        )
 
         registered = 0
         skipped = 0
@@ -464,12 +486,13 @@ class AutoTrader:
         """진입감시 대기열 체크 — job_monitor에서 30초마다 호출
 
         각 종목의 KIS API 실시간 데이터를 확인하고:
-        1. 시가 갭 체크 (갭업 5%+ → 추격 안 함)
-        2. 가격 안정화 (시가 대비 하락 후 반등 or 횡보)
-        3. 거래량 확인 (평균 이상)
-        4. 체결강도 확인 (100 이상 = 매수 우위)
-        5. AI EYE 점수 (40+ = 진입 OK)
-        → 조건 3개 이상 충족 시 매수 실행
+        1. 갭업 체크 → TP(보이지않는 목표가) 대비 업사이드 판단
+        2. 가격 안정화 (시가 대비 -2% 이상 안 빠짐)
+        3. 양봉 (현재가 > 시가)
+        4. 체결강도 (100+ = 매수 우위)
+        5. AI EYE 점수 (50+ = 진입 OK)
+        6. MACD 0선 크로스 상태 (일봉 기반)
+        → 6개 중 3개 이상 충족 시 매수 실행
         """
         if not self._entry_watch:
             return
@@ -515,16 +538,26 @@ class AutoTrader:
                 conditions_met = 0
                 conditions_detail = []
 
-                # 1) 갭업 과대 체크 → 5% 이상 갭업이면 추격 안 함
+                # 1) 갭업 체크 — "보이지않는 목표가" 기반 판단
+                #    고정 5% 거부 X → TP 대비 업사이드가 충분하면 갭업도 매수
                 gap_pct = (open_price / prev_close - 1) * 100 if prev_close > 0 else 0
-                if gap_pct >= 5.0:
+                tp = watch.get("tp", 0)
+                upside_to_tp = (tp / cp - 1) * 100 if tp > 0 and cp > 0 else 0
+
+                # 갭업이어도 목표가까지 5% 이상 남으면 → 매수 OK
+                # 갭업인데 목표가까지 5% 미만 → 리스크 대비 수익 부족 → 패스
+                if gap_pct >= 3.0 and upside_to_tp < 5.0:
                     expired.append(code)
                     await self._alert(
-                        f"⛔ 갭업 과대: {watch['name']}({code})\n"
+                        f"⛔ 갭업+업사이드 부족: {watch['name']}({code})\n"
                         f"   전일 {prev_close:,} → 시가 {open_price:,} ({gap_pct:+.1f}%)\n"
-                        f"   추격 매수 위험 — 오늘 패스"
+                        f"   현재 {cp:,} → 목표 {tp:,} (업사이드 {upside_to_tp:+.1f}%)\n"
+                        f"   R:R 불리 — 오늘 패스"
                     )
                     continue
+                elif gap_pct >= 3.0 and upside_to_tp >= 5.0:
+                    # 갭업이지만 목표가 여유 있음 → 매수 계속 진행
+                    conditions_detail.append(f"갭업{gap_pct:+.1f}%→목표{upside_to_tp:.0f}%남음")
 
                 # 2) 가격 안정화: 시가 대비 -2% 이상 하락 안 함
                 from_open = (cp / open_price - 1) * 100 if open_price > 0 else 0
@@ -565,16 +598,38 @@ class AutoTrader:
                 elif ai_score >= 0:
                     conditions_detail.append(f"AI{ai_score}(약)")
 
+                # 6) MACD 0선 크로스 상태 (일봉 기반)
+                try:
+                    from strategies.macd_zero_scanner import _calc_macd
+                    from pykrx import stock as pykrx_stock
+                    from datetime import timedelta
+                    end_d = datetime.now().strftime("%Y%m%d")
+                    start_d = (datetime.now() - timedelta(days=60)).strftime("%Y%m%d")
+                    day_df = pykrx_stock.get_market_ohlcv(start_d, end_d, code)
+                    if day_df is not None and len(day_df) >= 30:
+                        close_arr = day_df["종가"].astype(float).values
+                        macd_l, macd_s, macd_h = _calc_macd(close_arr)
+                        # MACD 히스토그램 양수 + MACD 0선 위 = 강한 상승
+                        if macd_h[-1] > 0 and macd_l[-1] > 0:
+                            conditions_met += 1
+                            conditions_detail.append("MACD0↑")
+                        elif macd_h[-1] > 0:
+                            conditions_detail.append("MACD+")
+                        else:
+                            conditions_detail.append("MACD-")
+                except Exception:
+                    pass
+
                 # 5분마다 관찰 로그 (매 10회 = 30초 * 10 = 5분)
                 if watch["checks"] % 10 == 0:
                     logger.info(
                         f"진입감시 {watch['name']}: "
                         f"현재{cp:,} 시가{open_price:,} 갭{gap_pct:+.1f}% | "
-                        f"조건 {conditions_met}/4 | "
+                        f"조건 {conditions_met}/6 | "
                         f"{' '.join(conditions_detail)}"
                     )
 
-                # ── 진입 조건 충족! (3개 이상) → 매수 ──
+                # ── 진입 조건 충족! (6개 중 3개 이상) → 매수 ──
                 if conditions_met >= 3:
                     detail_str = " + ".join(conditions_detail)
 
@@ -1111,6 +1166,49 @@ class AutoTrader:
                     result = self.trader.liquidate_one(code)
                     self._positions.pop(code, None)
                     await self._alert(f"🔴 동적 전량매도: {name}({code}) @ {cp:,} ({reason})")
+                elif action == ACTION_ADD:
+                    # ── 추매: 업사이드 8%+ → 추가 매수 실행 ──
+                    risk_ok, risk_reason = self.check_risk_gate()
+                    if risk_ok:
+                        bal_add = self.trader.fetch_balance()
+                        add_cash = bal_add.get("cash", 0) if bal_add.get("success") else 0
+                        # 추매 금액 = 가용 현금 × add_on_buy_ratio (config, 기본 30%)
+                        add_ratio = self.config.get("bot", {}).get("add_on_buy_ratio", 0.30)
+                        add_amount = int(add_cash * add_ratio)
+                        if add_amount >= 100000:
+                            if self._confirm_auto:
+                                self._pending_auto_buys.append({
+                                    "code": code, "name": name,
+                                    "amount": add_amount,
+                                    "sl": pos["stop_loss"],
+                                    "tp": pos["take_profit"],
+                                    "tp1_quick": pos["take_profit"],
+                                    "score": 0,
+                                })
+                                await self._alert(
+                                    f"🔵 추매 확인 대기: {name}({code})\n"
+                                    f"   {reason}\n"
+                                    f"   현재 {cp:,}원 ({pnl:+.1f}%)\n"
+                                    f"   추매 금액: {add_amount:,}원\n\n"
+                                    f"   실행: '자동확인' | 취소: '자동취소'"
+                                )
+                            else:
+                                result = self.trader.safe_buy(code, add_amount)
+                                if result.get("success"):
+                                    await self._alert(
+                                        f"🔵 추매 완료: {name}({code}) @ {cp:,}원\n"
+                                        f"   {reason}\n"
+                                        f"   추매 금액: {add_amount:,}원"
+                                    )
+                        else:
+                            await self._alert(
+                                f"🔵 추매 판정: {name}({code}) — 현금 부족({add_cash:,}원)"
+                            )
+                    else:
+                        await self._alert(
+                            f"🔵 추매 판정: {name}({code}) — 리스크 차단: {risk_reason}"
+                        )
+
                 elif action == ACTION_PARTIAL_SELL:
                     # 부분매도: 보유수량의 50% (스마트 지정가)
                     bal = self.trader.fetch_balance()
@@ -1207,7 +1305,8 @@ class AutoTrader:
             if report.stocks:
                 await _send(
                     f"💡 06:30 미국장 체크 → 조정 여부 알림\n"
-                    f"   08:50 최종 확인 → 09:20 자동매수"
+                    f"   09:00 장 시작 → 실시간 관찰 → 조건 충족 시 매수\n"
+                    f"   매수 금액: 장 시작 시 실제 잔고 기반 자동 계산"
                 )
         except Exception as e:
             logger.error(f"저녁 분석 실패: {e}")

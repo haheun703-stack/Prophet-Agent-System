@@ -132,6 +132,46 @@ def _step2_premove_scan() -> dict:
 
 
 # ═══════════════════════════════════════
+#  Step 2.5: MACD 제로선 크로스 스캔
+# ═══════════════════════════════════════
+
+def _step_macd_zero_scan() -> dict:
+    """MACD 음→0선 골든크로스 + 수급/거래량 폭발 종목"""
+    try:
+        from strategies.macd_zero_scanner import scan_phase1, check_phase2, load_watchlist
+        # Phase1: 신규 MACD 크로스 종목
+        new_signals = scan_phase1()
+        # Phase2: 기존 감시 종목 중 진입 시그널
+        watchlist = load_watchlist()
+        entries = check_phase2(watchlist)
+
+        macd_stocks = {}
+        for s in new_signals[:10]:
+            macd_stocks[s["code"]] = {
+                "name": s.get("name", s["code"]),
+                "source": "macd_zero_phase1",
+                "flow_ratio": s.get("flow_ratio", 0),
+                "vol_ratio": s.get("vol_ratio", 0),
+                "cross_price": s.get("cross_price", 0),
+            }
+        for e in entries:
+            macd_stocks[e["code"]] = {
+                "name": e.get("name", e["code"]),
+                "source": "macd_zero_phase2",
+                "entry": e.get("entry_price", 0),
+                "sl": e.get("sl", 0),
+                "tp": e.get("tp", 0),
+                "drawdown": e.get("drawdown", 0),
+            }
+
+        logger.info(f"MACD 0선: Phase1 {len(new_signals)}건, Phase2 진입 {len(entries)}건")
+        return macd_stocks
+    except Exception as e:
+        logger.warning(f"MACD 0선 스캔 실패: {e}")
+        return {}
+
+
+# ═══════════════════════════════════════
 #  Step 3: 기술적 분석 필터
 # ═══════════════════════════════════════
 
@@ -283,14 +323,18 @@ def _step4_news_filter(codes_names: list[tuple[str, str]]) -> dict:
 # ═══════════════════════════════════════
 
 def _step5_cross_validate(
-    relay: dict, premove: dict, tech: dict, news: dict
+    relay: dict, premove: dict, tech: dict, news: dict,
+    macd_result: dict = None,
 ) -> list[RecommendedStock]:
     """모든 스텝 결과 통합 → 교차검증 → 최종 랭킹"""
+    if macd_result is None:
+        macd_result = {}
 
     # 모든 종목 코드 수집
     all_codes = set()
     all_codes.update(relay.get("stocks", {}).keys())
     all_codes.update(premove.get("stocks", {}).keys())
+    all_codes.update(macd_result.keys())
 
     candidates = []
     for code in all_codes:
@@ -316,7 +360,7 @@ def _step5_cross_validate(
         name = r_info.get("name") or p_info.get("name", code)
         close = r_info.get("close") or p_info.get("close", 0)
 
-        # 교차 등장 횟수
+        # 교차 등장 횟수 (MACD 0선 포함)
         cross = 0
         sources = []
         if code in relay.get("stocks", {}):
@@ -325,6 +369,9 @@ def _step5_cross_validate(
         if code in premove.get("stocks", {}):
             cross += 1
             sources.append("premove")
+        if code in macd_result:
+            cross += 1
+            sources.append(f"macd_zero({macd_result[code].get('source', '')})")
 
         # 점수 합산 (가중치)
         relay_sc = min(r_info.get("signal_count", 0) * 15, 45)  # 0~45
@@ -334,10 +381,13 @@ def _step5_cross_validate(
 
         total = relay_sc + premove_sc + tech_sc + cross_bonus
 
-        # 진입/SL/TP: premove에서 우선, 없으면 간단 계산
-        entry = int(p_info.get("entry", close))
-        sl = int(p_info.get("sl", close * 0.95))
-        tp = int(p_info.get("tp", close * 1.10))
+        # MACD Phase2 진입 시그널 정보
+        m_info = macd_result.get(code, {})
+
+        # 진입/SL/TP: premove → MACD Phase2 → 간단 계산 (우선순위)
+        entry = int(p_info.get("entry") or m_info.get("entry") or close)
+        sl = int(p_info.get("sl") or m_info.get("sl") or close * 0.95)
+        tp = int(p_info.get("tp") or m_info.get("tp") or close * 1.10)
         sl_source = p_info.get("sl_source", "ATR")
 
         # 신뢰도
@@ -378,8 +428,8 @@ def _step5_cross_validate(
 #  메인 파이프라인
 # ═══════════════════════════════════════
 
-def run_evening_recommendation(max_budget: int = 480000) -> RecommendationReport:
-    """Stage 1: 저녁 분석 (16:45) — 5단계 전체 실행"""
+def run_evening_recommendation() -> RecommendationReport:
+    """Stage 1: 저녁 분석 (16:45) — 5단계 전체 실행 + MACD 0선"""
     from datetime import datetime
 
     logger.info("=" * 50)
@@ -424,6 +474,16 @@ def run_evening_recommendation(max_budget: int = 480000) -> RecommendationReport
 
     codes_names = list(all_codes)
 
+    # Step 2.5: MACD 제로선 크로스 스캔 (추가 소스)
+    logger.info("[Step 2.5] MACD 0선 크로스 스캔...")
+    macd_result = _step_macd_zero_scan()
+    # MACD 크로스 종목도 후보에 추가
+    for code, info in macd_result.items():
+        if (code, info.get("name", code)) not in all_codes:
+            all_codes.add((code, info.get("name", code)))
+
+    codes_names = list(all_codes)
+
     # Step 3: 기술적 필터
     logger.info(f"[Step 3/5] 기술 분석 ({len(codes_names)}종목)...")
     tech_result = _step3_tech_filter(codes_names)
@@ -432,10 +492,11 @@ def run_evening_recommendation(max_budget: int = 480000) -> RecommendationReport
     logger.info(f"[Step 4/5] 뉴스AI 분석...")
     news_result = _step4_news_filter(codes_names)
 
-    # Step 5: 교차검증
+    # Step 5: 교차검증 (MACD 0선 소스 포함)
     logger.info("[Step 5/5] 교차검증 + 최종 랭킹...")
     final_stocks = _step5_cross_validate(
-        relay_result, premove_result, tech_result, news_result
+        relay_result, premove_result, tech_result, news_result,
+        macd_result=macd_result,
     )
 
     report.stocks = final_stocks
@@ -542,8 +603,11 @@ def run_morning_confirmation(prev_report: RecommendationReport) -> Recommendatio
 #  텔레그램 포맷
 # ═══════════════════════════════════════
 
-def format_recommendation(report: RecommendationReport, max_budget: int = 480000) -> str:
-    """텔레그램용 추천 리포트 포맷"""
+def format_recommendation(report: RecommendationReport, max_budget: int = 0) -> str:
+    """텔레그램용 추천 리포트 포맷
+
+    max_budget=0이면 매수 수량 표시 안 함 (실제 금액은 장 시작 시 잔고 기반 계산)
+    """
     stage_emoji = {"evening": "🌙", "us_check": "🇺🇸", "morning": "🌅"}
     stage_label = {"evening": "저녁 분석", "us_check": "미국장 체크", "morning": "최종 확인"}
 
