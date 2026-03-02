@@ -202,7 +202,7 @@ output:
 
 # --- Telegram Bot (Body Hunter v4 봇 — 동적 목표가) ---
 bot:
-  auto_trade: false             # 자동매매 기본 OFF ("시작" 명령으로 켬)
+  auto_trade: true              # 자동매매 ON — 텔레그램 확인 후 주문
   trade_mode: "swing"           # "swing" = 동적 목표가 스윙 | "day" = 당일 청산
   scan_interval_sec: 30         # 포지션 감시 주기 (초)
   morning_scan_time: "09:20"    # 아침 스캔 시각
@@ -211,9 +211,9 @@ bot:
   minute_collect_time: "15:40"  # 분봉(5분/15분) 수집 시각
   daily_collect_time: "16:00"   # 일봉 + 수급 데이터 수집 시각
   universe_rebuild_time: "08:30"  # 유니버스 리빌드 (시총 변동 반영)
-  max_auto_positions: 5         # 자동매매 최대 동시 보유
+  max_auto_positions: 1         # 자동매매 최대 동시 보유 (450K 전액 1종목)
   max_hold_days: 10             # 스윙 최대 보유일
-  auto_buy_amount: 500000       # 자동매수 1회 금액 (원)
+  auto_buy_amount: 450000       # 자동매수 1회 금액 (원) — 전액 투자
   confirm_real_order: true      # 실주문 전 확인 메시지 요구
 
 # --- 데이터 수집 스케줄 ---

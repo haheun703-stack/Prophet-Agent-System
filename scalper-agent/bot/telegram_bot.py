@@ -100,6 +100,8 @@ HELP_TEXT = """
 [자동매매]
   시작 — 자동매매 ON
   정지 — 자동매매 OFF
+  자동확인 — 대기 중 자동매수 실행
+  자동취소 — 대기 중 자동매수 취소
 
 [복기]
   일지 — 오늘 매매 일지
@@ -881,6 +883,39 @@ class BodyHunterBot:
         self.auto_trader.stop()
         await update.message.reply_text("🔴 자동매매 정지")
 
+    async def cmd_auto_confirm(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """대기 중인 자동매수 확인 실행"""
+        if not self._is_authorized(update):
+            return
+        pending = self.auto_trader._pending_auto_buys
+        if not pending:
+            await update.message.reply_text("대기 중인 자동매수가 없습니다")
+            return
+
+        await update.message.reply_text(f"🔄 {len(pending)}건 자동매수 실행 중...")
+        results = await asyncio.to_thread(self.auto_trader.execute_pending_auto_buys)
+        for r in results:
+            if r["success"]:
+                await update.message.reply_text(
+                    f"✅ {r['name']}({r['code']}) 매수 완료\n"
+                    f"   {r['message']}\n"
+                    f"   SL:{r['sl']:,} TP:{r['tp']:,}"
+                )
+            else:
+                await update.message.reply_text(
+                    f"❌ {r['name']}({r['code']}) 매수 실패\n   {r['message']}"
+                )
+
+    async def cmd_auto_cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """대기 중인 자동매수 전체 취소"""
+        if not self._is_authorized(update):
+            return
+        count = self.auto_trader.cancel_pending_auto_buys()
+        if count:
+            await update.message.reply_text(f"🚫 자동매수 {count}건 취소됨")
+        else:
+            await update.message.reply_text("대기 중인 자동매수가 없습니다")
+
     # ═══════════════════════════════════════
     #  사전감지 + AI 모니터
     # ═══════════════════════════════════════
@@ -1309,6 +1344,8 @@ class BodyHunterBot:
             r"^시작$": self.cmd_auto_start,
             r"^정지$": self.cmd_auto_stop,
             r"^확인$": self.cmd_confirm,
+            r"^자동확인$": self.cmd_auto_confirm,
+            r"^자동취소$": self.cmd_auto_cancel,
             r"^사전감지$": self.cmd_premove_scan,
             r"^AI모니터$": self.cmd_ai_monitor,
             r"^뉴스AI$": self.cmd_news_ai,

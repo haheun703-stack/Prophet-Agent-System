@@ -58,6 +58,10 @@ class AutoTrader:
         self._risk_state = self._load_risk_state()
         self._risk_blocked = False  # True면 신규 매수 차단
 
+        # ── 자동매수 확인 대기열 ──
+        self._confirm_auto = config.get("bot", {}).get("confirm_real_order", True)
+        self._pending_auto_buys = []  # [{code, name, amount, sl, tp, tp1_quick, score}]
+
     def _get_rt_monitor(self):
         """RealtimeMonitor lazy init"""
         if self._rt_monitor is None:
@@ -188,7 +192,52 @@ class AutoTrader:
     def stop(self):
         """자동매매 정지"""
         self.is_running = False
+        self._pending_auto_buys.clear()
         logger.info("자동매매 정지")
+
+    def execute_pending_auto_buys(self) -> list[dict]:
+        """대기 중인 자동매수 전부 실행 → 결과 리스트 반환"""
+        results = []
+        for item in self._pending_auto_buys:
+            code, name = item["code"], item["name"]
+            amount = item["amount"]
+
+            result = self.trader.safe_buy(code, amount)
+            if result.get("success"):
+                price_info = self.trader.fetch_price(code)
+                cp = price_info.get("current_price", item.get("sl", 0))
+                target_state = self._init_dynamic_target(code, name, cp)
+                sl = target_state.dynamic_sl if target_state else item["sl"]
+                tp = target_state.dynamic_tp if target_state else item["tp"]
+
+                self._positions[code] = {
+                    "entry_price": cp,
+                    "stop_loss": sl,
+                    "take_profit": tp,
+                    "entry_date": datetime.now().strftime("%Y-%m-%d"),
+                    "name": name,
+                    "target_state": target_state,
+                }
+                try:
+                    rtm = self._get_rt_monitor()
+                    rtm.register_position(code, name, cp, sl, tp)
+                except Exception as e:
+                    logger.warning(f"AI 모니터 등록 실패 {code}: {e}")
+
+                results.append({"success": True, "name": name, "code": code,
+                                "message": result.get("message"), "sl": sl, "tp": tp})
+            else:
+                results.append({"success": False, "name": name, "code": code,
+                                "message": result.get("message")})
+
+        self._pending_auto_buys.clear()
+        return results
+
+    def cancel_pending_auto_buys(self) -> int:
+        """대기 중인 자동매수 전부 취소 → 취소 건수 반환"""
+        count = len(self._pending_auto_buys)
+        self._pending_auto_buys.clear()
+        return count
 
     def _is_market_hours(self) -> bool:
         now = datetime.now()
@@ -400,47 +449,64 @@ class AutoTrader:
             except Exception as e:
                 logger.warning(f"저항대 감지 오류 {code}: {e} — 즉시 매수")
 
-            # ── 즉시 매수 (저항대 없거나 멀리 떨어진 경우) ──
-            result = self.trader.safe_buy(code, actual_amount)
-            if result.get("success"):
-                bought += 1
+            # ── 매수 실행 (저항대 없거나 멀리 떨어진 경우) ──
+            if self._confirm_auto:
+                # 확인 모드: 대기열에 추가 → 텔레그램 확인 후 매수
+                self._pending_auto_buys.append({
+                    "code": code, "name": c["name"],
+                    "amount": actual_amount, "sl": c["sl"],
+                    "tp": c["tp"], "tp1_quick": c.get("tp1_quick", c["tp"]),
+                    "score": c["total_score"],
+                })
                 price_info = self.trader.fetch_price(code)
                 cp = price_info.get("current_price", c["entry"])
-
-                # 동적 목표가 엔진으로 초기 설정
-                target_state = self._init_dynamic_target(code, c["name"], cp)
-
-                sl = target_state.dynamic_sl if target_state else c["sl"]
-                tp = target_state.dynamic_tp if target_state else c["tp"]
-
-                self._positions[code] = {
-                    "entry_price": cp,
-                    "stop_loss": sl,
-                    "take_profit": tp,
-                    "entry_date": datetime.now().strftime("%Y-%m-%d"),
-                    "name": c["name"],
-                    "target_state": target_state,
-                }
-
-                # AI 모니터에 포지션 등록
-                try:
-                    rtm = self._get_rt_monitor()
-                    rtm.register_position(code, c["name"], cp, sl, tp)
-                except Exception as e:
-                    logger.warning(f"AI 모니터 등록 실패 {code}: {e}")
-
                 await _send(
-                    f"스윙 매수: {result.get('message')}\n"
-                    f"   SL:{sl:,} TP:{tp:,} (동적)"
+                    f"⚠️ 자동매수 확인 대기\n"
+                    f"종목: {c['name']}({code})\n"
+                    f"금액: {actual_amount:,}원 | 현재가: {cp:,}원\n"
+                    f"SL: {c['sl']:,} → TP: {c['tp']:,}\n"
+                    f"점수: {c['total_score']:.0f}\n\n"
+                    f"실행: '자동확인' 입력 | 취소: '자동취소'"
                 )
+                bought += 1  # pending count
             else:
-                await _send(f"❌ 매수 실패 {code}: {result.get('message')}")
+                # 즉시 매수 (확인 없이)
+                result = self.trader.safe_buy(code, actual_amount)
+                if result.get("success"):
+                    bought += 1
+                    price_info = self.trader.fetch_price(code)
+                    cp = price_info.get("current_price", c["entry"])
+                    target_state = self._init_dynamic_target(code, c["name"], cp)
+                    sl = target_state.dynamic_sl if target_state else c["sl"]
+                    tp = target_state.dynamic_tp if target_state else c["tp"]
+                    self._positions[code] = {
+                        "entry_price": cp,
+                        "stop_loss": sl,
+                        "take_profit": tp,
+                        "entry_date": datetime.now().strftime("%Y-%m-%d"),
+                        "name": c["name"],
+                        "target_state": target_state,
+                    }
+                    try:
+                        rtm = self._get_rt_monitor()
+                        rtm.register_position(code, c["name"], cp, sl, tp)
+                    except Exception as e:
+                        logger.warning(f"AI 모니터 등록 실패 {code}: {e}")
+                    await _send(
+                        f"스윙 매수: {result.get('message')}\n"
+                        f"   SL:{sl:,} TP:{tp:,} (동적)"
+                    )
+                else:
+                    await _send(f"❌ 매수 실패 {code}: {result.get('message')}")
 
-        summary = f"아침 스캔 완료: {bought}매수"
+        label = "확인대기" if self._confirm_auto else "매수"
+        summary = f"아침 스캔 완료: {bought}{label}"
         if watching:
             summary += f" / {watching}돌파대기"
         if skipped:
             summary += f" / {skipped}거부(차트필터)"
+        if self._confirm_auto and bought:
+            summary += "\n📱 '자동확인' 입력으로 매수 실행"
         await _send(summary)
 
     # ═══════════════════════════════════════
@@ -587,44 +653,58 @@ class AutoTrader:
                         continue  # 매수 안 하고 다음 체크에서 재시도
 
                     buy_amount = watch["buy_amount"]
-                    result = self.trader.safe_buy(code, buy_amount)
+                    ai_msg = f" | AI {ai_score}점" if ai_score >= 0 else ""
 
-                    if result.get("success"):
-                        # 매수 성공 → 포지션 등록
-                        target_state = self._init_dynamic_target(
-                            code, watch["name"], cp
-                        )
-                        sl = target_state.dynamic_sl if target_state else watch["sl"]
-                        tp = target_state.dynamic_tp if target_state else watch["tp"]
-
-                        self._positions[code] = {
-                            "entry_price": cp,
-                            "stop_loss": sl,
-                            "take_profit": tp,
-                            "entry_date": datetime.now().strftime("%Y-%m-%d"),
-                            "name": watch["name"],
-                            "target_state": target_state,
-                        }
-
-                        try:
-                            rtm = self._get_rt_monitor()
-                            rtm.register_position(code, watch["name"], cp, sl, tp)
-                        except Exception:
-                            pass
-
-                        ai_msg = f" | AI {ai_score}점" if ai_score >= 0 else ""
+                    if self._confirm_auto:
+                        # 확인 모드: 대기열에 추가
+                        self._pending_auto_buys.append({
+                            "code": code, "name": watch["name"],
+                            "amount": buy_amount, "sl": watch["sl"],
+                            "tp": watch["tp"],
+                            "tp1_quick": watch.get("tp1_quick", watch["tp"]),
+                            "score": watch.get("premove_score", 0),
+                        })
                         await self._alert(
-                            f"🚀 돌파 매수 성공!\n"
+                            f"⚠️ 돌파 매수 확인 대기\n"
                             f"   {watch['name']}({code}) @ {cp:,}원\n"
                             f"   저항 {resistance:,}원 돌파 확인\n"
                             f"   거래량 {vol_ratio:.1f}x{ai_msg}\n"
-                            f"   SL:{sl:,} TP:{tp:,}"
+                            f"   금액: {buy_amount:,}원\n\n"
+                            f"   실행: '자동확인' | 취소: '자동취소'"
                         )
                     else:
-                        await self._alert(
-                            f"❌ 돌파 매수 실패: {watch['name']}({code})\n"
-                            f"   {result.get('message')}"
-                        )
+                        result = self.trader.safe_buy(code, buy_amount)
+                        if result.get("success"):
+                            target_state = self._init_dynamic_target(
+                                code, watch["name"], cp
+                            )
+                            sl = target_state.dynamic_sl if target_state else watch["sl"]
+                            tp = target_state.dynamic_tp if target_state else watch["tp"]
+                            self._positions[code] = {
+                                "entry_price": cp,
+                                "stop_loss": sl,
+                                "take_profit": tp,
+                                "entry_date": datetime.now().strftime("%Y-%m-%d"),
+                                "name": watch["name"],
+                                "target_state": target_state,
+                            }
+                            try:
+                                rtm = self._get_rt_monitor()
+                                rtm.register_position(code, watch["name"], cp, sl, tp)
+                            except Exception:
+                                pass
+                            await self._alert(
+                                f"🚀 돌파 매수 성공!\n"
+                                f"   {watch['name']}({code}) @ {cp:,}원\n"
+                                f"   저항 {resistance:,}원 돌파 확인\n"
+                                f"   거래량 {vol_ratio:.1f}x{ai_msg}\n"
+                                f"   SL:{sl:,} TP:{tp:,}"
+                            )
+                        else:
+                            await self._alert(
+                                f"❌ 돌파 매수 실패: {watch['name']}({code})\n"
+                                f"   {result.get('message')}"
+                            )
 
                     expired.append(code)
 
