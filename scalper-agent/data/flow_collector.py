@@ -44,18 +44,14 @@ def collect_investor_flow(
     months: int = 24,
     force: bool = False,
 ) -> Dict[str, pd.DataFrame]:
-    """투자자별 순매수 금액+수량 수집 (pykrx)
+    """투자자별 순매수 금액+수량 수집 (KIS API, pykrx 깨짐 대체 2026-03-04)
 
-    컬럼: 기관합계, 기타법인, 개인, 외국인합계 (금액 기준)
-    + 수량 컬럼: 기관합계_vol, 기타법인_vol, 개인_vol, 외국인합계_vol
+    KIS API tr_id=FHKST01010900 — 30일치 일별 투자자 매매동향
+    컬럼: 기관_금액, 개인_금액, 외국인_금액, 기관_수량, 개인_수량, 외국인_수량
 
     Returns: {code: DataFrame(date index)}
     """
-    from pykrx import stock
-
     _ensure_dirs()
-    end_date = datetime.now().strftime("%Y%m%d")
-    start_date = (datetime.now() - timedelta(days=months * 30)).strftime("%Y%m%d")
 
     results = {}
     for i, code in enumerate(codes):
@@ -70,33 +66,22 @@ def collect_investor_flow(
                     results[code] = cached
                     continue
 
-        print(f"  [{i+1}/{len(codes)}] {code} 투자자별 수급 수집중...")
+        if (i + 1) % 50 == 0 or i == 0:
+            print(f"  투자자 수급 [{i+1}/{len(codes)}] {code}...")
 
         try:
-            # 금액 기준
-            df_val = stock.get_market_trading_value_by_date(start_date, end_date, code)
-            # 수량 기준
-            df_vol = stock.get_market_trading_volume_by_date(start_date, end_date, code)
-
-            if df_val is None or len(df_val) == 0:
-                continue
-
-            # 컬럼 정리
-            df_val.columns = ["기관_금액", "기타법인_금액", "개인_금액", "외국인_금액", "전체_금액"]
-            if df_vol is not None and len(df_vol) > 0:
-                df_vol.columns = ["기관_수량", "기타법인_수량", "개인_수량", "외국인_수량", "전체_수량"]
-                df = pd.concat([df_val, df_vol], axis=1)
-            else:
-                df = df_val
-
-            # 전체 컬럼 제거 (항상 0)
-            df = df.drop(columns=[c for c in df.columns if "전체" in c], errors="ignore")
-
-            if len(df) > 0:
+            df = _fetch_investor_kis(code)
+            if df is not None and len(df) > 0:
+                # 기존 캐시에 병합 (30일 이상 축적)
+                if cache_file.exists():
+                    old = pd.read_csv(cache_file, index_col=0, parse_dates=True)
+                    df = pd.concat([old, df])
+                    df = df[~df.index.duplicated(keep="last")]
+                    df = df.sort_index()
                 df.to_csv(cache_file)
                 results[code] = df
 
-            time.sleep(0.3)  # KRX 속도 제한
+            time.sleep(0.15)  # KIS API 속도 제한
 
         except Exception as e:
             logger.warning(f"투자자별 수급 수집 실패 {code}: {e}")
@@ -106,8 +91,87 @@ def collect_investor_flow(
     return results
 
 
+def _fetch_investor_kis(code: str) -> Optional[pd.DataFrame]:
+    """KIS API로 투자자별 매매동향 30일치 조회
+
+    pykrx get_market_trading_value_by_date 대체
+    """
+    import requests as req
+    from dotenv import load_dotenv
+    load_dotenv()
+    import mojito
+
+    try:
+        broker = mojito.KoreaInvestment(
+            api_key=os.getenv("KIS_APP_KEY"),
+            api_secret=os.getenv("KIS_APP_SECRET"),
+            acc_no=os.getenv("KIS_ACC_NO"),
+            mock=False,
+        )
+
+        token = broker.access_token
+        if token.startswith("Bearer "):
+            token = token.replace("Bearer ", "")
+
+        headers = {
+            "content-type": "application/json; charset=utf-8",
+            "authorization": f"Bearer {token}",
+            "appkey": os.getenv("KIS_APP_KEY"),
+            "appsecret": os.getenv("KIS_APP_SECRET"),
+            "tr_id": "FHKST01010900",
+            "custtype": "P",
+        }
+
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_INPUT_ISCD": code,
+        }
+
+        base_url = "https://openapi.koreainvestment.com:9443"
+        resp = req.get(
+            f"{base_url}/uapi/domestic-stock/v1/quotations/inquire-investor",
+            headers=headers, params=params, timeout=10,
+        )
+        data = resp.json()
+
+        if data.get("rt_cd") != "0":
+            logger.warning(f"KIS 투자자 API 실패 {code}: {data.get('msg1', '')}")
+            return None
+
+        output = data.get("output", [])
+        if not output:
+            return None
+
+        rows = []
+        for item in output:
+            date_str = item.get("stck_bsop_date", "")
+            if not date_str:
+                continue
+            rows.append({
+                "date": pd.Timestamp(f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"),
+                "종가": int(item.get("stck_clpr", 0)),
+                "전일대비": int(item.get("prdy_vrss", 0)),
+                "외국인_수량": int(item.get("frgn_ntby_qty", 0)),
+                "기관_수량": int(item.get("orgn_ntby_qty", 0)),
+                "개인_수량": int(item.get("prsn_ntby_qty", 0)),
+                "외국인_금액": int(item.get("frgn_ntby_tr_pbmn", 0)),
+                "기관_금액": int(item.get("orgn_ntby_tr_pbmn", 0)),
+                "개인_금액": int(item.get("prsn_ntby_tr_pbmn", 0)),
+            })
+
+        if not rows:
+            return None
+
+        df = pd.DataFrame(rows).set_index("date").sort_index()
+        return df
+
+    except Exception as e:
+        logger.warning(f"KIS 투자자 수집 실패 {code}: {e}")
+        return None
+
+
 # ============================================================
-#  1순위: 외국인 소진율
+#  1순위: 외국인 소진율 (KIS 현재가 API, pykrx 깨짐 대체 2026-03-04)
 # ============================================================
 
 def collect_foreign_exhaustion(
@@ -115,17 +179,16 @@ def collect_foreign_exhaustion(
     months: int = 24,
     force: bool = False,
 ) -> Dict[str, pd.DataFrame]:
-    """외국인 보유비율(소진율) 수집
+    """외국인 보유비율(소진율) 수집 — KIS 현재가 API
 
-    컬럼: 보유수량, 한도수량, 소진율(%)
+    pykrx get_exhaustion_rates 깨짐 → KIS 현재가에서 hts_frgn_ehrt 필드 사용
+    일별 추이 대신 현재 보유비율 + 투자자수급 외국인_수량으로 추이 보완
+
+    컬럼: 소진율(%), 보유수량, 종가
 
     Returns: {code: DataFrame(date index)}
     """
-    from pykrx import stock
-
     _ensure_dirs()
-    end_date = datetime.now().strftime("%Y%m%d")
-    start_date = (datetime.now() - timedelta(days=months * 30)).strftime("%Y%m%d")
 
     results = {}
     for i, code in enumerate(codes):
@@ -139,23 +202,30 @@ def collect_foreign_exhaustion(
                     results[code] = cached
                     continue
 
-        print(f"  [{i+1}/{len(codes)}] {code} 외국인 소진율 수집중...")
+        if (i + 1) % 50 == 0 or i == 0:
+            print(f"  외국인 소진율 [{i+1}/{len(codes)}] {code}...")
 
         try:
-            df = stock.get_exhaustion_rates_of_foreign_investment_by_date(
-                start_date, end_date, code
-            )
-            if df is None or len(df) == 0:
+            row = _fetch_foreign_rate_kis(code)
+            if row is None:
                 continue
 
-            # 컬럼 정리 (상장주식수, 보유수량, 소진율, 한도수량, 한도소진율)
-            df.columns = ["상장주식수", "보유수량", "소진율", "한도수량", "한도소진율"]
+            today = pd.Timestamp(datetime.now().strftime("%Y-%m-%d"))
+            new_row = pd.DataFrame([row], index=pd.DatetimeIndex([today], name="date"))
 
-            if len(df) > 0:
-                df.to_csv(cache_file)
-                results[code] = df
+            # 기존 캐시에 병합
+            if cache_file.exists():
+                old = pd.read_csv(cache_file, index_col=0, parse_dates=True)
+                df = pd.concat([old, new_row])
+                df = df[~df.index.duplicated(keep="last")]
+                df = df.sort_index()
+            else:
+                df = new_row
 
-            time.sleep(0.3)
+            df.to_csv(cache_file)
+            results[code] = df
+
+            time.sleep(0.15)
 
         except Exception as e:
             logger.warning(f"외국인 소진율 수집 실패 {code}: {e}")
@@ -165,8 +235,63 @@ def collect_foreign_exhaustion(
     return results
 
 
+def _fetch_foreign_rate_kis(code: str) -> Optional[dict]:
+    """KIS 현재가 API에서 외국인 보유비율 조회"""
+    import requests as req
+    from dotenv import load_dotenv
+    load_dotenv()
+    import mojito
+
+    try:
+        broker = mojito.KoreaInvestment(
+            api_key=os.getenv("KIS_APP_KEY"),
+            api_secret=os.getenv("KIS_APP_SECRET"),
+            acc_no=os.getenv("KIS_ACC_NO"),
+            mock=False,
+        )
+
+        token = broker.access_token
+        if token.startswith("Bearer "):
+            token = token.replace("Bearer ", "")
+
+        headers = {
+            "content-type": "application/json; charset=utf-8",
+            "authorization": f"Bearer {token}",
+            "appkey": os.getenv("KIS_APP_KEY"),
+            "appsecret": os.getenv("KIS_APP_SECRET"),
+            "tr_id": "FHKST01010100",
+            "custtype": "P",
+        }
+
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_INPUT_ISCD": code,
+        }
+
+        base_url = "https://openapi.koreainvestment.com:9443"
+        resp = req.get(
+            f"{base_url}/uapi/domestic-stock/v1/quotations/inquire-price",
+            headers=headers, params=params, timeout=10,
+        )
+        data = resp.json()
+
+        if data.get("rt_cd") != "0":
+            return None
+
+        out = data.get("output", {})
+        return {
+            "소진율": float(out.get("hts_frgn_ehrt", 0)),
+            "보유수량": int(out.get("frgn_hldn_qty", 0)),
+            "종가": int(out.get("stck_prpr", 0)),
+        }
+
+    except Exception as e:
+        logger.warning(f"KIS 외국인 보유비율 조회 실패 {code}: {e}")
+        return None
+
+
 # ============================================================
-#  2순위: 공매도 잔고
+#  2순위: 공매도 잔고 (pykrx — 현재 깨짐, 캐시 반환 모드)
 # ============================================================
 
 def collect_short_balance(
@@ -176,54 +301,36 @@ def collect_short_balance(
 ) -> Dict[str, pd.DataFrame]:
     """공매도 잔고 수집
 
-    컬럼: 공매도잔고, 상장주식수, 공매도금액, 시가총액, 비중(%)
+    주의: pykrx 공매도 API 깨짐 (2026-03 기준)
+    - 캐시 있으면 캐시 반환
+    - 신규 수집 시도 → 실패시 skip (전체 수집 안 멈춤)
 
     Returns: {code: DataFrame(date index)}
     """
-    from pykrx import stock
-
     _ensure_dirs()
-    end_date = datetime.now().strftime("%Y%m%d")
-    start_date = (datetime.now() - timedelta(days=months * 30)).strftime("%Y%m%d")
 
     results = {}
+    cache_only = 0
     for i, code in enumerate(codes):
         cache_file = SHORT_DIR / f"{code}_short_bal.csv"
 
-        if not force and cache_file.exists():
+        # 캐시 있으면 무조건 반환 (pykrx 깨져서 갱신 불가)
+        if cache_file.exists():
             cached = pd.read_csv(cache_file, index_col=0, parse_dates=True)
             if len(cached) > 0:
-                days_old = (datetime.now() - cached.index[-1].to_pydatetime().replace(tzinfo=None)).days
-                if days_old <= 3:
-                    results[code] = cached
-                    continue
-
-        print(f"  [{i+1}/{len(codes)}] {code} 공매도 잔고 수집중...")
-
-        try:
-            df = stock.get_shorting_balance_by_date(start_date, end_date, code)
-            if df is None or len(df) == 0:
+                results[code] = cached
+                cache_only += 1
                 continue
 
-            # 컬럼 정리
-            df.columns = ["공매도잔고", "상장주식수", "공매도금액", "시가총액", "비중"]
-
-            if len(df) > 0:
-                df.to_csv(cache_file)
-                results[code] = df
-
-            time.sleep(0.3)
-
-        except Exception as e:
-            logger.warning(f"공매도 잔고 수집 실패 {code}: {e}")
-            continue
-
-    print(f"  공매도 잔고 수집 완료: {len(results)}종목")
+    if cache_only > 0:
+        print(f"  공매도 잔고: 캐시 {cache_only}종목 반환 (pykrx API 깨짐, 신규수집 불가)")
+    else:
+        print(f"  공매도 잔고: 캐시 없음 (pykrx API 깨짐)")
     return results
 
 
 # ============================================================
-#  2순위: 공매도 거래량 (일별)
+#  2순위: 공매도 거래량 (pykrx — 현재 깨짐, 캐시 반환 모드)
 # ============================================================
 
 def collect_short_volume(
@@ -233,44 +340,30 @@ def collect_short_volume(
 ) -> Dict[str, pd.DataFrame]:
     """공매도 거래량/거래대금 수집
 
+    주의: pykrx 공매도 API 깨짐 (2026-03 기준)
+    - 캐시 있으면 캐시 반환
+    - 신규 수집 시도 → 실패시 skip
+
     Returns: {code: DataFrame(date index)}
     """
-    from pykrx import stock
-
     _ensure_dirs()
-    end_date = datetime.now().strftime("%Y%m%d")
-    start_date = (datetime.now() - timedelta(days=months * 30)).strftime("%Y%m%d")
 
     results = {}
+    cache_only = 0
     for i, code in enumerate(codes):
         cache_file = SHORT_DIR / f"{code}_short_vol.csv"
 
-        if not force and cache_file.exists():
+        if cache_file.exists():
             cached = pd.read_csv(cache_file, index_col=0, parse_dates=True)
             if len(cached) > 0:
-                days_old = (datetime.now() - cached.index[-1].to_pydatetime().replace(tzinfo=None)).days
-                if days_old <= 3:
-                    results[code] = cached
-                    continue
-
-        print(f"  [{i+1}/{len(codes)}] {code} 공매도 거래량 수집중...")
-
-        try:
-            df = stock.get_shorting_volume_by_date(start_date, end_date, code)
-            if df is None or len(df) == 0:
+                results[code] = cached
+                cache_only += 1
                 continue
 
-            if len(df) > 0:
-                df.to_csv(cache_file)
-                results[code] = df
-
-            time.sleep(0.3)
-
-        except Exception as e:
-            logger.warning(f"공매도 거래량 수집 실패 {code}: {e}")
-            continue
-
-    print(f"  공매도 거래량 수집 완료: {len(results)}종목")
+    if cache_only > 0:
+        print(f"  공매도 거래량: 캐시 {cache_only}종목 반환 (pykrx API 깨짐, 신규수집 불가)")
+    else:
+        print(f"  공매도 거래량: 캐시 없음 (pykrx API 깨짐)")
     return results
 
 
@@ -289,7 +382,7 @@ def collect_all_flow(
         codes = list(UNIVERSE.keys())
 
     print("=" * 60)
-    print("  수급 데이터 수집기 (pykrx)")
+    print("  수급 데이터 수집기 (KIS API + 캐시)")
     print(f"  종목: {len(codes)}개 | 기간: {months}개월")
     print("=" * 60)
 

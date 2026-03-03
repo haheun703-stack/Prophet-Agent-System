@@ -148,6 +148,74 @@ class KISTrader:
             logger.error(f"현재가 조회 실패 {code}: {e}")
             return {"success": False, "message": f"현재가 조회 실패: {e}"}
 
+    def fetch_investor_daily(self, code: str) -> dict:
+        """투자자별 매매동향 (30일치, KIS API)
+
+        pykrx 수급 API 깨짐 → KIS API 대체 (2026-03-04)
+        tr_id: FHKST01010900 (주식현재가 투자자)
+
+        Returns: {success, data: [{date, close, foreign_net_qty, inst_net_qty, indi_net_qty, ...}]}
+        """
+        try:
+            broker = self._get_broker()
+            import requests
+
+            token = broker.access_token
+            if token.startswith("Bearer "):
+                token = token.replace("Bearer ", "")
+
+            headers = {
+                "content-type": "application/json; charset=utf-8",
+                "authorization": f"Bearer {token}",
+                "appkey": os.getenv("KIS_APP_KEY"),
+                "appsecret": os.getenv("KIS_APP_SECRET"),
+                "tr_id": "FHKST01010900",
+                "custtype": "P",
+            }
+
+            params = {
+                "FID_COND_MRKT_DIV_CODE": "J",
+                "FID_INPUT_ISCD": code,
+            }
+
+            base_url = "https://openapi.koreainvestment.com:9443"
+            resp = requests.get(
+                f"{base_url}/uapi/domestic-stock/v1/quotations/inquire-investor",
+                headers=headers, params=params, timeout=10,
+            )
+            data = resp.json()
+
+            if data.get("rt_cd") != "0":
+                return {"success": False, "message": data.get("msg1", "API 오류")}
+
+            rows = []
+            for item in data.get("output", []):
+                rows.append({
+                    "date": item.get("stck_bsop_date", ""),
+                    "close": int(item.get("stck_clpr", 0)),
+                    "change": int(item.get("prdy_vrss", 0)),
+                    # 순매수 수량
+                    "foreign_net_qty": int(item.get("frgn_ntby_qty", 0)),
+                    "inst_net_qty": int(item.get("orgn_ntby_qty", 0)),
+                    "indi_net_qty": int(item.get("prsn_ntby_qty", 0)),
+                    # 순매수 금액 (백만원)
+                    "foreign_net_amount": int(item.get("frgn_ntby_tr_pbmn", 0)),
+                    "inst_net_amount": int(item.get("orgn_ntby_tr_pbmn", 0)),
+                    "indi_net_amount": int(item.get("prsn_ntby_tr_pbmn", 0)),
+                    # 매수 수량
+                    "foreign_buy_qty": int(item.get("frgn_shnu_vol", 0)),
+                    "inst_buy_qty": int(item.get("orgn_shnu_vol", 0)),
+                    # 매도 수량
+                    "foreign_sell_qty": int(item.get("frgn_seln_vol", 0)),
+                    "inst_sell_qty": int(item.get("orgn_seln_vol", 0)),
+                })
+
+            return {"success": True, "data": rows}
+
+        except Exception as e:
+            logger.error(f"투자자별 매매동향 조회 실패 {code}: {e}")
+            return {"success": False, "message": str(e)}
+
     def fetch_open_orders(self) -> dict:
         """미체결 주문 조회"""
         try:
