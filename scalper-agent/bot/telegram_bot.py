@@ -14,7 +14,10 @@ import time
 import asyncio
 import logging
 from pathlib import Path
-from datetime import datetime, time as dtime
+from datetime import datetime, time as dtime, timezone, timedelta
+
+# 한국 표준시 (UTC+9) — 스케줄러에 반드시 전달
+KST = timezone(timedelta(hours=9))
 
 from telegram import Update, ReplyKeyboardMarkup, BotCommand
 from telegram.ext import (
@@ -1604,11 +1607,15 @@ class BodyHunterBot:
 
         bot_conf = self.config.get("bot", {})
 
+        # ── 모든 스케줄은 KST (UTC+9) 기준 ──
+        def kst_time(h, m):
+            return dtime(h, m, tzinfo=KST)
+
         # 아침 스캔
-        scan_time_str = bot_conf.get("morning_scan_time", "09:20")
+        scan_time_str = bot_conf.get("morning_scan_time", "09:00")
         h, m = map(int, scan_time_str.split(":"))
-        jq.run_daily(self.auto_trader.job_morning_scan, time=dtime(h, m))
-        logger.info(f"아침 스캔 등록: {scan_time_str}")
+        jq.run_daily(self.auto_trader.job_morning_scan, time=kst_time(h, m))
+        logger.info(f"아침 스캔 등록: {scan_time_str} KST")
 
         # 포지션 감시 (30초)
         interval = bot_conf.get("scan_interval_sec", 30)
@@ -1618,63 +1625,63 @@ class BodyHunterBot:
         # 장마감 청산
         eod_str = bot_conf.get("eod_close_time", "15:10")
         h2, m2 = map(int, eod_str.split(":"))
-        jq.run_daily(self.auto_trader.job_eod_close, time=dtime(h2, m2))
-        logger.info(f"장마감 청산 등록: {eod_str}")
+        jq.run_daily(self.auto_trader.job_eod_close, time=kst_time(h2, m2))
+        logger.info(f"장마감 청산 등록: {eod_str} KST")
 
         # 장마감 후 분봉 수집 (15:40)
         minute_str = bot_conf.get("minute_collect_time", "15:40")
         h3, m3 = map(int, minute_str.split(":"))
-        jq.run_daily(self._job_collect_minutes, time=dtime(h3, m3))
-        logger.info(f"분봉 수집 등록: {minute_str}")
+        jq.run_daily(self._job_collect_minutes, time=kst_time(h3, m3))
+        logger.info(f"분봉 수집 등록: {minute_str} KST")
 
         # 일봉 + 수급 수집 (16:00)
         daily_str = bot_conf.get("daily_collect_time", "16:00")
         h4, m4 = map(int, daily_str.split(":"))
-        jq.run_daily(self._job_collect_daily, time=dtime(h4, m4))
-        logger.info(f"일봉 수집 등록: {daily_str}")
+        jq.run_daily(self._job_collect_daily, time=kst_time(h4, m4))
+        logger.info(f"일봉 수집 등록: {daily_str} KST")
 
         # 체결 스냅샷 폴링 — 장 시작 시 자동 시작 (09:01)
         tick_enabled = self.config.get("schedule", {}).get(
             "tick_collect", {}
         ).get("enabled", True)
         if tick_enabled:
-            jq.run_daily(self._job_start_tick_polling, time=dtime(9, 1))
-            logger.info("체결 폴링 등록: 09:01 시작 (1분 간격, 장중)")
+            jq.run_daily(self._job_start_tick_polling, time=kst_time(9, 1))
+            logger.info("체결 폴링 등록: 09:01 KST 시작 (1분 간격, 장중)")
 
         # 유니버스 리빌드 (08:30)
         uni_str = bot_conf.get("universe_rebuild_time", "08:30")
         h5, m5 = map(int, uni_str.split(":"))
-        jq.run_daily(self._job_rebuild_universe, time=dtime(h5, m5))
-        logger.info(f"유니버스 리빌드 등록: {uni_str}")
+        jq.run_daily(self._job_rebuild_universe, time=kst_time(h5, m5))
+        logger.info(f"유니버스 리빌드 등록: {uni_str} KST")
 
         # 일간 시그널 기록 (16:30 — 일봉 수집 후)
-        jq.run_daily(self._job_record_signals, time=dtime(16, 30))
-        logger.info("일간 시그널 기록 등록: 16:30")
+        jq.run_daily(self._job_record_signals, time=kst_time(16, 30))
+        logger.info("일간 시그널 기록 등록: 16:30 KST")
 
         # 해외 이벤트 캘린더 스캔 (08:00 — 장 전 D-3 알림)
-        jq.run_daily(self._job_global_event_scan, time=dtime(8, 0))
-        logger.info("해외 이벤트 스캔 등록: 08:00")
+        jq.run_daily(self._job_global_event_scan, time=kst_time(8, 0))
+        logger.info("해외 이벤트 스캔 등록: 08:00 KST")
 
         # 스윙 종목 선정 (16:35 — 시그널 기록 후)
-        jq.run_daily(self._job_swing_picker, time=dtime(16, 35))
-        logger.info("스윙 종목 선정 등록: 16:35")
+        jq.run_daily(self._job_swing_picker, time=kst_time(16, 35))
+        logger.info("스윙 종목 선정 등록: 16:35 KST")
 
         # MACD 제로선 크로스 스캔 (16:40 — 일봉+수급 수집 후)
-        jq.run_daily(self._job_macd_scan, time=dtime(16, 40))
-        logger.info("MACD 크로스 스캔 등록: 16:40")
+        jq.run_daily(self._job_macd_scan, time=kst_time(16, 40))
+        logger.info("MACD 크로스 스캔 등록: 16:40 KST")
 
         # 사전감지 스캔 (08:50 — 장 시작 전)
-        jq.run_daily(self._job_premove_scan, time=dtime(8, 50))
-        logger.info("사전감지 스캔 등록: 08:50")
+        jq.run_daily(self._job_premove_scan, time=kst_time(8, 50))
+        logger.info("사전감지 스캔 등록: 08:50 KST")
 
         # ── 추천 파이프라인 3-Stage ──
         # Stage 1: 저녁 분석 (16:45 — 데이터 수집 완료 후)
-        jq.run_daily(self.auto_trader.job_evening_analysis, time=dtime(16, 45))
-        logger.info("저녁 추천 분석 등록: 16:45")
+        jq.run_daily(self.auto_trader.job_evening_analysis, time=kst_time(16, 45))
+        logger.info("저녁 추천 분석 등록: 16:45 KST")
 
         # Stage 2: 미국장 체크 (06:30 — 다음날 새벽)
-        jq.run_daily(self.auto_trader.job_us_market_check, time=dtime(6, 30))
-        logger.info("미국장 체크 등록: 06:30")
+        jq.run_daily(self.auto_trader.job_us_market_check, time=kst_time(6, 30))
+        logger.info("미국장 체크 등록: 06:30 KST")
 
     async def _job_start_tick_polling(self, context):
         """장 시작 시 체결 스냅샷 폴링 시작 (백그라운드 스레드)"""
