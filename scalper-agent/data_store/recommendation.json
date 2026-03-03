@@ -1,17 +1,17 @@
 {
-  "stage": "evening",
-  "timestamp": "2026-03-03 23:25",
-  "market_health": "NORMAL",
-  "us_market_note": "",
+  "stage": "us_market_check",
+  "timestamp": "2026-03-04 01:30",
+  "market_health": "WARNING",
+  "us_market_note": "이란전쟁확대|선물급락(NQ-2.17%,ES-1.66%)|VIX22.40(+12%)|WTI$72(+8.4%)|US방산급등(LMT+3.37%,RTX+4.86%,NOC+5.8%)|금$5350|호르무즈해협위기",
   "relay_summary": "HOT:방산/국방 | HOT:반도체/AI | RELAY:자동차 | RELAY:한화그룹 | RELAY:현대차그룹",
-  "warning": "3/3 방산 급등 | 당일급락필터+KIS검증 적용",
+  "warning": "US방산급등→KR방산릴레이확인 | 전체시장약세(선물-2%) | 방산과열RSI72~89 | 갭업매수자제→눌림진입",
   "stocks": [
     {
       "code": "003570",
       "name": "SNT다이내믹스",
       "close": 56600,
       "total_score": 47.5,
-      "confidence": "MED",
+      "confidence": "HIGH",
       "entry": 56600,
       "sl": 53770,
       "tp": 62260,
@@ -22,53 +22,35 @@
         "group:한화그룹",
         "etf:K방산"
       ],
-      "cross_count": 1,
+      "cross_count": 2,
       "relay_score": 30,
       "premove_score": 0.0,
       "tech_score": 17.5,
-      "news_score": 15
+      "news_score": 15,
+      "us_note": "LMT+3.37%,RTX+4.86%→한화그룹방산릴레이|RSI72과열최저|이중교차|17주분할가능"
     },
     {
-      "code": "012450",
-      "name": "한화에어로스페이스",
-      "close": 1432000,
+      "code": "047810",
+      "name": "한국항공우주",
+      "close": 197600,
       "total_score": 35.0,
-      "confidence": "MED",
-      "entry": 1432000,
-      "sl": 1360400,
-      "tp": 1575200,
+      "confidence": "HIGH",
+      "entry": 197600,
+      "sl": 187720,
+      "tp": 217360,
       "sl_source": "ATR",
-      "tech_detail": "정배열+EMA20>60+MACD++OBV UP+당일+20%",
+      "tech_detail": "정배열+EMA20>60+RSI82과열+MACD++OBV UP+당일+3%",
       "news_detail": "POSITIVE",
       "sources": [
-        "sector_hot:방산/국방"
+        "etf:K방산",
+        "us_relay:LMT"
       ],
-      "cross_count": 1,
-      "relay_score": 15,
-      "premove_score": 0.0,
-      "tech_score": 20.0,
-      "news_score": 55
-    },
-    {
-      "code": "272210",
-      "name": "한화시스템",
-      "close": 146700,
-      "total_score": 32.5,
-      "confidence": "MED",
-      "entry": 146700,
-      "sl": 139365,
-      "tp": 161370,
-      "sl_source": "ATR",
-      "tech_detail": "정배열+EMA20>60+RSI73과열+MACD++OBV UP+당일+29%",
-      "news_detail": "POSITIVE",
-      "sources": [
-        "sector_hot:방산/국방"
-      ],
-      "cross_count": 1,
+      "cross_count": 2,
       "relay_score": 15,
       "premove_score": 0.0,
       "tech_score": 17.5,
-      "news_score": 65
+      "news_score": 55,
+      "us_note": "LMT(F-35)+3.37%→KAI(KF-21/FA-50)직접릴레이|3/3단+3%갭업부담최소|4주분할(1-1-2)"
     },
     {
       "code": "103140",
@@ -89,19 +71,20 @@
       "relay_score": 15,
       "premove_score": 0.0,
       "tech_score": 17.5,
-      "news_score": 45
+      "news_score": 45,
+      "us_note": "대안3순위|탄약=전쟁직접수혜|RSI74양호|7주분할가능"
     },
     {
-      "code": "079550",
-      "name": "LIG넥스원",
-      "close": 661000,
+      "code": "272210",
+      "name": "한화시스템",
+      "close": 146700,
       "total_score": 32.5,
-      "confidence": "MED",
-      "entry": 661000,
-      "sl": 627950,
-      "tp": 727100,
+      "confidence": "LOW",
+      "entry": 146700,
+      "sl": 139365,
+      "tp": 161370,
       "sl_source": "ATR",
-      "tech_detail": "정배열+EMA20>60+RSI89과열+MACD++OBV UP+당일+30%",
+      "tech_detail": "정배열+EMA20>60+RSI73과열+MACD++OBV UP+당일+29%",
       "news_detail": "POSITIVE",
       "sources": [
         "sector_hot:방산/국방"
@@ -110,70 +93,8 @@
       "relay_score": 15,
       "premove_score": 0.0,
       "tech_score": 17.5,
-      "news_score": 75
-    },
-    {
-      "code": "047810",
-      "name": "한국항공우주",
-      "close": 197600,
-      "total_score": 32.5,
-      "confidence": "MED",
-      "entry": 197600,
-      "sl": 187720,
-      "tp": 217360,
-      "sl_source": "ATR",
-      "tech_detail": "정배열+EMA20>60+RSI82과열+MACD++OBV UP+당일+3%",
-      "news_detail": "POSITIVE",
-      "sources": [
-        "etf:K방산"
-      ],
-      "cross_count": 1,
-      "relay_score": 15,
-      "premove_score": 0.0,
-      "tech_score": 17.5,
-      "news_score": 55
-    },
-    {
-      "code": "065450",
-      "name": "빅텍",
-      "close": 5720,
-      "total_score": 32.5,
-      "confidence": "MED",
-      "entry": 5720,
-      "sl": 5434,
-      "tp": 6292,
-      "sl_source": "ATR",
-      "tech_detail": "정배열+EMA20>60+RSI87과열+MACD++OBV UP+당일+30%",
-      "news_detail": "POSITIVE",
-      "sources": [
-        "sector_hot:방산/국방"
-      ],
-      "cross_count": 1,
-      "relay_score": 15,
-      "premove_score": 0.0,
-      "tech_score": 17.5,
-      "news_score": 75
-    },
-    {
-      "code": "357780",
-      "name": "솔브레인",
-      "close": 440500,
-      "total_score": 30.0,
-      "confidence": "MED",
-      "entry": 440500,
-      "sl": 418475,
-      "tp": 484550,
-      "sl_source": "ATR",
-      "tech_detail": "정배열+EMA20>60+OBV UP",
-      "news_detail": "POSITIVE",
-      "sources": [
-        "sector_hot:반도체/AI"
-      ],
-      "cross_count": 1,
-      "relay_score": 15,
-      "premove_score": 0.0,
-      "tech_score": 15.0,
-      "news_score": 15
+      "news_score": 65,
+      "us_note": "3/3+29%급등→갭업위험높음|참고만"
     }
   ]
 }
