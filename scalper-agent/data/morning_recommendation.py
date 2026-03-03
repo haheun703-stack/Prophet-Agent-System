@@ -118,7 +118,7 @@ def _step2_premove_scan() -> dict:
                 "close": c.close,
                 "premove_score": c.premove_score,
                 "signal_count": c.signal_count,
-                "signals": [s["name"] for s in c.signals] if c.signals else [],
+                "signals": [s["type"] for s in c.signals] if c.signals else [],
                 "entry": c.entry,
                 "sl": c.sl,
                 "tp": c.tp2,
@@ -296,26 +296,82 @@ def _step3_tech_filter(codes_names: list[tuple[str, str]]) -> dict:
 # ═══════════════════════════════════════
 
 def _step4_news_filter(codes_names: list[tuple[str, str]]) -> dict:
-    """뉴스AI로 네거티브 종목 제거
+    """뉴스AI로 네거티브 종목 제거 (캐시 활용)
 
-    Returns: {code: {"sentiment": "POSITIVE"/"NEUTRAL"/"NEGATIVE", "reason": "..."}}
+    Returns: {code: {"sentiment": "...", "reason": "...", "score": N}}
     """
+    import json
+    from datetime import datetime
+    from pathlib import Path
+
+    news_map = {}
+
+    # 오늘 캐시 로드 (사전감지에서 이미 분석한 종목)
+    today = datetime.now().strftime("%Y%m%d")
+    cache_path = Path(__file__).resolve().parent.parent / "data_store" / "news_ai" / f"news_ai_{today}.json"
+    cached = {}
+    if cache_path.exists():
+        try:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                for item in json.load(f):
+                    grade = item.get("news_grade", "NEUTRAL")
+                    # news_grade → sentiment 매핑
+                    if grade in ("STRONG_NEGATIVE", "NEGATIVE"):
+                        sentiment = "NEGATIVE"
+                    elif grade in ("STRONG_POSITIVE", "POSITIVE"):
+                        sentiment = "POSITIVE"
+                    else:
+                        sentiment = "NEUTRAL"
+                    cached[item["code"]] = {
+                        "sentiment": sentiment,
+                        "reason": item.get("ai_summary", ""),
+                        "score": item.get("news_score", 0),
+                    }
+            logger.info(f"뉴스AI 캐시: {len(cached)}종목 로드")
+        except Exception as e:
+            logger.warning(f"뉴스AI 캐시 로드 실패: {e}")
+
+    # 캐시에 있는 종목은 재사용
+    need_analysis = []
+    for code, name in codes_names:
+        if code in cached:
+            news_map[code] = cached[code]
+        else:
+            need_analysis.append((code, name))
+
+    if not need_analysis:
+        logger.info(f"뉴스AI: 전종목 캐시 히트 ({len(news_map)}건)")
+        return news_map
+
+    # 미분석 종목만 뉴스AI 실행
     try:
         from data.news_ai_scanner import scan_news_ai
-        targets = [{"code": c, "name": n} for c, n in codes_names]
-        results = scan_news_ai(targets, use_ai=True)
+        targets = [{"code": c, "name": n} for c, n in need_analysis]
+        logger.info(f"뉴스AI: {len(need_analysis)}종목 신규 분석 (캐시 {len(news_map)}건)")
+        results = scan_news_ai(targets)
 
-        news_map = {}
         for r in results:
+            grade = r.news_grade
+            if grade in ("STRONG_NEGATIVE", "NEGATIVE"):
+                sentiment = "NEGATIVE"
+            elif grade in ("STRONG_POSITIVE", "POSITIVE"):
+                sentiment = "POSITIVE"
+            else:
+                sentiment = "NEUTRAL"
             news_map[r.code] = {
-                "sentiment": r.sentiment,
-                "reason": r.reason if hasattr(r, "reason") else "",
-                "score": r.score if hasattr(r, "score") else 0,
+                "sentiment": sentiment,
+                "reason": r.ai_summary if hasattr(r, "ai_summary") else "",
+                "score": r.news_score if hasattr(r, "news_score") else 0,
             }
-        return news_map
     except Exception as e:
-        logger.warning(f"뉴스AI 실패: {e} — 전종목 NEUTRAL 처리")
-        return {c: {"sentiment": "NEUTRAL", "reason": "AI실패", "score": 0} for c, _ in codes_names}
+        logger.warning(f"뉴스AI 실패: {e} — 미분석 종목 NEUTRAL 처리")
+
+    # 누락 종목 NEUTRAL 처리
+    for code, _ in codes_names:
+        if code not in news_map:
+            news_map[code] = {"sentiment": "NEUTRAL", "reason": "미분석", "score": 0}
+
+    return news_map
 
 
 # ═══════════════════════════════════════
@@ -429,12 +485,18 @@ def _step5_cross_validate(
 # ═══════════════════════════════════════
 
 def run_evening_recommendation() -> RecommendationReport:
-    """Stage 1: 저녁 분석 (16:45) — 5단계 전체 실행 + MACD 0선"""
+    """Stage 1: 저녁 분석 (16:45) — 5단계 전체 실행 + MACD 0선
+
+    최적화: 기술필터 통과 종목만 뉴스AI 분석 (API 비용/시간 절약)
+    캐시: 오늘 이미 분석한 종목은 재사용
+    """
+    import time
     from datetime import datetime
 
     logger.info("=" * 50)
     logger.info("저녁 추천 파이프라인 시작 (5단계)")
     logger.info("=" * 50)
+    t_start = time.time()
 
     report = RecommendationReport(
         stage="evening",
@@ -453,13 +515,17 @@ def run_evening_recommendation() -> RecommendationReport:
         report.market_health = f"체크실패: {e}"
 
     # Step 1: 릴레이 스캔
+    t0 = time.time()
     logger.info("[Step 1/5] 릴레이 스캔...")
     relay_result = _step1_relay_scan()
     report.relay_summary = relay_result.get("summary", "")
+    logger.info(f"  → {len(relay_result.get('stocks', {}))}종목 ({time.time()-t0:.0f}s)")
 
-    # Step 2: 사전감지 스캔
+    # Step 2: 사전감지 스캔 (내부에 뉴스AI 포함 — 오래 걸림)
+    t0 = time.time()
     logger.info("[Step 2/5] 사전감지 스캔...")
     premove_result = _step2_premove_scan()
+    logger.info(f"  → {len(premove_result.get('stocks', {}))}종목 ({time.time()-t0:.0f}s)")
 
     # 기술분석 대상 종목 수집
     all_codes = set()
@@ -472,27 +538,41 @@ def run_evening_recommendation() -> RecommendationReport:
         report.warning = "릴레이+사전감지 결과 0건 — 추천 불가"
         return report
 
-    codes_names = list(all_codes)
-
     # Step 2.5: MACD 제로선 크로스 스캔 (추가 소스)
+    t0 = time.time()
     logger.info("[Step 2.5] MACD 0선 크로스 스캔...")
     macd_result = _step_macd_zero_scan()
-    # MACD 크로스 종목도 후보에 추가
     for code, info in macd_result.items():
         if (code, info.get("name", code)) not in all_codes:
             all_codes.add((code, info.get("name", code)))
+    logger.info(f"  → {len(macd_result)}종목 ({time.time()-t0:.0f}s)")
 
     codes_names = list(all_codes)
 
     # Step 3: 기술적 필터
+    t0 = time.time()
     logger.info(f"[Step 3/5] 기술 분석 ({len(codes_names)}종목)...")
     tech_result = _step3_tech_filter(codes_names)
+    logger.info(f"  → 완료 ({time.time()-t0:.0f}s)")
 
-    # Step 4: 뉴스AI
-    logger.info(f"[Step 4/5] 뉴스AI 분석...")
-    news_result = _step4_news_filter(codes_names)
+    # Step 4: 뉴스AI (기술필터 통과 종목만 — API 비용/시간 절약)
+    # 기술 점수 2.0+ AND OBV UP인 종목만 분석 (나머지는 Step5에서 걸러짐)
+    t0 = time.time()
+    filtered_for_news = [
+        (code, name) for code, name in codes_names
+        if tech_result.get(code, {}).get("score", 0) >= 2.0
+        and tech_result.get(code, {}).get("obv_dir") != "DOWN"
+    ]
+    logger.info(f"[Step 4/5] 뉴스AI ({len(filtered_for_news)}/{len(codes_names)}종목, 기술필터 통과분만)...")
+    news_result = _step4_news_filter(filtered_for_news)
+    # 뉴스AI 미분석 종목은 NEUTRAL로 채움
+    for code, name in codes_names:
+        if code not in news_result:
+            news_result[code] = {"sentiment": "NEUTRAL", "reason": "기술필터미통과", "score": 0}
+    logger.info(f"  → 완료 ({time.time()-t0:.0f}s)")
 
     # Step 5: 교차검증 (MACD 0선 소스 포함)
+    t0 = time.time()
     logger.info("[Step 5/5] 교차검증 + 최종 랭킹...")
     final_stocks = _step5_cross_validate(
         relay_result, premove_result, tech_result, news_result,
@@ -500,7 +580,8 @@ def run_evening_recommendation() -> RecommendationReport:
     )
 
     report.stocks = final_stocks
-    logger.info(f"최종 추천: {len(final_stocks)}종목")
+    elapsed = time.time() - t_start
+    logger.info(f"최종 추천: {len(final_stocks)}종목 (전체 {elapsed:.0f}s)")
 
     return report
 
