@@ -37,6 +37,8 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from data.extend_parquet_data import load_daily
+
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -138,12 +140,11 @@ def score_tech(code: str) -> float:
 
     supply_analyzer 없이 일봉 데이터로 직접 계산
     """
-    path = DAILY_DIR / f"{code}.csv"
-    if not path.exists():
+    df = load_daily(code)
+    if df is None:
         return 0.0
 
     try:
-        df = pd.read_csv(path, index_col=0, parse_dates=True)
         if len(df) < 60:
             return 0.0
 
@@ -214,12 +215,11 @@ def score_momentum(code: str) -> float:
 
     스윙 D+1~2 관점: 상승 지속 모멘텀 + 반등 시작 모두 포착
     """
-    path = DAILY_DIR / f"{code}.csv"
-    if not path.exists():
+    df = load_daily(code)
+    if df is None:
         return 0.0
 
     try:
-        df = pd.read_csv(path, index_col=0, parse_dates=True)
         if len(df) < 30:
             return 0.0
 
@@ -333,12 +333,11 @@ def score_event(code: str) -> float:
 
 def score_volatility(code: str) -> float:
     """ATR% 기반 변동성 점수 — 적정 변동성(2~5%) 선호"""
-    path = DAILY_DIR / f"{code}.csv"
-    if not path.exists():
+    df = load_daily(code)
+    if df is None:
         return 0.0
 
     try:
-        df = pd.read_csv(path, index_col=0, parse_dates=True)
         if len(df) < 20:
             return 0.0
 
@@ -428,14 +427,14 @@ def score_inst_gap(code: str, days: int = 20) -> float:
     현재가 ≈ 매집원가 + 매수 가속 → 높은 점수
     현재가 > 매집원가 크게 이탈 → 차익실현 경고
     """
-    daily_path = DAILY_DIR / f"{code}.csv"
+    dd = load_daily(code)
     flow_path = FLOW_DIR / f"{code}_investor.csv"
 
-    if not daily_path.exists() or not flow_path.exists():
+    if dd is None or not flow_path.exists():
         return 30.0  # 데이터 없으면 중립 이하
 
     try:
-        dd = pd.read_csv(daily_path, index_col=0, parse_dates=True).sort_index().tail(days)
+        dd = dd.sort_index().tail(days)
         ff = pd.read_csv(flow_path, index_col=0, parse_dates=True).sort_index().tail(days)
 
         if len(dd) < 10 or len(ff) < 10:
@@ -533,11 +532,10 @@ def pick_swing_candidates(
     # 거래대금 필터 (10억+)
     filtered = []
     for code in codes:
-        path = DAILY_DIR / f"{code}.csv"
-        if not path.exists():
+        df = load_daily(code)
+        if df is None:
             continue
         try:
-            df = pd.read_csv(path, index_col=0, parse_dates=True)
             if len(df) < 60:
                 continue
             # 최근 5일 평균 거래대금
@@ -564,7 +562,9 @@ def pick_swing_candidates(
         # ── 과열 필터: 10일 수익률 >25% 제외 ──
         # ── 전일 급등 필터: 전일 등락률 >10% 제외 ──
         try:
-            _df = pd.read_csv(DAILY_DIR / f"{code}.csv", index_col=0, parse_dates=True)
+            _df = load_daily(code)
+            if _df is None:
+                continue
             _c = _df["종가"].values.astype(float)
             if len(_c) < 25:
                 continue
@@ -620,7 +620,9 @@ def pick_swing_candidates(
 
         # 진입가/손절가/목표가 계산
         try:
-            df = pd.read_csv(DAILY_DIR / f"{code}.csv", index_col=0, parse_dates=True)
+            df = load_daily(code)
+            if df is None:
+                raise ValueError("no data")
             c = df["종가"].values.astype(float)
             h = df["고가"].values.astype(float)
             l = df["저가"].values.astype(float)

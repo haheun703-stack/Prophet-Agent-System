@@ -373,7 +373,7 @@ def extend_parquet_all(
 
     if not need_update:
         print(f"  전체 캐시 히트 ({cached}종목). 갱신 불필요.")
-        return
+        return cached, 0
 
     print(f"  갱신 필요: {len(need_update)}종목 (캐시: {cached}종목)")
 
@@ -422,10 +422,42 @@ def extend_parquet_all(
     print(f"  합계:      {built + cached}종목")
     print(f"={'='*60}")
 
+    return built + cached, failed
+
 
 # ============================================================
 #  유틸: parquet 로드
 # ============================================================
+
+def load_daily(code: str) -> Optional[pd.DataFrame]:
+    """일봉 로드 — parquet 우선, CSV 폴백
+
+    전체 시스템에서 일봉 데이터 읽을 때 이 함수 사용.
+    processed parquet → raw parquet → daily CSV 순으로 시도.
+    """
+    # 1) processed parquet (기술지표 포함)
+    proc_path = PROCESSED_DIR / f"{code}.parquet"
+    if proc_path.exists():
+        try:
+            return pd.read_parquet(proc_path)
+        except Exception:
+            pass
+
+    # 2) raw parquet
+    raw_path = RAW_DIR / f"{code}.parquet"
+    if raw_path.exists():
+        try:
+            return pd.read_parquet(raw_path)
+        except Exception:
+            pass
+
+    # 3) CSV 폴백 (기존 호환)
+    csv_path = DAILY_DIR / f"{code}.csv"
+    if csv_path.exists():
+        return pd.read_csv(csv_path, index_col=0, parse_dates=True)
+
+    return None
+
 
 def load_raw(code: str) -> Optional[pd.DataFrame]:
     """raw parquet 로드"""

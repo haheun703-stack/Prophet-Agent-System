@@ -28,6 +28,8 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import numpy as np
 
+from data.extend_parquet_data import load_daily
+
 logger = logging.getLogger(__name__)
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data_store"
@@ -477,9 +479,8 @@ class SupplyAnalyzer:
                 self._cache_short[code] = pd.read_csv(path, index_col=0, parse_dates=True)
 
         if code not in self._cache_daily:
-            path = DAILY_DIR / f"{code}.csv"
-            if path.exists():
-                df = pd.read_csv(path, index_col=0, parse_dates=True)
+            df = load_daily(code)
+            if df is not None:
                 # pykrx 한글 컬럼 → 영문 컬럼 매핑
                 col_map = {"시가": "open", "고가": "high", "저가": "low",
                            "종가": "close", "거래량": "volume", "등락률": "change_pct"}

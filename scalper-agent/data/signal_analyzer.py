@@ -30,6 +30,7 @@ import pandas as pd
 import numpy as np
 
 from data.indicator_calc import IndicatorCalc as IC
+from data.extend_parquet_data import load_daily as _load_daily_parquet
 
 logger = logging.getLogger("BH.Signal")
 
@@ -79,10 +80,9 @@ class SignalAnalyzer:
     def _load_daily(self, code: str) -> Optional[pd.DataFrame]:
         if code in self._daily_cache:
             return self._daily_cache[code]
-        path = DAILY_DIR / f"{code}.csv"
-        if not path.exists():
+        df = _load_daily_parquet(code)
+        if df is None:
             return None
-        df = pd.read_csv(path, index_col=0, parse_dates=True)
         col_map = {"시가": "open", "고가": "high", "저가": "low",
                     "종가": "close", "거래량": "volume", "등락률": "change_pct"}
         df.rename(columns=col_map, inplace=True)

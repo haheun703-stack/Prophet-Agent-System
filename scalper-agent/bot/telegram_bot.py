@@ -1835,6 +1835,26 @@ class BodyHunterBot:
                 chat_id=chat_id, text=f"⚠️ 수급 수집 실패: {str(e)[:200]}"
             )
 
+        # 3. Parquet 통합 빌드 (CSV → raw parquet → processed parquet)
+        try:
+            from data.extend_parquet_data import extend_parquet_all
+            await context.bot.send_message(
+                chat_id=chat_id, text="📦 Parquet 통합 빌드 시작..."
+            )
+            t1 = time.time()
+            ok, fail = await asyncio.to_thread(extend_parquet_all, True)
+            elapsed_pq = int(time.time() - t1)
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"📦 Parquet 빌드 완료 ({elapsed_pq}초): 성공 {ok} / 실패 {fail}",
+            )
+            logger.info(f"Parquet 빌드 완료: ok={ok}, fail={fail}")
+        except Exception as e:
+            logger.error(f"Parquet 빌드 실패: {e}")
+            await context.bot.send_message(
+                chat_id=chat_id, text=f"⚠️ Parquet 빌드 실패: {str(e)[:200]}"
+            )
+
     async def _job_rebuild_universe(self, context):
         """장전 유니버스 리빌드 (시총 변동 반영)"""
         from datetime import date

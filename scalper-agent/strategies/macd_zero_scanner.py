@@ -24,6 +24,8 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from data.extend_parquet_data import load_daily
+
 logger = logging.getLogger("BH.MACDZero")
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -72,13 +74,8 @@ def scan_phase1(codes: List[str] = None) -> List[Dict]:
     results = []
 
     for code in codes:
-        daily_path = DAILY_DIR / f"{code}.csv"
-        if not daily_path.exists():
-            continue
-
-        try:
-            df = pd.read_csv(daily_path, index_col=0, parse_dates=True)
-        except Exception:
+        df = load_daily(code)
+        if df is None:
             continue
 
         if len(df) < 40:
@@ -200,13 +197,8 @@ def check_phase2(watchlist: List[Dict] = None) -> List[Dict]:
 
     for item in watchlist:
         code = item["code"]
-        daily_path = DAILY_DIR / f"{code}.csv"
-        if not daily_path.exists():
-            continue
-
-        try:
-            df = pd.read_csv(daily_path, index_col=0, parse_dates=True)
-        except Exception:
+        df = load_daily(code)
+        if df is None:
             continue
 
         if len(df) < 20:

@@ -32,6 +32,8 @@ from typing import List
 import pandas as pd
 import numpy as np
 
+from data.extend_parquet_data import load_daily
+
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -163,12 +165,11 @@ def _collect_market_breadth() -> dict:
     total = 0
 
     for code in universe:
-        daily_file = DAILY_DIR / f"{code}.csv"
-        if not daily_file.exists():
+        df = load_daily(code)
+        if df is None:
             continue
 
         try:
-            df = pd.read_csv(daily_file, index_col=0, parse_dates=True)
             if len(df) < 6:
                 continue
 
@@ -195,15 +196,14 @@ def _collect_market_breadth() -> dict:
 
     # KOSPI 대용 (삼성전자 사용 — 향후 KOSPI ETF로 대체 가능)
     kospi_change = 0
-    kospi_file = DAILY_DIR / "069500.csv"  # KODEX 200
-    if not kospi_file.exists():
-        kospi_file = DAILY_DIR / "005930.csv"  # 삼성전자 폴백
-    if kospi_file.exists():
+    kospi_df = load_daily("069500")  # KODEX 200
+    if kospi_df is None:
+        kospi_df = load_daily("005930")  # 삼성전자 폴백
+    if kospi_df is not None:
         try:
-            df = pd.read_csv(kospi_file, index_col=0, parse_dates=True)
-            close_col = "종가" if "종가" in df.columns else "close"
-            if len(df) >= 6 and close_col in df.columns:
-                kospi_change = (df[close_col].iloc[-1] / df[close_col].iloc[-6] - 1) * 100
+            close_col = "종가" if "종가" in kospi_df.columns else "close"
+            if len(kospi_df) >= 6 and close_col in kospi_df.columns:
+                kospi_change = (kospi_df[close_col].iloc[-1] / kospi_df[close_col].iloc[-6] - 1) * 100
         except Exception:
             pass
 

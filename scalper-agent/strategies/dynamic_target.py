@@ -32,6 +32,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from data.extend_parquet_data import load_daily
+
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -102,10 +104,9 @@ class DynamicTargetEngine:
         - 매집원가 SL 하한선 = max(매집원가×0.97, ATR SL)
         """
         if df is None:
-            path = DAILY_DIR / f"{code}.csv"
-            if not path.exists():
+            df = load_daily(code)
+            if df is None:
                 return self._fallback_state(code, name, entry_price, entry_date)
-            df = pd.read_csv(path, index_col=0, parse_dates=True)
 
         if len(df) < 20:
             return self._fallback_state(code, name, entry_price, entry_date)
@@ -217,12 +218,11 @@ class DynamicTargetEngine:
         """
         code = state.code
         if df is None:
-            path = DAILY_DIR / f"{code}.csv"
-            if not path.exists():
+            df = load_daily(code)
+            if df is None:
                 state.current_price = current_price
                 state.action = ACTION_HOLD
                 return state
-            df = pd.read_csv(path, index_col=0, parse_dates=True)
 
         if flow_df is None:
             flow_path = FLOW_DIR / f"{code}_investor.csv"

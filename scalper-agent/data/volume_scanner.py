@@ -28,6 +28,7 @@ import numpy as np
 import pandas as pd
 
 from data.indicator_calc import IndicatorCalc
+from data.extend_parquet_data import load_daily
 
 logger = logging.getLogger(__name__)
 
@@ -200,14 +201,13 @@ def scan_universe(top_n: int = 30) -> list:
 
     for code, info in universe.items():
         name = info.get("name", code) if isinstance(info, dict) else info[0]
-        daily_file = DAILY_DIR / f"{code}.csv"
 
-        if not daily_file.exists():
+        df = load_daily(code)
+        if df is None:
             skipped += 1
             continue
 
         try:
-            df = pd.read_csv(daily_file, index_col=0, parse_dates=True)
             if len(df) < 25:
                 skipped += 1
                 continue
