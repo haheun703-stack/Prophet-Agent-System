@@ -1622,6 +1622,12 @@ class BodyHunterBot:
         jq.run_repeating(self.auto_trader.job_monitor, interval=interval, first=10)
         logger.info(f"포지션 감시 등록: {interval}초")
 
+        # ★ 동적 목표가 재평가 + 트레일링 스탑 (15:00 — 장마감 전)
+        reeval_str = bot_conf.get("reeval_time", "15:00")
+        h_re, m_re = map(int, reeval_str.split(":"))
+        jq.run_daily(self.auto_trader.job_daily_reeval, time=kst_time(h_re, m_re))
+        logger.info(f"동적 목표가 재평가 등록: {reeval_str} KST (트레일링스탑+수급판정)")
+
         # 장마감 청산
         eod_str = bot_conf.get("eod_close_time", "15:10")
         h2, m2 = map(int, eod_str.split(":"))

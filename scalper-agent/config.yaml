@@ -174,8 +174,8 @@ risk:
   max_position_ratio: 0.30
   stop_loss_pct: 0.02
   take_profit_pct: 0.05
-  trailing_stop: false
-  trailing_stop_pct: 0.015
+  trailing_stop: false              # ← 레거시 (미사용). v5.1 트레일링은 dynamic_target.py에서 자동 작동
+  trailing_stop_pct: 0.015          # ← 레거시 (미사용). v5.1: 고점 -3% 기반 트레일링
   split_count: 3                    # 분할 주문 횟수 (매수/매도)
   max_volume_pct: 0.10              # 내 주문/당일거래량 최대 비율 (10%)
   max_spread_pct: 0.5               # 호가 스프레드 한도 (%) — 초과 시 주문 보류
