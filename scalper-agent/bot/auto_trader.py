@@ -244,6 +244,9 @@ class AutoTrader:
                         "entry_date": datetime.now().strftime("%Y-%m-%d"),
                         "name": name,
                         "target_state": target_state,
+                        "high_watermark": cp,
+                        "trailing_activated": False,
+                        "trailing_sl": 0,
                     }
                     try:
                         rtm = self._get_rt_monitor()
@@ -748,6 +751,9 @@ class AutoTrader:
                                     "entry_date": datetime.now().strftime("%Y-%m-%d"),
                                     "name": watch["name"],
                                     "target_state": target_state,
+                                    "high_watermark": cp,
+                                    "trailing_activated": False,
+                                    "trailing_sl": 0,
                                 }
                                 try:
                                     rtm = self._get_rt_monitor()
@@ -974,6 +980,9 @@ class AutoTrader:
                                 "entry_date": datetime.now().strftime("%Y-%m-%d"),
                                 "name": watch["name"],
                                 "target_state": target_state,
+                                "high_watermark": cp,
+                                "trailing_activated": False,
+                                "trailing_sl": 0,
                             }
                             try:
                                 rtm = self._get_rt_monitor()
@@ -1068,6 +1077,9 @@ class AutoTrader:
                         "entry_price": cp,
                         "stop_loss": int(cp * (1 - sl_pct)),
                         "take_profit": int(cp * (1 + tp_pct)),
+                        "high_watermark": cp,
+                        "trailing_activated": False,
+                        "trailing_sl": 0,
                     }
                 await _send(f"✅ 자동 매수: {result.get('message')}")
             else:
@@ -1124,6 +1136,18 @@ class AutoTrader:
                 # SL 동기화 (트레일링 반영)
                 pos["stop_loss"] = snap.current_sl
 
+                # ── 고점 추적 (AI 모니터에서도) ──
+                entry = pos["entry_price"]
+                pos["high_watermark"] = max(pos.get("high_watermark", entry), snap.price)
+                pnl_pct = (snap.price / entry - 1) * 100 if entry > 0 else 0
+                if pnl_pct >= 3.0 or pos.get("trailing_activated"):
+                    pos["trailing_activated"] = True
+                    hwm = pos["high_watermark"]
+                    trail_sl = int(hwm * 0.97)
+                    if pnl_pct >= 3.0 or hwm > entry * 1.03:
+                        trail_sl = max(trail_sl, entry)
+                    pos["trailing_sl"] = max(pos.get("trailing_sl", 0), trail_sl)
+
                 if snap.decision == "FULL_SELL":
                     logger.info(f"AI 전량매도: {code} @ {snap.price:,} ({snap.decision_reason})")
                     # 실현 손익 기록
@@ -1157,7 +1181,7 @@ class AutoTrader:
                 logger.error(f"AI 모니터 처리 실패 {code}: {e}")
 
     async def _job_monitor_fallback(self):
-        """AI 모니터 실패 시 폴백: 단순 SL/TP 체크"""
+        """AI 모니터 실패 시 폴백: SL + 인트라데이 트레일링 스탑 체크"""
         for code, pos in list(self._positions.items()):
             try:
                 price_info = self.trader.fetch_price(code)
@@ -1165,26 +1189,59 @@ class AutoTrader:
                     continue
 
                 cp = price_info["current_price"]
+                entry = pos["entry_price"]
+                name = pos.get("name", code)
 
-                if cp <= pos["stop_loss"]:
-                    # 실현 손실 기록
-                    loss = cp - pos["entry_price"]
-                    self.record_realized_loss(loss)
+                # ── 고점(high_watermark) 갱신 ──
+                pos["high_watermark"] = max(pos.get("high_watermark", entry), cp)
+                hwm = pos["high_watermark"]
+                pnl_pct = (cp / entry - 1) * 100 if entry > 0 else 0
 
+                # ── 인트라데이 트레일링 SL 계산 ──
+                if pnl_pct >= 3.0 or pos.get("trailing_activated"):
+                    pos["trailing_activated"] = True
+                    trail_sl = int(hwm * 0.97)  # 고점 -3%
+                    if pnl_pct >= 3.0 or hwm > entry * 1.03:
+                        trail_sl = max(trail_sl, entry)  # 본전 확보
+                    # ratchet: 절대 내려가지 않음
+                    pos["trailing_sl"] = max(pos.get("trailing_sl", 0), trail_sl)
+
+                    # target_state에도 동기화
+                    ts = pos.get("target_state")
+                    if ts:
+                        ts.high_watermark = hwm
+                        ts.trailing_activated = True
+                        ts.trailing_sl = max(ts.trailing_sl, pos["trailing_sl"])
+
+                # ── 유효 SL = max(기존 SL, 트레일링 SL) ──
+                effective_sl = max(pos["stop_loss"], pos.get("trailing_sl", 0))
+
+                if cp <= effective_sl:
+                    pnl = cp - entry
+                    self.record_realized_loss(pnl)
                     result = self.trader.liquidate_one(code)
                     self._positions.pop(code, None)
-                    await self._alert(
-                        f"손절\n{pos.get('name', code)}({code}) @ {cp:,}원\n"
-                        f"진입: {pos['entry_price']:,} -> 현재: {cp:,} ({loss:+,})"
-                    )
+
+                    if pos.get("trailing_activated"):
+                        drop_pct = (1 - cp / hwm) * 100 if hwm > 0 else 0
+                        await self._alert(
+                            f"📉 트레일링스탑\n{name}({code}) @ {cp:,}원\n"
+                            f"진입:{entry:,} → 고점:{hwm:,} → 매도:{cp:,}\n"
+                            f"고점대비 -{drop_pct:.1f}% | 수익:{pnl:+,}원"
+                        )
+                    else:
+                        await self._alert(
+                            f"⛔ 손절\n{name}({code}) @ {cp:,}원\n"
+                            f"진입:{entry:,} -> 현재:{cp:,} ({pnl:+,})"
+                        )
 
                 elif self.mode == "day" and cp >= pos["take_profit"]:
                     result = self.trader.liquidate_one(code)
                     self._positions.pop(code, None)
-                    gain = cp - pos["entry_price"]
+                    gain = cp - entry
                     await self._alert(
-                        f"익절\n{pos.get('name', code)}({code}) @ {cp:,}원\n"
-                        f"진입: {pos['entry_price']:,} -> 현재: {cp:,} (+{gain:,})"
+                        f"익절\n{name}({code}) @ {cp:,}원\n"
+                        f"진입:{entry:,} -> 현재:{cp:,} (+{gain:,})"
                     )
 
             except Exception as e:
@@ -1228,9 +1285,21 @@ class AutoTrader:
                 # 뉴스 감성
                 news_score = self._get_news_score(code, pos.get("name", ""))
 
-                # 동적 재평가
+                # 동적 재평가 (트레일링 스탑 연동)
                 target_state = pos.get("target_state")
                 if target_state:
+                    # ── 인트라데이에서 추적한 고점/트레일링을 target_state에 동기화 ──
+                    target_state.high_watermark = max(
+                        target_state.high_watermark,
+                        pos.get("high_watermark", pos["entry_price"])
+                    )
+                    if pos.get("trailing_activated"):
+                        target_state.trailing_activated = True
+                    target_state.trailing_sl = max(
+                        target_state.trailing_sl,
+                        pos.get("trailing_sl", 0)
+                    )
+
                     target_state = engine.daily_reeval(
                         target_state, cp, news_score=news_score
                     )
@@ -1239,6 +1308,11 @@ class AutoTrader:
                     pos["target_state"] = target_state
                     pos["stop_loss"] = target_state.dynamic_sl
                     pos["take_profit"] = target_state.dynamic_tp
+
+                    # ── 재평가 후 트레일링 상태를 position dict에 역동기화 ──
+                    pos["high_watermark"] = target_state.high_watermark
+                    pos["trailing_activated"] = target_state.trailing_activated
+                    pos["trailing_sl"] = target_state.trailing_sl
                 else:
                     action = ACTION_HOLD
                     reason = "타겟 상태 없음"

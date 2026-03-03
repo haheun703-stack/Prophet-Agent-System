@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-동적 목표가 엔진 — 매일 재평가하여 SL/TP 조정
-===================================================
+동적 목표가 엔진 + 트레일링 스탑 — 매일 재평가하여 SL/TP 조정
+================================================================
 3 GAP 통합:
   GAP 1: ATR 기반 초기 SL/TP (고정% → ATR)
   GAP 2: 뉴스 감성 → 목표가 보정
@@ -13,11 +13,15 @@
   ③ RSI / 볼린저 밴드
   ④ 증권사 목표가 변동
 
-판정 기준:
-  재조정 목표가 > 현재가 × 1.08 → 추가매수 검토
-  재조정 목표가 > 현재가 × 1.03 → 홀딩
-  재조정 목표가 < 현재가 × 1.01 → 부분매도 50%
-  재조정 목표가 < 현재가 × 0.97 → 전량매도
+★ 트레일링 스탑 (v5.1):
+  - 수익 +3% 또는 TP 도달 시 트레일링 모드 활성화
+  - 고점(high_watermark) 대비 하락폭으로 판정
+  - 조정 vs 수급이탈 구분: 수급OK→홀딩, 수급이탈→매도
+  - 고점 -2% 미만: 홀딩 (상승 중)
+  - 고점 -2~3.5%: 수급이탈→전량매도, 수급OK→홀딩(조정)
+  - 고점 -3.5~5%: 수급이탈→전량매도, 수급OK→부분매도
+  - 고점 -5% 이상: 무조건 전량매도 (하드스탑)
+  - SL ratchet: 한번 올라간 SL은 절대 내려가지 않음
 """
 
 import logging
@@ -72,6 +76,11 @@ class TargetState:
     reason: str = ""
     current_price: int = 0
     pnl_pct: float = 0.0
+
+    # 트레일링 스탑 (v5.1)
+    high_watermark: int = 0           # 보유 이래 최고가
+    trailing_activated: bool = False  # 트레일링 모드 활성화됨
+    trailing_sl: int = 0             # 트레일링 손절가 (ratchet: 절대 하락 안 함)
 
 
 class DynamicTargetEngine:
@@ -257,8 +266,11 @@ class DynamicTargetEngine:
         else:
             state.dynamic_sl = max(state.initial_sl, state.inst_cost_sl) if state.inst_cost_sl > 0 else state.initial_sl
 
-        # ─── 판정 ───
-        state.action, state.reason = self._decide_action(state)
+        # ─── 고점 갱신 (daily_reeval 진입 시) ───
+        state.high_watermark = max(state.high_watermark or state.entry_price, current_price)
+
+        # ─── 판정 (트레일링 + 수급 판정 포함) ───
+        state.action, state.reason = self._decide_action(state, flow_df)
 
         return state
 
@@ -358,27 +370,159 @@ class DynamicTargetEngine:
         except Exception:
             return 0.0
 
-    def _decide_action(self, state: TargetState) -> tuple:
-        """동적 목표가 vs 현재가 비교하여 판정"""
+    def _decide_action(self, state: TargetState, flow_df=None) -> tuple:
+        """동적 목표가 + 트레일링 스탑 판정
+
+        트레일링 활성화 전: 기존 TP 기반 (단, TP 근접 시 매도 대신 트레일링 전환)
+        트레일링 활성화 후: 고점 대비 하락폭 + 수급 이탈 여부로 판정
+        """
         cp = state.current_price
         tp = state.dynamic_tp
         sl = state.dynamic_sl
+        entry = state.entry_price
 
-        # 1. 손절 체크 (최우선)
+        # ─── 고점 갱신 ───
+        state.high_watermark = max(state.high_watermark or entry, cp)
+        hwm = state.high_watermark
+
+        pnl_pct = (cp / entry - 1) * 100 if entry > 0 else 0
+        drop_pct = (1 - cp / hwm) * 100 if hwm > 0 else 0
+
+        # ═══ 1. 하드 손절 (최우선 — 트레일링 여부 무관) ═══
         if cp <= sl:
             return ACTION_STOP_LOSS, f"SL 도달 ({cp:,} ≤ {sl:,})"
 
-        # 2. 재조정 목표가 기반 판정
+        # ═══ 2. 트레일링 모드 활성화 조건 ═══
+        #   - 수익 +3% 이상 경험
+        #   - TP 도달/돌파
+        #   - 이미 활성화됨
+        should_trail = (
+            state.trailing_activated
+            or pnl_pct >= 3.0
+            or (cp >= tp and tp > 0)
+        )
+
+        if should_trail:
+            state.trailing_activated = True
+
+            # ─── 트레일링 SL 계산 ───
+            # 고점 × 0.97 (고점 대비 -3%)
+            trail_sl = int(hwm * 0.97)
+            # 수익 +3% 경험 → 본전 확보 (SL ≥ 진입가)
+            if pnl_pct >= 3.0 or (hwm > entry * 1.03):
+                trail_sl = max(trail_sl, entry)
+            # ratchet: 절대 내려가지 않음
+            state.trailing_sl = max(state.trailing_sl, trail_sl)
+
+            # ─── 트레일링 SL 도달 체크 ───
+            if cp <= state.trailing_sl:
+                return ACTION_FULL_SELL, (
+                    f"트레일링SL (현:{cp:,} ≤ SL:{state.trailing_sl:,}, "
+                    f"고점:{hwm:,}, 하락:{drop_pct:.1f}%)"
+                )
+
+            # ─── 고점 대비 하락폭 판정 ───
+            if drop_pct < 2.0:
+                # 고점 근처 — 올라가는 중, 놔두기
+                if pnl_pct >= 8.0:
+                    return ACTION_ADD, f"고점추적+업사이드{pnl_pct:.1f}% → 추매검토"
+                return ACTION_HOLD, (
+                    f"고점추적 (고점:{hwm:,} 하락:{drop_pct:.1f}% 수익:{pnl_pct:+.1f}%)"
+                )
+
+            elif drop_pct < 3.5:
+                # -2~3.5%: 조정인지 수급이탈인지 확인
+                exiting, supply_reason = self._is_supply_exiting(flow_df)
+                if exiting:
+                    return ACTION_FULL_SELL, (
+                        f"고점-{drop_pct:.1f}% + {supply_reason} → 전량매도"
+                    )
+                return ACTION_HOLD, (
+                    f"건강한조정 (고점-{drop_pct:.1f}%, {supply_reason})"
+                )
+
+            elif drop_pct < 5.0:
+                # -3.5~5%: 수급이탈이면 전량, 아니면 부분
+                exiting, supply_reason = self._is_supply_exiting(flow_df)
+                if exiting:
+                    return ACTION_FULL_SELL, (
+                        f"고점-{drop_pct:.1f}% + {supply_reason} → 전량매도"
+                    )
+                return ACTION_PARTIAL_SELL, (
+                    f"고점-{drop_pct:.1f}% → 부분매도 ({supply_reason})"
+                )
+
+            else:
+                # -5% 이상: 무조건 전량매도 (하드스탑)
+                return ACTION_FULL_SELL, (
+                    f"고점-{drop_pct:.1f}% 하드스탑 → 전량매도"
+                )
+
+        # ═══ 3. 트레일링 미활성 → 기존 TP 기반 로직 ═══
         ratio = tp / cp if cp > 0 else 1.0
 
         if ratio >= 1.08:
-            return ACTION_ADD, f"업사이드 {(ratio-1)*100:.1f}% → 추가매수 검토"
-        elif ratio >= 1.02:
+            return ACTION_ADD, f"업사이드 {(ratio-1)*100:.1f}% → 추매검토"
+        elif ratio >= 1.03:
             return ACTION_HOLD, f"업사이드 {(ratio-1)*100:.1f}% → 홀딩"
-        elif ratio >= 0.99:
-            return ACTION_PARTIAL_SELL, f"업사이드 {(ratio-1)*100:.1f}% 소진 → 부분매도"
+        elif ratio >= 1.01:
+            # ★ 기존: 부분매도 → 변경: 트레일링 모드 전환
+            state.trailing_activated = True
+            state.high_watermark = max(state.high_watermark, cp)
+            return ACTION_HOLD, (
+                f"TP근접 → 트레일링전환 (업사이드:{(ratio-1)*100:.1f}%)"
+            )
         else:
-            return ACTION_FULL_SELL, f"목표가 소진 (TP:{tp:,} < CP×0.99:{int(cp*0.99):,})"
+            # ★ 기존: 전량매도 → 변경: TP 돌파 = 트레일링 모드 전환
+            state.trailing_activated = True
+            state.high_watermark = max(state.high_watermark, cp)
+            return ACTION_HOLD, (
+                f"TP돌파! 트레일링전환 (고점:{hwm:,}, 수익:{pnl_pct:+.1f}%)"
+            )
+
+    # ═══════════════════════════════════════════════════
+    #  수급 이탈 판정
+    # ═══════════════════════════════════════════════════
+
+    def _is_supply_exiting(self, flow_df) -> tuple:
+        """수급 이탈 여부 판정 (조정 vs 본격 이탈 구분)
+
+        Returns: (이탈여부: bool, 사유: str)
+        """
+        if flow_df is None or len(flow_df) < 3:
+            return False, "수급데이터없음→보수적홀딩"
+
+        try:
+            inst_3d = flow_df["기관_수량"].values[-3:].astype(float)
+            frgn_3d = flow_df["외국인_수량"].values[-3:].astype(float)
+            net_3d = inst_3d + frgn_3d
+
+            # 3일 연속 순매도 → 수급 이탈 확정
+            if all(n < 0 for n in net_3d):
+                return True, "3일연속순매도"
+
+            # 최근 3일 합산 대폭 순매도 (평균의 2배 이상)
+            total = net_3d.sum()
+            avg_abs = float(np.abs(net_3d).mean())
+            if total < 0 and avg_abs > 0 and abs(total) > avg_abs * 2:
+                return True, "수급대량이탈"
+
+            # 최근일 급격 순매도 (직전일 대비 3배 이상 매도)
+            if net_3d[-1] < 0 and len(net_3d) >= 2:
+                prev_abs = max(abs(net_3d[-2]), 1)
+                if abs(net_3d[-1]) > prev_abs * 3:
+                    return True, "급격순매도"
+
+            # 수급 양호 판정
+            if all(n > 0 for n in net_3d):
+                return False, "수급양호(3일순매수)"
+            if total > 0:
+                return False, "수급보통(합산순매수)"
+            return False, "수급보통"
+
+        except Exception as e:
+            logger.debug(f"수급 판정 실패: {e}")
+            return False, "수급판정실패→보수적홀딩"
 
 
 # ═══════════════════════════════════════════════════
