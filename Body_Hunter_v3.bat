@@ -1,14 +1,13 @@
 @echo off
-chcp 65001 >nul
-title Body Hunter v3
+title Body Hunter v4
 echo ============================================
-echo   Body Hunter v3 텔레그램 봇 시작
+echo   Body Hunter v4 - Starting...
 echo   %date% %time%
 echo ============================================
 echo.
-cd /d "D:\Prophet_Agent_System_예언자\scalper-agent"
-echo   봇 실행중...
-"C:\Program Files\Python31312\python.exe" run_bot.py
+cd /d "%~dp0scalper-agent"
+echo   Running bot from: %cd%
+python run_bot.py
 echo.
-echo   봇이 종료되었습니다 (종료코드: %errorlevel%)
+echo   Bot stopped (exit code: %errorlevel%)
 pause
