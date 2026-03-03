@@ -1,12 +1,13 @@
 """
 수급 데이터 수집기 — 외국인/기관/공매도/소진율
 
-데이터 소스: pykrx (KRX 크롤링, API키 불필요)
+데이터 소스: KIS API (투자자수급, 외국인소진율) + 캐시 (공매도)
+pykrx 수급 API 전면 깨짐 → KIS API로 대체 (2026-03-04)
 
 수집 항목:
-  1순위: 외국인/기관 순매수 (금액+수량), 프로그램 매매 (추후)
-  2순위: 공매도 잔고, 외국인 소진율
-  3순위: (추후 추가)
+  1순위: 외국인/기관 순매수 (금액+수량) — KIS API FHKST01010900
+  1순위: 외국인 소진율 — KIS 현재가 API hts_frgn_ehrt
+  2순위: 공매도 잔고/거래량 — 캐시 반환 (pykrx 깨짐)
 
 사용법:
   python -m data.flow_collector
@@ -18,10 +19,11 @@ import time
 import logging
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import numpy as np
+import requests as _requests
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +38,43 @@ def _ensure_dirs():
 
 
 # ============================================================
-#  1순위: 투자자별 순매수 (외국인/기관)
+#  KIS API 싱글톤 세션 (346종목 수집 최적화)
+# ============================================================
+
+def _get_kis_session() -> Tuple[str, dict]:
+    """KIS API 토큰+헤더 1회 생성, 전 종목에 재사용
+
+    Returns: (base_url, headers_template)
+    """
+    from dotenv import load_dotenv
+    load_dotenv()
+    import mojito
+
+    broker = mojito.KoreaInvestment(
+        api_key=os.getenv("KIS_APP_KEY"),
+        api_secret=os.getenv("KIS_APP_SECRET"),
+        acc_no=os.getenv("KIS_ACC_NO"),
+        mock=False,
+    )
+
+    token = broker.access_token
+    if token.startswith("Bearer "):
+        token = token.replace("Bearer ", "")
+
+    base_url = "https://openapi.koreainvestment.com:9443"
+    headers = {
+        "content-type": "application/json; charset=utf-8",
+        "authorization": f"Bearer {token}",
+        "appkey": os.getenv("KIS_APP_KEY"),
+        "appsecret": os.getenv("KIS_APP_SECRET"),
+        "custtype": "P",
+    }
+
+    return base_url, headers
+
+
+# ============================================================
+#  1순위: 투자자별 순매수 (외국인/기관) — KIS API
 # ============================================================
 
 def collect_investor_flow(
@@ -53,11 +91,11 @@ def collect_investor_flow(
     """
     _ensure_dirs()
 
+    # 캐시로 커버되지 않는 종목 확인
     results = {}
-    for i, code in enumerate(codes):
+    need_fetch = []
+    for code in codes:
         cache_file = FLOW_DIR / f"{code}_investor.csv"
-
-        # 캐시 확인
         if not force and cache_file.exists():
             cached = pd.read_csv(cache_file, index_col=0, parse_dates=True)
             if len(cached) > 0:
@@ -65,12 +103,27 @@ def collect_investor_flow(
                 if days_old <= 3:
                     results[code] = cached
                     continue
+        need_fetch.append(code)
+
+    if not need_fetch:
+        print(f"  투자자별 수급: 전체 캐시 히트 ({len(results)}종목)")
+        return results
+
+    # KIS 세션 1회 생성
+    print(f"  투자자 수급: {len(need_fetch)}종목 KIS API 수집 시작...")
+    base_url, headers = _get_kis_session()
+    headers["tr_id"] = "FHKST01010900"
+
+    fetched = 0
+    failed = 0
+    for i, code in enumerate(need_fetch):
+        cache_file = FLOW_DIR / f"{code}_investor.csv"
 
         if (i + 1) % 50 == 0 or i == 0:
-            print(f"  투자자 수급 [{i+1}/{len(codes)}] {code}...")
+            print(f"    [{i+1}/{len(need_fetch)}] {code}...")
 
         try:
-            df = _fetch_investor_kis(code)
+            df = _fetch_investor_api(base_url, headers, code)
             if df is not None and len(df) > 0:
                 # 기존 캐시에 병합 (30일 이상 축적)
                 if cache_file.exists():
@@ -80,55 +133,28 @@ def collect_investor_flow(
                     df = df.sort_index()
                 df.to_csv(cache_file)
                 results[code] = df
+                fetched += 1
 
-            time.sleep(0.15)  # KIS API 속도 제한
+            time.sleep(0.12)  # KIS API 속도 제한 (초당 ~8건)
 
         except Exception as e:
             logger.warning(f"투자자별 수급 수집 실패 {code}: {e}")
+            failed += 1
             continue
 
-    print(f"  투자자별 수급 수집 완료: {len(results)}종목")
+    print(f"  투자자별 수급 완료: 신규{fetched} + 캐시{len(results)-fetched} = {len(results)}종목 (실패{failed})")
     return results
 
 
-def _fetch_investor_kis(code: str) -> Optional[pd.DataFrame]:
-    """KIS API로 투자자별 매매동향 30일치 조회
-
-    pykrx get_market_trading_value_by_date 대체
-    """
-    import requests as req
-    from dotenv import load_dotenv
-    load_dotenv()
-    import mojito
-
+def _fetch_investor_api(base_url: str, headers: dict, code: str) -> Optional[pd.DataFrame]:
+    """KIS API로 투자자별 매매동향 30일치 조회 (세션 재사용)"""
     try:
-        broker = mojito.KoreaInvestment(
-            api_key=os.getenv("KIS_APP_KEY"),
-            api_secret=os.getenv("KIS_APP_SECRET"),
-            acc_no=os.getenv("KIS_ACC_NO"),
-            mock=False,
-        )
-
-        token = broker.access_token
-        if token.startswith("Bearer "):
-            token = token.replace("Bearer ", "")
-
-        headers = {
-            "content-type": "application/json; charset=utf-8",
-            "authorization": f"Bearer {token}",
-            "appkey": os.getenv("KIS_APP_KEY"),
-            "appsecret": os.getenv("KIS_APP_SECRET"),
-            "tr_id": "FHKST01010900",
-            "custtype": "P",
-        }
-
         params = {
             "FID_COND_MRKT_DIV_CODE": "J",
             "FID_INPUT_ISCD": code,
         }
 
-        base_url = "https://openapi.koreainvestment.com:9443"
-        resp = req.get(
+        resp = _requests.get(
             f"{base_url}/uapi/domestic-stock/v1/quotations/inquire-investor",
             headers=headers, params=params, timeout=10,
         )
@@ -142,6 +168,14 @@ def _fetch_investor_kis(code: str) -> Optional[pd.DataFrame]:
         if not output:
             return None
 
+        def _safe_int(val, default=0):
+            if not val and val != 0:
+                return default
+            try:
+                return int(val)
+            except (ValueError, TypeError):
+                return default
+
         rows = []
         for item in output:
             date_str = item.get("stck_bsop_date", "")
@@ -149,14 +183,14 @@ def _fetch_investor_kis(code: str) -> Optional[pd.DataFrame]:
                 continue
             rows.append({
                 "date": pd.Timestamp(f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"),
-                "종가": int(item.get("stck_clpr", 0)),
-                "전일대비": int(item.get("prdy_vrss", 0)),
-                "외국인_수량": int(item.get("frgn_ntby_qty", 0)),
-                "기관_수량": int(item.get("orgn_ntby_qty", 0)),
-                "개인_수량": int(item.get("prsn_ntby_qty", 0)),
-                "외국인_금액": int(item.get("frgn_ntby_tr_pbmn", 0)),
-                "기관_금액": int(item.get("orgn_ntby_tr_pbmn", 0)),
-                "개인_금액": int(item.get("prsn_ntby_tr_pbmn", 0)),
+                "종가": _safe_int(item.get("stck_clpr")),
+                "전일대비": _safe_int(item.get("prdy_vrss")),
+                "외국인_수량": _safe_int(item.get("frgn_ntby_qty")),
+                "기관_수량": _safe_int(item.get("orgn_ntby_qty")),
+                "개인_수량": _safe_int(item.get("prsn_ntby_qty")),
+                "외국인_금액": _safe_int(item.get("frgn_ntby_tr_pbmn")),
+                "기관_금액": _safe_int(item.get("orgn_ntby_tr_pbmn")),
+                "개인_금액": _safe_int(item.get("prsn_ntby_tr_pbmn")),
             })
 
         if not rows:
@@ -171,7 +205,7 @@ def _fetch_investor_kis(code: str) -> Optional[pd.DataFrame]:
 
 
 # ============================================================
-#  1순위: 외국인 소진율 (KIS 현재가 API, pykrx 깨짐 대체 2026-03-04)
+#  1순위: 외국인 소진율 (KIS 현재가 API)
 # ============================================================
 
 def collect_foreign_exhaustion(
@@ -190,10 +224,11 @@ def collect_foreign_exhaustion(
     """
     _ensure_dirs()
 
+    # 캐시 확인
     results = {}
-    for i, code in enumerate(codes):
+    need_fetch = []
+    for code in codes:
         cache_file = FLOW_DIR / f"{code}_foreign_exh.csv"
-
         if not force and cache_file.exists():
             cached = pd.read_csv(cache_file, index_col=0, parse_dates=True)
             if len(cached) > 0:
@@ -201,16 +236,33 @@ def collect_foreign_exhaustion(
                 if days_old <= 3:
                     results[code] = cached
                     continue
+        need_fetch.append(code)
+
+    if not need_fetch:
+        print(f"  외국인 소진율: 전체 캐시 히트 ({len(results)}종목)")
+        return results
+
+    # KIS 세션 1회 생성
+    print(f"  외국인 소진율: {len(need_fetch)}종목 KIS API 수집 시작...")
+    base_url, headers = _get_kis_session()
+    headers["tr_id"] = "FHKST01010100"
+
+    fetched = 0
+    failed = 0
+    today = pd.Timestamp(datetime.now().strftime("%Y-%m-%d"))
+
+    for i, code in enumerate(need_fetch):
+        cache_file = FLOW_DIR / f"{code}_foreign_exh.csv"
 
         if (i + 1) % 50 == 0 or i == 0:
-            print(f"  외국인 소진율 [{i+1}/{len(codes)}] {code}...")
+            print(f"    [{i+1}/{len(need_fetch)}] {code}...")
 
         try:
-            row = _fetch_foreign_rate_kis(code)
+            row = _fetch_foreign_rate_api(base_url, headers, code)
             if row is None:
+                failed += 1
                 continue
 
-            today = pd.Timestamp(datetime.now().strftime("%Y-%m-%d"))
             new_row = pd.DataFrame([row], index=pd.DatetimeIndex([today], name="date"))
 
             # 기존 캐시에 병합
@@ -224,52 +276,28 @@ def collect_foreign_exhaustion(
 
             df.to_csv(cache_file)
             results[code] = df
+            fetched += 1
 
-            time.sleep(0.15)
+            time.sleep(0.12)
 
         except Exception as e:
             logger.warning(f"외국인 소진율 수집 실패 {code}: {e}")
+            failed += 1
             continue
 
-    print(f"  외국인 소진율 수집 완료: {len(results)}종목")
+    print(f"  외국인 소진율 완료: 신규{fetched} + 캐시{len(results)-fetched} = {len(results)}종목 (실패{failed})")
     return results
 
 
-def _fetch_foreign_rate_kis(code: str) -> Optional[dict]:
-    """KIS 현재가 API에서 외국인 보유비율 조회"""
-    import requests as req
-    from dotenv import load_dotenv
-    load_dotenv()
-    import mojito
-
+def _fetch_foreign_rate_api(base_url: str, headers: dict, code: str) -> Optional[dict]:
+    """KIS 현재가 API에서 외국인 보유비율 조회 (세션 재사용)"""
     try:
-        broker = mojito.KoreaInvestment(
-            api_key=os.getenv("KIS_APP_KEY"),
-            api_secret=os.getenv("KIS_APP_SECRET"),
-            acc_no=os.getenv("KIS_ACC_NO"),
-            mock=False,
-        )
-
-        token = broker.access_token
-        if token.startswith("Bearer "):
-            token = token.replace("Bearer ", "")
-
-        headers = {
-            "content-type": "application/json; charset=utf-8",
-            "authorization": f"Bearer {token}",
-            "appkey": os.getenv("KIS_APP_KEY"),
-            "appsecret": os.getenv("KIS_APP_SECRET"),
-            "tr_id": "FHKST01010100",
-            "custtype": "P",
-        }
-
         params = {
             "FID_COND_MRKT_DIV_CODE": "J",
             "FID_INPUT_ISCD": code,
         }
 
-        base_url = "https://openapi.koreainvestment.com:9443"
-        resp = req.get(
+        resp = _requests.get(
             f"{base_url}/uapi/domestic-stock/v1/quotations/inquire-price",
             headers=headers, params=params, timeout=10,
         )
@@ -279,10 +307,13 @@ def _fetch_foreign_rate_kis(code: str) -> Optional[dict]:
             return None
 
         out = data.get("output", {})
+        ehrt = out.get("hts_frgn_ehrt", "0")
+        hldn = out.get("frgn_hldn_qty", "0")
+        prpr = out.get("stck_prpr", "0")
         return {
-            "소진율": float(out.get("hts_frgn_ehrt", 0)),
-            "보유수량": int(out.get("frgn_hldn_qty", 0)),
-            "종가": int(out.get("stck_prpr", 0)),
+            "소진율": float(ehrt) if ehrt else 0.0,
+            "보유수량": int(hldn) if hldn else 0,
+            "종가": int(prpr) if prpr else 0,
         }
 
     except Exception as e:
@@ -455,11 +486,5 @@ if __name__ == "__main__":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
     logging.basicConfig(level=logging.WARNING)
 
-    # 주요 종목만 수집 (전체는 시간 오래 걸림)
-    top_codes = [
-        "005930", "000660", "005380", "000270", "006400",
-        "051910", "003670", "247540", "086520", "012330",
-        "028260", "032830", "035420", "035720", "066570",
-    ]
-
-    collect_all_flow(codes=top_codes, months=24, force=False)
+    # 전체 유니버스 수집
+    collect_all_flow(months=24, force=False)
