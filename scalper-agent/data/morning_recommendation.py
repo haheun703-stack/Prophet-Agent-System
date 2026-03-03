@@ -176,9 +176,9 @@ def _step_macd_zero_scan() -> dict:
 # ═══════════════════════════════════════
 
 def _step3_tech_filter(codes_names: list[tuple[str, str]]) -> dict:
-    """EMA/RSI/MACD/OBV 기술적 점수 계산
+    """EMA/RSI/MACD/OBV 기술적 점수 계산 + 당일급락 필터 + 데이터 검증
 
-    Returns: {code: {"score": 0~5, "detail": "정배열+OBV UP+RSI42"}}
+    Returns: {code: {"score": 0~5, "detail": "...", "today_chg": -8.2, "close": 57600}}
     """
     from pykrx import stock
     from datetime import datetime, timedelta
@@ -189,16 +189,44 @@ def _step3_tech_filter(codes_names: list[tuple[str, str]]) -> dict:
     start = end - timedelta(days=120)
     start_s = start.strftime("%Y%m%d")
     end_s = end.strftime("%Y%m%d")
+    today_s = end.strftime("%Y-%m-%d")
+
+    # 데이터 날짜 검증 플래그
+    data_date_ok = None
 
     for code, name in codes_names:
         try:
             df = stock.get_market_ohlcv(start_s, end_s, code)
             if df is None or len(df) < 60:
-                results[code] = {"score": 0, "detail": "데이터부족"}
+                results[code] = {"score": 0, "detail": "데이터부족", "today_chg": 0, "close": 0}
                 continue
+
+            # 데이터 날짜 검증 (첫 종목에서 1회만)
+            if data_date_ok is None:
+                last_date = str(df.index[-1].date())
+                if last_date == today_s:
+                    data_date_ok = True
+                else:
+                    data_date_ok = False
+                    logger.warning(f"pykrx 데이터 날짜 불일치: 최신={last_date}, 오늘={today_s}")
 
             close = df["종가"].astype(float).values
             volume = df["거래량"].astype(float).values
+
+            # 당일 등락률 계산
+            today_chg = 0.0
+            if len(close) >= 2:
+                today_chg = (close[-1] / close[-2] - 1) * 100
+
+            # ★ 당일 급락 필터: -5% 이상 하락 → 즉시 탈락 (떨어지는 칼 잡기 방지)
+            if today_chg <= -5.0:
+                logger.info(f"당일급락 제거: {name}({code}) {today_chg:+.1f}% — 떨어지는 칼")
+                results[code] = {
+                    "score": 0, "detail": f"당일급락{today_chg:+.1f}%",
+                    "rsi": 0, "obv_dir": "DOWN",
+                    "today_chg": round(today_chg, 1), "close": int(close[-1]),
+                }
+                continue
 
             # EMA 계산
             def ema(arr, period):
@@ -278,15 +306,24 @@ def _step3_tech_filter(codes_names: list[tuple[str, str]]) -> dict:
                 score -= 0.5
                 details.append("OBV DOWN")
 
+            # 당일 등락률 표시
+            if abs(today_chg) >= 3.0:
+                details.append(f"당일{today_chg:+.0f}%")
+
             results[code] = {
                 "score": max(0, round(score, 1)),
                 "detail": "+".join(details) if details else "N/A",
                 "rsi": round(rsi, 1),
                 "obv_dir": obv_dir,
+                "today_chg": round(today_chg, 1),
+                "close": int(close[-1]),
             }
         except Exception as e:
             logger.warning(f"기술 분석 실패 {name}({code}): {e}")
-            results[code] = {"score": 0, "detail": f"오류:{e}"}
+            results[code] = {"score": 0, "detail": f"오류:{e}", "today_chg": 0, "close": 0}
+
+    if data_date_ok is False:
+        logger.error("⚠️ pykrx 당일 데이터 미반영 — 추천 정확도 저하 가능")
 
     return results
 
@@ -481,6 +518,69 @@ def _step5_cross_validate(
 
 
 # ═══════════════════════════════════════
+#  Step 6: KIS API 교차검증
+# ═══════════════════════════════════════
+
+def _step6_kis_verify(stocks: list[RecommendedStock]) -> list[RecommendedStock]:
+    """KIS API로 최종 후보의 실시간 가격 교차검증
+
+    - 당일 -5% 이상 하락 종목 제거 (떨어지는 칼)
+    - pykrx vs KIS 가격 괴리 5% 이상이면 KIS 가격으로 교체
+    - close/entry/sl/tp 재계산
+    """
+    try:
+        from bot.kis_trader import KISTrader
+        trader = KISTrader()
+    except Exception as e:
+        logger.warning(f"KIS API 초기화 실패: {e} — 검증 생략")
+        return stocks
+
+    verified = []
+    for s in stocks:
+        try:
+            r = trader.fetch_price(s.code)
+            if not r.get("success"):
+                verified.append(s)  # 조회 실패 시 기존 데이터 유지
+                continue
+
+            kis_price = r["current_price"]
+            kis_chg = r["change_rate"]
+
+            # 당일 -5% 이상 하락 → 제거
+            if kis_chg <= -5.0:
+                logger.info(
+                    f"KIS 급락 제거: {s.name}({s.code}) "
+                    f"KIS={kis_price:,} ({kis_chg:+.1f}%)"
+                )
+                continue
+
+            # pykrx vs KIS 가격 괴리 체크
+            if s.close > 0:
+                gap_pct = abs(kis_price - s.close) / s.close * 100
+                if gap_pct > 5.0:
+                    logger.warning(
+                        f"가격 괴리: {s.name}({s.code}) "
+                        f"pykrx={s.close:,} vs KIS={kis_price:,} ({gap_pct:.1f}%) "
+                        f"→ KIS 가격으로 교체"
+                    )
+                    s.close = kis_price
+                    s.entry = kis_price
+                    s.sl = int(kis_price * 0.95)
+                    s.tp = int(kis_price * 1.10)
+
+            verified.append(s)
+        except Exception as e:
+            logger.warning(f"KIS 검증 실패 {s.name}: {e}")
+            verified.append(s)
+
+    removed = len(stocks) - len(verified)
+    if removed > 0:
+        logger.info(f"KIS 검증: {removed}종목 제거, {len(verified)}종목 통과")
+
+    return verified
+
+
+# ═══════════════════════════════════════
 #  메인 파이프라인
 # ═══════════════════════════════════════
 
@@ -578,6 +678,13 @@ def run_evening_recommendation() -> RecommendationReport:
         relay_result, premove_result, tech_result, news_result,
         macd_result=macd_result,
     )
+    logger.info(f"  → {len(final_stocks)}종목 ({time.time()-t0:.0f}s)")
+
+    # Step 6: KIS API 교차검증 — 최종 후보의 실시간 가격 확인
+    t0 = time.time()
+    logger.info("[Step 6] KIS API 가격 교차검증...")
+    final_stocks = _step6_kis_verify(final_stocks)
+    logger.info(f"  → 최종 {len(final_stocks)}종목 ({time.time()-t0:.0f}s)")
 
     report.stocks = final_stocks
     elapsed = time.time() - t_start

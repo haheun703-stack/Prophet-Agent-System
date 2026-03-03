@@ -1,10 +1,10 @@
 {
   "stage": "evening",
-  "timestamp": "2026-03-03 23:02",
+  "timestamp": "2026-03-03 23:25",
   "market_health": "NORMAL",
   "us_market_note": "",
   "relay_summary": "HOT:방산/국방 | HOT:반도체/AI | RELAY:자동차 | RELAY:한화그룹 | RELAY:현대차그룹",
-  "warning": "3/3 방산 급등 후 — 갭업 추격매수 주의 | HL만도 -14.65% 폭락(차트확인) 제거",
+  "warning": "3/3 방산 급등 | 당일급락필터+KIS검증 적용",
   "stocks": [
     {
       "code": "003570",
@@ -38,7 +38,7 @@
       "sl": 1360400,
       "tp": 1575200,
       "sl_source": "ATR",
-      "tech_detail": "정배열+EMA20>60+MACD++OBV UP",
+      "tech_detail": "정배열+EMA20>60+MACD++OBV UP+당일+20%",
       "news_detail": "POSITIVE",
       "sources": [
         "sector_hot:방산/국방"
@@ -47,90 +47,6 @@
       "relay_score": 15,
       "premove_score": 0.0,
       "tech_score": 20.0,
-      "news_score": 55
-    },
-    {
-      "code": "065450",
-      "name": "빅텍",
-      "close": 5720,
-      "total_score": 32.5,
-      "confidence": "MED",
-      "entry": 5720,
-      "sl": 5434,
-      "tp": 6292,
-      "sl_source": "ATR",
-      "tech_detail": "정배열+EMA20>60+RSI87과열+MACD++OBV UP",
-      "news_detail": "POSITIVE",
-      "sources": [
-        "sector_hot:방산/국방"
-      ],
-      "cross_count": 1,
-      "relay_score": 15,
-      "premove_score": 0.0,
-      "tech_score": 17.5,
-      "news_score": 75
-    },
-    {
-      "code": "079550",
-      "name": "LIG넥스원",
-      "close": 661000,
-      "total_score": 32.5,
-      "confidence": "MED",
-      "entry": 661000,
-      "sl": 627950,
-      "tp": 727100,
-      "sl_source": "ATR",
-      "tech_detail": "정배열+EMA20>60+RSI89과열+MACD++OBV UP",
-      "news_detail": "POSITIVE",
-      "sources": [
-        "sector_hot:방산/국방"
-      ],
-      "cross_count": 1,
-      "relay_score": 15,
-      "premove_score": 0.0,
-      "tech_score": 17.5,
-      "news_score": 75
-    },
-    {
-      "code": "103140",
-      "name": "풍산",
-      "close": 130600,
-      "total_score": 32.5,
-      "confidence": "MED",
-      "entry": 130600,
-      "sl": 124070,
-      "tp": 143660,
-      "sl_source": "ATR",
-      "tech_detail": "정배열+EMA20>60+RSI74과열+MACD++OBV UP",
-      "news_detail": "POSITIVE",
-      "sources": [
-        "sector_hot:방산/국방"
-      ],
-      "cross_count": 1,
-      "relay_score": 15,
-      "premove_score": 0.0,
-      "tech_score": 17.5,
-      "news_score": 45
-    },
-    {
-      "code": "047810",
-      "name": "한국항공우주",
-      "close": 197600,
-      "total_score": 32.5,
-      "confidence": "MED",
-      "entry": 197600,
-      "sl": 187720,
-      "tp": 217360,
-      "sl_source": "ATR",
-      "tech_detail": "정배열+EMA20>60+RSI82과열+MACD++OBV UP",
-      "news_detail": "POSITIVE",
-      "sources": [
-        "etf:K방산"
-      ],
-      "cross_count": 1,
-      "relay_score": 15,
-      "premove_score": 0.0,
-      "tech_score": 17.5,
       "news_score": 55
     },
     {
@@ -143,7 +59,7 @@
       "sl": 139365,
       "tp": 161370,
       "sl_source": "ATR",
-      "tech_detail": "정배열+EMA20>60+RSI73과열+MACD++OBV UP",
+      "tech_detail": "정배열+EMA20>60+RSI73과열+MACD++OBV UP+당일+29%",
       "news_detail": "POSITIVE",
       "sources": [
         "sector_hot:방산/국방"
@@ -153,6 +69,111 @@
       "premove_score": 0.0,
       "tech_score": 17.5,
       "news_score": 65
+    },
+    {
+      "code": "103140",
+      "name": "풍산",
+      "close": 130600,
+      "total_score": 32.5,
+      "confidence": "MED",
+      "entry": 130600,
+      "sl": 124070,
+      "tp": 143660,
+      "sl_source": "ATR",
+      "tech_detail": "정배열+EMA20>60+RSI74과열+MACD++OBV UP+당일+13%",
+      "news_detail": "POSITIVE",
+      "sources": [
+        "sector_hot:방산/국방"
+      ],
+      "cross_count": 1,
+      "relay_score": 15,
+      "premove_score": 0.0,
+      "tech_score": 17.5,
+      "news_score": 45
+    },
+    {
+      "code": "079550",
+      "name": "LIG넥스원",
+      "close": 661000,
+      "total_score": 32.5,
+      "confidence": "MED",
+      "entry": 661000,
+      "sl": 627950,
+      "tp": 727100,
+      "sl_source": "ATR",
+      "tech_detail": "정배열+EMA20>60+RSI89과열+MACD++OBV UP+당일+30%",
+      "news_detail": "POSITIVE",
+      "sources": [
+        "sector_hot:방산/국방"
+      ],
+      "cross_count": 1,
+      "relay_score": 15,
+      "premove_score": 0.0,
+      "tech_score": 17.5,
+      "news_score": 75
+    },
+    {
+      "code": "047810",
+      "name": "한국항공우주",
+      "close": 197600,
+      "total_score": 32.5,
+      "confidence": "MED",
+      "entry": 197600,
+      "sl": 187720,
+      "tp": 217360,
+      "sl_source": "ATR",
+      "tech_detail": "정배열+EMA20>60+RSI82과열+MACD++OBV UP+당일+3%",
+      "news_detail": "POSITIVE",
+      "sources": [
+        "etf:K방산"
+      ],
+      "cross_count": 1,
+      "relay_score": 15,
+      "premove_score": 0.0,
+      "tech_score": 17.5,
+      "news_score": 55
+    },
+    {
+      "code": "065450",
+      "name": "빅텍",
+      "close": 5720,
+      "total_score": 32.5,
+      "confidence": "MED",
+      "entry": 5720,
+      "sl": 5434,
+      "tp": 6292,
+      "sl_source": "ATR",
+      "tech_detail": "정배열+EMA20>60+RSI87과열+MACD++OBV UP+당일+30%",
+      "news_detail": "POSITIVE",
+      "sources": [
+        "sector_hot:방산/국방"
+      ],
+      "cross_count": 1,
+      "relay_score": 15,
+      "premove_score": 0.0,
+      "tech_score": 17.5,
+      "news_score": 75
+    },
+    {
+      "code": "357780",
+      "name": "솔브레인",
+      "close": 440500,
+      "total_score": 30.0,
+      "confidence": "MED",
+      "entry": 440500,
+      "sl": 418475,
+      "tp": 484550,
+      "sl_source": "ATR",
+      "tech_detail": "정배열+EMA20>60+OBV UP",
+      "news_detail": "POSITIVE",
+      "sources": [
+        "sector_hot:반도체/AI"
+      ],
+      "cross_count": 1,
+      "relay_score": 15,
+      "premove_score": 0.0,
+      "tech_score": 15.0,
+      "news_score": 15
     }
   ]
 }
