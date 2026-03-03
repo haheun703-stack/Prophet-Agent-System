@@ -1,0 +1,56 @@
+{
+  "stage": "evening",
+  "timestamp": "2026-03-03 22:30",
+  "market_health": "NORMAL",
+  "us_market_note": "",
+  "relay_summary": "HOT:방산/국방 | RELAY:한화그룹 | 3/3 방산 대폭발",
+  "warning": "3/3 방산 급등 후 — 빅텍 상한가(+30%), 풍산(+12.8%) — 갭업 시 추격매수 주의",
+  "stocks": [
+    {
+      "code": "065450",
+      "name": "빅텍",
+      "close": 5720,
+      "total_score": 78,
+      "confidence": "MEDIUM",
+      "entry": 5620,
+      "sl": 5260,
+      "tp": 6635,
+      "sl_source": "CAP_8%",
+      "tech_detail": "상한가+30%|거래량x4.3|방산테마리더",
+      "news_detail": "POSITIVE",
+      "sources": [
+        "sector:방산",
+        "relay:한화그룹",
+        "momentum"
+      ],
+      "cross_count": 3,
+      "relay_score": 30,
+      "premove_score": 0,
+      "tech_score": 20,
+      "news_score": 10
+    },
+    {
+      "code": "103140",
+      "name": "풍산",
+      "close": 130600,
+      "total_score": 75,
+      "confidence": "MEDIUM",
+      "entry": 129000,
+      "sl": 120150,
+      "tp": 151500,
+      "sl_source": "CAP_8%",
+      "tech_detail": "급등+12.8%|거래량x8.3|탄약수혜",
+      "news_detail": "POSITIVE",
+      "sources": [
+        "sector:방산",
+        "relay:한화그룹",
+        "momentum"
+      ],
+      "cross_count": 3,
+      "relay_score": 30,
+      "premove_score": 0,
+      "tech_score": 20,
+      "news_score": 10
+    }
+  ]
+}
