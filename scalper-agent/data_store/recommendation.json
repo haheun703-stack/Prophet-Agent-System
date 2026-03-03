@@ -4,31 +4,8 @@
   "market_health": "NORMAL",
   "us_market_note": "",
   "relay_summary": "HOT:방산/국방 | HOT:반도체/AI | RELAY:자동차 | RELAY:한화그룹 | RELAY:현대차그룹",
-  "warning": "3/3 방산 급등 후 — 갭업 추격매수 주의 | 사전감지 미실행(시간초과방지)",
+  "warning": "3/3 방산 급등 후 — 갭업 추격매수 주의 | HL만도 -14.65% 폭락(차트확인) 제거",
   "stocks": [
-    {
-      "code": "204320",
-      "name": "만도",
-      "close": 57600,
-      "total_score": 60.0,
-      "confidence": "MED",
-      "entry": 57600,
-      "sl": 54720,
-      "tp": 63360,
-      "sl_source": "ATR",
-      "tech_detail": "EMA20>60+RSI40+OBV UP",
-      "news_detail": "POSITIVE",
-      "sources": [
-        "sector:자동차",
-        "group:현대차그룹",
-        "etf:자동차"
-      ],
-      "cross_count": 1,
-      "relay_score": 45,
-      "premove_score": 0.0,
-      "tech_score": 15.0,
-      "news_score": 65
-    },
     {
       "code": "003570",
       "name": "SNT다이내믹스",
