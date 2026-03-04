@@ -56,6 +56,7 @@ class RecommendationReport:
     stocks: list = field(default_factory=list)  # list[RecommendedStock]
     relay_summary: str = ""
     warning: str = ""
+    etf_signal: dict = field(default_factory=dict)  # 위기 ETF 시그널
 
 
 # ═══════════════════════════════════════
@@ -752,6 +753,21 @@ def run_us_market_check(prev_report: RecommendationReport) -> RecommendationRepo
                 report.warning = f"S&P500 {sp_chg:+.1f}% 폭락! 매수 보류 권고"
     except Exception:
         pass
+
+    # 위기 ETF 시그널 생성 (인버스/레버리지 추천)
+    try:
+        from strategies.crisis_etf_signal import generate_signal, format_signal_telegram
+        etf_sig = generate_signal()
+        report.etf_signal = etf_sig.to_dict()
+        if etf_sig.signal != "HOLD":
+            etf = etf_sig.recommended_etf
+            etf_name = etf.get("name", "") if etf else ""
+            etf_code = etf.get("code", "") if etf else ""
+            report.warning = (
+                f"{report.warning} | " if report.warning else ""
+            ) + f"ETF시그널: {etf_sig.signal}({etf_sig.confidence}) → {etf_name}({etf_code})"
+    except Exception as e:
+        logger.warning(f"ETF 시그널 생성 실패: {e}")
 
     return report
 

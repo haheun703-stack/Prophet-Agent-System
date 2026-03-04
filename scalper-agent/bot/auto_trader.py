@@ -1532,6 +1532,20 @@ class AutoTrader:
             else:
                 await _send("✅ 미국장 정상 — 저녁 추천 유지")
 
+            # ETF 시그널 별도 전송
+            if report.etf_signal and report.etf_signal.get("signal") != "HOLD":
+                try:
+                    from strategies.crisis_etf_signal import (
+                        CrisisSignal, format_signal_telegram
+                    )
+                    sig = CrisisSignal(**{
+                        k: v for k, v in report.etf_signal.items()
+                        if k in CrisisSignal.__dataclass_fields__
+                    })
+                    await _send(format_signal_telegram(sig))
+                except Exception as e2:
+                    logger.warning(f"ETF 시그널 전송 실패: {e2}")
+
         except Exception as e:
             logger.error(f"미국장 체크 실패: {e}")
             await _send(f"❌ 미국장 체크 실패: {e}")
