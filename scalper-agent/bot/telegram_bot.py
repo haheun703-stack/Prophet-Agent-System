@@ -1844,7 +1844,7 @@ class BodyHunterBot:
                 chat_id=chat_id, text=f"⚠️ 수급 수집 실패: {str(e)[:200]}"
             )
 
-        # 3. 외국인 국적별 수급 (추천/보유 종목만 — Playwright)
+        # 3. 외국인 국적별 수급 (추천/보유 종목만 — HTTP JSON API)
         try:
             nat_codes = self._get_nationality_targets()
             if nat_codes:
@@ -1856,7 +1856,7 @@ class BodyHunterBot:
                 date_from = (datetime.now() - timedelta(days=5)).strftime("%Y%m%d")
                 date_to = datetime.now().strftime("%Y%m%d")
                 nat_results = await afetch_nationality_batch(
-                    nat_codes, date_from, date_to, headless=True,
+                    nat_codes, date_from, date_to,
                 )
                 nat_ok = sum(1 for df in nat_results.values() if not df.empty)
                 await context.bot.send_message(
@@ -1947,7 +1947,7 @@ class BodyHunterBot:
             date_from = (datetime.now() - timedelta(days=5)).strftime("%Y%m%d")
             date_to = datetime.now().strftime("%Y%m%d")
 
-            results = await afetch_nationality_batch(codes, date_from, date_to, headless=True)
+            results = await afetch_nationality_batch(codes, date_from, date_to)
 
             for code, df in results.items():
                 name = CODE_TO_NAME.get(code, code)

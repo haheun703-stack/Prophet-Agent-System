@@ -460,9 +460,9 @@ def collect_nationality(
     months: int = 24,
     force: bool = False,
 ) -> Dict[str, pd.DataFrame]:
-    """외국인 국적별 매매 데이터 수집 (KRX HARD053 Playwright)
+    """외국인 국적별 거래량 수집 (KRX HARD053 JSON API)
 
-    주의: Playwright 브라우저 자동화 → 느림 (종목당 ~10초)
+    하이브리드: Playwright(네이버 로그인) + HTTP(JSON API 데이터).
     전체 유니버스(346종목) 대신 추천/보유 종목만 대상으로 할 것.
 
     캐시: data_store/nationality/{code}.csv — 당일 캐시 있으면 스킵
@@ -495,14 +495,14 @@ def collect_nationality(
         print(f"  국적별 수급: 전체 캐시 히트 ({len(results)}종목)")
         return results
 
-    # Playwright batch 크롤링
-    print(f"  국적별 수급: {len(need_fetch)}종목 KRX HARD053 크롤링...")
+    # HTTP JSON API 배치 수집
+    print(f"  국적별 수급: {len(need_fetch)}종목 KRX HARD053 수집...")
     try:
         from data.krx_nationality_crawler import fetch_nationality_batch
         date_from = (datetime.now() - timedelta(days=5)).strftime("%Y%m%d")
         date_to = today_str
 
-        fetched = fetch_nationality_batch(need_fetch, date_from, date_to, headless=True)
+        fetched = fetch_nationality_batch(need_fetch, date_from, date_to)
         for code, df in fetched.items():
             if not df.empty:
                 results[code] = df
