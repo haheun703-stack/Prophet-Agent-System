@@ -30,11 +30,13 @@ logger = logging.getLogger(__name__)
 DATA_DIR = Path(__file__).resolve().parent.parent / "data_store"
 FLOW_DIR = DATA_DIR / "flow"          # 수급 데이터
 SHORT_DIR = DATA_DIR / "short"        # 공매도 데이터
+NAT_DIR = DATA_DIR / "nationality"    # 외국인 국적별 데이터
 
 
 def _ensure_dirs():
     FLOW_DIR.mkdir(parents=True, exist_ok=True)
     SHORT_DIR.mkdir(parents=True, exist_ok=True)
+    NAT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ============================================================
@@ -447,6 +449,81 @@ def collect_all_flow(
         "short_balance": short_bal,
         "short_volume": short_vol,
     }
+
+
+# ============================================================
+#  5순위: 외국인 국적별 매매 (KRX HARD053 Playwright)
+# ============================================================
+
+def collect_nationality(
+    codes: List[str],
+    months: int = 24,
+    force: bool = False,
+) -> Dict[str, pd.DataFrame]:
+    """외국인 국적별 매매 데이터 수집 (KRX HARD053 Playwright)
+
+    주의: Playwright 브라우저 자동화 → 느림 (종목당 ~10초)
+    전체 유니버스(346종목) 대신 추천/보유 종목만 대상으로 할 것.
+
+    캐시: data_store/nationality/{code}.csv — 당일 캐시 있으면 스킵
+    쿠키 만료 시 빈 dict 반환 (에러 로그만, 전체 파이프라인 안 멈춤)
+
+    Returns: {code: DataFrame(국가명, 거래규모)}
+    """
+    _ensure_dirs()
+
+    # 캐시 확인
+    results = {}
+    need_fetch = []
+    today_str = datetime.now().strftime("%Y%m%d")
+
+    for code in codes:
+        cache_file = NAT_DIR / f"nationality_{code}.csv"
+        if not force and cache_file.exists():
+            try:
+                cached = pd.read_csv(cache_file, encoding="utf-8-sig")
+                # 파일 수정일이 오늘이면 캐시 히트
+                mtime = datetime.fromtimestamp(cache_file.stat().st_mtime)
+                if mtime.strftime("%Y%m%d") == today_str and len(cached) > 0:
+                    results[code] = cached
+                    continue
+            except Exception:
+                pass
+        need_fetch.append(code)
+
+    if not need_fetch:
+        print(f"  국적별 수급: 전체 캐시 히트 ({len(results)}종목)")
+        return results
+
+    # Playwright batch 크롤링
+    print(f"  국적별 수급: {len(need_fetch)}종목 KRX HARD053 크롤링...")
+    try:
+        from data.krx_nationality_crawler import fetch_nationality_batch
+        date_from = (datetime.now() - timedelta(days=5)).strftime("%Y%m%d")
+        date_to = today_str
+
+        fetched = fetch_nationality_batch(need_fetch, date_from, date_to, headless=True)
+        for code, df in fetched.items():
+            if not df.empty:
+                results[code] = df
+
+        ok = sum(1 for df in fetched.values() if not df.empty)
+        fail = len(need_fetch) - ok
+        print(f"  국적별 수급 완료: 신규{ok} + 캐시{len(results)-ok} = {len(results)}종목 (실패{fail})")
+
+    except Exception as e:
+        logger.error(f"국적별 수급 크롤링 실패: {e}")
+        print(f"  국적별 수급 실패: {e}")
+
+    return results
+
+
+def load_nationality(code: str) -> Optional[pd.DataFrame]:
+    """캐시된 국적별 매매 데이터 로드"""
+    path = NAT_DIR / f"nationality_{code}.csv"
+    if path.exists():
+        return pd.read_csv(path, encoding="utf-8-sig")
+    return None
 
 
 # ============================================================

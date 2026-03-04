@@ -457,6 +457,105 @@ def _reshape_nationality(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ═══════════════════════════════════════════
+# Batch 모드 (단일 브라우저 → 다종목 순차)
+# ═══════════════════════════════════════════
+
+async def _crawl_nationality_batch(
+    stock_codes: list,
+    date_from: str,
+    date_to: str,
+    headless: bool = True,
+) -> dict:
+    """하나의 브라우저 세션에서 여러 종목 순차 크롤링
+
+    매번 브라우저를 열고 닫는 대신, 한 세션에서 종목만 바꿔가며 수집.
+    Playwright 오버헤드 최소화 → 5~10종목에 최적.
+
+    Returns: {code: DataFrame}
+    """
+    from playwright.async_api import async_playwright
+
+    cookies = _load_cookies()
+    if not cookies:
+        logger.error("저장된 쿠키 없음 → --login으로 먼저 로그인 필요")
+        return {}
+
+    results = {}
+
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=headless)
+        context = await browser.new_context(
+            viewport={"width": 1920, "height": 1080},
+            locale="ko-KR",
+        )
+        await context.add_cookies(cookies)
+        logger.info(f"배치 크롤링: {len(stock_codes)}종목, 쿠키 {len(cookies)}개")
+
+        page = await context.new_page()
+
+        try:
+            # 최초 페이지 로드
+            await page.goto(HARD053_URL, wait_until="networkidle", timeout=30000)
+            await page.wait_for_timeout(3000)
+
+            tables = page.locator("table")
+            if await tables.count() < 2:
+                logger.error("세션 만료 → 재로그인 필요")
+                await browser.close()
+                return {}
+
+            for i, code in enumerate(stock_codes):
+                logger.info(f"[{i+1}/{len(stock_codes)}] {code} 크롤링...")
+                try:
+                    # 종목 변경
+                    await _set_stock(page, code)
+
+                    # 날짜 설정
+                    await page.evaluate(f"""() => {{
+                        var s = document.querySelector('[name=strtDd]');
+                        var e = document.querySelector('[name=endDd]');
+                        if (s) {{ s.removeAttribute('readonly'); s.value = '{date_from}'; }}
+                        if (e) {{ e.removeAttribute('readonly'); e.value = '{date_to}'; }}
+                    }}""")
+
+                    # 조회
+                    await _trigger_search(page)
+                    await page.wait_for_timeout(5000)
+                    try:
+                        await page.wait_for_selector(
+                            ".CI-LOADING, .loading", state="hidden", timeout=10000,
+                        )
+                    except Exception:
+                        pass
+                    await page.wait_for_timeout(2000)
+
+                    # 추출
+                    df = await _extract_table(page)
+                    if not df.empty:
+                        df_clean = _reshape_nationality(df)
+                        save_path = DATA_DIR / f"nationality_{code}.csv"
+                        df_clean.to_csv(save_path, index=False, encoding="utf-8-sig")
+                        results[code] = df_clean
+                        logger.info(f"  {code}: {len(df_clean)}개국 저장")
+                    else:
+                        logger.warning(f"  {code}: 데이터 없음")
+                        results[code] = pd.DataFrame()
+
+                except Exception as e:
+                    logger.error(f"  {code} 실패: {e}")
+                    results[code] = pd.DataFrame()
+
+        finally:
+            try:
+                _save_cookies(await context.cookies())
+            except Exception:
+                pass
+            await browser.close()
+
+    return results
+
+
+# ═══════════════════════════════════════════
 # 공개 API
 # ═══════════════════════════════════════════
 
@@ -466,16 +565,9 @@ def fetch_nationality(
     date_to: str = None,
     headless: bool = True,
 ) -> pd.DataFrame:
-    """외국인 국적별 매매 데이터 조회
+    """외국인 국적별 매매 데이터 조회 (단일 종목, CLI용)
 
-    Args:
-        stock_code: 6자리 종목코드 (예: "000660")
-        date_from: 시작일 YYYYMMDD (기본: 5일 전)
-        date_to: 종료일 YYYYMMDD (기본: 오늘)
-        headless: 헤드리스 모드
-
-    Returns:
-        DataFrame [국가명, 거래규모] — 거래규모 내림차순
+    Returns: DataFrame [국가명, 거래규모]
     """
     if not date_to:
         date_to = datetime.now().strftime("%Y%m%d")
@@ -485,21 +577,40 @@ def fetch_nationality(
     return asyncio.run(_crawl_nationality(stock_code, date_from, date_to, headless))
 
 
-def fetch_nationality_multi(
+def fetch_nationality_batch(
     stock_codes: list,
     date_from: str = None,
     date_to: str = None,
     headless: bool = True,
 ) -> dict:
-    """여러 종목 순차 조회 → {코드: DataFrame}"""
-    results = {}
-    for code in stock_codes:
-        try:
-            results[code] = fetch_nationality(code, date_from, date_to, headless)
-        except Exception as e:
-            logger.error(f"{code} 실패: {e}")
-            results[code] = pd.DataFrame()
-    return results
+    """여러 종목 배치 조회 (단일 브라우저, CLI용)
+
+    Returns: {code: DataFrame}
+    """
+    if not date_to:
+        date_to = datetime.now().strftime("%Y%m%d")
+    if not date_from:
+        date_from = (datetime.now() - timedelta(days=5)).strftime("%Y%m%d")
+
+    return asyncio.run(_crawl_nationality_batch(stock_codes, date_from, date_to, headless))
+
+
+async def afetch_nationality_batch(
+    stock_codes: list,
+    date_from: str = None,
+    date_to: str = None,
+    headless: bool = True,
+) -> dict:
+    """여러 종목 배치 조회 (async — 텔레그램 봇 등 이벤트루프 내부용)
+
+    Returns: {code: DataFrame}
+    """
+    if not date_to:
+        date_to = datetime.now().strftime("%Y%m%d")
+    if not date_from:
+        date_from = (datetime.now() - timedelta(days=5)).strftime("%Y%m%d")
+
+    return await _crawl_nationality_batch(stock_codes, date_from, date_to, headless)
 
 
 # ═══════════════════════════════════════════

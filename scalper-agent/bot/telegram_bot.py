@@ -59,11 +59,11 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
         ["종목선정", "MACD스캔", "워치리스트"],
         ["섹터릴레이", "그룹릴레이", "ETF릴레이"],
         ["릴레이종합", "내일추천", "뉴스AI"],
-        ["AI모니터", "해외이벤트", "시나리오"],
-        ["현재잔고", "체결내역", "포트폴리오"],
-        ["시작", "정지", "상태"],
-        ["유니버스", "일지", "도움"],
-        ["청산"],
+        ["AI모니터", "해외이벤트", "국적수급"],
+        ["시나리오", "현재잔고", "체결내역"],
+        ["포트폴리오", "시작", "정지"],
+        ["상태", "유니버스", "일지"],
+        ["도움", "청산"],
     ],
     resize_keyboard=True,
 )
@@ -97,6 +97,10 @@ HELP_TEXT = """
 [내일 추천]
   내일추천 — 5단계 파이프라인 추천 조회/실행
   (자동 16:45 저녁분석 → 06:30 미국장체크 → 08:50 최종확인)
+
+[국적별 수급]
+  국적수급 — 추천/보유 종목 외국인 국적별 매매
+  국적수급 SK하이닉스 — 특정 종목 국적별 조회
 
 [분석]
   스캔 — 5D 전종목 수급 스캔
@@ -1536,6 +1540,7 @@ class BodyHunterBot:
             r"^ETF릴레이$": self.cmd_etf_relay,
             r"^릴레이종합$": self.cmd_relay_hub,
             r"^내일추천$": self.cmd_recommendation,
+            r"^국적수급$": self.cmd_nationality,
         }
 
         for pattern, handler in exact_commands.items():
@@ -1569,6 +1574,10 @@ class BodyHunterBot:
         )
         app.add_handler(
             MessageHandler(filters.Regex(r"^시나리오삭제\s+.+"), self.cmd_scenario_delete)
+        )
+
+        app.add_handler(
+            MessageHandler(filters.Regex(r"^국적수급\s+.+"), self.cmd_nationality)
         )
 
         # 인자 없는 "분석" / "뉴스" → 안내
@@ -1835,7 +1844,33 @@ class BodyHunterBot:
                 chat_id=chat_id, text=f"⚠️ 수급 수집 실패: {str(e)[:200]}"
             )
 
-        # 3. Parquet 통합 빌드 (CSV → raw parquet → processed parquet)
+        # 3. 외국인 국적별 수급 (추천/보유 종목만 — Playwright)
+        try:
+            nat_codes = self._get_nationality_targets()
+            if nat_codes:
+                from data.krx_nationality_crawler import afetch_nationality_batch
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"🌍 국적별 수급 수집: {len(nat_codes)}종목...",
+                )
+                date_from = (datetime.now() - timedelta(days=5)).strftime("%Y%m%d")
+                date_to = datetime.now().strftime("%Y%m%d")
+                nat_results = await afetch_nationality_batch(
+                    nat_codes, date_from, date_to, headless=True,
+                )
+                nat_ok = sum(1 for df in nat_results.values() if not df.empty)
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"🌍 국적별 수급 완료: {nat_ok}/{len(nat_codes)}종목",
+                )
+                logger.info(f"국적별 수급 수집: {nat_ok}/{len(nat_codes)}")
+        except Exception as e:
+            logger.error(f"국적별 수급 실패: {e}")
+            await context.bot.send_message(
+                chat_id=chat_id, text=f"⚠️ 국적별 수급 실패: {str(e)[:200]}"
+            )
+
+        # 4. Parquet 통합 빌드 (CSV → raw parquet → processed parquet)
         try:
             from data.extend_parquet_data import extend_parquet_all
             await context.bot.send_message(
@@ -1854,6 +1889,92 @@ class BodyHunterBot:
             await context.bot.send_message(
                 chat_id=chat_id, text=f"⚠️ Parquet 빌드 실패: {str(e)[:200]}"
             )
+
+    def _get_nationality_targets(self) -> list:
+        """국적별 수급 수집 대상 종목 = 추천 + 보유 (중복 제거)"""
+        codes = set()
+
+        # 추천 종목
+        try:
+            import json
+            rec_path = Path(__file__).parent.parent / "data_store" / "recommendation.json"
+            if rec_path.exists():
+                with open(rec_path, "r", encoding="utf-8") as f:
+                    rec = json.load(f)
+                for s in rec.get("stocks", []):
+                    if s.get("code"):
+                        codes.add(s["code"])
+        except Exception:
+            pass
+
+        # 보유 종목 (자동매매 포지션)
+        try:
+            if self.auto_trader and hasattr(self.auto_trader, "positions"):
+                for code in self.auto_trader.positions.keys():
+                    codes.add(code)
+        except Exception:
+            pass
+
+        return list(codes) if codes else []
+
+    async def cmd_nationality(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """국적수급 — 추천/보유 종목 외국인 국적별 매매 조회"""
+        chat_id = update.effective_chat.id
+        text = update.message.text.strip()
+
+        # "국적수급 삼성전자" or "국적수급 005930" → 특정 종목
+        parts = text.split()
+        if len(parts) >= 2:
+            target = parts[1]
+            code, name = resolve_stock(target)
+            if not code:
+                await update.message.reply_text(f"종목 '{target}' 을 찾을 수 없습니다")
+                return
+            codes = [code]
+            await update.message.reply_text(f"🌍 {name}({code}) 국적별 수급 조회 중...")
+        else:
+            codes = self._get_nationality_targets()
+            if not codes:
+                await update.message.reply_text("추천/보유 종목 없음")
+                return
+            names = [CODE_TO_NAME.get(c, c) for c in codes]
+            await update.message.reply_text(
+                f"🌍 국적별 수급 조회: {', '.join(names)}"
+            )
+
+        try:
+            from data.krx_nationality_crawler import afetch_nationality_batch
+            date_from = (datetime.now() - timedelta(days=5)).strftime("%Y%m%d")
+            date_to = datetime.now().strftime("%Y%m%d")
+
+            results = await afetch_nationality_batch(codes, date_from, date_to, headless=True)
+
+            for code, df in results.items():
+                name = CODE_TO_NAME.get(code, code)
+                if df.empty:
+                    await update.message.reply_text(f"  {name}: 데이터 없음 (쿠키 만료?)")
+                    continue
+
+                # 주요국 추출
+                lines = [f"🌍 {name}({code}) 외국인 국적별 수급"]
+                lines.append(f"기간: {date_from}~{date_to}")
+                lines.append("")
+                for _, row in df.head(15).iterrows():
+                    country = row["국가명"]
+                    vol = row["거래규모"]
+                    bar = "█" * min(int(vol / (df["거래규모"].max() / 10 + 1)), 10)
+                    lines.append(f"  {country:10s} {vol:>12,} {bar}")
+
+                # 중국+홍콩 합산 하이라이트
+                cn = df[df["국가명"] == "중국"]["거래규모"].sum()
+                hk = df[df["국가명"] == "홍콩"]["거래규모"].sum()
+                if cn + hk > 0:
+                    lines.append(f"\n  🇨🇳 중국+홍콩 합산: {cn + hk:,}")
+
+                await update.message.reply_text("\n".join(lines))
+
+        except Exception as e:
+            await update.message.reply_text(f"국적수급 실패: {str(e)[:300]}")
 
     async def _job_rebuild_universe(self, context):
         """장전 유니버스 리빌드 (시총 변동 반영)"""
