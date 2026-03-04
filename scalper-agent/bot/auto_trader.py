@@ -1486,9 +1486,102 @@ class AutoTrader:
                     f"   09:00 장 시작 → 실시간 관찰 → 조건 충족 시 매수\n"
                     f"   매수 금액: 장 시작 시 실제 잔고 기반 자동 계산"
                 )
+
+            # 국적별 수급 보고 (추천 + 보유 종목)
+            try:
+                await self._report_nationality_signal(_send)
+            except Exception as e2:
+                logger.warning(f"국적별 수급 보고 실패 (무시): {e2}")
+
         except Exception as e:
             logger.error(f"저녁 분석 실패: {e}")
             await _send(f"❌ 저녁 분석 실패: {e}")
+
+    async def _report_nationality_signal(self, _send):
+        """국적별 수급 변화 보고 (저녁분석 후 자동 실행)
+
+        추천 종목 + 보유 종목의 전일 대비 국적별 거래량 변화 보고
+        """
+        from data.nationality_signal import (
+            collect_daily_snapshots, generate_nationality_report,
+            score_nationality_batch,
+        )
+
+        # 대상 종목 = 추천 + 보유 (중복 제거)
+        target_codes = set()
+        target_names = {}
+
+        # 추천 종목
+        try:
+            from data.morning_recommendation import load_recommendation
+            rec = load_recommendation()
+            if rec and rec.stocks:
+                for s in rec.stocks:
+                    target_codes.add(s.code)
+                    target_names[s.code] = s.name
+        except Exception:
+            pass
+
+        # 보유 종목
+        if self.trader:
+            try:
+                bal = self.trader.get_balance()
+                for pos in bal.get("positions", []):
+                    code = pos.get("code", "")
+                    if code:
+                        target_codes.add(code)
+                        if code not in target_names:
+                            target_names[code] = pos.get("name", code)
+            except Exception:
+                pass
+
+        if not target_codes:
+            return
+
+        target_list = list(target_codes)
+
+        # 스냅샷 수집 (오늘 + 전일 2일치)
+        await _send(f"🌍 국적별 수급 분석 중... ({len(target_list)}종목)")
+
+        from data.nationality_signal import _get_latest_data_date
+        date_new = _get_latest_data_date()
+
+        await asyncio.to_thread(collect_daily_snapshots, target_list, date_new)
+
+        # 전일 스냅샷도 수집 (없으면 비교 불가)
+        from data.nationality_signal import _find_prev_trading_day
+        date_old = _find_prev_trading_day(date_new)
+        if date_old:
+            await asyncio.to_thread(collect_daily_snapshots, target_list, date_old)
+
+        # 보고서 생성
+        report = await asyncio.to_thread(
+            generate_nationality_report, target_list, target_names, date_new,
+        )
+
+        if report:
+            # 긴 메시지 분할
+            if len(report) > 4000:
+                for i in range(0, len(report), 4000):
+                    await _send(report[i:i + 4000])
+            else:
+                await _send(report)
+
+        # 점수 요약
+        scores = await asyncio.to_thread(
+            score_nationality_batch, target_list, date_new,
+        )
+        if scores:
+            score_lines = []
+            for code in target_list:
+                sc, reason = scores.get(code, (0, ""))
+                name = target_names.get(code, code)
+                if sc != 0:
+                    score_lines.append(f"  {name}: {sc:+.0f}점 ({reason})")
+            if score_lines:
+                await _send(
+                    "📊 국적별 수급 점수\n" + "\n".join(score_lines)
+                )
 
     async def job_us_market_check(self, context):
         """Stage 2: 미국장 체크 (06:30) — 전일 저녁 추천 조정

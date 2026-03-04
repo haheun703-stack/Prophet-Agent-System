@@ -1918,8 +1918,7 @@ class BodyHunterBot:
         return list(codes) if codes else []
 
     async def cmd_nationality(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """국적수급 — 추천/보유 종목 외국인 국적별 매매 조회"""
-        chat_id = update.effective_chat.id
+        """국적수급 — 추천/보유 종목 외국인 국적별 수급 변화 보고"""
         text = update.message.text.strip()
 
         # "국적수급 삼성전자" or "국적수급 005930" → 특정 종목
@@ -1931,47 +1930,52 @@ class BodyHunterBot:
                 await update.message.reply_text(f"종목 '{target}' 을 찾을 수 없습니다")
                 return
             codes = [code]
-            await update.message.reply_text(f"🌍 {name}({code}) 국적별 수급 조회 중...")
+            code_names = {code: name}
+            await update.message.reply_text(f"🌍 {name}({code}) 국적별 수급 분석 중...")
         else:
             codes = self._get_nationality_targets()
             if not codes:
                 await update.message.reply_text("추천/보유 종목 없음")
                 return
-            names = [CODE_TO_NAME.get(c, c) for c in codes]
+            code_names = {c: CODE_TO_NAME.get(c, c) for c in codes}
             await update.message.reply_text(
-                f"🌍 국적별 수급 조회: {', '.join(names)}"
+                f"🌍 국적별 수급 분석: {', '.join(code_names.values())}"
             )
 
         try:
-            from data.krx_nationality_crawler import afetch_nationality_batch
-            date_from = (datetime.now() - timedelta(days=5)).strftime("%Y%m%d")
-            date_to = datetime.now().strftime("%Y%m%d")
+            from data.nationality_signal import (
+                collect_daily_snapshots, generate_nationality_report,
+                score_nationality_batch, _get_latest_data_date,
+                _find_prev_trading_day,
+            )
 
-            results = await afetch_nationality_batch(codes, date_from, date_to)
+            date_new = _get_latest_data_date()
 
-            for code, df in results.items():
-                name = CODE_TO_NAME.get(code, code)
-                if df.empty:
-                    await update.message.reply_text(f"  {name}: 데이터 없음 (쿠키 만료?)")
-                    continue
+            # 스냅샷 수집 (금일 + 전일)
+            await asyncio.to_thread(collect_daily_snapshots, codes, date_new)
+            date_old = _find_prev_trading_day(date_new)
+            if date_old:
+                await asyncio.to_thread(collect_daily_snapshots, codes, date_old)
 
-                # 주요국 추출
-                lines = [f"🌍 {name}({code}) 외국인 국적별 수급"]
-                lines.append(f"기간: {date_from}~{date_to}")
-                lines.append("")
-                for _, row in df.head(15).iterrows():
-                    country = row["국가명"]
-                    vol = row["거래규모"]
-                    bar = "█" * min(int(vol / (df["거래규모"].max() / 10 + 1)), 10)
-                    lines.append(f"  {country:10s} {vol:>12,} {bar}")
+            # 보고서 생성
+            report = await asyncio.to_thread(
+                generate_nationality_report, codes, code_names, date_new,
+            )
+            if report:
+                for chunk in _split_message(report):
+                    await update.message.reply_text(chunk)
 
-                # 중국+홍콩 합산 하이라이트
-                cn = df[df["국가명"] == "중국"]["거래규모"].sum()
-                hk = df[df["국가명"] == "홍콩"]["거래규모"].sum()
-                if cn + hk > 0:
-                    lines.append(f"\n  🇨🇳 중국+홍콩 합산: {cn + hk:,}")
-
-                await update.message.reply_text("\n".join(lines))
+            # 점수 요약
+            scores = await asyncio.to_thread(
+                score_nationality_batch, codes, date_new,
+            )
+            if scores:
+                score_lines = ["📊 국적별 수급 점수"]
+                for code in codes:
+                    sc, reason = scores.get(code, (0, ""))
+                    name = code_names.get(code, code)
+                    score_lines.append(f"  {name}: {sc:+.0f}점 ({reason})")
+                await update.message.reply_text("\n".join(score_lines))
 
         except Exception as e:
             await update.message.reply_text(f"국적수급 실패: {str(e)[:300]}")

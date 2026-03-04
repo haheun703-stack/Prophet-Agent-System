@@ -32,6 +32,8 @@ class RecommendedStock:
     premove_score: float = 0.0     # 사전감지 점수
     tech_score: float = 0.0        # 기술적 점수 (0~5)
     news_score: float = 0.0        # 뉴스AI 점수
+    nationality_score: float = 0.0 # 국적별 수급 점수
+    nationality_detail: str = ""   # 국적별 수급 상세
     cross_count: int = 0           # 교차 등장 횟수
     # 합산
     total_score: float = 0.0
@@ -419,10 +421,13 @@ def _step4_news_filter(codes_names: list[tuple[str, str]]) -> dict:
 def _step5_cross_validate(
     relay: dict, premove: dict, tech: dict, news: dict,
     macd_result: dict = None,
+    nationality: dict = None,
 ) -> list[RecommendedStock]:
     """모든 스텝 결과 통합 → 교차검증 → 최종 랭킹"""
     if macd_result is None:
         macd_result = {}
+    if nationality is None:
+        nationality = {}
 
     # 모든 종목 코드 수집
     all_codes = set()
@@ -473,7 +478,12 @@ def _step5_cross_validate(
         tech_sc = t_info.get("score", 0) * 5  # 0~25
         cross_bonus = cross * 10 if cross >= 2 else 0
 
-        total = relay_sc + premove_sc + tech_sc + cross_bonus
+        # 국적별 수급 점수 (-30 ~ +50)
+        nat_info = nationality.get(code, (0, ""))
+        nat_sc = nat_info[0] if isinstance(nat_info, tuple) else 0
+        nat_detail = nat_info[1] if isinstance(nat_info, tuple) else ""
+
+        total = relay_sc + premove_sc + tech_sc + cross_bonus + nat_sc
 
         # MACD Phase2 진입 시그널 정보
         m_info = macd_result.get(code, {})
@@ -500,6 +510,8 @@ def _step5_cross_validate(
             premove_score=premove_sc,
             tech_score=tech_sc,
             news_score=n_info.get("score", 0),
+            nationality_score=nat_sc,
+            nationality_detail=nat_detail,
             cross_count=cross,
             total_score=round(total, 1),
             entry=entry,
@@ -672,12 +684,24 @@ def run_evening_recommendation() -> RecommendationReport:
             news_result[code] = {"sentiment": "NEUTRAL", "reason": "기술필터미통과", "score": 0}
     logger.info(f"  → 완료 ({time.time()-t0:.0f}s)")
 
-    # Step 5: 교차검증 (MACD 0선 소스 포함)
+    # Step 5a: 국적별 수급 점수 (스냅샷 있으면 반영, 없으면 skip)
+    nationality_scores = {}
+    try:
+        from data.nationality_signal import score_nationality_batch
+        all_codes = [code for code, _ in codes_names]
+        nationality_scores = score_nationality_batch(all_codes)
+        scored = sum(1 for sc, _ in nationality_scores.values() if sc != 0)
+        logger.info(f"[Step 5a] 국적별 수급: {scored}/{len(all_codes)}종목 점수 반영")
+    except Exception as e:
+        logger.warning(f"국적별 수급 점수 실패 (무시): {e}")
+
+    # Step 5: 교차검증 (MACD 0선 + 국적별 수급 포함)
     t0 = time.time()
     logger.info("[Step 5/5] 교차검증 + 최종 랭킹...")
     final_stocks = _step5_cross_validate(
         relay_result, premove_result, tech_result, news_result,
         macd_result=macd_result,
+        nationality=nationality_scores,
     )
     logger.info(f"  → {len(final_stocks)}종목 ({time.time()-t0:.0f}s)")
 
@@ -859,9 +883,12 @@ def format_recommendation(report: RecommendationReport, max_budget: int = 0) -> 
         lines.append(
             f"   현재: {s.close:,}원 | SL: {s.sl:,} → TP: {s.tp:,}"
         )
-        lines.append(
-            f"   기술: {s.tech_detail} | 뉴스: {s.news_detail}"
-        )
+        detail_line = f"   기술: {s.tech_detail} | 뉴스: {s.news_detail}"
+        if s.nationality_score != 0:
+            detail_line += f" | 국적:{s.nationality_score:+.0f}"
+        lines.append(detail_line)
+        if s.nationality_detail:
+            lines.append(f"   🌍 {s.nationality_detail}")
         if shares > 0:
             lines.append(f"   매수: {shares}주 = {buy_total:,}원")
         if s.sources:
@@ -908,6 +935,8 @@ def save_recommendation(report: RecommendationReport):
                 "sources": s.sources, "cross_count": s.cross_count,
                 "relay_score": s.relay_score, "premove_score": s.premove_score,
                 "tech_score": s.tech_score, "news_score": s.news_score,
+                "nationality_score": s.nationality_score,
+                "nationality_detail": s.nationality_detail,
             }
             for s in report.stocks
         ],
@@ -951,6 +980,8 @@ def load_recommendation() -> Optional[RecommendationReport]:
                 premove_score=sd.get("premove_score", 0),
                 tech_score=sd.get("tech_score", 0),
                 news_score=sd.get("news_score", 0),
+                nationality_score=sd.get("nationality_score", 0),
+                nationality_detail=sd.get("nationality_detail", ""),
             ))
         return report
     except Exception as e:
