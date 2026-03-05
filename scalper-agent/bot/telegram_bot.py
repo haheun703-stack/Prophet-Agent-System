@@ -1837,7 +1837,7 @@ class BodyHunterBot:
             )
 
     async def _job_collect_minutes(self, context):
-        """장마감 후 자동 분봉(5분/15분) 수집"""
+        """장마감 후 자동 분봉(5분/15분) 수집 + 수급 분석"""
         from datetime import date
         if date.today().weekday() >= 5:  # 주말 스킵
             return
@@ -1852,14 +1852,37 @@ class BodyHunterBot:
                 f"📊 분봉 수집 완료\n"
                 f"  {len(results)}/{len(UNIVERSE)}종목 성공\n"
             )
-            if results:
-                sample = list(results.items())[:3]
-                for code, st in sample:
-                    name = UNIVERSE.get(code, (code,))[0]
-                    msg += f"  {name}: 5분={st['5min']}봉 15분={st['15min']}봉\n"
-
             await context.bot.send_message(chat_id=chat_id, text=msg)
             logger.info(f"분봉 수집 완료: {len(results)}종목")
+
+            # ── 수급 분석 ──
+            try:
+                from data.minute_supply_analyzer import (
+                    analyze_minute_supply,
+                    format_supply_report,
+                )
+                logger.info("분봉 수급 분석 시작...")
+                signals = await asyncio.to_thread(
+                    analyze_minute_supply,
+                    target_date=None,
+                    universe=UNIVERSE,
+                    top_n=20,
+                )
+                if signals:
+                    report = format_supply_report(signals)
+                    await context.bot.send_message(chat_id=chat_id, text=report)
+                    logger.info(f"수급 분석 완료: {len(signals)}종목 발송")
+                else:
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text="📊 수급 분석: 특이 종목 없음 (vol_ratio < 1.5x)",
+                    )
+            except Exception as e:
+                logger.error(f"수급 분석 실패: {e}")
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"⚠️ 수급 분석 실패: {str(e)[:200]}",
+                )
 
         except Exception as e:
             logger.error(f"분봉 수집 실패: {e}")
