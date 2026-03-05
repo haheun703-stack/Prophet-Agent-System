@@ -24,8 +24,13 @@ stock_data_daily/
 # 원본 ZIP 파일 (이미 통합 완료)
 *.zip
 
-# 개인 자료
+# 개인 자료 & 참고 문서
 서보성 대화 텍스트/
+3D사진/
+주식차트모음/
+수급건전성,이벤트 드리븐시스템 외 모음/
+*.pdf
+*.docx
 
 # IDE & Tool metadata
 .vscode/
@@ -47,8 +52,23 @@ scalper-agent/token.dat
 scalper-agent/logs/
 scalper-agent/results/
 prophet-agent/results/
+scalper-agent/_evening_log.txt
+scalper-agent/tools/scan_result*.txt
+scalper-agent/backtest/tomorrow_report.txt
+scalper-agent/backtest/tomorrow_analysis.py
+scalper-agent/backtest/fetch_today.py
+scalper-agent/backtest/collect_0227_flow.py
+scalper-agent/backtest/dynamic_target_backtest.py
+
+# 1회성 스크립트 & 데이터 (루트)
+paper_trader.py
+paper_trades.csv
+news-early-detection-guide.html
 
 # OS
 Thumbs.db
 .DS_Store
 desktop.ini
+
+# NIGHTWATCH 참고 문서
+NIGHTWATCH_*.md
