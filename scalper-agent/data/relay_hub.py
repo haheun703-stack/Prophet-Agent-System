@@ -1,19 +1,26 @@
+# -*- coding: utf-8 -*-
 """
 릴레이 통합 허브 (Relay Hub)
 - 섹터/그룹/ETF 3개 에이전트 통합
 - 교차 검증: 3개 중 2개 이상에서 같은 종목 나오면 신뢰도 UP
 - 최종 릴레이 추천 종목 생성
+- pykrx 야간 블로킹 대비: socket timeout 설정
 """
 
 from dataclasses import dataclass, field
 from typing import Optional
 import logging
+import socket
 
 from data.sector_relay import scan_all_sectors, SectorStatus
 from data.group_relay import scan_all_groups, GroupStatus
 from data.etf_relay import scan_all_etfs, ETFStatus
 
 logger = logging.getLogger(__name__)
+
+# pykrx 야간 블로킹 대비: 전역 소켓 타임아웃 (30초)
+_ORIGINAL_TIMEOUT = socket.getdefaulttimeout()
+_SCAN_TIMEOUT = 30  # 초
 
 
 @dataclass
@@ -41,25 +48,42 @@ class RelayReport:
 
 
 def scan_relay_all() -> RelayReport:
-    """3개 에이전트 통합 스캔"""
+    """3개 에이전트 통합 스캔 (pykrx 야간 대비 소켓 타임아웃)"""
     report = RelayReport()
 
-    # ── 1. 섹터 스캔 ──
-    logger.info("[RelayHub] 섹터 스캔 시작...")
-    sectors = scan_all_sectors()
-    report.hot_sectors = [s for s in sectors if s.status in ("HOT", "WARMING")]
-    report.relay_sectors = [s for s in sectors if s.status == "RELAY"]
+    # pykrx는 내부적으로 urllib/requests를 사용 → 소켓 타임아웃으로 블로킹 방지
+    socket.setdefaulttimeout(_SCAN_TIMEOUT)
 
-    # ── 2. 그룹 스캔 ──
-    logger.info("[RelayHub] 그룹 스캔 시작...")
-    groups = scan_all_groups()
-    report.hot_groups = [g for g in groups if g.status == "HOT"]
-    report.relay_groups = [g for g in groups if g.status == "RELAY"]
+    try:
+        # ── 1. 섹터 스캔 ──
+        logger.info("[RelayHub] 섹터 스캔 시작...")
+        try:
+            sectors = scan_all_sectors()
+            report.hot_sectors = [s for s in sectors if s.status in ("HOT", "WARMING")]
+            report.relay_sectors = [s for s in sectors if s.status == "RELAY"]
+        except (socket.timeout, TimeoutError, Exception) as e:
+            logger.warning(f"[RelayHub] 섹터 스캔 실패: {e}")
 
-    # ── 3. ETF 스캔 ──
-    logger.info("[RelayHub] ETF 스캔 시작...")
-    etfs = scan_all_etfs()
-    report.leading_etfs = [e for e in etfs if e.status in ("LEADING", "DIVERGING")]
+        # ── 2. 그룹 스캔 ──
+        logger.info("[RelayHub] 그룹 스캔 시작...")
+        try:
+            groups = scan_all_groups()
+            report.hot_groups = [g for g in groups if g.status == "HOT"]
+            report.relay_groups = [g for g in groups if g.status == "RELAY"]
+        except (socket.timeout, TimeoutError, Exception) as e:
+            logger.warning(f"[RelayHub] 그룹 스캔 실패: {e}")
+
+        # ── 3. ETF 스캔 ──
+        logger.info("[RelayHub] ETF 스캔 시작...")
+        try:
+            etfs = scan_all_etfs()
+            report.leading_etfs = [e for e in etfs if e.status in ("LEADING", "DIVERGING")]
+        except (socket.timeout, TimeoutError, Exception) as e:
+            logger.warning(f"[RelayHub] ETF 스캔 실패: {e}")
+
+    finally:
+        # 소켓 타임아웃 원복
+        socket.setdefaulttimeout(_ORIGINAL_TIMEOUT)
 
     # ── 4. 교차 검증 ──
     logger.info("[RelayHub] 교차 검증...")
