@@ -1732,15 +1732,22 @@ class AutoTrader:
                 await _send(f"NXT 진입 조건 미충족 (점수 {report.total_score:+.1f} < {min_score})")
                 return
 
-            # 진입 대상 종목 결정
-            if report.total_score >= 5:
-                sector_key = "strong_buy"
-            else:
-                sector_key = "buy"
+            # 진입 대상 종목 결정 — JARVIS 섹터 매핑 사용
+            nxt_targets = getattr(report, 'nxt_targets', [])
+            if not nxt_targets:
+                # 폴백: config prefer_sectors (하위 호환)
+                if report.total_score >= 5:
+                    sector_key = "strong_buy"
+                else:
+                    sector_key = "buy"
+                fallback_codes = nw_cfg.get("prefer_sectors", {}).get(sector_key, [])
+                for c in fallback_codes:
+                    from bot.kis_trader import CODE_TO_NAME
+                    nxt_targets.append({"code": c, "name": CODE_TO_NAME.get(c, c),
+                                        "sector": "config", "tier": 1, "priority": 1})
 
-            nxt_codes = nw_cfg.get("prefer_sectors", {}).get(sector_key, [])
-            if not nxt_codes:
-                await _send("NXT 매수 대상 종목 없음 (config.nightwatch.prefer_sectors)")
+            if not nxt_targets:
+                await _send("NXT 매수 대상 종목 없음 (JARVIS 섹터 매핑 결과 없음)")
                 return
 
             # 예산 계산
@@ -1754,29 +1761,36 @@ class AutoTrader:
             max_pos = nw_cfg.get("max_nxt_positions", 1)
             per_stock = nxt_budget // max_pos
 
+            # Tier1 1순위 섹터만 필터 (NXT 매수 대상)
+            buy_targets = [t for t in nxt_targets if t.get("tier", 1) == 1][:max_pos]
+
             # 알림만 모드
             if alert_only:
+                reason = getattr(report, 'selection_reason', '')
                 code_names = []
-                for c in nxt_codes[:max_pos]:
-                    from bot.kis_trader import CODE_TO_NAME
-                    name = CODE_TO_NAME.get(c, c)
-                    code_names.append(f"  {name}({c})")
+                for t in nxt_targets[:8]:  # 최대 8종목 표시
+                    tier_mark = "★" if t.get("tier") == 1 else "☆"
+                    code_names.append(f"  {tier_mark} {t['name']}({t['code']}) [{t.get('sector', '')}]")
+
+                buy_names = [f"  → {t['name']}({t['code']})" for t in buy_targets]
 
                 await _send(
                     f"{report.signal} NXT 매수 신호!\n"
                     f"점수: {report.total_score:+.1f}\n"
+                    f"판단: {reason}\n"
                     f"예산: {nxt_budget:,}원 (현금의 {int(budget_pct*100)}%)\n"
                     f"종목당: {per_stock:,}원\n\n"
-                    f"대상 종목:\n" + "\n".join(code_names) + "\n\n"
+                    f"JARVIS 추천:\n" + "\n".join(code_names) + "\n\n"
+                    f"매수 실행 대상 (Tier1 {max_pos}종목):\n" + "\n".join(buy_names) + "\n\n"
                     f"[알림만 모드] 수동 매수 필요\n"
-                    f"자동매매 전환: /nxt_on"
+                    f"자동매매 전환: NXT켜기"
                 )
                 return
 
             # 자동매매 모드 — NXT 매수 실행
-            for code in nxt_codes[:max_pos]:
-                from bot.kis_trader import CODE_TO_NAME
-                name = CODE_TO_NAME.get(code, code)
+            for t in buy_targets:
+                code = t["code"]
+                name = t["name"]
 
                 result = self.trader.nxt_safe_buy(code, per_stock)
                 if result.get("success"):

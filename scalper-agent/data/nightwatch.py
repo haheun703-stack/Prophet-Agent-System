@@ -89,8 +89,160 @@ class NightwatchReport:
     signal: str = "🟡"
     signal_text: str = "관망"
     recommended_sectors: List[str] = field(default_factory=list)
+    # JARVIS 섹터 매핑
+    nxt_targets: List[Dict] = field(default_factory=list)
+    macro_conditions: Dict = field(default_factory=dict)
+    selection_reason: str = ""
     # 원본 데이터
     raw_indicators: Dict = field(default_factory=dict)
+
+
+# ═══════════════════════════════════════════════════
+#  JARVIS SECTOR MAP v1.0
+#  "대장이 움직이면 소부장이 따라온다. 순서를 아는 자가 이긴다."
+# ═══════════════════════════════════════════════════
+JARVIS_SECTORS = {
+    "semiconductor": {
+        "name": "💾 반도체",
+        "us": ["NVDA", "TSMC", "AMD", "AVGO", "ASML", "MU"],
+        "kr_tier1": [
+            {"code": "000660", "name": "SK하이닉스"},
+            {"code": "005930", "name": "삼성전자"},
+        ],
+        "kr_tier2": [
+            {"code": "403870", "name": "HPSP"},
+            {"code": "240810", "name": "원익IPS"},
+            {"code": "042700", "name": "한미반도체"},
+            {"code": "039030", "name": "이오테크닉스"},
+            {"code": "005290", "name": "동진쎄미켐"},
+        ],
+        "relay": "NVDA수주→SK하이닉스/삼성전자→한미반도체→HPSP/원익IPS→ISC",
+    },
+    "software_ai": {
+        "name": "💻 소프트웨어·AI",
+        "us": ["MSFT", "GOOGL", "META", "CRM", "NOW", "PLTR"],
+        "kr_tier1": [
+            {"code": "035420", "name": "NAVER"},
+            {"code": "035720", "name": "카카오"},
+            {"code": "259960", "name": "크래프톤"},
+        ],
+        "kr_tier2": [
+            {"code": "018260", "name": "삼성SDS"},
+            {"code": "017670", "name": "SK텔레콤"},
+        ],
+        "relay": "MSFT/GOOGL AI투자→NAVER/카카오 AI전환→삼성SDS 인프라",
+    },
+    "bio": {
+        "name": "💊 바이오·헬스케어",
+        "us": ["LLY", "NVO", "ABBV", "JNJ", "MRK"],
+        "kr_tier1": [
+            {"code": "207940", "name": "삼성바이오로직스"},
+            {"code": "068270", "name": "셀트리온"},
+            {"code": "128940", "name": "한미약품"},
+        ],
+        "kr_tier2": [
+            {"code": "000100", "name": "유한양행"},
+            {"code": "196170", "name": "알테오젠"},
+            {"code": "028300", "name": "HLB"},
+        ],
+        "relay": "LLY/NVO GLP-1폭증→한미약품→삼성바이오CMO→알테오젠",
+    },
+    "power_infra": {
+        "name": "⚡ 전력·에너지인프라",
+        "us": ["GEV", "NEE", "ETN", "VRT", "CEG"],
+        "kr_tier1": [
+            {"code": "267260", "name": "HD현대일렉트릭"},
+            {"code": "010120", "name": "LS일렉트릭"},
+            {"code": "298040", "name": "효성중공업"},
+        ],
+        "kr_tier2": [
+            {"code": "229640", "name": "LS전선아시아"},
+            {"code": "006260", "name": "LS"},
+            {"code": "042670", "name": "두산에너빌리티"},
+        ],
+        "relay": "AI DC착공→GEV/ETN/VRT→HD현대일렉/효성중공업→LS전선→두산에너빌리티",
+    },
+    "oil_resource": {
+        "name": "🛢 원유·자원",
+        "us": ["XOM", "CVX", "COP", "SLB", "LNG"],
+        "kr_tier1": [
+            {"code": "010950", "name": "S-Oil"},
+            {"code": "096770", "name": "SK이노베이션"},
+        ],
+        "kr_tier2": [
+            {"code": "028050", "name": "삼성엔지니어링"},
+            {"code": "036460", "name": "한국가스공사"},
+        ],
+        "relay": "WTI$80+→XOM/CVX증산→SLB서비스→삼성엔지니어링→S-Oil마진개선",
+    },
+    "space_defense": {
+        "name": "🚀 우주·항공·방산",
+        "us": ["LMT", "NOC", "BA", "RKLB", "KTOS"],
+        "kr_tier1": [
+            {"code": "012450", "name": "한화에어로스페이스"},
+            {"code": "047810", "name": "한국항공우주"},
+            {"code": "079550", "name": "LIG넥스원"},
+        ],
+        "kr_tier2": [
+            {"code": "064350", "name": "현대로템"},
+            {"code": "003570", "name": "SNT다이내믹스"},
+            {"code": "103140", "name": "풍산"},
+            {"code": "099320", "name": "쎄트렉아이"},
+        ],
+        "relay": "지정학긴장→LMT/NOC→한화에어로/KAI→LIG넥스원→현대로템/SNT/풍산",
+    },
+    "entertainment": {
+        "name": "🎭 엔터테인먼트",
+        "us": ["NFLX", "DIS", "SPOT"],
+        "kr_tier1": [
+            {"code": "352820", "name": "하이브"},
+            {"code": "041510", "name": "SM엔터"},
+            {"code": "035900", "name": "JYP엔터"},
+        ],
+        "kr_tier2": [
+            {"code": "068290", "name": "삼성출판사"},
+            {"code": "253450", "name": "스튜디오드래곤"},
+        ],
+        "relay": "NFLX K-콘텐츠발주→스튜디오드래곤→하이브/SM 글로벌투어",
+    },
+    "securities": {
+        "name": "📈 증권·금융",
+        "us": ["GS", "MS", "JPM", "BX"],
+        "kr_tier1": [
+            {"code": "006800", "name": "미래에셋증권"},
+            {"code": "039490", "name": "키움증권"},
+            {"code": "016360", "name": "삼성증권"},
+        ],
+        "kr_tier2": [
+            {"code": "071050", "name": "한국금융지주"},
+        ],
+        "relay": "금리인하→채권랠리→증권운용이익/IPO시장→키움거래대금",
+    },
+    "reits": {
+        "name": "🏢 리츠·부동산",
+        "us": ["AMT", "PLD", "EQIX", "DLR", "O"],
+        "kr_tier1": [
+            {"code": "395400", "name": "SK리츠"},
+            {"code": "088980", "name": "맥쿼리인프라"},
+        ],
+        "kr_tier2": [
+            {"code": "365550", "name": "ESR켄달스퀘어리츠"},
+            {"code": "334890", "name": "이지스밸류리츠"},
+        ],
+        "relay": "금리인하→배당매력→EQIX/DLR AI DC→ESR켄달스퀘어",
+    },
+    # 특수 섹터
+    "inverse": {
+        "name": "📉 인버스(헤지)",
+        "us": [],
+        "kr_tier1": [
+            {"code": "252670", "name": "KODEX 200선물인버스2X"},
+            {"code": "114800", "name": "KODEX 인버스"},
+        ],
+        "kr_tier2": [],
+        "relay": "하락시그널→인버스ETF",
+    },
+}
 
 
 # ═══════════════════════════════════════════════════
@@ -366,6 +518,178 @@ def detect_divergence() -> Tuple[float, List[str], Dict]:
 
 
 # ═══════════════════════════════════════════════════
+#  [4단] 매크로 조건 감지 (JARVIS 섹터 매핑용)
+# ═══════════════════════════════════════════════════
+def collect_macro_conditions(
+    asian_detail: Dict,
+    raw_indicators: Dict,
+) -> Tuple[Dict, Dict]:
+    """
+    추가 매크로 지표 수집 + 조건 판별
+    NQ(나스닥), CL(원유), HG(구리) 추가 수집 → 기존 데이터와 결합
+    Returns: (conditions_dict, additional_raw_data)
+    """
+    conditions = {}
+    additional_raw = {}
+
+    # --- NQ: 나스닥 100 선물 (미국 기술주 방향) ---
+    nq = _fetch_ticker("NQ=F")
+    additional_raw["NQ"] = asdict(nq) if nq else {}
+    if nq and nq.change_pct is not None:
+        conditions["nasdaq_up"] = nq.change_pct > 0.3
+        conditions["nasdaq_down"] = nq.change_pct < -0.3
+        conditions["nasdaq_pct"] = nq.change_pct
+
+    # --- CL: WTI 원유 선물 ---
+    cl = _fetch_ticker("CL=F")
+    additional_raw["CL"] = asdict(cl) if cl else {}
+    if cl and cl.change_pct is not None:
+        conditions["oil_up"] = cl.change_pct > 1.0
+        conditions["oil_down"] = cl.change_pct < -1.0
+        conditions["oil_pct"] = cl.change_pct
+
+    # --- HG: 구리 선물 (지정학 감지용) ---
+    hg = _fetch_ticker("HG=F")
+    additional_raw["HG"] = asdict(hg) if hg else {}
+
+    # --- TNX: 금리 방향 (detect_divergence에서 이미 수집) ---
+    tnx = raw_indicators.get("TNX", {})
+    if tnx.get("change_abs") is not None:
+        conditions["rate_down"] = tnx["change_abs"] < -0.03
+        conditions["rate_up"] = tnx["change_abs"] > 0.03
+
+    # --- CNH: 위안화 강세 (collect_asian_risk에서 이미 수집) ---
+    cnh = asian_detail.get("CNH", {})
+    if cnh.get("change_pct") is not None:
+        # CNY=X 하락 = 위안화 강세 = 긍정
+        conditions["cnh_strong"] = cnh["change_pct"] < -0.2
+
+    # --- 지정학 긴장: AUD/JPY 하락 + 구리 상승 ---
+    audjpy = asian_detail.get("AUD/JPY", {})
+    if (audjpy.get("change_pct") is not None and
+            hg and hg.change_pct is not None):
+        conditions["geopolitical"] = (
+            audjpy["change_pct"] < -0.2 and hg.change_pct > 0.3
+        )
+    # AUD/JPY만 급락해도 지정학 의심
+    elif audjpy.get("change_pct") is not None and audjpy["change_pct"] < -0.5:
+        conditions["geopolitical"] = True
+
+    # 활성 조건 텍스트 생성
+    active = []
+    if conditions.get("nasdaq_up"):
+        active.append(f"나스닥↑ {conditions.get('nasdaq_pct', 0):+.1f}%")
+    if conditions.get("nasdaq_down"):
+        active.append(f"나스닥↓ {conditions.get('nasdaq_pct', 0):+.1f}%")
+    if conditions.get("rate_down"):
+        active.append("금리↓")
+    if conditions.get("rate_up"):
+        active.append("금리↑")
+    if conditions.get("oil_up"):
+        active.append(f"유가↑ {conditions.get('oil_pct', 0):+.1f}%")
+    if conditions.get("cnh_strong"):
+        active.append("CNH강세")
+    if conditions.get("geopolitical"):
+        active.append("지정학 긴장")
+    conditions["active_text"] = active
+
+    return conditions, additional_raw
+
+
+# ═══════════════════════════════════════════════════
+#  JARVIS 섹터 선정 + NXT 대상 종목 매칭
+# ═══════════════════════════════════════════════════
+def select_sectors_and_targets(
+    total_score: float,
+    macro: Dict,
+    max_tier: int = 1,
+) -> Tuple[List[str], List[Dict], str]:
+    """
+    NIGHTWATCH 점수 + 매크로 조건 → 섹터 우선순위 → NXT 대상 종목
+    PDF p.16 NIGHTWATCH 섹터 매핑 테이블 구현
+
+    Returns: (sector_display_names, nxt_targets, selection_reason)
+    """
+    selected_keys = []
+    reason = ""
+
+    # ── 강매수 (5+) ──
+    if total_score >= 5:
+        if macro.get("nasdaq_up"):
+            selected_keys = ["semiconductor", "software_ai", "space_defense",
+                             "entertainment", "securities"]
+            reason = "🟢🟢 + 나스닥↑"
+        elif macro.get("rate_down"):
+            selected_keys = ["reits", "securities", "power_infra", "bio"]
+            reason = "🟢🟢 + 금리↓"
+        else:
+            selected_keys = ["semiconductor", "software_ai", "power_infra"]
+            reason = "🟢🟢 기본"
+
+    # ── 매수 (2~4.9) ──
+    elif total_score >= 2:
+        if macro.get("cnh_strong"):
+            selected_keys = ["semiconductor", "entertainment", "bio", "securities"]
+            reason = "🟢 + CNH강세"
+        elif macro.get("oil_up"):
+            selected_keys = ["oil_resource", "power_infra"]
+            reason = "🟢 + 유가↑"
+        elif macro.get("geopolitical"):
+            selected_keys = ["space_defense"]
+            reason = "🟢 + 지정학 긴장"
+        else:
+            selected_keys = ["semiconductor", "power_infra"]
+            reason = "🟢 기본"
+
+    # ── 진입 금지 / 패닉 (-2 이하) ──
+    elif total_score < -2:
+        selected_keys = ["inverse"]
+        reason = "🔴 하락 → 인버스 헤지"
+
+    # ── 관망 (-1.9 ~ 1.9) ──
+    else:
+        return [], [], "🟡 관망 — 진입 없음"
+
+    # 섹터 키 → 종목 목록 변환
+    nxt_targets = []
+    sector_names = []
+
+    for priority, key in enumerate(selected_keys, 1):
+        sector = JARVIS_SECTORS.get(key)
+        if not sector:
+            continue
+        sector_names.append(f"{sector['name']} ({priority}순위)")
+
+        # Tier 1
+        for stock in sector.get("kr_tier1", []):
+            nxt_targets.append({
+                "code": stock["code"],
+                "name": stock["name"],
+                "sector": sector["name"],
+                "sector_key": key,
+                "tier": 1,
+                "priority": priority,
+            })
+
+        # Tier 2 (max_tier >= 2 일 때만)
+        if max_tier >= 2:
+            for stock in sector.get("kr_tier2", []):
+                nxt_targets.append({
+                    "code": stock["code"],
+                    "name": stock["name"],
+                    "sector": sector["name"],
+                    "sector_key": key,
+                    "tier": 2,
+                    "priority": priority,
+                })
+
+    # 정렬: 1순위 섹터 Tier1 → 2순위 섹터 Tier1 → ...
+    nxt_targets.sort(key=lambda x: (x["priority"], x["tier"]))
+
+    return sector_names, nxt_targets, reason
+
+
+# ═══════════════════════════════════════════════════
 #  최종 점수 계산
 # ═══════════════════════════════════════════════════
 def calculate_nightwatch_score(
@@ -376,8 +700,9 @@ def calculate_nightwatch_score(
     div_score: float,
     divergences: List[str],
     raw_indicators: Dict,
+    macro_conditions: Optional[Dict] = None,
 ) -> NightwatchReport:
-    """3단 체인 종합 → 최종 리포트"""
+    """3단 체인 + 매크로 조건 종합 → JARVIS 섹터 매핑 → 최종 리포트"""
     total = asian_score + europe_score + div_score
     total = max(-10.0, min(10.0, total))
 
@@ -393,18 +718,13 @@ def calculate_nightwatch_score(
     else:
         signal, text = "💀", "전체 포지션 점검"
 
-    # 추천 섹터
-    sectors = []
-    if total >= 5:
-        sectors.extend(["반도체 (SK하이닉스, 삼성전자)", "방산 (한화에어로, 현대로템)"])
-    if total >= 2:
-        sectors.append("조선 (HD현대중공업)")
-    # CNH 강세 시 2차전지
-    cnh = asian_detail.get("CNH", {})
-    if cnh.get("change_pct") and cnh["change_pct"] > 0.2:
-        sectors.append("2차전지 (POSCO홀딩스, 에코프로비엠)")
-    if total < -2:
-        sectors.append("인버스 (KODEX 200선물인버스2X)")
+    # JARVIS 섹터 매핑 (매크로 조건 기반)
+    macro = macro_conditions or {}
+    sector_names, nxt_targets, selection_reason = select_sectors_and_targets(
+        total_score=total,
+        macro=macro,
+        max_tier=1,  # NXT는 Tier1만 (유동성 우선)
+    )
 
     return NightwatchReport(
         timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -417,7 +737,10 @@ def calculate_nightwatch_score(
         total_score=round(total, 1),
         signal=signal,
         signal_text=text,
-        recommended_sectors=sectors,
+        recommended_sectors=sector_names,
+        nxt_targets=nxt_targets,
+        macro_conditions=macro,
+        selection_reason=selection_reason,
         raw_indicators=raw_indicators,
     )
 
@@ -426,7 +749,7 @@ def calculate_nightwatch_score(
 #  메인 실행
 # ═══════════════════════════════════════════════════
 def run_nightwatch() -> NightwatchReport:
-    """NIGHTWATCH 전체 실행"""
+    """NIGHTWATCH 전체 실행 (3단 체인 + JARVIS 섹터 매핑)"""
     logger.info("[NIGHTWATCH] 실행 시작")
 
     # 1단: 아시안 리스크
@@ -444,17 +767,27 @@ def run_nightwatch() -> NightwatchReport:
     div_score, divergences, raw = detect_divergence()
     logger.info(f"[NIGHTWATCH] 괴리 스코어: {div_score:+.1f}, 감지: {len(divergences)}건")
 
-    # 종합
+    # 4단: 매크로 조건 수집 (JARVIS 섹터 매핑용)
+    logger.info("[NIGHTWATCH] [4단] 매크로 조건 수집 (NQ/CL/HG)...")
+    macro_conditions, macro_raw = collect_macro_conditions(asian_detail, raw)
+    raw.update(macro_raw)  # 추가 지표 병합
+    active = macro_conditions.get("active_text", [])
+    logger.info(f"[NIGHTWATCH] 매크로: {', '.join(active) if active else '특이사항 없음'}")
+
+    # 종합 (JARVIS 섹터 매핑 포함)
     report = calculate_nightwatch_score(
         asian_score, asian_detail,
         europe_score, europe_detail,
         div_score, divergences, raw,
+        macro_conditions=macro_conditions,
     )
 
     # 저장
     save_nightwatch_report(report)
     logger.info(f"[NIGHTWATCH] 완료 | {report.signal} {report.signal_text} | "
-                f"점수: {report.total_score:+.1f}")
+                f"점수: {report.total_score:+.1f} | "
+                f"섹터: {report.selection_reason} | "
+                f"NXT 대상: {len(report.nxt_targets)}종목")
 
     return report
 
@@ -487,7 +820,7 @@ def load_nightwatch_report() -> Optional[NightwatchReport]:
 #  텔레그램 포맷
 # ═══════════════════════════════════════════════════
 def format_nightwatch_report(report: NightwatchReport) -> str:
-    """텔레그램 발송용 메시지 포맷"""
+    """텔레그램 발송용 메시지 포맷 (JARVIS 섹터 매핑 포함)"""
 
     def _sig(d: dict) -> str:
         return d.get("signal", "⬜")
@@ -503,6 +836,7 @@ def format_nightwatch_report(report: NightwatchReport) -> str:
     ad = report.asian_detail
     ed = report.europe_detail
     ri = report.raw_indicators
+    mc = report.macro_conditions
 
     lines = [
         f"NIGHTWATCH | {report.timestamp}",
@@ -532,20 +866,61 @@ def format_nightwatch_report(report: NightwatchReport) -> str:
     else:
         lines.append("  괴리 없음")
 
+    # 매크로 조건
+    lines.append("")
+    lines.append("[4단] 매크로 조건")
+    nq_d = ri.get("NQ", {})
+    cl_d = ri.get("CL", {})
+    if nq_d:
+        lines.append(f"  나스닥(NQ): {_pct(nq_d)}")
+    if cl_d:
+        lines.append(f"  원유(CL): {_pct(cl_d)}")
+    active_text = mc.get("active_text", [])
+    if active_text:
+        lines.append(f"  활성: {' | '.join(active_text)}")
+    else:
+        lines.append("  특이사항 없음")
+
     lines.extend([
         "",
         "=" * 34,
         f"종합: {report.total_score:+.1f} / 10",
         f"{report.signal} {report.signal_text}",
-        "",
     ])
 
+    # JARVIS 섹터 매핑 결과
+    if report.selection_reason:
+        lines.append(f"판단: {report.selection_reason}")
+
+    lines.append("")
+
     if report.recommended_sectors:
-        lines.append("주목 섹터:")
+        lines.append("JARVIS 섹터:")
         for s in report.recommended_sectors:
-            lines.append(f"  - {s}")
-    else:
-        lines.append("주목 섹터: 없음 (관망/금지)")
+            lines.append(f"  {s}")
+
+    # NXT 매수 대상 종목
+    if report.nxt_targets:
+        lines.append("")
+        lines.append("NXT 매수 대상:")
+        shown = set()
+        for t in report.nxt_targets:
+            key = t["code"]
+            if key in shown:
+                continue
+            shown.add(key)
+            tier_mark = "★" if t["tier"] == 1 else "☆"
+            lines.append(
+                f"  {tier_mark} {t['name']}({t['code']}) "
+                f"[{t['sector']}]"
+            )
+            if len(shown) >= 8:  # 최대 8종목까지 표시
+                remaining = len(report.nxt_targets) - len(shown)
+                if remaining > 0:
+                    lines.append(f"  ... 외 {remaining}종목")
+                break
+    elif report.total_score >= 2:
+        lines.append("NXT 대상: 없음")
 
     lines.append("=" * 34)
 
