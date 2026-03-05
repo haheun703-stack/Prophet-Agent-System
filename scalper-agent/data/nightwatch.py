@@ -110,6 +110,7 @@ JARVIS_SECTORS = {
             {"code": "005930", "name": "삼성전자"},
         ],
         "kr_tier2": [
+            {"code": "009150", "name": "삼성전기"},
             {"code": "403870", "name": "HPSP"},
             {"code": "240810", "name": "원익IPS"},
             {"code": "042700", "name": "한미반도체"},
@@ -200,10 +201,11 @@ JARVIS_SECTORS = {
             {"code": "035900", "name": "JYP엔터"},
         ],
         "kr_tier2": [
-            {"code": "068290", "name": "삼성출판사"},
             {"code": "253450", "name": "스튜디오드래곤"},
+            {"code": "122870", "name": "YG엔터"},
+            {"code": "035760", "name": "CJ ENM"},
         ],
-        "relay": "NFLX K-콘텐츠발주→스튜디오드래곤→하이브/SM 글로벌투어",
+        "relay": "NFLX K-콘텐츠발주→스튜디오드래곤/CJ ENM→하이브/SM/YG 글로벌투어",
     },
     "securities": {
         "name": "📈 증권·금융",
@@ -230,6 +232,33 @@ JARVIS_SECTORS = {
             {"code": "334890", "name": "이지스밸류리츠"},
         ],
         "relay": "금리인하→배당매력→EQIX/DLR AI DC→ESR켄달스퀘어",
+    },
+    "shipbuilding": {
+        "name": "🚢 조선",
+        "us": ["HII", "GD"],
+        "kr_tier1": [
+            {"code": "009540", "name": "HD한국조선해양"},
+            {"code": "042660", "name": "한화오션"},
+        ],
+        "kr_tier2": [
+            {"code": "010620", "name": "HD현대미포"},
+            {"code": "329180", "name": "HD현대마린솔루션"},
+        ],
+        "relay": "LNG발주/지정학→HD한국조선해양/한화오션→HD현대미포→마린솔루션",
+    },
+    "battery_ev": {
+        "name": "🔋 2차전지·EV",
+        "us": ["TSLA", "PANW", "ALB", "LAC"],
+        "kr_tier1": [
+            {"code": "373220", "name": "LG에너지솔루션"},
+            {"code": "006400", "name": "삼성SDI"},
+        ],
+        "kr_tier2": [
+            {"code": "051910", "name": "LG화학"},
+            {"code": "247540", "name": "에코프로비엠"},
+            {"code": "086520", "name": "에코프로"},
+        ],
+        "relay": "TSLA수주→LG에너지솔루션/삼성SDI→에코프로비엠/에코프로→LG화학",
     },
     # 특수 섹터
     "inverse": {
@@ -536,16 +565,16 @@ def collect_macro_conditions(
     nq = _fetch_ticker("NQ=F")
     additional_raw["NQ"] = asdict(nq) if nq else {}
     if nq and nq.change_pct is not None:
-        conditions["nasdaq_up"] = nq.change_pct > 0.3
-        conditions["nasdaq_down"] = nq.change_pct < -0.3
+        conditions["nasdaq_up"] = nq.change_pct > 0.5
+        conditions["nasdaq_down"] = nq.change_pct < -0.5
         conditions["nasdaq_pct"] = nq.change_pct
 
     # --- CL: WTI 원유 선물 ---
     cl = _fetch_ticker("CL=F")
     additional_raw["CL"] = asdict(cl) if cl else {}
     if cl and cl.change_pct is not None:
-        conditions["oil_up"] = cl.change_pct > 1.0
-        conditions["oil_down"] = cl.change_pct < -1.0
+        conditions["oil_up"] = cl.change_pct > 1.5
+        conditions["oil_down"] = cl.change_pct < -1.5
         conditions["oil_pct"] = cl.change_pct
 
     # --- HG: 구리 선물 (지정학 감지용) ---
@@ -555,14 +584,14 @@ def collect_macro_conditions(
     # --- TNX: 금리 방향 (detect_divergence에서 이미 수집) ---
     tnx = raw_indicators.get("TNX", {})
     if tnx.get("change_abs") is not None:
-        conditions["rate_down"] = tnx["change_abs"] < -0.03
-        conditions["rate_up"] = tnx["change_abs"] > 0.03
+        conditions["rate_down"] = tnx["change_abs"] < -0.04
+        conditions["rate_up"] = tnx["change_abs"] > 0.04
 
     # --- CNH: 위안화 강세 (collect_asian_risk에서 이미 수집) ---
     cnh = asian_detail.get("CNH", {})
     if cnh.get("change_pct") is not None:
         # CNY=X 하락 = 위안화 강세 = 긍정
-        conditions["cnh_strong"] = cnh["change_pct"] < -0.2
+        conditions["cnh_strong"] = cnh["change_pct"] < -0.15
 
     # --- 지정학 긴장: AUD/JPY 하락 + 구리 상승 ---
     audjpy = asian_detail.get("AUD/JPY", {})
@@ -572,7 +601,7 @@ def collect_macro_conditions(
             audjpy["change_pct"] < -0.2 and hg.change_pct > 0.3
         )
     # AUD/JPY만 급락해도 지정학 의심
-    elif audjpy.get("change_pct") is not None and audjpy["change_pct"] < -0.5:
+    elif audjpy.get("change_pct") is not None and audjpy["change_pct"] < -0.4:
         conditions["geopolitical"] = True
 
     # 활성 조건 텍스트 생성
@@ -616,27 +645,35 @@ def select_sectors_and_targets(
     # ── 강매수 (5+) ──
     if total_score >= 5:
         if macro.get("nasdaq_up"):
-            selected_keys = ["semiconductor", "software_ai", "space_defense",
-                             "entertainment", "securities"]
+            selected_keys = ["semiconductor", "software_ai"]
             reason = "🟢🟢 + 나스닥↑"
         elif macro.get("rate_down"):
-            selected_keys = ["reits", "securities", "power_infra", "bio"]
+            selected_keys = ["reits", "securities", "power_infra"]
             reason = "🟢🟢 + 금리↓"
+        elif macro.get("oil_up"):
+            selected_keys = ["oil_resource", "shipbuilding"]
+            reason = "🟢🟢 + 유가↑"
         else:
-            selected_keys = ["semiconductor", "software_ai", "power_infra"]
+            selected_keys = ["semiconductor", "power_infra"]
             reason = "🟢🟢 기본"
 
     # ── 매수 (2~4.9) ──
     elif total_score >= 2:
-        if macro.get("cnh_strong"):
-            selected_keys = ["semiconductor", "entertainment", "bio", "securities"]
+        if macro.get("nasdaq_up"):
+            selected_keys = ["semiconductor", "battery_ev"]
+            reason = "🟢 + 나스닥↑"
+        elif macro.get("cnh_strong"):
+            selected_keys = ["semiconductor", "entertainment"]
             reason = "🟢 + CNH강세"
         elif macro.get("oil_up"):
-            selected_keys = ["oil_resource", "power_infra"]
+            selected_keys = ["oil_resource", "shipbuilding"]
             reason = "🟢 + 유가↑"
         elif macro.get("geopolitical"):
-            selected_keys = ["space_defense"]
+            selected_keys = ["space_defense", "shipbuilding"]
             reason = "🟢 + 지정학 긴장"
+        elif macro.get("rate_down"):
+            selected_keys = ["reits", "securities"]
+            reason = "🟢 + 금리↓"
         else:
             selected_keys = ["semiconductor", "power_infra"]
             reason = "🟢 기본"
@@ -723,7 +760,7 @@ def calculate_nightwatch_score(
     sector_names, nxt_targets, selection_reason = select_sectors_and_targets(
         total_score=total,
         macro=macro,
-        max_tier=1,  # NXT는 Tier1만 (유동성 우선)
+        max_tier=2,  # 리포트에 Tier2까지 포함 (매수 시 auto_trader에서 Tier1 필터)
     )
 
     return NightwatchReport(
