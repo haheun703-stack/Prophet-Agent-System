@@ -72,6 +72,10 @@ class AutoTrader:
         self._confirm_auto = config.get("bot", {}).get("confirm_real_order", True)
         self._pending_auto_buys = []  # [{code, name, amount, sl, tp, tp1_quick, score}]
 
+        # ── NIGHTWATCH NXT ──
+        self._nxt_positions = {}
+        self._nightwatch_report = None
+
     def _get_rt_monitor(self):
         """RealtimeMonitor lazy init"""
         if self._rt_monitor is None:
@@ -1642,6 +1646,265 @@ class AutoTrader:
         except Exception as e:
             logger.error(f"미국장 체크 실패: {e}")
             await _send(f"❌ 미국장 체크 실패: {e}")
+
+    # ═══════════════════════════════════════
+    #  NIGHTWATCH NXT 야간매매
+    # ═══════════════════════════════════════
+
+    async def job_nightwatch_collect(self, context):
+        """16:00 — 유럽장 개장, NIGHTWATCH 데이터 수집 시작"""
+        from datetime import date as dt_date
+        if dt_date.today().weekday() >= 5:
+            return
+
+        nw_cfg = self.config.get("nightwatch", {})
+        if not nw_cfg.get("enabled", False):
+            return
+
+        chat_id = None
+        if not self._send_alert:
+            import os
+            chat_id = os.getenv("TELEGRAM_CHAT_ID")
+
+        async def _send(text):
+            if self._send_alert:
+                await self._send_alert(text)
+            elif chat_id:
+                await context.bot.send_message(chat_id=chat_id, text=text)
+
+        try:
+            await _send("NIGHTWATCH 수집 시작 (유럽장 개장)")
+
+            from data.nightwatch import collect_asian_risk
+            asian_score, asian_detail = await asyncio.to_thread(collect_asian_risk)
+
+            # 아시안 리스크 중간 알림
+            signals = []
+            for k, v in asian_detail.items():
+                sig = v.get("signal", "⬜") if isinstance(v, dict) else "⬜"
+                signals.append(f"  {sig} {k}")
+
+            await _send(
+                f"[1단] 아시안 리스크: {asian_score:+.1f}\n"
+                + "\n".join(signals)
+                + "\n\n16:30 유럽 오픈 스코어 대기 중..."
+            )
+
+        except Exception as e:
+            logger.error(f"NIGHTWATCH 수집 실패: {e}")
+            await _send(f"NIGHTWATCH 수집 실패: {e}")
+
+    async def job_nightwatch_decide(self, context):
+        """16:35 — NIGHTWATCH 최종 판단 + NXT 매수 결정"""
+        from datetime import date as dt_date
+        if dt_date.today().weekday() >= 5:
+            return
+
+        nw_cfg = self.config.get("nightwatch", {})
+        if not nw_cfg.get("enabled", False):
+            return
+
+        chat_id = None
+        if not self._send_alert:
+            import os
+            chat_id = os.getenv("TELEGRAM_CHAT_ID")
+
+        async def _send(text):
+            if self._send_alert:
+                await self._send_alert(text)
+            elif chat_id:
+                await context.bot.send_message(chat_id=chat_id, text=text)
+
+        try:
+            from data.nightwatch import run_nightwatch, format_nightwatch_report
+
+            report = await asyncio.to_thread(run_nightwatch)
+            msg = format_nightwatch_report(report)
+            await _send(msg)
+
+            # NXT 포지션 저장
+            self._nightwatch_report = report
+
+            min_score = nw_cfg.get("min_score", 3)
+            alert_only = nw_cfg.get("alert_only", True)
+
+            if report.total_score < min_score:
+                await _send(f"NXT 진입 조건 미충족 (점수 {report.total_score:+.1f} < {min_score})")
+                return
+
+            # 진입 대상 종목 결정
+            if report.total_score >= 5:
+                sector_key = "strong_buy"
+            else:
+                sector_key = "buy"
+
+            nxt_codes = nw_cfg.get("prefer_sectors", {}).get(sector_key, [])
+            if not nxt_codes:
+                await _send("NXT 매수 대상 종목 없음 (config.nightwatch.prefer_sectors)")
+                return
+
+            # 예산 계산
+            bal = self.trader.fetch_balance()
+            if not bal.get("success"):
+                await _send(f"NXT 잔고 조회 실패")
+                return
+
+            budget_pct = nw_cfg.get("nxt_budget_pct", 30) / 100.0
+            nxt_budget = int(bal["cash"] * budget_pct)
+            max_pos = nw_cfg.get("max_nxt_positions", 1)
+            per_stock = nxt_budget // max_pos
+
+            # 알림만 모드
+            if alert_only:
+                code_names = []
+                for c in nxt_codes[:max_pos]:
+                    from bot.kis_trader import CODE_TO_NAME
+                    name = CODE_TO_NAME.get(c, c)
+                    code_names.append(f"  {name}({c})")
+
+                await _send(
+                    f"{report.signal} NXT 매수 신호!\n"
+                    f"점수: {report.total_score:+.1f}\n"
+                    f"예산: {nxt_budget:,}원 (현금의 {int(budget_pct*100)}%)\n"
+                    f"종목당: {per_stock:,}원\n\n"
+                    f"대상 종목:\n" + "\n".join(code_names) + "\n\n"
+                    f"[알림만 모드] 수동 매수 필요\n"
+                    f"자동매매 전환: /nxt_on"
+                )
+                return
+
+            # 자동매매 모드 — NXT 매수 실행
+            for code in nxt_codes[:max_pos]:
+                from bot.kis_trader import CODE_TO_NAME
+                name = CODE_TO_NAME.get(code, code)
+
+                result = self.trader.nxt_safe_buy(code, per_stock)
+                if result.get("success"):
+                    # NXT 포지션 기록
+                    if not hasattr(self, '_nxt_positions'):
+                        self._nxt_positions = {}
+                    pi = self.trader.fetch_price(code)
+                    entry_price = pi.get("current_price", 0) if pi.get("success") else 0
+                    self._nxt_positions[code] = {
+                        "name": name,
+                        "entry_price": entry_price,
+                        "entry_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        "nw_score": report.total_score,
+                        "nw_signal": report.signal,
+                    }
+                    self._save_nxt_positions()
+                    await _send(f"NXT 매수 완료: {result['message']}")
+                else:
+                    await _send(f"NXT 매수 실패: {name}({code}) — {result['message']}")
+
+        except Exception as e:
+            logger.error(f"NIGHTWATCH 판단 실패: {e}")
+            await _send(f"NIGHTWATCH 판단 실패: {e}")
+
+    async def job_nxt_morning_sell(self, context):
+        """08:00 — NXT 포지션 매도 (장전 시간외)"""
+        from datetime import date as dt_date
+        if dt_date.today().weekday() >= 5:
+            return
+
+        nw_cfg = self.config.get("nightwatch", {})
+        if not nw_cfg.get("enabled", False):
+            return
+
+        if not hasattr(self, '_nxt_positions'):
+            self._nxt_positions = {}
+        self._load_nxt_positions()
+
+        if not self._nxt_positions:
+            return
+
+        chat_id = None
+        if not self._send_alert:
+            import os
+            chat_id = os.getenv("TELEGRAM_CHAT_ID")
+
+        async def _send(text):
+            if self._send_alert:
+                await self._send_alert(text)
+            elif chat_id:
+                await context.bot.send_message(chat_id=chat_id, text=text)
+
+        await _send(f"NXT 아침 매도 시작 ({len(self._nxt_positions)}종목)")
+
+        for code, pos in list(self._nxt_positions.items()):
+            name = pos.get("name", code)
+            try:
+                # 현재 잔고에서 보유 수량 확인
+                bal = self.trader.fetch_balance()
+                if not bal.get("success"):
+                    await _send(f"NXT 매도 잔고 조회 실패: {name}")
+                    continue
+
+                held_qty = 0
+                for p in bal.get("positions", []):
+                    if p["code"] == code:
+                        held_qty = p["qty"]
+                        break
+
+                if held_qty <= 0:
+                    await _send(f"NXT {name}: 보유 없음 (이미 매도?)")
+                    self._nxt_positions.pop(code, None)
+                    continue
+
+                # 수익률 계산
+                pi = self.trader.fetch_price(code)
+                curr_price = pi.get("current_price", 0) if pi.get("success") else 0
+                entry = pos.get("entry_price", 0)
+                pnl_pct = ((curr_price - entry) / entry * 100) if entry > 0 else 0
+
+                # 장전 시간외 매도
+                alert_only = nw_cfg.get("alert_only", True)
+                if alert_only:
+                    await _send(
+                        f"NXT 매도 알림: {name}({code})\n"
+                        f"  진입: {entry:,}원 → 현재: {curr_price:,}원\n"
+                        f"  수익: {pnl_pct:+.1f}% ({held_qty}주)\n"
+                        f"  [알림만 모드] 수동 매도 필요"
+                    )
+                else:
+                    result = self.trader.afterhours_sell(code, held_qty)
+                    if result.get("success"):
+                        await _send(
+                            f"NXT 매도 완료: {name}({code})\n"
+                            f"  수익: {pnl_pct:+.1f}% | {result['message']}"
+                        )
+                    else:
+                        await _send(f"NXT 매도 실패: {name} — {result['message']}")
+
+                self._nxt_positions.pop(code, None)
+
+            except Exception as e:
+                logger.error(f"NXT 매도 실패 {code}: {e}")
+                await _send(f"NXT 매도 예외: {name} — {e}")
+
+        self._save_nxt_positions()
+
+    def _save_nxt_positions(self):
+        """NXT 포지션 JSON 저장"""
+        if not hasattr(self, '_nxt_positions'):
+            self._nxt_positions = {}
+        path = Path(__file__).resolve().parent.parent / "data_store" / "nxt_positions.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(self._nxt_positions, f, ensure_ascii=False, indent=2)
+
+    def _load_nxt_positions(self):
+        """NXT 포지션 JSON 로드"""
+        path = Path(__file__).resolve().parent.parent / "data_store" / "nxt_positions.json"
+        if path.exists():
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    self._nxt_positions = json.load(f)
+            except (json.JSONDecodeError, IOError):
+                self._nxt_positions = {}
+        else:
+            if not hasattr(self, '_nxt_positions'):
+                self._nxt_positions = {}
 
     # ═══════════════════════════════════════
     #  내부 로직

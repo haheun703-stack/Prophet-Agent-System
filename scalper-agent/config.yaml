@@ -289,6 +289,20 @@ premove:
   trailing_start_pct: 10.0       # 트레일링 시작 수익률(%)
   trailing_distance_pct: 3.0     # 트레일링 거리(%)
 
+# --- NIGHTWATCH NXT 야간매매 ---
+nightwatch:
+  enabled: true                  # NXT 자동매매 활성화
+  alert_only: true               # true=알림만, false=자동매매 (첫 2주는 true)
+  nxt_budget_pct: 30             # 전체 자금의 30%를 NXT에 배정
+  max_nxt_positions: 1           # NXT 동시 보유 최대 1종목
+  min_score: 3                   # 최소 진입 점수 (-10~+10)
+  collect_time: "16:00"          # 유럽장 개장, 수집 시작
+  decide_time: "16:35"           # 최종 판단 + NXT 매수
+  morning_sell_time: "08:00"     # 다음날 매도 시각
+  prefer_sectors:                # 신호별 선호 섹터 코드
+    strong_buy: ["005930", "000660", "012450", "064350"]  # 삼전,하이닉스,한화에어로,현대로템
+    buy: ["329180", "009540"]    # HD현대중공업, 한국조선해양
+
 # --- Backtest / Paper Trading ---
 backtest:
   initial_cash: 10000000

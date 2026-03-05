@@ -123,6 +123,13 @@ HELP_TEXT = """
   위기모드 [사유] — 매수 완전 차단
   위기해제 — 위기 모드 해제
 
+[NIGHTWATCH NXT 야간매매]
+  NXT — NIGHTWATCH 상태 + NXT 포지션
+  NXT실행 — NIGHTWATCH 즉시 실행 (테스트)
+  NXT켜기 — NXT 자동매매 ON
+  NXT끄기 — NXT 알림만 모드
+  (자동 16:00 수집 → 16:35 판단 → 08:00 매도)
+
 [복기]
   일지 — 오늘 매매 일지
   일지 2026-02-18 — 특정일 일지
@@ -1437,6 +1444,74 @@ class BodyHunterBot:
             await update.message.reply_text(f"❌ 추천 조회 실패: {e}")
 
     # ═══════════════════════════════════════
+    #  NIGHTWATCH NXT 명령어
+    # ═══════════════════════════════════════
+
+    async def cmd_nxt(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """NIGHTWATCH 상태 + NXT 포지션 조회"""
+        if not self._is_authorized(update):
+            return
+        try:
+            from data.nightwatch import load_nightwatch_report, format_nightwatch_report
+
+            report = load_nightwatch_report()
+            if report:
+                msg = format_nightwatch_report(report)
+            else:
+                msg = "NIGHTWATCH 리포트 없음 (아직 미실행)"
+
+            # NXT 포지션
+            self.auto_trader._load_nxt_positions()
+            nxt_pos = getattr(self.auto_trader, '_nxt_positions', {})
+            if nxt_pos:
+                msg += "\n\nNXT 보유 포지션:"
+                for code, pos in nxt_pos.items():
+                    name = pos.get("name", code)
+                    entry = pos.get("entry_price", 0)
+                    score = pos.get("nw_score", 0)
+                    msg += f"\n  {name}({code}) @{entry:,}원 | NW:{score:+.1f}"
+            else:
+                msg += "\n\nNXT 보유 포지션: 없음"
+
+            nw_cfg = self.config.get("nightwatch", {})
+            mode = "알림만" if nw_cfg.get("alert_only", True) else "자동매매"
+            msg += f"\n\n모드: {mode}"
+
+            for chunk in _split_message(msg):
+                await update.message.reply_text(chunk)
+
+        except Exception as e:
+            await update.message.reply_text(f"NXT 조회 실패: {e}")
+
+    async def cmd_nxt_on(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """NXT 자동매매 활성화 (alert_only → False)"""
+        if not self._is_authorized(update):
+            return
+        self.config.setdefault("nightwatch", {})["alert_only"] = False
+        await update.message.reply_text("NXT 자동매매 활성화됨\n(시간외 단일가 자동 주문)")
+
+    async def cmd_nxt_off(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """NXT 자동매매 비활성화 (alert_only → True)"""
+        if not self._is_authorized(update):
+            return
+        self.config.setdefault("nightwatch", {})["alert_only"] = True
+        await update.message.reply_text("NXT 알림만 모드로 전환\n(자동 주문 중지, 알림은 유지)")
+
+    async def cmd_nxt_run(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """NIGHTWATCH 즉시 실행 (테스트용)"""
+        if not self._is_authorized(update):
+            return
+        await update.message.reply_text("NIGHTWATCH 즉시 실행 중...")
+        try:
+            from data.nightwatch import run_nightwatch, format_nightwatch_report
+            report = await asyncio.to_thread(run_nightwatch)
+            msg = format_nightwatch_report(report)
+            for chunk in _split_message(msg):
+                await update.message.reply_text(chunk)
+        except Exception as e:
+            await update.message.reply_text(f"NIGHTWATCH 실행 실패: {e}")
+
+    # ═══════════════════════════════════════
     #  봇 빌드 & 실행
     # ═══════════════════════════════════════
 
@@ -1541,6 +1616,10 @@ class BodyHunterBot:
             r"^릴레이종합$": self.cmd_relay_hub,
             r"^내일추천$": self.cmd_recommendation,
             r"^국적수급$": self.cmd_nationality,
+            r"^NXT$": self.cmd_nxt,
+            r"^NXT켜기$": self.cmd_nxt_on,
+            r"^NXT끄기$": self.cmd_nxt_off,
+            r"^NXT실행$": self.cmd_nxt_run,
         }
 
         for pattern, handler in exact_commands.items():
@@ -1697,6 +1776,24 @@ class BodyHunterBot:
         # Stage 2: 미국장 체크 (06:30 — 다음날 새벽)
         jq.run_daily(self.auto_trader.job_us_market_check, time=kst_time(6, 30))
         logger.info("미국장 체크 등록: 06:30 KST")
+
+        # ── NIGHTWATCH NXT 야간매매 ──
+        nw_cfg = self.config.get("nightwatch", {})
+        if nw_cfg.get("enabled", False):
+            collect_str = nw_cfg.get("collect_time", "16:00")
+            h_nw1, m_nw1 = map(int, collect_str.split(":"))
+            jq.run_daily(self.auto_trader.job_nightwatch_collect, time=kst_time(h_nw1, m_nw1))
+            logger.info(f"NIGHTWATCH 수집 등록: {collect_str} KST")
+
+            decide_str = nw_cfg.get("decide_time", "16:35")
+            h_nw2, m_nw2 = map(int, decide_str.split(":"))
+            jq.run_daily(self.auto_trader.job_nightwatch_decide, time=kst_time(h_nw2, m_nw2))
+            logger.info(f"NIGHTWATCH 판단 등록: {decide_str} KST")
+
+            sell_str = nw_cfg.get("morning_sell_time", "08:00")
+            h_nw3, m_nw3 = map(int, sell_str.split(":"))
+            jq.run_daily(self.auto_trader.job_nxt_morning_sell, time=kst_time(h_nw3, m_nw3))
+            logger.info(f"NXT 아침 매도 등록: {sell_str} KST")
 
     async def _job_start_tick_polling(self, context):
         """장 시작 시 체결 스냅샷 폴링 시작 (백그라운드 스레드)"""

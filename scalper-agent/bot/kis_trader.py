@@ -826,6 +826,140 @@ class KISTrader:
             return {"success": False, "message": f"주문 취소 실패: {e}"}
 
     # ═══════════════════════════════════════
+    #  시간외 단일가 주문 (NXT 야간매매)
+    # ═══════════════════════════════════════
+
+    def afterhours_buy(self, code: str, qty: int, price: int = 0) -> dict:
+        """시간외 단일가 매수
+
+        KIS API tr_id: TTTC0803U (시간외 단일가 매수)
+        시간: 16:00~18:00 (10분 간격 체결)
+        price=0이면 전일 종가로 주문
+        """
+        name = CODE_TO_NAME.get(code, code)
+        try:
+            if price <= 0:
+                pi = self.fetch_price(code)
+                if not pi.get("success"):
+                    return {"success": False, "message": f"현재가 조회 실패"}
+                price = pi["current_price"]
+
+            broker = self._get_broker()
+            # mojito에 시간외 메서드가 없으므로 REST API 직접 호출
+            path = "/uapi/domestic-stock/v1/trading/order-cash"
+            body = {
+                "CANO": broker.acc_no[:8],
+                "ACNT_PRDT_CD": broker.acc_no[8:],
+                "PDNO": code,
+                "ORD_DVSN": "00",      # 지정가
+                "ORD_QTY": str(qty),
+                "ORD_UNPR": str(price),
+            }
+            headers = {
+                "Content-Type": "application/json; charset=utf-8",
+                "authorization": f"Bearer {broker.access_token}",
+                "appkey": broker.api_key,
+                "appsecret": broker.api_secret,
+                "tr_id": "TTTC0803U",  # 시간외 단일가 매수
+                "custtype": "P",
+            }
+
+            import requests
+            url = f"{broker.base_url}{path}"
+            resp = requests.post(url, json=body, headers=headers, timeout=10)
+            data = resp.json()
+
+            if data.get("rt_cd") == "0":
+                order_no = data.get("output", {}).get("ODNO", "?")
+                self._log_trade("NXT_BUY", code, name, qty, 1)
+                logger.info(f"시간외 매수 성공: {name}({code}) {qty}주 @{price:,}원 #{order_no}")
+                return {"success": True, "order_no": order_no,
+                        "message": f"시간외 매수 {name}({code}) {qty}주 @{price:,}원 #{order_no}"}
+            else:
+                msg = data.get("msg1", "알 수 없는 오류")
+                logger.warning(f"시간외 매수 실패: {name}({code}) → {msg}")
+                return {"success": False, "message": f"시간외 매수 실패: {msg}"}
+
+        except Exception as e:
+            logger.error(f"시간외 매수 예외 {code}: {e}")
+            return {"success": False, "message": f"시간외 매수 예외: {e}"}
+
+    def afterhours_sell(self, code: str, qty: int, price: int = 0) -> dict:
+        """시간외 단일가 매도
+
+        KIS API tr_id: TTTC0801U (시간외 단일가 매도)
+        """
+        name = CODE_TO_NAME.get(code, code)
+        try:
+            if price <= 0:
+                pi = self.fetch_price(code)
+                if not pi.get("success"):
+                    return {"success": False, "message": f"현재가 조회 실패"}
+                price = pi["current_price"]
+
+            broker = self._get_broker()
+            path = "/uapi/domestic-stock/v1/trading/order-cash"
+            body = {
+                "CANO": broker.acc_no[:8],
+                "ACNT_PRDT_CD": broker.acc_no[8:],
+                "PDNO": code,
+                "ORD_DVSN": "00",
+                "ORD_QTY": str(qty),
+                "ORD_UNPR": str(price),
+            }
+            headers = {
+                "Content-Type": "application/json; charset=utf-8",
+                "authorization": f"Bearer {broker.access_token}",
+                "appkey": broker.api_key,
+                "appsecret": broker.api_secret,
+                "tr_id": "TTTC0801U",  # 시간외 단일가 매도
+                "custtype": "P",
+            }
+
+            import requests
+            url = f"{broker.base_url}{path}"
+            resp = requests.post(url, json=body, headers=headers, timeout=10)
+            data = resp.json()
+
+            if data.get("rt_cd") == "0":
+                order_no = data.get("output", {}).get("ODNO", "?")
+                self._log_trade("NXT_SELL", code, name, qty, 1)
+                logger.info(f"시간외 매도 성공: {name}({code}) {qty}주 @{price:,}원 #{order_no}")
+                return {"success": True, "order_no": order_no,
+                        "message": f"시간외 매도 {name}({code}) {qty}주 @{price:,}원 #{order_no}"}
+            else:
+                msg = data.get("msg1", "알 수 없는 오류")
+                logger.warning(f"시간외 매도 실패: {name}({code}) → {msg}")
+                return {"success": False, "message": f"시간외 매도 실패: {msg}"}
+
+        except Exception as e:
+            logger.error(f"시간외 매도 예외 {code}: {e}")
+            return {"success": False, "message": f"시간외 매도 예외: {e}"}
+
+    def nxt_safe_buy(self, code: str, amount: int) -> dict:
+        """NXT 금액 기반 시간외 매수 (잔고 확인 포함)"""
+        name = CODE_TO_NAME.get(code, code)
+
+        bal = self.fetch_balance()
+        if not bal.get("success"):
+            return {"success": False, "message": f"잔고 조회 실패"}
+
+        cash = bal["cash"]
+        if cash < amount:
+            return {"success": False, "message": f"현금 부족: {cash:,}원 < {amount:,}원"}
+
+        pi = self.fetch_price(code)
+        if not pi.get("success"):
+            return {"success": False, "message": f"현재가 조회 실패"}
+
+        price = pi["current_price"]
+        qty = amount // price
+        if qty <= 0:
+            return {"success": False, "message": f"매수 가능 수량 없음 (@{price:,}원)"}
+
+        return self.afterhours_buy(code, qty, price)
+
+    # ═══════════════════════════════════════
     #  안전 매수 (리스크 체크)
     # ═══════════════════════════════════════
 
