@@ -35,8 +35,15 @@ class RecommendedStock:
     nationality_score: float = 0.0 # 국적별 수급 점수
     nationality_detail: str = ""   # 국적별 수급 상세
     cross_count: int = 0           # 교차 등장 횟수
+    # 페널티 (soft scoring)
+    news_penalty: float = 0.0      # 뉴스 NEGATIVE 페널티
+    obv_penalty: float = 0.0       # OBV DOWN 페널티
+    relative_penalty: float = 0.0  # 시장대비 약세 페널티
     # 합산
     total_score: float = 0.0
+    # 시장 대비
+    today_chg: float = 0.0         # 당일 절대 등락률
+    relative_str: float = 0.0      # 시장 대비 상대강도
     # 진입 레벨
     entry: int = 0
     sl: int = 0
@@ -54,6 +61,7 @@ class RecommendationReport:
     stage: str = ""  # "evening" / "us_check" / "morning"
     timestamp: str = ""
     market_health: str = ""
+    market_change: float = 0.0     # 당일 시장(KOSPI) 등락률
     us_market_note: str = ""
     stocks: list = field(default_factory=list)  # list[RecommendedStock]
     relay_summary: str = ""
@@ -175,13 +183,42 @@ def _step_macd_zero_scan() -> dict:
 
 
 # ═══════════════════════════════════════
-#  Step 3: 기술적 분석 필터
+#  시장 등락률 조회 (상대강도 기준)
 # ═══════════════════════════════════════
 
-def _step3_tech_filter(codes_names: list[tuple[str, str]]) -> dict:
-    """EMA/RSI/MACD/OBV 기술적 점수 계산 + 당일급락 필터 + 데이터 검증
+def _get_market_change_today() -> float:
+    """오늘 KOSPI(KODEX200) 등락률 — 상대강도 계산 기준"""
+    try:
+        from pykrx import stock
+        from datetime import datetime, timedelta
+        end = datetime.now()
+        start = end - timedelta(days=10)
+        df = stock.get_market_ohlcv(
+            start.strftime("%Y%m%d"), end.strftime("%Y%m%d"), "069500"
+        )
+        if df is not None and len(df) >= 2:
+            chg = (float(df["종가"].iloc[-1]) / float(df["종가"].iloc[-2]) - 1) * 100
+            return round(chg, 2)
+    except Exception as e:
+        logger.warning(f"시장 등락률 조회 실패: {e}")
+    return 0.0
 
-    Returns: {code: {"score": 0~5, "detail": "...", "today_chg": -8.2, "close": 57600}}
+
+# ═══════════════════════════════════════
+#  Step 3: 기술적 분석 (Soft Scoring)
+# ═══════════════════════════════════════
+
+def _step3_tech_filter(codes_names: list[tuple[str, str]], market_chg: float = 0.0) -> dict:
+    """EMA/RSI/MACD/OBV 기술적 점수 계산 + 상대강도 (hard cutoff 제거)
+
+    v2: 절대값 -5% 탈락 → 시장대비 상대강도(relative_str) 계산
+        모든 종목이 점수를 받음 (탈락 없음)
+
+    Args:
+        market_chg: 당일 시장(KOSPI) 등락률. 상대강도 = 종목등락률 - 시장등락률
+
+    Returns: {code: {"score": 0~5, "detail": "...", "today_chg": -8.2,
+                      "relative_str": +2.1, "close": 57600}}
     """
     from pykrx import stock
     from datetime import datetime, timedelta
@@ -201,7 +238,11 @@ def _step3_tech_filter(codes_names: list[tuple[str, str]]) -> dict:
         try:
             df = stock.get_market_ohlcv(start_s, end_s, code)
             if df is None or len(df) < 60:
-                results[code] = {"score": 0, "detail": "데이터부족", "today_chg": 0, "close": 0}
+                results[code] = {
+                    "score": 0, "detail": "데이터부족",
+                    "today_chg": 0, "relative_str": 0, "close": 0,
+                    "rsi": 50, "obv_dir": "FLAT",
+                }
                 continue
 
             # 데이터 날짜 검증 (첫 종목에서 1회만)
@@ -216,20 +257,11 @@ def _step3_tech_filter(codes_names: list[tuple[str, str]]) -> dict:
             close = df["종가"].astype(float).values
             volume = df["거래량"].astype(float).values
 
-            # 당일 등락률 계산
+            # 당일 등락률 + 상대강도
             today_chg = 0.0
             if len(close) >= 2:
                 today_chg = (close[-1] / close[-2] - 1) * 100
-
-            # ★ 당일 급락 필터: -5% 이상 하락 → 즉시 탈락 (떨어지는 칼 잡기 방지)
-            if today_chg <= -5.0:
-                logger.info(f"당일급락 제거: {name}({code}) {today_chg:+.1f}% — 떨어지는 칼")
-                results[code] = {
-                    "score": 0, "detail": f"당일급락{today_chg:+.1f}%",
-                    "rsi": 0, "obv_dir": "DOWN",
-                    "today_chg": round(today_chg, 1), "close": int(close[-1]),
-                }
-                continue
+            relative_str = round(today_chg - market_chg, 2)
 
             # EMA 계산
             def ema(arr, period):
@@ -272,7 +304,7 @@ def _step3_tech_filter(codes_names: list[tuple[str, str]]) -> dict:
             obv_5d_change = obv[-1] - obv[-5] if len(obv) >= 5 else 0
             obv_dir = "UP" if obv_5d_change > 0 else "DOWN"
 
-            # 점수 계산 (0~5)
+            # 점수 계산 (0~5, hard cutoff 없음)
             score = 0.0
             details = []
 
@@ -304,14 +336,13 @@ def _step3_tech_filter(codes_names: list[tuple[str, str]]) -> dict:
             # 5. OBV 방향
             if obv_dir == "UP":
                 score += 1.0
-                details.append("OBV UP")
+                details.append("OBV+")
             else:
                 score -= 0.5
-                details.append("OBV DOWN")
+                details.append("OBV-")
 
-            # 당일 등락률 표시
-            if abs(today_chg) >= 3.0:
-                details.append(f"당일{today_chg:+.0f}%")
+            # 상대강도 표시
+            details.append(f"RS{relative_str:+.0f}%")
 
             results[code] = {
                 "score": max(0, round(score, 1)),
@@ -319,14 +350,19 @@ def _step3_tech_filter(codes_names: list[tuple[str, str]]) -> dict:
                 "rsi": round(rsi, 1),
                 "obv_dir": obv_dir,
                 "today_chg": round(today_chg, 1),
+                "relative_str": relative_str,
                 "close": int(close[-1]),
             }
         except Exception as e:
             logger.warning(f"기술 분석 실패 {name}({code}): {e}")
-            results[code] = {"score": 0, "detail": f"오류:{e}", "today_chg": 0, "close": 0}
+            results[code] = {
+                "score": 0, "detail": f"오류:{e}",
+                "today_chg": 0, "relative_str": 0, "close": 0,
+                "rsi": 50, "obv_dir": "FLAT",
+            }
 
     if data_date_ok is False:
-        logger.error("⚠️ pykrx 당일 데이터 미반영 — 추천 정확도 저하 가능")
+        logger.error("pykrx 당일 데이터 미반영 — 추천 정확도 저하 가능")
 
     return results
 
@@ -422,8 +458,17 @@ def _step5_cross_validate(
     relay: dict, premove: dict, tech: dict, news: dict,
     macd_result: dict = None,
     nationality: dict = None,
+    market_chg: float = 0.0,
 ) -> list[RecommendedStock]:
-    """모든 스텝 결과 통합 → 교차검증 → 최종 랭킹"""
+    """모든 스텝 결과 통합 → Soft Scoring → 최종 랭킹
+
+    v2: Hard gate 제거 → 모든 요소를 점수로 변환
+        - 뉴스 NEGATIVE: -20 페널티 (기존: 즉시 탈락)
+        - OBV DOWN: -10 페널티 (기존: 즉시 탈락)
+        - 기술 < 2.0: 그대로 반영 (기존: 즉시 탈락)
+        - 시장대비 상대약세: -15 페널티 (기존: 절대값 -5% 탈락)
+        유일한 hard cutoff: total_score <= 0 (모든 점수 합산 후)
+    """
     if macd_result is None:
         macd_result = {}
     if nationality is None:
@@ -441,25 +486,16 @@ def _step5_cross_validate(
         p_info = premove.get("stocks", {}).get(code, {})
         t_info = tech.get(code, {})
         n_info = news.get(code, {})
+        m_info = macd_result.get(code, {})
 
-        # 뉴스 NEGATIVE → 제거
-        if n_info.get("sentiment") == "NEGATIVE":
-            logger.info(f"뉴스 NEGATIVE 제거: {r_info.get('name', p_info.get('name', code))}")
-            continue
+        name = (r_info.get("name") or p_info.get("name")
+                or m_info.get("name", code))
+        close = (t_info.get("close")
+                 or r_info.get("close")
+                 or p_info.get("close", 0))
 
-        # OBV DOWN → 제거 (돈 빠지는 중)
-        if t_info.get("obv_dir") == "DOWN":
-            logger.info(f"OBV DOWN 제거: {r_info.get('name', p_info.get('name', code))}")
-            continue
-
-        # 기술 점수 2.0 미만 → 제거
-        if t_info.get("score", 0) < 2.0:
-            continue
-
-        name = r_info.get("name") or p_info.get("name", code)
-        close = r_info.get("close") or p_info.get("close", 0)
-
-        # 교차 등장 횟수 (MACD 0선 포함)
+        # ── 양의 점수 (가산) ──────────────────
+        # 교차 등장 횟수
         cross = 0
         sources = []
         if code in relay.get("stocks", {}):
@@ -470,34 +506,56 @@ def _step5_cross_validate(
             sources.append("premove")
         if code in macd_result:
             cross += 1
-            sources.append(f"macd_zero({macd_result[code].get('source', '')})")
+            sources.append(f"macd_zero({m_info.get('source', '')})")
 
-        # 점수 합산 (가중치)
-        relay_sc = min(r_info.get("signal_count", 0) * 15, 45)  # 0~45
+        relay_sc = min(r_info.get("signal_count", 0) * 15, 45)   # 0~45
         premove_sc = min(p_info.get("premove_score", 0), 100) * 0.3  # 0~30
-        tech_sc = t_info.get("score", 0) * 5  # 0~25
-        cross_bonus = cross * 10 if cross >= 2 else 0
+        tech_sc = t_info.get("score", 0) * 5                      # 0~25
+        cross_bonus = cross * 10 if cross >= 2 else 0             # 0~30
 
-        # 국적별 수급 점수 (-30 ~ +50)
+        # 국적별 수급 (-30 ~ +50)
         nat_info = nationality.get(code, (0, ""))
         nat_sc = nat_info[0] if isinstance(nat_info, tuple) else 0
         nat_detail = nat_info[1] if isinstance(nat_info, tuple) else ""
 
-        total = relay_sc + premove_sc + tech_sc + cross_bonus + nat_sc
+        # ── 페널티 (감산, hard cutoff 대신) ──
+        # 뉴스 NEGATIVE → -20 (기존: 즉시 탈락)
+        news_pen = 0.0
+        sentiment = n_info.get("sentiment", "NEUTRAL")
+        if sentiment == "NEGATIVE":
+            news_pen = -20.0
+            logger.debug(f"뉴스 NEGATIVE 페널티: {name}({code}) -20")
 
-        # MACD Phase2 진입 시그널 정보
-        m_info = macd_result.get(code, {})
+        # OBV DOWN → -10 (기존: 즉시 탈락)
+        obv_pen = 0.0
+        if t_info.get("obv_dir") == "DOWN":
+            obv_pen = -10.0
 
-        # 진입/SL/TP: premove → MACD Phase2 → 간단 계산 (우선순위)
+        # 시장대비 상대약세 → 단계적 페널티 (기존: 절대 -5% 탈락)
+        rel_pen = 0.0
+        relative_str = t_info.get("relative_str", 0)
+        today_chg = t_info.get("today_chg", 0)
+        if relative_str < -10.0:
+            rel_pen = -25.0   # 시장보다 10%p 이상 약세 = 큰 문제
+        elif relative_str < -5.0:
+            rel_pen = -15.0   # 시장보다 5%p 이상 약세
+        elif relative_str < -2.0:
+            rel_pen = -5.0    # 시장보다 약간 약세
+
+        # ── 합산 ──────────────────────────────
+        total = (relay_sc + premove_sc + tech_sc + cross_bonus
+                 + nat_sc + news_pen + obv_pen + rel_pen)
+
+        # 진입/SL/TP: premove → MACD Phase2 → 간단 계산
         entry = int(p_info.get("entry") or m_info.get("entry") or close)
         sl = int(p_info.get("sl") or m_info.get("sl") or close * 0.95)
         tp = int(p_info.get("tp") or m_info.get("tp") or close * 1.10)
         sl_source = p_info.get("sl_source", "ATR")
 
-        # 신뢰도
-        if cross >= 2 and t_info.get("score", 0) >= 3.5:
+        # 신뢰도 (교차수 + 기술점수 기반)
+        if cross >= 2 and t_info.get("score", 0) >= 3.0:
             confidence = "HIGH"
-        elif cross >= 1 and t_info.get("score", 0) >= 2.5:
+        elif cross >= 1 and t_info.get("score", 0) >= 2.0:
             confidence = "MED"
         else:
             confidence = "LOW"
@@ -513,31 +571,39 @@ def _step5_cross_validate(
             nationality_score=nat_sc,
             nationality_detail=nat_detail,
             cross_count=cross,
+            news_penalty=news_pen,
+            obv_penalty=obv_pen,
+            relative_penalty=rel_pen,
             total_score=round(total, 1),
+            today_chg=round(today_chg, 1),
+            relative_str=round(relative_str, 1),
             entry=entry,
             sl=sl,
             tp=tp,
             sl_source=sl_source,
             sources=sources,
             tech_detail=t_info.get("detail", ""),
-            news_detail=n_info.get("sentiment", "NEUTRAL"),
+            news_detail=sentiment,
             confidence=confidence,
         )
         candidates.append(rec)
 
+    # 유일한 hard cutoff: 합산 > 0 (페널티가 모든 가산을 초과하면 제거)
+    candidates = [c for c in candidates if c.total_score > 0]
+
     # 정렬: total_score 내림차순
     candidates.sort(key=lambda x: x.total_score, reverse=True)
-    return candidates[:8]  # 최대 8개
+    return candidates[:8]
 
 
 # ═══════════════════════════════════════
 #  Step 6: KIS API 교차검증
 # ═══════════════════════════════════════
 
-def _step6_kis_verify(stocks: list[RecommendedStock]) -> list[RecommendedStock]:
+def _step6_kis_verify(stocks: list[RecommendedStock], market_chg: float = 0.0) -> list[RecommendedStock]:
     """KIS API로 최종 후보의 실시간 가격 교차검증
 
-    - 당일 -5% 이상 하락 종목 제거 (떨어지는 칼)
+    v2: 절대 -5% 제거 → 가격 교체만 수행 (탈락 판단은 step5 soft scoring에서 완료)
     - pykrx vs KIS 가격 괴리 5% 이상이면 KIS 가격으로 교체
     - close/entry/sl/tp 재계산
     """
@@ -553,21 +619,13 @@ def _step6_kis_verify(stocks: list[RecommendedStock]) -> list[RecommendedStock]:
         try:
             r = trader.fetch_price(s.code)
             if not r.get("success"):
-                verified.append(s)  # 조회 실패 시 기존 데이터 유지
+                verified.append(s)
                 continue
 
             kis_price = r["current_price"]
             kis_chg = r["change_rate"]
 
-            # 당일 -5% 이상 하락 → 제거
-            if kis_chg <= -5.0:
-                logger.info(
-                    f"KIS 급락 제거: {s.name}({s.code}) "
-                    f"KIS={kis_price:,} ({kis_chg:+.1f}%)"
-                )
-                continue
-
-            # pykrx vs KIS 가격 괴리 체크
+            # pykrx vs KIS 가격 괴리 체크 → 가격 교체
             if s.close > 0:
                 gap_pct = abs(kis_price - s.close) / s.close * 100
                 if gap_pct > 5.0:
@@ -581,14 +639,14 @@ def _step6_kis_verify(stocks: list[RecommendedStock]) -> list[RecommendedStock]:
                     s.sl = int(kis_price * 0.95)
                     s.tp = int(kis_price * 1.10)
 
+            # KIS 기준 상대강도 업데이트
+            s.today_chg = round(kis_chg, 1)
+            s.relative_str = round(kis_chg - market_chg, 1)
+
             verified.append(s)
         except Exception as e:
             logger.warning(f"KIS 검증 실패 {s.name}: {e}")
             verified.append(s)
-
-    removed = len(stocks) - len(verified)
-    if removed > 0:
-        logger.info(f"KIS 검증: {removed}종목 제거, {len(verified)}종목 통과")
 
     return verified
 
@@ -598,16 +656,19 @@ def _step6_kis_verify(stocks: list[RecommendedStock]) -> list[RecommendedStock]:
 # ═══════════════════════════════════════
 
 def run_evening_recommendation() -> RecommendationReport:
-    """Stage 1: 저녁 분석 (16:45) — 5단계 전체 실행 + MACD 0선
+    """Stage 1: 저녁 분석 (16:45) — Soft Scoring 파이프라인
 
-    최적화: 기술필터 통과 종목만 뉴스AI 분석 (API 비용/시간 절약)
-    캐시: 오늘 이미 분석한 종목은 재사용
+    v2 변경점:
+    - market_health: diagnose() 사용 + CRITICAL이어도 경고만 (early return 제거)
+    - 시장 등락률 조회 → 전 단계에 상대강도 기준 전달
+    - 뉴스AI 사전필터 제거: 전종목 분석 (8종목 수준이라 비용 미미)
+    - Step5: hard gate 제거 → soft scoring
     """
     import time
     from datetime import datetime
 
     logger.info("=" * 50)
-    logger.info("저녁 추천 파이프라인 시작 (5단계)")
+    logger.info("저녁 추천 파이프라인 시작 (Soft Scoring v2)")
     logger.info("=" * 50)
     t_start = time.time()
 
@@ -616,99 +677,106 @@ def run_evening_recommendation() -> RecommendationReport:
         timestamp=datetime.now().strftime("%Y-%m-%d %H:%M"),
     )
 
-    # 0) 시장 건전성
+    # 0) 시장 건전성 — CRITICAL이어도 경고만 (종목 추천은 계속)
     try:
-        from data.market_health import check_market_health
-        health = check_market_health()
-        report.market_health = health.get("level", "UNKNOWN")
-        if report.market_health == "CRITICAL":
-            report.warning = "시장 건전성 CRITICAL — 매수 자제 권고"
-            return report
+        from data.market_health import diagnose, get_position_multiplier
+        health = diagnose()
+        report.market_health = health.alert_level.upper()
+        if health.alert_level == "critical":
+            report.warning = "시장 건전성 CRITICAL — 매수 규모 축소 권고"
     except Exception as e:
-        report.market_health = f"체크실패: {e}"
+        # diagnose 실패 시 캐시된 multiplier 확인
+        try:
+            from data.market_health import get_position_multiplier
+            mult = get_position_multiplier()
+            report.market_health = "NORMAL" if mult >= 1.0 else ("WARNING" if mult > 0 else "CRITICAL")
+        except Exception:
+            report.market_health = "UNKNOWN"
+        logger.warning(f"시장건전성 체크 실패: {e}")
+
+    # 0.5) 시장 등락률 (상대강도 기준)
+    t0 = time.time()
+    market_chg = _get_market_change_today()
+    report.market_change = market_chg
+    logger.info(f"[시장] KOSPI 등락률: {market_chg:+.2f}% ({time.time()-t0:.0f}s)")
 
     # Step 1: 릴레이 스캔
     t0 = time.time()
-    logger.info("[Step 1/5] 릴레이 스캔...")
+    logger.info("[Step 1/6] 릴레이 스캔...")
     relay_result = _step1_relay_scan()
     report.relay_summary = relay_result.get("summary", "")
     logger.info(f"  → {len(relay_result.get('stocks', {}))}종목 ({time.time()-t0:.0f}s)")
 
-    # Step 2: 사전감지 스캔 (내부에 뉴스AI 포함 — 오래 걸림)
+    # Step 2: 사전감지 스캔
     t0 = time.time()
-    logger.info("[Step 2/5] 사전감지 스캔...")
+    logger.info("[Step 2/6] 사전감지 스캔...")
     premove_result = _step2_premove_scan()
     logger.info(f"  → {len(premove_result.get('stocks', {}))}종목 ({time.time()-t0:.0f}s)")
 
     # 기술분석 대상 종목 수집
-    all_codes = set()
+    all_codes_set = set()
     for code, info in relay_result.get("stocks", {}).items():
-        all_codes.add((code, info.get("name", code)))
+        all_codes_set.add((code, info.get("name", code)))
     for code, info in premove_result.get("stocks", {}).items():
-        all_codes.add((code, info.get("name", code)))
+        all_codes_set.add((code, info.get("name", code)))
 
-    if not all_codes:
-        report.warning = "릴레이+사전감지 결과 0건 — 추천 불가"
-        return report
-
-    # Step 2.5: MACD 제로선 크로스 스캔 (추가 소스)
+    # Step 2.5: MACD 제로선 크로스 스캔
     t0 = time.time()
     logger.info("[Step 2.5] MACD 0선 크로스 스캔...")
     macd_result = _step_macd_zero_scan()
     for code, info in macd_result.items():
-        if (code, info.get("name", code)) not in all_codes:
-            all_codes.add((code, info.get("name", code)))
+        if (code, info.get("name", code)) not in all_codes_set:
+            all_codes_set.add((code, info.get("name", code)))
     logger.info(f"  → {len(macd_result)}종목 ({time.time()-t0:.0f}s)")
 
-    codes_names = list(all_codes)
+    if not all_codes_set:
+        report.warning = "릴레이+사전감지+MACD 결과 0건 — 추천 불가"
+        return report
 
-    # Step 3: 기술적 필터
+    codes_names = list(all_codes_set)
+
+    # Step 3: 기술 분석 (market_chg 전달 → 상대강도 계산)
     t0 = time.time()
-    logger.info(f"[Step 3/5] 기술 분석 ({len(codes_names)}종목)...")
-    tech_result = _step3_tech_filter(codes_names)
+    logger.info(f"[Step 3/6] 기술 분석 ({len(codes_names)}종목, 시장 {market_chg:+.1f}%)...")
+    tech_result = _step3_tech_filter(codes_names, market_chg=market_chg)
     logger.info(f"  → 완료 ({time.time()-t0:.0f}s)")
 
-    # Step 4: 뉴스AI (기술필터 통과 종목만 — API 비용/시간 절약)
-    # 기술 점수 2.0+ AND OBV UP인 종목만 분석 (나머지는 Step5에서 걸러짐)
+    # Step 4: 뉴스AI — 전종목 분석 (사전필터 제거)
     t0 = time.time()
-    filtered_for_news = [
-        (code, name) for code, name in codes_names
-        if tech_result.get(code, {}).get("score", 0) >= 2.0
-        and tech_result.get(code, {}).get("obv_dir") != "DOWN"
-    ]
-    logger.info(f"[Step 4/5] 뉴스AI ({len(filtered_for_news)}/{len(codes_names)}종목, 기술필터 통과분만)...")
-    news_result = _step4_news_filter(filtered_for_news)
-    # 뉴스AI 미분석 종목은 NEUTRAL로 채움
+    logger.info(f"[Step 4/6] 뉴스AI ({len(codes_names)}종목, 전체)...")
+    news_result = _step4_news_filter(codes_names)
+    # 누락 종목 NEUTRAL
     for code, name in codes_names:
         if code not in news_result:
-            news_result[code] = {"sentiment": "NEUTRAL", "reason": "기술필터미통과", "score": 0}
+            news_result[code] = {"sentiment": "NEUTRAL", "reason": "미분석", "score": 0}
     logger.info(f"  → 완료 ({time.time()-t0:.0f}s)")
 
-    # Step 5a: 국적별 수급 점수 (스냅샷 있으면 반영, 없으면 skip)
+    # Step 5a: 국적별 수급 점수
     nationality_scores = {}
     try:
         from data.nationality_signal import score_nationality_batch
-        all_codes = [code for code, _ in codes_names]
-        nationality_scores = score_nationality_batch(all_codes)
+        all_code_list = [code for code, _ in codes_names]
+        nationality_scores = score_nationality_batch(all_code_list)
         scored = sum(1 for sc, _ in nationality_scores.values() if sc != 0)
-        logger.info(f"[Step 5a] 국적별 수급: {scored}/{len(all_codes)}종목 점수 반영")
+        logger.info(f"[Step 5a] 국적별 수급: {scored}/{len(all_code_list)}종목 점수 반영")
     except Exception as e:
         logger.warning(f"국적별 수급 점수 실패 (무시): {e}")
 
-    # Step 5: 교차검증 (MACD 0선 + 국적별 수급 포함)
+    # Step 5: Soft Scoring 교차검증
     t0 = time.time()
-    logger.info("[Step 5/5] 교차검증 + 최종 랭킹...")
+    logger.info("[Step 5/6] Soft Scoring 교차검증...")
     final_stocks = _step5_cross_validate(
         relay_result, premove_result, tech_result, news_result,
         macd_result=macd_result,
         nationality=nationality_scores,
+        market_chg=market_chg,
     )
     logger.info(f"  → {len(final_stocks)}종목 ({time.time()-t0:.0f}s)")
 
-    # Step 6: KIS API 교차검증 — 최종 후보의 실시간 가격 확인
+    # Step 6: KIS API 가격 교차검증
     t0 = time.time()
-    logger.info("[Step 6] KIS API 가격 교차검증...")
-    final_stocks = _step6_kis_verify(final_stocks)
+    logger.info("[Step 6/6] KIS API 가격 교차검증...")
+    final_stocks = _step6_kis_verify(final_stocks, market_chg=market_chg)
     logger.info(f"  → 최종 {len(final_stocks)}종목 ({time.time()-t0:.0f}s)")
 
     report.stocks = final_stocks
@@ -832,7 +900,7 @@ def run_morning_confirmation(prev_report: RecommendationReport) -> Recommendatio
 # ═══════════════════════════════════════
 
 def format_recommendation(report: RecommendationReport, max_budget: int = 0) -> str:
-    """텔레그램용 추천 리포트 포맷
+    """텔레그램용 추천 리포트 포맷 (v2: 상대강도 + 페널티 표시)
 
     max_budget=0이면 매수 수량 표시 안 함 (실제 금액은 장 시작 시 잔고 기반 계산)
     """
@@ -853,6 +921,11 @@ def format_recommendation(report: RecommendationReport, max_budget: int = 0) -> 
             report.market_health, "⚪"
         )
         lines.append(f"{health_emoji} 시장건전성: {report.market_health}")
+
+    # 시장 등락률 표시
+    if report.market_change != 0:
+        mkt_icon = "📈" if report.market_change > 0 else "📉"
+        lines.append(f"{mkt_icon} 시장: KOSPI {report.market_change:+.1f}%")
 
     if report.relay_summary:
         lines.append(f"🔄 릴레이: {report.relay_summary}")
@@ -876,17 +949,46 @@ def format_recommendation(report: RecommendationReport, max_budget: int = 0) -> 
         shares = max_budget // s.close if s.close > 0 else 0
         buy_total = shares * s.close if shares > 0 else 0
 
+        # 상대강도 표시
+        rs_icon = "💪" if s.relative_str > 2 else ("⚡" if s.relative_str > 0 else "")
         lines.append(
             f"{ce} {i}. {s.name}({s.code}) [{s.confidence}] "
-            f"총점:{s.total_score:.0f}"
+            f"총점:{s.total_score:.0f} {rs_icon}"
         )
         lines.append(
-            f"   현재: {s.close:,}원 | SL: {s.sl:,} → TP: {s.tp:,}"
+            f"   현재: {s.close:,}원 | 등락: {s.today_chg:+.1f}% | RS: {s.relative_str:+.1f}%"
         )
-        detail_line = f"   기술: {s.tech_detail} | 뉴스: {s.news_detail}"
+        lines.append(
+            f"   SL: {s.sl:,} → TP: {s.tp:,}"
+        )
+
+        # 점수 분해 (투명하게)
+        score_parts = []
+        if s.relay_score > 0:
+            score_parts.append(f"릴{s.relay_score:.0f}")
+        if s.premove_score > 0:
+            score_parts.append(f"사전{s.premove_score:.0f}")
+        if s.tech_score > 0:
+            score_parts.append(f"기술{s.tech_score:.0f}")
+        if s.cross_count >= 2:
+            score_parts.append(f"교차+{s.cross_count * 10}")
         if s.nationality_score != 0:
-            detail_line += f" | 국적:{s.nationality_score:+.0f}"
-        lines.append(detail_line)
+            score_parts.append(f"국적{s.nationality_score:+.0f}")
+        # 페널티 표시
+        penalties = []
+        if s.news_penalty < 0:
+            penalties.append(f"뉴스{s.news_penalty:.0f}")
+        if s.obv_penalty < 0:
+            penalties.append(f"OBV{s.obv_penalty:.0f}")
+        if s.relative_penalty < 0:
+            penalties.append(f"약세{s.relative_penalty:.0f}")
+
+        score_line = "   + ".join(score_parts) if score_parts else "가산없음"
+        if penalties:
+            score_line += " | " + " ".join(penalties)
+        lines.append(f"   {score_line}")
+
+        lines.append(f"   기술: {s.tech_detail}")
         if s.nationality_detail:
             lines.append(f"   🌍 {s.nationality_detail}")
         if shares > 0:
@@ -922,6 +1024,7 @@ def save_recommendation(report: RecommendationReport):
         "stage": report.stage,
         "timestamp": report.timestamp,
         "market_health": report.market_health,
+        "market_change": report.market_change,
         "us_market_note": report.us_market_note,
         "relay_summary": report.relay_summary,
         "warning": report.warning,
@@ -937,6 +1040,11 @@ def save_recommendation(report: RecommendationReport):
                 "tech_score": s.tech_score, "news_score": s.news_score,
                 "nationality_score": s.nationality_score,
                 "nationality_detail": s.nationality_detail,
+                "news_penalty": s.news_penalty,
+                "obv_penalty": s.obv_penalty,
+                "relative_penalty": s.relative_penalty,
+                "today_chg": s.today_chg,
+                "relative_str": s.relative_str,
             }
             for s in report.stocks
         ],
@@ -961,6 +1069,7 @@ def load_recommendation() -> Optional[RecommendationReport]:
             stage=data.get("stage", ""),
             timestamp=data.get("timestamp", ""),
             market_health=data.get("market_health", ""),
+            market_change=data.get("market_change", 0),
             us_market_note=data.get("us_market_note", ""),
             relay_summary=data.get("relay_summary", ""),
             warning=data.get("warning", ""),
@@ -982,6 +1091,11 @@ def load_recommendation() -> Optional[RecommendationReport]:
                 news_score=sd.get("news_score", 0),
                 nationality_score=sd.get("nationality_score", 0),
                 nationality_detail=sd.get("nationality_detail", ""),
+                news_penalty=sd.get("news_penalty", 0),
+                obv_penalty=sd.get("obv_penalty", 0),
+                relative_penalty=sd.get("relative_penalty", 0),
+                today_chg=sd.get("today_chg", 0),
+                relative_str=sd.get("relative_str", 0),
             ))
         return report
     except Exception as e:
