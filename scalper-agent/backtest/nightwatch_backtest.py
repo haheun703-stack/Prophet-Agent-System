@@ -369,9 +369,10 @@ def calc_divergence(row: pd.Series) -> Tuple[float, List[str]]:
         else:
             penalty += 0.5
 
+    es_pct = row.get("ES_pct")
+
     # 괴리1: HYG↓ + ES 안정
     hyg_pct = row.get("HYG_pct")
-    es_pct = row.get("ES_pct")
     if pd.notna(hyg_pct) and pd.notna(es_pct):
         if hyg_pct < -0.3 and es_pct > -0.2:
             penalty -= 2.0
@@ -457,15 +458,15 @@ def simulate_day(row: pd.Series) -> Dict:
     total = asian_score + europe_score + div_score
     total = max(-10.0, min(10.0, total))
 
-    # 신호
+    # 신호 (v2: 관망 확대, 금지/패닉 축소)
     if total >= 5:
         signal = "강매수"
     elif total >= 2:
         signal = "매수"
-    elif total >= -1:
-        signal = "관망"
-    elif total >= -4:
-        signal = "금지"
+    elif total >= -2:
+        signal = "관망"  # was -1 → -2
+    elif total >= -5:
+        signal = "금지"  # was -4 → -5
     else:
         signal = "패닉"
 

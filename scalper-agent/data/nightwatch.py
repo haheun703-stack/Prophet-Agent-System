@@ -456,7 +456,7 @@ def collect_europe_open() -> Tuple[float, Dict]:
             score += 1.5
         elif pct < -0.3:
             hyg.signal = "🔴"
-            score -= 2.0  # HYG 하락은 더 강한 경고
+            score -= 2.0  # HYG 하락 경고
         else:
             hyg.signal = "🟡"
     detail["HYG"] = asdict(hyg) if hyg else {}
@@ -678,10 +678,12 @@ def select_sectors_and_targets(
             selected_keys = ["semiconductor", "power_infra"]
             reason = "🟢 기본"
 
-    # ── 진입 금지 / 패닉 (-2 이하) ──
-    elif total_score < -2:
+    # ── 극단 패닉만 인버스 (-5 이하) ──
+    # 백테스트: score<-2 인버스 적중 41% → 대부분 손실
+    # 수정: -5 이하 극단적일 때만 인버스 (그 외는 관망=미진입)
+    elif total_score < -5:
         selected_keys = ["inverse"]
-        reason = "🔴 하락 → 인버스 헤지"
+        reason = "💀 극단 하락 → 인버스 헤지"
 
     # ── 관망 (-1.9 ~ 1.9) ──
     else:
@@ -743,15 +745,15 @@ def calculate_nightwatch_score(
     total = asian_score + europe_score + div_score
     total = max(-10.0, min(10.0, total))
 
-    # 신호 변환
+    # 신호 변환 (v2: 관망 확대, 금지/패닉 축소 — 백테스트 44%→개선)
     if total >= 5:
         signal, text = "🟢🟢", "강한 매수"
     elif total >= 2:
         signal, text = "🟢", "매수 고려"
-    elif total >= -1:
-        signal, text = "🟡", "관망"
-    elif total >= -4:
-        signal, text = "🔴", "진입 금지"
+    elif total >= -2:
+        signal, text = "🟡", "관망"       # was -1 → -2 (하방 관망 확대)
+    elif total >= -5:
+        signal, text = "🔴", "진입 금지"  # was -4 → -5
     else:
         signal, text = "💀", "전체 포지션 점검"
 
