@@ -654,10 +654,18 @@ def _step5_cross_validate(
             elif rot_src == "reversal_exit":
                 rotation_bonus = -20.0  # 반전 → 신규 매수 금지 수준
 
+        # ── OR bias 보정 (ICT Opening Range) ──
+        or_bias_adj = 0.0
+        try:
+            from strategies.opening_range import get_bias_adjustment
+            or_bias_adj = get_bias_adjustment(code)
+        except Exception:
+            pass
+
         # ── 합산 ──────────────────────────────
         raw_total = (relay_sc + premove_sc + tech_sc + bargain_sc + cross_bonus
                      + nat_sc + news_pen + obv_pen + rel_pen
-                     + shock_pen + opp_bonus + rotation_bonus)
+                     + shock_pen + opp_bonus + rotation_bonus + or_bias_adj)
         # CORTEX 체제 배수 적용
         total = raw_total * regime_mult
 

@@ -439,6 +439,16 @@ class AutoTrader:
                     f"  {c['name']}({c['code']}) 점수:{c['total_score']:.0f} "
                     f"SL:{c['sl']:,} TP:{c['tp']:,}"
                 )
+                # 프리미엄 레벨 1줄 추가
+                try:
+                    from strategies.premium_levels import format_telegram_levels
+                    pl_line = format_telegram_levels(
+                        c['code'], c['name'], c.get('entry') or c.get('close', 0)
+                    )
+                    if pl_line:
+                        lines.append(f"    📐 {pl_line}")
+                except Exception:
+                    pass
             await _send("\n".join(lines))
             return
 
@@ -1948,6 +1958,87 @@ class AutoTrader:
         except Exception as e:
             logger.error(f"BRAIN 백업 실패: {e}")
             await _send(f"BRAIN 백업 실패: {e}")
+
+    # ═══════════════════════════════════════
+    #  ICT 프리미엄 레벨 + Opening Range
+    # ═══════════════════════════════════════
+
+    async def job_premium_levels(self, context):
+        """08:30 — 전일/전주/전월 프리미엄 레벨 계산"""
+        from datetime import date as dt_date
+        if dt_date.today().weekday() >= 5:
+            return
+
+        chat_id = None
+        if not self._send_alert:
+            import os
+            chat_id = os.getenv("TELEGRAM_CHAT_ID")
+
+        async def _send(text):
+            if self._send_alert:
+                await self._send_alert(text)
+            elif chat_id:
+                await context.bot.send_message(chat_id=chat_id, text=text)
+
+        try:
+            from strategies.premium_levels import run_premium_levels
+            results = await asyncio.to_thread(run_premium_levels)
+            await _send(f"📐 프리미엄 레벨 {len(results)}종목 계산 완료")
+        except Exception as e:
+            logger.error(f"프리미엄 레벨 실패: {e}")
+            await _send(f"⚠️ 프리미엄 레벨 실패: {str(e)[:200]}")
+
+    async def job_opening_range(self, context):
+        """10:05 — OR/IR 확정 + daily_bias 계산"""
+        from datetime import date as dt_date
+        if dt_date.today().weekday() >= 5:
+            return
+
+        chat_id = None
+        if not self._send_alert:
+            import os
+            chat_id = os.getenv("TELEGRAM_CHAT_ID")
+
+        async def _send(text):
+            if self._send_alert:
+                await self._send_alert(text)
+            elif chat_id:
+                await context.bot.send_message(chat_id=chat_id, text=text)
+
+        try:
+            from strategies.opening_range import run_opening_range
+            results = await asyncio.to_thread(run_opening_range)
+
+            bullish = sum(1 for r in results.values() if r["daily_bias"] == "bullish")
+            bearish = sum(1 for r in results.values() if r["daily_bias"] == "bearish")
+            neutral = len(results) - bullish - bearish
+
+            # OR/IR을 프리미엄 레벨에 병합
+            try:
+                from strategies.premium_levels import (
+                    load_premium_levels, merge_or_levels, PL_DIR,
+                )
+                import json as _json
+                pl_data = load_premium_levels()
+                merged = 0
+                for code, or_info in results.items():
+                    if code in pl_data:
+                        merge_or_levels(pl_data[code], or_info)
+                        merged += 1
+                if merged > 0:
+                    out_path = PL_DIR / f"{dt_date.today().isoformat()}.json"
+                    with open(out_path, "w", encoding="utf-8") as f:
+                        _json.dump(pl_data, f, ensure_ascii=False, indent=2)
+            except Exception as e:
+                logger.warning(f"OR→PL 병합 실패: {e}")
+
+            await _send(
+                f"📊 OR/IR 확정 ({len(results)}종목)\n"
+                f"  bullish:{bullish} bearish:{bearish} neutral:{neutral}"
+            )
+        except Exception as e:
+            logger.error(f"Opening Range 실패: {e}")
+            await _send(f"⚠️ Opening Range 실패: {str(e)[:200]}")
 
     # ═══════════════════════════════════════
     #  NIGHTWATCH NXT 야간매매

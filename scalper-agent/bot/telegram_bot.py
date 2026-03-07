@@ -1944,6 +1944,12 @@ class BodyHunterBot:
         jq.run_daily(self.auto_trader.job_us_market_check, time=kst_time(6, 30))
         logger.info("미국장 체크 등록: 06:30 KST")
 
+        # ── ICT 프리미엄 레벨 (08:30) + Opening Range (10:05) ──
+        jq.run_daily(self.auto_trader.job_premium_levels, time=kst_time(8, 30))
+        logger.info("프리미엄 레벨 등록: 08:30 KST")
+        jq.run_daily(self.auto_trader.job_opening_range, time=kst_time(10, 5))
+        logger.info("Opening Range 등록: 10:05 KST")
+
         # ── JARVIS BRAIN 자본 배분 (백업용 — NIGHTWATCH 미실행 대비) ──
         jq.run_daily(self.auto_trader.job_brain_allocation, time=kst_time(16, 36))
         logger.info("BRAIN 배분 백업 등록: 16:36 KST")
