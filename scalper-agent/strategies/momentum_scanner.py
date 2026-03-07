@@ -316,8 +316,23 @@ def scan_momentum(top_n: int = 5) -> List[MomentumCandidate]:
         print("  소형주 유니버스 없음 — build_smallcap_universe() 먼저 실행")
         return []
 
+    # ETF/ETN/인버스/레버리지 제외
+    _ETF_KEYWORDS = {"ETF", "ETN", "인버스", "레버리지", "KODEX", "TIGER", "KBSTAR",
+                     "KOSEF", "ARIRANG", "HANARO", "SOL", "ACE", "PLUS", "RISE",
+                     "KINDEX", "BNK", "파워", "하나", "KoAct", "KOACT", "액티브",
+                     "FOCUS", "마이티", "TIMEFOLIO", "히어로즈"}
+    filtered = {}
+    for code, info in universe.items():
+        name = info.get("name", "")
+        if any(kw in name for kw in _ETF_KEYWORDS):
+            continue
+        # 우선주(끝자리 5/7/8/9) 제외
+        if code[-1] in ("5", "7", "8", "9") and code[-2:] != "00":
+            continue
+        filtered[code] = info
+    universe = filtered
     codes = list(universe.keys())
-    print(f"  유니버스: {len(codes)}개 (시총 300억~5000억)")
+    print(f"  유니버스: {len(codes)}개 (시총 300억~5000억, ETF/ETN 제외)")
 
     phase1_pass = []  # 거래량 통과
     phase2_pass = []  # 테마 매칭

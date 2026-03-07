@@ -859,6 +859,10 @@ def run_evening_recommendation() -> RecommendationReport:
 
     if not all_codes_set:
         report.warning = "릴레이+사전감지+MACD+줍줍 결과 0건 — 추천 불가"
+        try:
+            save_recommendation(report)
+        except Exception:
+            pass
         return report
 
     codes_names = list(all_codes_set)
@@ -912,7 +916,13 @@ def run_evening_recommendation() -> RecommendationReport:
 
     report.stocks = final_stocks
     elapsed = time.time() - t_start
-    logger.info(f"최종 추천: {len(final_stocks)}종목 (전체 {elapsed:.0f}s)")
+    logger.info(f"최종 추천: {len(final_stocks)}종목, 모멘텀 {len(report.momentum_stocks)}종목 (전체 {elapsed:.0f}s)")
+
+    # 자동 저장
+    try:
+        save_recommendation(report)
+    except Exception as e:
+        logger.warning(f"추천 자동저장 실패: {e}")
 
     return report
 
@@ -1040,6 +1050,12 @@ def run_us_market_check(prev_report: RecommendationReport) -> RecommendationRepo
             ) + f"ETF시그널: {etf_sig.signal}({etf_sig.confidence}) → {etf_name}({etf_code})"
     except Exception as e:
         logger.warning(f"ETF 시그널 생성 실패: {e}")
+
+    # 자동 저장
+    try:
+        save_recommendation(report)
+    except Exception as e:
+        logger.warning(f"추천 자동저장 실패: {e}")
 
     return report
 
