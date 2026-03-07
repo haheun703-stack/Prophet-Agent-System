@@ -415,6 +415,39 @@ def format_allocation_report(
 #  메인 실행
 # ═══════════════════════════════════════════════════
 
+def _load_rotation_info() -> Dict:
+    """섹터 로테이션 분석 결과 로드 (추천 파이프라인에서 저장한 것)"""
+    try:
+        import sys
+        scalper_path = str(PROJECT_ROOT / "scalper-agent")
+        if scalper_path not in sys.path:
+            sys.path.insert(0, scalper_path)
+        from data.rotation_detector import analyze_rotation, format_rotation_report
+        rotation = analyze_rotation()
+        return {
+            "rotation_signal": rotation.rotation_signal,
+            "hot_sectors": [
+                {"sector": s.sector_name, "phase": s.phase,
+                 "hot_days": s.hot_days, "signal": s.signal}
+                for s in rotation.hot_sectors
+            ],
+            "staging_sectors": [
+                {"sector": s.sector_name, "momentum": s.current_momentum,
+                 "breadth": s.current_breadth, "signal": s.signal}
+                for s in rotation.staging_sectors
+            ],
+            "cooling_sectors": [
+                {"sector": s.sector_name, "phase": s.phase,
+                 "hot_days": s.hot_days, "signal": s.signal}
+                for s in rotation.cooling_sectors
+            ],
+            "telegram_block": format_rotation_report(rotation),
+        }
+    except Exception as e:
+        logger.warning(f"[BRAIN] 로테이션 정보 로드 실패: {e}")
+        return {}
+
+
 def run_brain(
     regime_override: str = None,
     total_capital: int = 1_150_000,
@@ -424,8 +457,9 @@ def run_brain(
     1. NIGHTWATCH 점수 읽기 (또는 수동 레짐)
     2. 레짐 판정
     3. 자본 배분 계산 (안전장치 포함)
-    4. JSON 저장
-    5. 텔레그램 메시지 생성
+    4. 섹터 로테이션 분석 로드
+    5. JSON 저장
+    6. 텔레그램 메시지 생성
 
     Args:
         regime_override: 수동 레짐 ("PANIC" 등, None이면 NIGHTWATCH 자동)
@@ -449,12 +483,18 @@ def run_brain(
     # 2. 자본 배분 계산
     result = get_capital_allocation(regime, total_capital)
 
-    # 3. 저장
+    # 3. 섹터 로테이션 분석 로드
+    rotation_info = _load_rotation_info()
+    result["rotation"] = rotation_info
+
+    # 4. 저장
     save_allocation(result)
     append_history(result)
 
-    # 4. 텔레그램 메시지
+    # 5. 텔레그램 메시지 (배분 + 로테이션)
     telegram_msg = format_allocation_report(result, nw_score, nw_signal)
+    if rotation_info.get("rotation_signal"):
+        telegram_msg += "\n\n" + rotation_info.get("telegram_block", "")
     result["telegram_message"] = telegram_msg
 
     logger.info(
@@ -464,6 +504,8 @@ def run_brain(
         f"인버스 {result['allocation_pct']['inverse_etf']}% "
         f"현금 {result['allocation_pct']['cash']}%"
     )
+    if rotation_info.get("rotation_signal"):
+        logger.info(f"[BRAIN] 로테이션: {rotation_info['rotation_signal']}")
 
     return result
 

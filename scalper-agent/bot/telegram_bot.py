@@ -63,7 +63,8 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
         ["시나리오", "현재잔고", "체결내역"],
         ["포트폴리오", "시작", "정지"],
         ["상태", "유니버스", "일지"],
-        ["배분현황", "도움", "청산"],
+        ["배분현황", "로테이션", "도움"],
+        ["청산"],
     ],
     resize_keyboard=True,
 )
@@ -125,6 +126,7 @@ HELP_TEXT = """
 
 [JARVIS BRAIN 자본 배분]
   배분현황 — 현재 BRAIN 자본 배분 지시 조회
+  로테이션 — 섹터 로테이션 분석 (HOT/STAGING/다음섹터)
   (자동: NIGHTWATCH 완료 후 배분 갱신)
 
 [NIGHTWATCH NXT 야간매매]
@@ -1487,6 +1489,33 @@ class BodyHunterBot:
             logger.error(f"BRAIN 조회 실패: {e}", exc_info=True)
             await update.message.reply_text(f"BRAIN 조회 실패: {str(e)[:200]}")
 
+    async def cmd_rotation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """섹터 로테이션 분석 조회"""
+        if not self._is_authorized(update):
+            return
+        try:
+            from data.rotation_detector import (
+                analyze_rotation, format_rotation_report, get_next_sector_stocks
+            )
+            rotation = analyze_rotation()
+            msg = format_rotation_report(rotation)
+
+            # 다음 섹터 종목 요약 (상위 10개)
+            next_stocks = get_next_sector_stocks(rotation)
+            staging = {c: i for c, i in next_stocks.items()
+                       if i["rotation_source"] in ("staging", "hot_early")}
+            if staging:
+                msg += "\n\n📌 다음 섹터 주목 종목"
+                for code, info in list(staging.items())[:10]:
+                    src = info["rotation_source"]
+                    tier = info["tier"]
+                    msg += f"\n  {info['name']}({code}) [{info['sector']}] {src}/{tier}"
+
+            await update.message.reply_text(msg)
+        except Exception as e:
+            logger.error(f"로테이션 조회 실패: {e}", exc_info=True)
+            await update.message.reply_text(f"로테이션 조회 실패: {str(e)[:200]}")
+
     # ═══════════════════════════════════════
     #  NIGHTWATCH NXT 명령어
     # ═══════════════════════════════════════
@@ -1661,6 +1690,7 @@ class BodyHunterBot:
             r"^내일추천$": self.cmd_recommendation,
             r"^국적수급$": self.cmd_nationality,
             r"^배분현황$": self.cmd_brain,
+            r"^로테이션$": self.cmd_rotation,
             r"^NXT$": self.cmd_nxt,
             r"^NXT켜기$": self.cmd_nxt_on,
             r"^NXT끄기$": self.cmd_nxt_off,

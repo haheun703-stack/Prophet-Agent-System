@@ -72,6 +72,9 @@ class RecommendationReport:
     cross_regime_detail: str = ""  # "S&P -1.3% + TNX +0.12% → 자경단"
     # 소형주 급등 후보 (Momentum Hunter)
     momentum_stocks: list = field(default_factory=list)
+    # 섹터 로테이션 시그널
+    rotation_signal: str = ""      # "HOT: 방산(MID 3D) | NEXT: 반도체(스테이징)"
+    rotation_detail: list = field(default_factory=list)  # 섹터별 상세
 
 
 # ═══════════════════════════════════════
@@ -110,10 +113,11 @@ def _step1_relay_scan() -> dict:
         return {
             "stocks": relay_stocks,
             "summary": " | ".join(summary_lines) if summary_lines else "활성 없음",
+            "all_sectors": report.all_sectors,  # 로테이션 분석용 전체 섹터
         }
     except Exception as e:
         logger.error(f"릴레이 스캔 실패: {e}")
-        return {"stocks": {}, "summary": f"실패: {e}"}
+        return {"stocks": {}, "summary": f"실패: {e}", "all_sectors": []}
 
 
 # ═══════════════════════════════════════
@@ -499,12 +503,14 @@ def _step5_cross_validate(
     market_chg: float = 0.0,
     regime_info: dict = None,
     shock_info: dict = None,
+    rotation_stocks: dict = None,
 ) -> list[RecommendedStock]:
     """모든 스텝 결과 통합 → Soft Scoring → 최종 랭킹
 
     v2: Hard gate 제거 → 모든 요소를 점수로 변환
     v3: 줍줍(bargain) 소스 추가 — 낙폭+수급매집 종목
     v4: CORTEX 체제별 점수 배수 + 충격 섹터 페널티/보너스
+    v5: 로테이션 디텍터 — 다음 섹터 종목 보너스 + 반전 섹터 페널티
     """
     if macd_result is None:
         macd_result = {}
@@ -516,6 +522,8 @@ def _step5_cross_validate(
         regime_info = {}
     if shock_info is None:
         shock_info = {}
+    if rotation_stocks is None:
+        rotation_stocks = {}
 
     # CORTEX 체제별 점수 배수
     regime_multipliers = {
@@ -538,6 +546,10 @@ def _step5_cross_validate(
     all_codes.update(relay.get("stocks", {}).keys())
     all_codes.update(premove.get("stocks", {}).keys())
     all_codes.update(macd_result.keys())
+    # 로테이션 다음 섹터 종목도 후보에 포함 (reversal_exit 제외)
+    for code, rot_info in rotation_stocks.items():
+        if rot_info.get("rotation_source") != "reversal_exit":
+            all_codes.add(code)
     all_codes.update(bargain_result.keys())
 
     candidates = []
@@ -573,6 +585,14 @@ def _step5_cross_validate(
             cross += 1
             grade = b_info.get("supply_grade", "")
             sources.append(f"bargain({grade})")
+
+        # 로테이션 소스 (다음 섹터 종목)
+        rot_info = rotation_stocks.get(code, {})
+        if rot_info and rot_info.get("rotation_source") != "reversal_exit":
+            cross += 1
+            rot_src = rot_info["rotation_source"]
+            rot_sector = rot_info.get("sector", "")
+            sources.append(f"rotation:{rot_src}({rot_sector})")
 
         relay_sc = min(r_info.get("signal_count", 0) * 15, 45)   # 0~45
         premove_sc = min(p_info.get("premove_score", 0), 100) * 0.3  # 0~30
@@ -621,10 +641,23 @@ def _step5_cross_validate(
         if sector and opportunity_sectors and sector in opportunity_sectors:
             opp_bonus = 5.0    # 기회 섹터 (충격 무관 과도 하락)
 
+        # ── 로테이션: 다음 섹터 보너스 / 반전 페널티 ──
+        rotation_bonus = 0.0
+        if rot_info:
+            rot_src = rot_info.get("rotation_source", "")
+            if rot_src == "staging":
+                rotation_bonus = 15.0   # 스테이징 섹터 리더/mid → 진입 우선
+            elif rot_src == "hot_early":
+                rotation_bonus = 10.0   # HOT 초기 소부장 → 릴레이 기회
+            elif rot_src == "hot_mid":
+                rotation_bonus = 5.0    # HOT 중기 → 아직 기회 있음
+            elif rot_src == "reversal_exit":
+                rotation_bonus = -20.0  # 반전 → 신규 매수 금지 수준
+
         # ── 합산 ──────────────────────────────
         raw_total = (relay_sc + premove_sc + tech_sc + bargain_sc + cross_bonus
                      + nat_sc + news_pen + obv_pen + rel_pen
-                     + shock_pen + opp_bonus)
+                     + shock_pen + opp_bonus + rotation_bonus)
         # CORTEX 체제 배수 적용
         total = raw_total * regime_mult
 
@@ -804,6 +837,42 @@ def run_evening_recommendation() -> RecommendationReport:
     report.relay_summary = relay_result.get("summary", "")
     logger.info(f"  → {len(relay_result.get('stocks', {}))}종목 ({time.time()-t0:.0f}s)")
 
+    # Step 1.5: 섹터 로테이션 분석 (히스토리 저장 + 다음 섹터 감지)
+    #   Step 1에서 이미 스캔한 all_sectors를 재활용 (중복 pykrx 호출 방지)
+    rotation_stocks = {}  # {code: rotation_info}
+    t0 = time.time()
+    logger.info("[Step 1.5] 섹터 로테이션 분석...")
+    try:
+        from data.rotation_detector import record_today, analyze_rotation, get_next_sector_stocks
+        sector_results = relay_result.get("all_sectors", [])
+        if sector_results:
+            history = record_today(sector_results)
+            rotation = analyze_rotation(history)
+            report.rotation_signal = rotation.rotation_signal
+            # 상세 정보 저장
+            report.rotation_detail = []
+            for s in rotation.hot_sectors + rotation.staging_sectors + rotation.cooling_sectors:
+                report.rotation_detail.append({
+                    "sector": s.sector_name,
+                    "phase": s.phase,
+                    "hot_days": s.hot_days,
+                    "momentum": s.current_momentum,
+                    "breadth": s.current_breadth,
+                    "signal": s.signal,
+                })
+            # 다음 섹터 종목 추출
+            rotation_stocks = get_next_sector_stocks(rotation)
+            next_count = sum(1 for v in rotation_stocks.values()
+                            if v["rotation_source"] != "reversal_exit")
+            logger.info(f"  → 로테이션: {rotation.rotation_signal}")
+            logger.info(f"  → 다음섹터 후보 {next_count}종목 ({time.time()-t0:.0f}s)")
+        else:
+            logger.warning("  → 섹터 스캔 결과 없음, 로테이션 분석 스킵")
+    except Exception as e:
+        logger.warning(f"로테이션 분석 실패 (무시): {e}")
+        import traceback
+        logger.debug(traceback.format_exc())
+
     # Step 2: 사전감지 스캔
     t0 = time.time()
     logger.info("[Step 2/6] 사전감지 스캔...")
@@ -816,6 +885,11 @@ def run_evening_recommendation() -> RecommendationReport:
         all_codes_set.add((code, info.get("name", code)))
     for code, info in premove_result.get("stocks", {}).items():
         all_codes_set.add((code, info.get("name", code)))
+
+    # 로테이션 다음 섹터 종목 추가 (reversal_exit 제외)
+    for code, info in rotation_stocks.items():
+        if info["rotation_source"] != "reversal_exit":
+            all_codes_set.add((code, info["name"]))
 
     # Step 2.5: MACD 제로선 크로스 스캔
     t0 = time.time()
@@ -907,7 +981,7 @@ def run_evening_recommendation() -> RecommendationReport:
         import traceback
         logger.debug(traceback.format_exc())
 
-    # Step 5: Soft Scoring 교차검증
+    # Step 5: Soft Scoring 교차검증 (로테이션 종목 포함)
     t0 = time.time()
     logger.info("[Step 5/6] Soft Scoring 교차검증...")
     final_stocks = _step5_cross_validate(
@@ -918,6 +992,7 @@ def run_evening_recommendation() -> RecommendationReport:
         market_chg=market_chg,
         regime_info=regime_info,
         shock_info=shock_info,
+        rotation_stocks=rotation_stocks,
     )
     logger.info(f"  → {len(final_stocks)}종목 ({time.time()-t0:.0f}s)")
 
@@ -1260,6 +1335,8 @@ def save_recommendation(report: RecommendationReport):
             for s in report.stocks
         ],
         "momentum_stocks": report.momentum_stocks,  # 소형주 급등 후보 (dict list)
+        "rotation_signal": report.rotation_signal,  # 섹터 로테이션 시그널
+        "rotation_detail": report.rotation_detail,  # 섹터별 로테이션 상세
     }
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)

@@ -45,14 +45,24 @@ class RelayReport:
     leading_etfs: list = field(default_factory=list)
     # 교차 검증 결과
     unified_signals: list = field(default_factory=list)
+    # 전체 섹터 결과 (로테이션 분석용)
+    all_sectors: list = field(default_factory=list)
 
 
 def _run_with_timeout(func, timeout_sec: int = 60):
-    """함수를 별도 스레드에서 실행 + 하드 타임아웃 (pykrx hang 방지)"""
-    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
-    with ThreadPoolExecutor(max_workers=1) as pool:
+    """함수를 별도 스레드에서 실행 + 하드 타임아웃 (pykrx hang 방지)
+
+    주의: with ThreadPoolExecutor → shutdown(wait=True) 블로킹 문제.
+    타임아웃 후에도 스레드 종료까지 대기 → pykrx hang 시 무한 대기.
+    shutdown(wait=False, cancel_futures=True)로 즉시 반환.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
         future = pool.submit(func)
         return future.result(timeout=timeout_sec)
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
 
 def scan_relay_all() -> RelayReport:
@@ -67,6 +77,7 @@ def scan_relay_all() -> RelayReport:
         logger.info("[RelayHub] 섹터 스캔 시작...")
         try:
             sectors = _run_with_timeout(scan_all_sectors, 60)
+            report.all_sectors = sectors  # 전체 결과 보존 (로테이션 분석용)
             report.hot_sectors = [s for s in sectors if s.status in ("HOT", "WARMING")]
             report.relay_sectors = [s for s in sectors if s.status == "RELAY"]
         except Exception as e:
