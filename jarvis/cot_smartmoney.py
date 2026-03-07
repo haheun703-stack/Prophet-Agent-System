@@ -62,8 +62,8 @@ TRACKED_CONTRACTS = {
         "name": "Gold",
         "search_patterns": ["GOLD - COMMODITY EXCHANGE"],
         "kospi_beta": -0.5,      # Gold ↑ → 안전자산 선호 → KOSPI ↓ (약한)
-        "comm_weight": 1.5,
-        "spec_weight": 2.0,      # Gold 투기 포지션은 강한 역지표
+        "comm_weight": 0.5,      # Commercial = 광산업체 헤지 → 방향성 약함
+        "spec_weight": 2.5,      # Managed Money 극단이 핵심 역지표
         "korea_impact": "안전자산 수요 → 위험자산 이탈",
     },
     "crude_oil": {
@@ -90,7 +90,8 @@ Z_MODERATE = 1.0
 
 # CFTC 데이터 URL
 CFTC_LATEST_URL = "https://www.cftc.gov/dea/newcot/deafut.txt"
-CFTC_YEARLY_URL = "https://www.cftc.gov/files/dea/history/deafut_txt_{year}.zip"
+# Legacy Combined Report (연간 아카이브, annual.txt 포함)
+CFTC_YEARLY_URL = "https://www.cftc.gov/files/dea/history/deacot{year}.zip"
 
 # 캐시 유효 기간 (일)
 CACHE_MAX_AGE_DAYS = 5  # 화~금 사이에 갱신되도록
@@ -301,7 +302,17 @@ def _fetch_cot_data() -> List[Dict]:
             except ValueError:
                 pass
 
-    # 3. CFTC 최신 주간 데이터 다운로드
+    # 3. 히스토리가 부족하면 연간 아카이브 백필 (z-score 즉시 활성화)
+    contract_counts = {}
+    for r in existing_data:
+        contract_counts[r["contract_id"]] = contract_counts.get(r["contract_id"], 0) + 1
+    min_weeks = min(contract_counts.values()) if contract_counts else 0
+
+    if min_weeks < 10:
+        logger.info(f"[COT] 히스토리 부족 ({min_weeks}주) → 연간 아카이브 백필 시작")
+        existing_data = _backfill_yearly(existing_data)
+
+    # 4. CFTC 최신 주간 데이터 다운로드
     logger.info("[COT] CFTC 최신 주간 보고서 다운로드...")
     latest_text = _download_text(CFTC_LATEST_URL)
     latest_rows = _parse_cot_text(latest_text) if latest_text else []
@@ -309,7 +320,7 @@ def _fetch_cot_data() -> List[Dict]:
     if latest_rows:
         logger.info(f"[COT] 최신 주간: {len(latest_rows)}건 파싱 (날짜: {latest_rows[0].get('report_date', '?')})")
 
-        # 4. 기존 데이터에 신규 추가 (중복 제거)
+        # 5. 기존 데이터에 신규 추가 (중복 제거)
         existing_keys = {(r["contract_id"], r["report_date"]) for r in existing_data}
         new_count = 0
         for row in latest_rows:
@@ -322,19 +333,55 @@ def _fetch_cot_data() -> List[Dict]:
         if new_count > 0:
             logger.info(f"[COT] 신규 {new_count}건 추가 (누적 {len(existing_data)}건)")
 
-        # 날짜순 정렬
-        existing_data.sort(key=lambda x: x["report_date"])
+    # 날짜순 정렬 + 트림
+    existing_data.sort(key=lambda x: x["report_date"])
+    existing_data = _trim_data(existing_data, max_weeks_per_contract=60)
 
-        # 52주 초과 데이터 정리 (계약별로 최근 60주만 유지)
-        existing_data = _trim_data(existing_data, max_weeks_per_contract=60)
-
+    if existing_data:
         _save_cache(existing_data)
     else:
         # 다운로드 실패 → 기존 캐시 사용
-        if existing_data:
-            logger.warning("[COT] 다운로드 실패 → 기존 캐시 사용")
-        else:
-            logger.warning("[COT] 데이터 수집 완전 실패")
+        if cached and cached.get("data"):
+            logger.warning("[COT] 다운로드 실패 → 오래된 캐시 사용")
+            return cached["data"]
+        logger.warning("[COT] 데이터 수집 완전 실패")
+
+    return existing_data
+
+
+def _backfill_yearly(existing_data: List[Dict]) -> List[Dict]:
+    """CFTC 연간 아카이브에서 과거 데이터 백필
+
+    deacot{year}.zip → annual.txt (Legacy Combined, 헤더행 포함)
+    최근 1년(전년+올해) 다운로드 → 52주 z-score 즉시 활성화
+    """
+    now = datetime.now()
+    existing_keys = {(r["contract_id"], r["report_date"]) for r in existing_data}
+    total_added = 0
+
+    for year in [now.year - 1, now.year]:
+        url = CFTC_YEARLY_URL.format(year=year)
+        logger.info(f"[COT] {year}년 아카이브 다운로드: {url}")
+        yearly_text = _download_zip(url)
+        if not yearly_text:
+            logger.warning(f"[COT] {year}년 아카이브 실패")
+            continue
+
+        yearly_rows = _parse_cot_text(yearly_text)
+        added = 0
+        for row in yearly_rows:
+            key = (row["contract_id"], row["report_date"])
+            if key not in existing_keys:
+                existing_data.append(row)
+                existing_keys.add(key)
+                added += 1
+
+        total_added += added
+        logger.info(f"[COT] {year}년: {len(yearly_rows)}건 파싱, {added}건 신규")
+
+    if total_added > 0:
+        existing_data.sort(key=lambda x: x["report_date"])
+        logger.info(f"[COT] 백필 완료: 총 {total_added}건 추가 (누적 {len(existing_data)}건)")
 
     return existing_data
 
@@ -483,6 +530,9 @@ def analyze_cot() -> COTReport:
         kospi_beta = cdef["kospi_beta"]
         comm_weight = cdef["comm_weight"]
         spec_weight = cdef["spec_weight"]
+        # Gold: comm_weight 0.5 (광산업체 헤지=방향성 약함)
+        #        spec_weight 2.5 (Managed Money 극단=핵심 역지표)
+        # 나머지: comm_weight 1.5~2.0, spec_weight 1.0~1.5
 
         contract_bullish = 0.0  # 해당 자산이 BULLISH인 정도
 
@@ -498,14 +548,14 @@ def analyze_cot() -> COTReport:
         elif pos.comm_z <= -Z_MODERATE:
             contract_bullish -= comm_weight * 0.5
 
-        # Speculator 신호 (역지표 — 반대 방향)
+        # Speculator 신호 (역지표 — 극단 롱 → 되돌림 = bearish)
         if pos.noncomm_z >= Z_EXTREME:
-            contract_bullish -= spec_weight  # 투기 과열 → bearish
+            contract_bullish -= spec_weight
             extreme_count += 1
         elif pos.noncomm_z >= Z_MODERATE:
             contract_bullish -= spec_weight * 0.5
         elif pos.noncomm_z <= -Z_EXTREME:
-            contract_bullish += spec_weight  # 투기 과매도 → bullish
+            contract_bullish += spec_weight
             extreme_count += 1
         elif pos.noncomm_z <= -Z_MODERATE:
             contract_bullish += spec_weight * 0.5
