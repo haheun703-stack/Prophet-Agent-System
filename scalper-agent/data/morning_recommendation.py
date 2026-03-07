@@ -894,7 +894,7 @@ def run_evening_recommendation() -> RecommendationReport:
         # 종가 딕셔너리 전달 (naver 재조회 줄이기)
         close_prices = {}
         for code, name in codes_names:
-            t_info = tech.get(code, {})
+            t_info = tech_result.get(code, {})
             if t_info.get("close"):
                 close_prices[code] = int(t_info["close"])
         nationality_scores = score_supply_batch(

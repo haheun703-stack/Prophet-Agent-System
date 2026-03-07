@@ -47,39 +47,47 @@ class RelayReport:
     unified_signals: list = field(default_factory=list)
 
 
+def _run_with_timeout(func, timeout_sec: int = 60):
+    """함수를 별도 스레드에서 실행 + 하드 타임아웃 (pykrx hang 방지)"""
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(func)
+        return future.result(timeout=timeout_sec)
+
+
 def scan_relay_all() -> RelayReport:
-    """3개 에이전트 통합 스캔 (pykrx 야간 대비 소켓 타임아웃)"""
+    """3개 에이전트 통합 스캔 (pykrx 야간 대비 하드 타임아웃)"""
     report = RelayReport()
 
     # pykrx는 내부적으로 urllib/requests를 사용 → 소켓 타임아웃으로 블로킹 방지
     socket.setdefaulttimeout(_SCAN_TIMEOUT)
 
     try:
-        # ── 1. 섹터 스캔 ──
+        # ── 1. 섹터 스캔 (60초 하드 타임아웃) ──
         logger.info("[RelayHub] 섹터 스캔 시작...")
         try:
-            sectors = scan_all_sectors()
+            sectors = _run_with_timeout(scan_all_sectors, 60)
             report.hot_sectors = [s for s in sectors if s.status in ("HOT", "WARMING")]
             report.relay_sectors = [s for s in sectors if s.status == "RELAY"]
-        except (socket.timeout, TimeoutError, Exception) as e:
-            logger.warning(f"[RelayHub] 섹터 스캔 실패: {e}")
+        except Exception as e:
+            logger.warning(f"[RelayHub] 섹터 스캔 실패/타임아웃: {e}")
 
-        # ── 2. 그룹 스캔 ──
+        # ── 2. 그룹 스캔 (60초 하드 타임아웃) ──
         logger.info("[RelayHub] 그룹 스캔 시작...")
         try:
-            groups = scan_all_groups()
+            groups = _run_with_timeout(scan_all_groups, 60)
             report.hot_groups = [g for g in groups if g.status == "HOT"]
             report.relay_groups = [g for g in groups if g.status == "RELAY"]
-        except (socket.timeout, TimeoutError, Exception) as e:
-            logger.warning(f"[RelayHub] 그룹 스캔 실패: {e}")
+        except Exception as e:
+            logger.warning(f"[RelayHub] 그룹 스캔 실패/타임아웃: {e}")
 
-        # ── 3. ETF 스캔 ──
+        # ── 3. ETF 스캔 (60초 하드 타임아웃) ──
         logger.info("[RelayHub] ETF 스캔 시작...")
         try:
-            etfs = scan_all_etfs()
+            etfs = _run_with_timeout(scan_all_etfs, 60)
             report.leading_etfs = [e for e in etfs if e.status in ("LEADING", "DIVERGING")]
-        except (socket.timeout, TimeoutError, Exception) as e:
-            logger.warning(f"[RelayHub] ETF 스캔 실패: {e}")
+        except Exception as e:
+            logger.warning(f"[RelayHub] ETF 스캔 실패/타임아웃: {e}")
 
     finally:
         # 소켓 타임아웃 원복
