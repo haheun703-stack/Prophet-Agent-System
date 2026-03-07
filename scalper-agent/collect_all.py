@@ -297,6 +297,35 @@ def step5_sync_stock_data_daily():
     return synced
 
 
+def _check_bot_already_collected() -> bool:
+    """봇이 오늘 이미 수집했는지 확인 (_last_collect.json)"""
+    lc_path = DATA_DIR / "_last_collect.json"
+    if not lc_path.exists():
+        return False
+    try:
+        with open(lc_path, "r", encoding="utf-8") as f:
+            info = json.load(f)
+        return info.get("date") == date.today().strftime("%Y-%m-%d")
+    except Exception:
+        return False
+
+
+def _save_collect_result(steps: dict):
+    """수집 완료 기록"""
+    lc_path = DATA_DIR / "_last_collect.json"
+    try:
+        info = {
+            "date": date.today().strftime("%Y-%m-%d"),
+            "source": "scheduler",
+            "time": datetime.now().strftime("%H:%M:%S"),
+            "steps": steps,
+        }
+        with open(lc_path, "w", encoding="utf-8") as f:
+            json.dump(info, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.warning(f"수집 기록 저장 실패: {e}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="독립 데이터 수집기")
     parser.add_argument("--force", action="store_true", help="캐시 무시 강제 수집")
@@ -320,6 +349,17 @@ def main():
         step5_sync_stock_data_daily()
         return
 
+    # 봇이 오늘 이미 수집했는지 체크
+    bot_done = _check_bot_already_collected()
+    if bot_done:
+        logger.info("봇이 이미 오늘 수집 완료 → parquet+sync만 실행")
+        pq = step4_parquet_build()
+        sync = step5_sync_stock_data_daily()
+        _save_collect_result({"parquet": pq, "sync": sync, "skipped": "bot_done"})
+        elapsed = int(time.time() - t_start)
+        logger.info(f"보완 수집 완료: {elapsed}초")
+        return
+
     codes = get_universe_codes()
     if not codes:
         logger.error("유니버스 종목이 없습니다!")
@@ -327,20 +367,25 @@ def main():
 
     logger.info(f"유니버스: {len(codes)}종목")
 
+    results = {}
+
     # 1. 일봉
-    step1_daily_ohlcv(codes, args.force)
+    results["daily"] = step1_daily_ohlcv(codes, args.force)
 
     # 2. 수급
-    step2_supply_demand(codes, args.force)
+    results["flow"] = step2_supply_demand(codes, args.force)
 
     # 3. 국적별
-    step3_nationality(args.force)
+    results["nationality"] = step3_nationality(args.force)
 
     # 4. Parquet
-    step4_parquet_build()
+    results["parquet"] = step4_parquet_build()
 
     # 5. stock_data_daily 동기화
-    step5_sync_stock_data_daily()
+    results["sync"] = step5_sync_stock_data_daily()
+
+    # 수집 완료 기록
+    _save_collect_result(results)
 
     elapsed = int(time.time() - t_start)
     logger.info(f"{'='*60}")

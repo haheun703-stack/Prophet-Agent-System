@@ -1904,8 +1904,12 @@ class BodyHunterBot:
         chat_id = os.getenv("TELEGRAM_CHAT_ID")
         t0 = time.time()
 
-        # 1. 일봉 pykrx (한글 컬럼: 시가/고가/저가/종가/거래량)
+        # 초기값 (수집 완료 기록용)
         pykrx_cnt = 0
+        r1 = []
+        ok, fail, sync_cnt = 0, 0, 0
+
+        # 1. 일봉 pykrx (한글 컬럼: 시가/고가/저가/종가/거래량)
         try:
             from data.universe_builder import collect_daily_pykrx
             from data.kis_collector import UNIVERSE
@@ -1997,7 +2001,9 @@ class BodyHunterBot:
                 chat_id=chat_id, text="📦 Parquet 통합 빌드 시작..."
             )
             t1 = time.time()
-            ok, fail = await asyncio.to_thread(extend_parquet_all, True)
+            ok, fail = await asyncio.to_thread(
+                lambda: extend_parquet_all(codes=None, force=True)
+            )
             elapsed_pq = int(time.time() - t1)
             await context.bot.send_message(
                 chat_id=chat_id,
@@ -2009,6 +2015,33 @@ class BodyHunterBot:
             await context.bot.send_message(
                 chat_id=chat_id, text=f"⚠️ Parquet 빌드 실패: {str(e)[:200]}"
             )
+
+        # 5. stock_data_daily 동기화
+        try:
+            from collect_all import step5_sync_stock_data_daily
+            sync_cnt = await asyncio.to_thread(step5_sync_stock_data_daily)
+            logger.info(f"stock_data_daily 동기화 완료: {sync_cnt}종목")
+        except Exception as e:
+            logger.error(f"stock_data_daily 동기화 실패: {e}")
+
+        # 6. 수집 완료 기록
+        try:
+            import json as _json
+            collect_info = {
+                "date": date.today().strftime("%Y-%m-%d"),
+                "source": "bot",
+                "steps": {
+                    "daily": pykrx_cnt,
+                    "flow": len(r1) if r1 else 0,
+                    "parquet": ok,
+                    "sync": sync_cnt,
+                },
+            }
+            lc_path = Path(__file__).parent.parent / "data_store" / "_last_collect.json"
+            with open(lc_path, "w", encoding="utf-8") as f:
+                _json.dump(collect_info, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
 
     def _get_nationality_targets(self) -> list:
         """국적별 수급 수집 대상 종목 = 추천 + 보유 (중복 제거)"""
