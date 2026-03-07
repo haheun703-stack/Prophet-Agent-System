@@ -333,7 +333,7 @@ class AutoTrader:
 
         if self.mode == "swing":
             await self._morning_swing(context, _send)
-            await self._morning_momentum(context, _send)  # 소형주 급등 포착
+            # await self._morning_momentum(context, _send)  # PF 0.70 → 비활성화 (2026-03-07)
         else:
             await self._morning_day(context, _send)
 

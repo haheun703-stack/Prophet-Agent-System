@@ -126,12 +126,14 @@ class Trade:
 class PipelineBacktester:
 
     def __init__(self, start: str = "2025-11-01", end: str = "2026-02-28",
-                 initial_cash: int = 1_150_000, version: str = "v1"):
+                 initial_cash: int = 1_150_000, version: str = "v1",
+                 no_supply: bool = False):
         self.start = pd.Timestamp(start)
         self.end = pd.Timestamp(end)
         self.initial_cash = initial_cash
         self.cash = initial_cash
         self.version = version
+        self.no_supply = no_supply  # 수급 점수 OFF (비교용)
         self.params = V2_PARAMS if version == "v2" else V1_PARAMS
         self.positions: Dict[str, Position] = {}
         self.trades: List[Trade] = []
@@ -354,7 +356,9 @@ class PipelineBacktester:
 
         score += max(tech, 0) * 5  # 0~25
 
-        # ── Supply Score (0~30) ──
+        # ── Supply Filter (-20~0, 필터 모드) ──
+        #   백테스트 검증: 양수가산 PF 1.05, 양방향 PF 1.19, OFF PF 1.49
+        #   → 수급은 "거부권"으로만 사용 (양수 무시, 음수만 감점)
         fgn5 = row.get("외국인_누적5", 0)
         inst5 = row.get("기관_누적5", 0)
         if pd.isna(fgn5):
@@ -363,10 +367,13 @@ class PipelineBacktester:
             inst5 = 0
 
         supply = 0.0
-        if fgn5 > 0:
-            supply += min(fgn5 / 1e8, 15)
-        if inst5 > 0:
-            supply += min(inst5 / 1e8, 15)
+        if not self.no_supply:
+            # 양수 수급 → 0 (가산하지 않음)
+            # 음수 수급 → 감점 (거부권)
+            if fgn5 < 0:
+                supply += max(fgn5 / 1e8, -10)
+            if inst5 < 0:
+                supply += max(inst5 / 1e8, -10)
         score += supply
 
         # ── MACD Zero Cross (+15) ──
@@ -559,6 +566,8 @@ class PipelineBacktester:
 
     def _is_supply_exit(self, code: str, T: pd.Timestamp) -> bool:
         """3일 연속 외국인+기관 순매도 여부"""
+        if self.no_supply:
+            return False
         df = self.stock_data.get(code)
         if df is None:
             return False
@@ -1016,12 +1025,15 @@ if __name__ == "__main__":
                         help="초기자금 (원)")
     parser.add_argument("--version", default="v1", choices=["v1", "v2"],
                         help="v1=기본, v2=3대개선 (SL완화+연말필터+반분할)")
+    parser.add_argument("--no-supply", action="store_true",
+                        help="수급 점수 OFF (비교용)")
     args = parser.parse_args()
 
     bt = PipelineBacktester(
         start=args.start, end=args.end,
         initial_cash=args.cash,
         version=args.version,
+        no_supply=args.no_supply,
     )
     bt.load_all()
     bt.run()

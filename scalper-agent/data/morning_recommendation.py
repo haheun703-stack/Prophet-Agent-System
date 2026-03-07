@@ -883,16 +883,29 @@ def run_evening_recommendation() -> RecommendationReport:
             news_result[code] = {"sentiment": "NEUTRAL", "reason": "미분석", "score": 0}
     logger.info(f"  → 완료 ({time.time()-t0:.0f}s)")
 
-    # Step 5a: 국적별 수급 점수
+    # Step 5a: 네이버 수급 검증 (외국인/기관 5일 누적 순매매)
+    #   기존 nationality_signal.py는 KRX 국적별 데이터 3종목만 존재 → 사실상 미작동
+    #   → 네이버 금융 크롤링으로 대체 (백테스트 PF 1.50과 동일 로직)
     nationality_scores = {}
     try:
-        from data.nationality_signal import score_nationality_batch
+        t_supply = time.time()
+        from data.supply_naver import score_supply_batch
         all_code_list = [code for code, _ in codes_names]
-        nationality_scores = score_nationality_batch(all_code_list)
+        # 종가 딕셔너리 전달 (naver 재조회 줄이기)
+        close_prices = {}
+        for code, name in codes_names:
+            t_info = tech.get(code, {})
+            if t_info.get("close"):
+                close_prices[code] = int(t_info["close"])
+        nationality_scores = score_supply_batch(
+            all_code_list, close_prices=close_prices
+        )
         scored = sum(1 for sc, _ in nationality_scores.values() if sc != 0)
-        logger.info(f"[Step 5a] 국적별 수급: {scored}/{len(all_code_list)}종목 점수 반영")
+        logger.info(f"[Step 5a] 네이버 수급: {scored}/{len(all_code_list)}종목 점수 반영 ({time.time()-t_supply:.0f}s)")
     except Exception as e:
-        logger.warning(f"국적별 수급 점수 실패 (무시): {e}")
+        logger.warning(f"네이버 수급 점수 실패 (무시): {e}")
+        import traceback
+        logger.debug(traceback.format_exc())
 
     # Step 5: Soft Scoring 교차검증
     t0 = time.time()
