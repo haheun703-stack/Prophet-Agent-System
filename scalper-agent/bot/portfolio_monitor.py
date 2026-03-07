@@ -77,6 +77,34 @@ def _get_avg_volume(code: str, n_days: int = 20) -> float:
         return 0
 
 
+def _get_vwap(code: str, n_days: int = 20) -> float:
+    """최근 N일 VWAP (Volume Weighted Average Price)
+    VWAP = Σ(TP × Vol) / Σ(Vol), TP = (고가+저가+종가)/3
+    """
+    fpath = DAILY_DIR / f"{code}.csv"
+    if not fpath.exists():
+        return 0
+    try:
+        df = pd.read_csv(fpath)
+        col_map = {"고가": "high", "저가": "low", "종가": "close", "거래량": "volume"}
+        if "고가" in df.columns:
+            df = df.rename(columns=col_map)
+        for c in ("high", "low", "close", "volume"):
+            if c not in df.columns:
+                return 0
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+        tail = df.tail(n_days).dropna(subset=["high", "low", "close", "volume"])
+        if tail.empty:
+            return 0
+        tp = (tail["high"] + tail["low"] + tail["close"]) / 3
+        total_vol = tail["volume"].sum()
+        if total_vol <= 0:
+            return 0
+        return float((tp * tail["volume"]).sum() / total_vol)
+    except Exception:
+        return 0
+
+
 def _market_time_fraction() -> float:
     """현재 시각 기준 장 진행률 (0.0~1.0)
     장외 시간에는 1.0 반환 (누적거래량 = 전일 전체이므로 보정 불필요)
@@ -167,6 +195,16 @@ def generate_dashboard(kis_trader, portfolio: list[dict] = None) -> str:
             arrow = "\u25b2" if vr >= 1.5 else ("\u2500" if vr >= 0.8 else "\u25bc")
             vol_str = f"Vol{arrow}{vr:.1f}x"
 
+        # ── VWAP (20일) ──
+        vwap_val = _get_vwap(code)
+        vwap_str = ""
+        if vwap_val > 0 and current > 0:
+            vwap_diff = (current - vwap_val) / vwap_val * 100
+            if vwap_diff >= 0:
+                vwap_str = f"V\u25b2{vwap_diff:.1f}%"
+            else:
+                vwap_str = f"V\u25bc{vwap_diff:.1f}%"
+
         # ── 색상 + 태그 ──
         color = _pnl_color(pnl)
         tags = []
@@ -183,7 +221,9 @@ def generate_dashboard(kis_trader, portfolio: list[dict] = None) -> str:
         # 한글 이름 정렬 (한글=2칸, 영문=1칸)
         name_w = sum(2 if ord(c) > 0x7F else 1 for c in name)
         pad = " " * max(0, 10 - name_w)
-        line = f"{color} {name}{pad}{pnl:>+5.1f}%  {vol_str}{tag_str}"
+        # indicators 결합 (빈 문자열 제외)
+        indicators = " ".join(x for x in [vol_str, vwap_str] if x)
+        line = f"{color} {name}{pad}{pnl:>+5.1f}%  {indicators}{tag_str}"
         lines.append(line)
 
     # ── 총 평가 ──
@@ -295,7 +335,27 @@ def check_alerts(
         except Exception:
             pass
 
-        # ── 4. 급변 (3%p+ 스윙) ──
+        # ── 4. VWAP 크로스오버 ──
+        vwap_val = _get_vwap(code)
+        if vwap_val > 0:
+            above_vwap = current >= vwap_val
+            state["above_vwap"] = above_vwap
+            prev_above = prev.get("above_vwap")
+
+            if prev_above is not None and above_vwap != prev_above:
+                diff_pct = (current - vwap_val) / vwap_val * 100
+                if above_vwap:
+                    alerts.append(
+                        f"\U0001f4c8 {name} VWAP 상향돌파! "
+                        f"({vwap_val:,.0f} → {current:,} V\u25b2{diff_pct:+.1f}%)"
+                    )
+                else:
+                    alerts.append(
+                        f"\U0001f4c9 {name} VWAP 하향이탈! "
+                        f"({vwap_val:,.0f} → {current:,} V\u25bc{diff_pct:+.1f}%)"
+                    )
+
+        # ── 5. 급변 (3%p+ 스윙) ──
         prev_pnl = prev.get("pnl", pnl)
         delta = pnl - prev_pnl
         if abs(delta) >= 3.0:
