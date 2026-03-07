@@ -129,6 +129,7 @@ HELP_TEXT = """
   로테이션 — 섹터 로테이션 분석 (HOT/STAGING/다음섹터)
   선행지표 — 채권시장 선행지표 (레짐 전환 감지)
   스트레스 — 크로스에셋 상관관계 붕괴 감지
+  COT — CFTC 스마트머니 포지션 (주간)
   (자동: NIGHTWATCH 완료 후 배분 갱신)
 
 [NIGHTWATCH NXT 야간매매]
@@ -1562,6 +1563,26 @@ class BodyHunterBot:
             logger.error(f"스트레스 조회 실패: {e}", exc_info=True)
             await update.message.reply_text(f"스트레스 조회 실패: {str(e)[:200]}")
 
+    async def cmd_cot(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """4D: COT 스마트머니 포지션 조회"""
+        if not self._is_authorized(update):
+            return
+        try:
+            import sys
+            parent_path = str(Path(__file__).resolve().parent.parent.parent)
+            if parent_path not in sys.path:
+                sys.path.insert(0, parent_path)
+
+            from jarvis.cot_smartmoney import analyze_cot, format_cot_report
+            await update.message.reply_text("COT 스마트머니 분석 중... (CFTC 데이터 다운로드)")
+            report = analyze_cot()
+            msg = format_cot_report(report)
+            for chunk in _split_message(msg):
+                await update.message.reply_text(chunk)
+        except Exception as e:
+            logger.error(f"COT 조회 실패: {e}", exc_info=True)
+            await update.message.reply_text(f"COT 조회 실패: {str(e)[:200]}")
+
     # ═══════════════════════════════════════
     #  NIGHTWATCH NXT 명령어
     # ═══════════════════════════════════════
@@ -1739,6 +1760,7 @@ class BodyHunterBot:
             r"^로테이션$": self.cmd_rotation,
             r"^선행지표$": self.cmd_leading,
             r"^스트레스$": self.cmd_stress,
+            r"^COT$": self.cmd_cot,
             r"^NXT$": self.cmd_nxt,
             r"^NXT켜기$": self.cmd_nxt_on,
             r"^NXT끄기$": self.cmd_nxt_off,

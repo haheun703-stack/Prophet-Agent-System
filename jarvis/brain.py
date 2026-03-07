@@ -448,6 +448,27 @@ def _load_rotation_info() -> Dict:
         return {}
 
 
+def _load_cot_smartmoney() -> Dict:
+    """4D: COT 스마트머니 포지션 로드"""
+    try:
+        from jarvis.cot_smartmoney import analyze_cot, format_cot_report
+        report = analyze_cot()
+        return {
+            "smart_money_score": report.smart_money_score,
+            "smart_money_signal": report.smart_money_signal,
+            "extreme_count": report.extreme_count,
+            "confidence": report.confidence,
+            "signal": report.signal,
+            "data_date": report.data_date,
+            "score_trend": report.score_trend,
+            "allocation_adjust": report.allocation_adjust,
+            "telegram_block": format_cot_report(report),
+        }
+    except Exception as e:
+        logger.warning(f"[BRAIN] COT 스마트머니 로드 실패: {e}")
+        return {}
+
+
 def _load_cross_asset_stress() -> Dict:
     """3D: 크로스에셋 스트레스 지수 로드"""
     try:
@@ -490,14 +511,19 @@ def _apply_sensor_adjustments(
     alloc_pct: Dict[str, int],
     stress_info: Dict,
     leading_info: Dict,
+    cot_info: Dict = None,
 ) -> tuple:
-    """2D+3D 센서 결과로 배분 미세 조정
+    """2D+3D+4D 센서 결과로 배분 미세 조정
+
+    적용 순서: 3D(빠른 위기) → 2D(선행 전환) → 4D(느린 포지셔닝)
 
     Returns:
         (adjusted_pct, adjustment_notes)
     """
     notes = []
     adjusted = dict(alloc_pct)
+    if cot_info is None:
+        cot_info = {}
 
     # ── 3D: 크로스에셋 스트레스 조정 ──
     stress_adj = stress_info.get("allocation_adjust", {})
@@ -527,6 +553,21 @@ def _apply_sensor_adjustments(
         direction = leading_info.get("transition_direction", "")
         notes.append(f"2D 선행({direction}): 현금 {cash_shift:+d}%p")
 
+    # ── 4D: COT 스마트머니 조정 (느린 눈 — 주간) ──
+    cot_adj = cot_info.get("allocation_adjust", {})
+    cot_cash = cot_adj.get("cash_shift_pct", 0)
+    cot_inv = cot_adj.get("inverse_shift_pct", 0)
+    cot_swing = cot_adj.get("swing_reduce_pct", 0)
+
+    if cot_swing != 0:
+        adjusted["v10_swing"] = max(0, adjusted.get("v10_swing", 0) + cot_swing)
+        if cot_cash != 0:
+            adjusted["cash"] = adjusted.get("cash", 0) + cot_cash
+        if cot_inv != 0:
+            adjusted["inverse_etf"] = max(0, adjusted.get("inverse_etf", 0) + cot_inv)
+        signal = cot_info.get("smart_money_signal", "")
+        notes.append(f"4D COT({signal}): 스윙 {cot_swing:+d}%p")
+
     # 합계 100% 보정 (현금으로 조정)
     non_cash = sum(adjusted.get(k, 0) for k in STRATEGY_KEYS if k != "cash")
     adjusted["cash"] = max(0, 100 - non_cash)
@@ -543,6 +584,7 @@ def run_brain(
     1D: NIGHTWATCH 점수 → 레짐 판정 → 기본 배분
     2D: 채권시장 선행지표 → 레짐 전환 직전 감지 → 선제 배분 조정
     3D: 크로스에셋 상관 붕괴 → 유동성 위기 감지 → 방어 배분 강화
+    4D: COT 스마트머니 포지셔닝 → 주간 방향성 (느린 눈)
     [1D] 섹터 로테이션 → 다음 섹터 정보 첨부
 
     Args:
@@ -552,7 +594,7 @@ def run_brain(
     Returns:
         배분 결과 dict
     """
-    logger.info("[BRAIN] 실행 시작 (1D~3D 센서)")
+    logger.info("[BRAIN] 실행 시작 (1D~4D 센서)")
 
     # ── 1D: 레짐 판정 (기존) ──
     if regime_override:
@@ -581,10 +623,17 @@ def run_brain(
     if stress_info.get("signal"):
         logger.info(f"[BRAIN] 3D: {stress_info['signal']}")
 
-    # ── 2D+3D 센서 조정 적용 ──
-    if leading_info or stress_info:
+    # ── 4D: COT 스마트머니 (주간, 느린 눈) ──
+    logger.info("[BRAIN] 4D COT 스마트머니 분석...")
+    cot_info = _load_cot_smartmoney()
+    result["cot_smartmoney"] = cot_info
+    if cot_info.get("signal"):
+        logger.info(f"[BRAIN] 4D: {cot_info['signal']}")
+
+    # ── 2D+3D+4D 센서 조정 적용 ──
+    if leading_info or stress_info or cot_info:
         adjusted_pct, adj_notes = _apply_sensor_adjustments(
-            result["allocation_pct"], stress_info, leading_info
+            result["allocation_pct"], stress_info, leading_info, cot_info
         )
         if adj_notes:
             # 기존 배분을 조정된 배분으로 교체
@@ -605,12 +654,12 @@ def run_brain(
     save_allocation(result)
     append_history(result)
 
-    # 5. 텔레그램 메시지 (1D 배분 + 2D 선행 + 3D 스트레스 + 로테이션)
+    # 5. 텔레그램 메시지 (1D 배분 + 2D~4D 센서 + 로테이션)
     telegram_msg = format_allocation_report(result, nw_score, nw_signal)
 
     # 센서 조정 노트
     if result.get("sensor_adjustments"):
-        telegram_msg += "\n\n📡 센서 조정"
+        telegram_msg += "\n\n센서 조정"
         for note in result["sensor_adjustments"]:
             telegram_msg += f"\n  {note}"
 
@@ -621,6 +670,10 @@ def run_brain(
     # 3D 스트레스 블록 (NORMAL이 아닐 때만)
     if stress_info.get("stress_level") and stress_info["stress_level"] != "NORMAL":
         telegram_msg += "\n\n" + stress_info.get("telegram_block", "")
+
+    # 4D COT 블록 (NEUTRAL이 아닐 때만)
+    if cot_info.get("smart_money_signal") and cot_info["smart_money_signal"] != "NEUTRAL":
+        telegram_msg += "\n\n" + cot_info.get("telegram_block", "")
 
     # 로테이션 블록
     if rotation_info.get("rotation_signal"):
@@ -639,6 +692,8 @@ def run_brain(
         logger.info(f"[BRAIN] 2D: {leading_info['signal']}")
     if stress_info.get("signal"):
         logger.info(f"[BRAIN] 3D: {stress_info['signal']}")
+    if cot_info.get("signal"):
+        logger.info(f"[BRAIN] 4D: {cot_info['signal']}")
     if rotation_info.get("rotation_signal"):
         logger.info(f"[BRAIN] 로테이션: {rotation_info['rotation_signal']}")
 
