@@ -6,7 +6,8 @@ CORTEX 6단계 체제 + 소프트 스코어링 v2 + ATR TP/SL + 트레일링 스
 
 사용법:
   cd scalper-agent
-  python -m backtest.pipeline_backtest
+  python -m backtest.pipeline_backtest                    # v1 (기본)
+  python -m backtest.pipeline_backtest --version v2       # v2 (3대 개선)
   python -m backtest.pipeline_backtest --start 2025-11-01 --end 2026-02-28
 """
 
@@ -49,6 +50,23 @@ TRAILING_ACTIVATE_PCT = 0.03   # +3% → 트레일링 활성화
 TRAILING_DROP_PCT = 0.03       # 고점 대비 -3% → 청산
 MIN_CAP_억 = 10000             # 시총 1조+
 
+# ── v1 / v2 tunable params ──────────────────────────────────
+# v1 기본값 (v2는 __init__에서 오버라이드)
+V1_PARAMS = {
+    "sl_atr_mult": 0.5,     # SL = entry - ATR × 0.5
+    "sl_max_pct": 0.05,     # SL 최대 -5%
+    "tp_atr_mult": 1.6,     # TP = entry + ATR × 1.6
+    "yearend_filter": False, # 12월 계절성 필터 없음
+    "partial_tp": False,     # TP에서 전량 청산
+}
+V2_PARAMS = {
+    "sl_atr_mult": 0.7,     # SL 완화 → 노이즈 손절 방지
+    "sl_max_pct": 0.07,     # SL 최대 -7%
+    "tp_atr_mult": 2.0,     # TP 확대 → 추세 더 타기
+    "yearend_filter": True,  # 12/15~1/5 사이즈50%+조건강화
+    "partial_tp": True,      # TP에서 반분할 익절
+}
+
 # ── regime config ───────────────────────────────────────────
 REGIME_RULES = {
     "NORMAL":             {"new_buy": True,  "capital_use": 1.0},
@@ -82,6 +100,7 @@ class Position:
     high_watermark: float = 0.0
     trailing_active: bool = False
     regime_at_entry: str = "NORMAL"
+    partial_sold: bool = False
 
 
 @dataclass
@@ -107,11 +126,13 @@ class Trade:
 class PipelineBacktester:
 
     def __init__(self, start: str = "2025-11-01", end: str = "2026-02-28",
-                 initial_cash: int = 1_150_000):
+                 initial_cash: int = 1_150_000, version: str = "v1"):
         self.start = pd.Timestamp(start)
         self.end = pd.Timestamp(end)
         self.initial_cash = initial_cash
         self.cash = initial_cash
+        self.version = version
+        self.params = V2_PARAMS if version == "v2" else V1_PARAMS
         self.positions: Dict[str, Position] = {}
         self.trades: List[Trade] = []
         self.equity_curve: List[Tuple[str, float]] = []
@@ -412,8 +433,14 @@ class PipelineBacktester:
         atr = df.loc[T].get("ATR14", np.nan)
         return atr if not pd.isna(atr) else 0
 
-    def _check_entry_conditions(self, code: str, T: pd.Timestamp) -> bool:
-        """간소화 진입 조건 (3개 중 2개+)"""
+    def _is_yearend(self, T: pd.Timestamp) -> bool:
+        """12/15 ~ 1/5 연말 계절성 구간"""
+        return ((T.month == 12 and T.day >= 15) or
+                (T.month == 1 and T.day <= 5))
+
+    def _check_entry_conditions(self, code: str, T: pd.Timestamp,
+                                strict: bool = False) -> bool:
+        """간소화 진입 조건 (기본 2/3, strict=True면 3/3)"""
         df = self.stock_data.get(code)
         if df is None or T not in df.index:
             return False
@@ -428,7 +455,8 @@ class PipelineBacktester:
         cond2 = (not pd.isna(rsi)) and rsi < 75
         cond3 = (not pd.isna(ema20)) and close > ema20
 
-        return sum([cond1, cond2, cond3]) >= 2
+        threshold = 3 if strict else 2
+        return sum([cond1, cond2, cond3]) >= threshold
 
     def _try_entries(self, T: pd.Timestamp,
                      candidates: List[Tuple[str, float]]):
@@ -443,6 +471,12 @@ class PipelineBacktester:
             return
 
         capital_use = regime_rules["capital_use"]
+
+        # v2: 연말 계절성 필터
+        yearend = self.params["yearend_filter"] and self._is_yearend(T)
+        if yearend:
+            capital_use *= 0.5  # 사이즈 절반
+
         entries_today = 0
 
         for code, score in candidates:
@@ -462,17 +496,22 @@ class PipelineBacktester:
             if idx < 1:
                 continue
             prev_day = df.index[idx - 1]
-            if not self._check_entry_conditions(code, prev_day):
+            if not self._check_entry_conditions(code, prev_day,
+                                                strict=yearend):
                 continue
 
-            # ATR 기반 SL/TP (전날 기준)
+            # ATR 기반 SL/TP (전날 기준, v1/v2 파라미터)
             atr = self._calc_atr(code, prev_day)
             if atr <= 0:
                 atr = entry_price * 0.03  # 폴백: 3%
 
-            sl = entry_price - atr * 0.5
-            sl = max(sl, entry_price * 0.95)  # 최대 -5%
-            tp = entry_price + atr * 1.6
+            sl_mult = self.params["sl_atr_mult"]
+            sl_max = self.params["sl_max_pct"]
+            tp_mult = self.params["tp_atr_mult"]
+
+            sl = entry_price - atr * sl_mult
+            sl = max(sl, entry_price * (1 - sl_max))
+            tp = entry_price + atr * tp_mult
 
             # 매수 금액
             usable = self.cash * (1 - CASH_RESERVE) * capital_use
@@ -540,6 +579,51 @@ class PipelineBacktester:
                 return False
         return True
 
+    def _partial_close(self, code: str, exit_price: float,
+                       exit_date: pd.Timestamp, reason: str,
+                       sell_shares: int):
+        """부분 청산 — 지정 수량만 매도, 포지션 유지"""
+        pos = self.positions[code]
+        if sell_shares >= pos.shares:
+            # 전량이면 일반 청산
+            self._close_position(code, exit_price, exit_date, reason)
+            return
+
+        gross = exit_price * sell_shares
+        sell_cost_amt = gross * SELL_COST
+        net = gross - sell_cost_amt
+
+        # 비례 원가 계산
+        cost_ratio = sell_shares / pos.shares
+        partial_cost = pos.cost * cost_ratio
+
+        pnl = net - partial_cost
+        actual_pnl_pct = (net / partial_cost - 1) * 100
+
+        hold_days = len(pd.bdate_range(pos.entry_date, exit_date)) - 1
+        if hold_days < 1:
+            hold_days = 1
+
+        trade = Trade(
+            code=code, name=pos.name,
+            entry_date=str(pos.entry_date.date()),
+            exit_date=str(exit_date.date()),
+            entry_price=pos.entry_price,
+            exit_price=round(exit_price, 0),
+            shares=sell_shares,
+            pnl=round(pnl, 0),
+            pnl_pct=round(actual_pnl_pct, 2),
+            exit_reason=reason,
+            regime=pos.regime_at_entry,
+            hold_days=hold_days,
+        )
+        self.trades.append(trade)
+        self.cash += net
+
+        # 포지션 업데이트
+        pos.shares -= sell_shares
+        pos.cost -= partial_cost
+
     def _close_position(self, code: str, exit_price: float,
                         exit_date: pd.Timestamp, reason: str):
         """포지션 청산 + Trade 기록"""
@@ -577,6 +661,7 @@ class PipelineBacktester:
     def _check_exits(self, T: pd.Timestamp):
         """보유 포지션 청산 체크"""
         codes_to_exit = []
+        partial_exits = []  # (code, price, reason, shares)
 
         for code, pos in self.positions.items():
             df = self.stock_data.get(code)
@@ -600,10 +685,22 @@ class PipelineBacktester:
                 codes_to_exit.append((code, pos.sl, "SL_HIT"))
                 continue
 
-            # 2) Take Profit
+            # 2) Take Profit — v2: 반분할 익절
             if high >= pos.tp:
-                codes_to_exit.append((code, pos.tp, "TP_HIT"))
-                continue
+                if self.params["partial_tp"] and not pos.partial_sold:
+                    # 절반만 청산, 나머지 트레일링
+                    half = pos.shares // 2
+                    if half > 0:
+                        partial_exits.append((code, pos.tp, "TP_PARTIAL", half))
+                    pos.partial_sold = True
+                    pos.trailing_active = True
+                    pos.high_watermark = max(pos.high_watermark, high)
+                    continue  # 나머지는 트레일링에서 처리
+                elif not self.params["partial_tp"]:
+                    # v1: 전량 청산
+                    codes_to_exit.append((code, pos.tp, "TP_HIT"))
+                    continue
+                # v2 + 이미 partial_sold → 트레일링으로 넘김
 
             # 3) Trailing Stop
             if high >= pos.entry_price * (1 + TRAILING_ACTIVATE_PCT):
@@ -628,8 +725,15 @@ class PipelineBacktester:
                 codes_to_exit.append((code, close, "TIMEOUT"))
                 continue
 
+        # 부분 청산 먼저 (포지션 유지)
+        for code, px, reason, shares in partial_exits:
+            if code in self.positions:
+                self._partial_close(code, px, T, reason, shares)
+
+        # 전량 청산
         for code, px, reason in codes_to_exit:
-            self._close_position(code, px, T, reason)
+            if code in self.positions:
+                self._close_position(code, px, T, reason)
 
     # ── equity tracking ─────────────────────────────────────
 
@@ -652,7 +756,8 @@ class PipelineBacktester:
             print("[ERROR] No trading days — check data")
             return
 
-        print(f"Backtesting: {self.start.date()} ~ {self.end.date()}")
+        print(f"Backtesting [{self.version.upper()}]: "
+              f"{self.start.date()} ~ {self.end.date()}")
         print(f"Initial cash: {self.initial_cash:,}")
         print(f"Max positions: {MAX_POSITIONS}")
         print()
@@ -766,10 +871,17 @@ class PipelineBacktester:
         line = "-" * 55
 
         print(sep)
-        print("  Body Hunter v4 - Pipeline Backtest Results")
+        ver = self.version.upper()
+        print(f"  Body Hunter v4 - Pipeline Backtest Results [{ver}]")
         print(f"  기간: {self.start.date()} ~ {self.end.date()} "
               f"({len(self.trading_days)} 거래일)")
         print(f"  초기자금: {self.initial_cash:>12,}원")
+        if self.version == "v2":
+            p = self.params
+            print(f"  SL: ATR×{p['sl_atr_mult']} (max -{p['sl_max_pct']*100:.0f}%) | "
+                  f"TP: ATR×{p['tp_atr_mult']} | "
+                  f"연말필터: {'ON' if p['yearend_filter'] else 'OFF'} | "
+                  f"반분할: {'ON' if p['partial_tp'] else 'OFF'}")
         print(sep)
         print()
         print("  성과 요약")
@@ -819,7 +931,7 @@ class PipelineBacktester:
         reasons = defaultdict(int)
         for t in trades:
             reasons[t.exit_reason] += 1
-        for reason in ["TP_HIT", "TRAILING", "SL_HIT",
+        for reason in ["TP_HIT", "TP_PARTIAL", "TRAILING", "SL_HIT",
                        "SUPPLY_EXIT", "TIMEOUT", "PERIOD_END"]:
             cnt = reasons.get(reason, 0)
             if cnt > 0:
@@ -869,15 +981,16 @@ class PipelineBacktester:
                 "hold_days": t.hold_days,
             })
         df = pd.DataFrame(rows)
+        ver = self.version
         out_path = ROOT / "backtest" / (
-            f"pipeline_result_{self.start.date()}_{self.end.date()}.csv"
+            f"pipeline_result_{ver}_{self.start.date()}_{self.end.date()}.csv"
         )
         df.to_csv(out_path, index=False, encoding="utf-8-sig")
         print(f"  CSV saved: {out_path.name}")
 
         # equity curve
         eq_path = ROOT / "backtest" / (
-            f"pipeline_equity_{self.start.date()}_{self.end.date()}.csv"
+            f"pipeline_equity_{ver}_{self.start.date()}_{self.end.date()}.csv"
         )
         eq_df = pd.DataFrame(self.equity_curve, columns=["date", "equity"])
         eq_df.to_csv(eq_path, index=False, encoding="utf-8-sig")
@@ -901,11 +1014,14 @@ if __name__ == "__main__":
                         help="종료일 (YYYY-MM-DD)")
     parser.add_argument("--cash", type=int, default=1_150_000,
                         help="초기자금 (원)")
+    parser.add_argument("--version", default="v1", choices=["v1", "v2"],
+                        help="v1=기본, v2=3대개선 (SL완화+연말필터+반분할)")
     args = parser.parse_args()
 
     bt = PipelineBacktester(
         start=args.start, end=args.end,
         initial_cash=args.cash,
+        version=args.version,
     )
     bt.load_all()
     bt.run()
