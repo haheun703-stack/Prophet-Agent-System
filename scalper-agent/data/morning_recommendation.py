@@ -16,8 +16,14 @@ Stage 3: 08:50 최종 확인
 """
 
 import logging
+import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
+
+# .env 로드 (상위 디렉터리)
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
 
 logger = logging.getLogger("BH.Recommend")
 
