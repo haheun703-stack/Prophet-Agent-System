@@ -125,13 +125,18 @@ class DynamicTargetEngine:
         )
         atr = float(np.mean(tr))
 
-        # 초기 SL/TP
-        atr_sl = int(entry_price - atr * 0.5)
-        # SL 최대 -5% 캡 (ATR이 너무 넓으면 제한)
-        max_sl = int(entry_price * 0.95)
+        # 초기 SL/TP — 체제별 파라미터 적용 (진입 시점 체제 고정)
+        from data.market_health import get_regime_rules
+        rules = get_regime_rules()
+        sl_mult = rules.get("sl_atr_mult", 0.5)
+        sl_max_pct = rules.get("sl_max_pct", 0.05)
+        tp_mult = rules.get("tp_atr_mult", 1.6)
+
+        atr_sl = int(entry_price - atr * sl_mult)
+        max_sl = int(entry_price * (1 - sl_max_pct))
         initial_sl = max(atr_sl, max_sl)
 
-        initial_tp = int(entry_price + atr * 1.6)
+        initial_tp = int(entry_price + atr * tp_mult)
 
         # 매집원가 계산 (20일 VWAP 기관순매수 가중)
         inst_cost = self._calc_inst_cost(code, df)

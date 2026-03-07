@@ -81,14 +81,47 @@ class Regime(Enum):
     RECOVERY_CONFIRMED = "RECOVERY_CONFIRMED"
 
 
-# 체제별 봇 행동 규칙
+# 체제별 봇 행동 규칙 (v2: SL/TP 리스크 파라미터 추가)
+# 백테스트 검증 결과:
+#   불장(NORMAL) → v1: 타이트 SL/빠른 TP (+18.2%)
+#   회복장(RECOVERY) → v2: 넓은 SL/반분할 TP (승률+2.6%p)
 REGIME_RULES = {
-    Regime.NORMAL:             {"new_buy": True,  "capital_use": 1.0},
-    Regime.CAUTION:            {"new_buy": True,  "capital_use": 0.7},
-    Regime.SHOCK:              {"new_buy": False, "capital_use": 0.5},
-    Regime.PANIC:              {"new_buy": False, "capital_use": 0.3},
-    Regime.RECOVERY_EARLY:     {"new_buy": True,  "capital_use": 0.5},
-    Regime.RECOVERY_CONFIRMED: {"new_buy": True,  "capital_use": 0.8},
+    Regime.NORMAL: {
+        "new_buy": True, "capital_use": 1.0,
+        "sl_atr_mult": 0.5, "sl_max_pct": 0.05,   # v1: 타이트
+        "tp_atr_mult": 1.6,                         # v1: 빠른 TP
+        "partial_tp": False,                         # 전량 청산
+    },
+    Regime.CAUTION: {
+        "new_buy": True, "capital_use": 0.7,
+        "sl_atr_mult": 0.6, "sl_max_pct": 0.06,   # 약간 완화
+        "tp_atr_mult": 1.8,
+        "partial_tp": False,
+    },
+    Regime.SHOCK: {
+        "new_buy": False, "capital_use": 0.5,
+        "sl_atr_mult": 0.7, "sl_max_pct": 0.07,   # v2: 넓은 SL
+        "tp_atr_mult": 2.0,
+        "partial_tp": True,                          # 반분할
+    },
+    Regime.PANIC: {
+        "new_buy": False, "capital_use": 0.3,
+        "sl_atr_mult": 0.8, "sl_max_pct": 0.08,   # 가장 넓은 SL
+        "tp_atr_mult": 2.0,
+        "partial_tp": True,
+    },
+    Regime.RECOVERY_EARLY: {
+        "new_buy": True, "capital_use": 0.5,
+        "sl_atr_mult": 0.7, "sl_max_pct": 0.07,   # v2: 줍줍 모드
+        "tp_atr_mult": 2.0,
+        "partial_tp": True,                          # 반분할 (추세 타기)
+    },
+    Regime.RECOVERY_CONFIRMED: {
+        "new_buy": True, "capital_use": 0.8,
+        "sl_atr_mult": 0.6, "sl_max_pct": 0.06,   # 중간
+        "tp_atr_mult": 1.8,
+        "partial_tp": True,
+    },
 }
 
 # 체제 전환 임계값
@@ -1021,25 +1054,30 @@ def get_position_multiplier() -> float:
 
 
 def get_regime_rules() -> dict:
-    """현재 체제 기반 행동 규칙 조회
+    """현재 체제 기반 행동 규칙 조회 (v2: SL/TP 파라미터 포함)
 
     Returns:
-        {"regime": "NORMAL", "new_buy": True, "capital_use": 1.0}
+        {"regime": "NORMAL", "new_buy": True, "capital_use": 1.0,
+         "sl_atr_mult": 0.5, "sl_max_pct": 0.05, "tp_atr_mult": 1.6,
+         "partial_tp": False}
     """
+    default_rules = REGIME_RULES[Regime.NORMAL]
+    fallback = {"regime": "NORMAL", **default_rules}
+
     health_path = DATA_DIR / "market_health.json"
     if not health_path.exists():
-        return {"regime": "NORMAL", "new_buy": True, "capital_use": 1.0}
+        return fallback
     try:
         with open(health_path, "r", encoding="utf-8") as f:
             data = json.load(f)
         ts = datetime.fromisoformat(data["timestamp"])
         if (datetime.now() - ts).total_seconds() > 6 * 3600:
-            return {"regime": "NORMAL", "new_buy": True, "capital_use": 1.0}
+            return fallback
         regime = data.get("regime", "NORMAL")
-        rules = REGIME_RULES.get(Regime[regime], REGIME_RULES[Regime.NORMAL])
-        return {"regime": regime, "new_buy": rules["new_buy"], "capital_use": rules["capital_use"]}
+        rules = REGIME_RULES.get(Regime[regime], default_rules)
+        return {"regime": regime, **rules}
     except Exception:
-        return {"regime": "NORMAL", "new_buy": True, "capital_use": 1.0}
+        return fallback
 
 
 def get_shock_info() -> dict:

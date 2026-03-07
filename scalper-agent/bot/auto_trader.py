@@ -459,13 +459,19 @@ class AutoTrader:
             await _send(f"보유 {current_positions}종목 — 추가 매수 불가")
             return
 
+        # ── 연말 계절성 필터 (12/15~1/5): 사이즈 축소 ──
+        now = datetime.now()
+        is_yearend = (now.month == 12 and now.day >= 15) or (now.month == 1 and now.day <= 5)
+
         # ── 매수 금액: 실제 잔고 기반 동적 계산 ──
-        # (하드코딩 480000 제거 → 가용 현금 / 매수할 종목수)
         # CORTEX 체제 기반 자본사용 배수 적용
         available_cash = bal.get("cash", 0) if bal.get("success") else 0
         num_targets = min(len(candidates), slots)
         cash_reserve_ratio = self.config.get("risk", {}).get("min_cash_ratio", 0.10)
         capital_use = regime_rules.get("capital_use", 1.0)
+        if is_yearend:
+            capital_use *= 0.5  # 연말 시즌: 50% 축소
+            await _send("연말 계절성 필터: 사이즈 50% 축소 (12/15~1/5)")
         usable_cash = int(available_cash * (1 - cash_reserve_ratio) * capital_use)
         buy_amount = usable_cash // num_targets if num_targets > 0 else 0
 
@@ -704,8 +710,12 @@ class AutoTrader:
                         f"{' '.join(conditions_detail)}"
                     )
 
-                # ── 진입 조건 충족! (6개 중 3개 이상) → 분할매수 ──
-                if conditions_met >= 3:
+                # ── 진입 조건 충족! → 분할매수 ──
+                # 연말 계절성(12/15~1/5): 4개 이상 / 평시: 3개 이상
+                _now = datetime.now()
+                _yearend = (_now.month == 12 and _now.day >= 15) or (_now.month == 1 and _now.day <= 5)
+                entry_threshold = 4 if _yearend else 3
+                if conditions_met >= entry_threshold:
                     detail_str = " + ".join(conditions_detail)
                     split_done = watch.get("split_done", 0)
                     split_count = watch.get("split_count", 3)
@@ -1375,9 +1385,28 @@ class AutoTrader:
                     self._positions.pop(code, None)
                     await self._alert(f"⛔ 동적 손절: {name}({code}) @ {cp:,}")
                 elif action == ACTION_FULL_SELL:
-                    result = self.trader.liquidate_one(code)
-                    self._positions.pop(code, None)
-                    await self._alert(f"🔴 동적 전량매도: {name}({code}) @ {cp:,} ({reason})")
+                    # 체제별 반분할 익절: TP 히트 + partial_tp 체제 + 미분할 상태
+                    from data.market_health import get_regime_rules as _get_rules
+                    _rules = _get_rules()
+                    is_tp_hit = pnl > 0 and "트레일링" not in reason and "하드스탑" not in reason
+                    if (is_tp_hit and _rules.get("partial_tp", False)
+                            and not pos.get("partial_sold", False)):
+                        # 반분할: 50%만 매도, 나머지 트레일링
+                        bal_pt = self.trader.fetch_balance()
+                        for p in bal_pt.get("positions", []):
+                            if p["code"] == code:
+                                half = max(1, p["qty"] // 2)
+                                self.trader.smart_sell(code, half)
+                                pos["partial_sold"] = True
+                                await self._alert(
+                                    f"🟡 반분할 익절: {name}({code}) {half}주 @ {cp:,}\n"
+                                    f"   나머지 트레일링 전환 ({reason})"
+                                )
+                                break
+                    else:
+                        result = self.trader.liquidate_one(code)
+                        self._positions.pop(code, None)
+                        await self._alert(f"🔴 동적 전량매도: {name}({code}) @ {cp:,} ({reason})")
                 elif action == ACTION_ADD:
                     # ── 추매: 업사이드 8%+ → 추가 매수 실행 ──
                     risk_ok, risk_reason = self.check_risk_gate()
