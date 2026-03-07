@@ -30,6 +30,10 @@ from bot.auto_trader import AutoTrader
 
 logger = logging.getLogger("BH.Bot")
 
+# APScheduler 로그 스팸 억제 (장외시간 30초마다 "executed successfully" 제거)
+logging.getLogger("apscheduler.executors.default").setLevel(logging.WARNING)
+logging.getLogger("apscheduler.scheduler").setLevel(logging.WARNING)
+
 # 텔레그램 4096자 제한
 TG_MAX = 4096
 
@@ -536,10 +540,11 @@ class BodyHunterBot:
         """보유종목 이상 감지 (장중 60초 간격)"""
         from datetime import date as _date
         now = datetime.now()
-        # 장중만 동작 (09:00~15:30)
+        # 장중만 동작 (09:00~15:30, 주말 제외)
         if _date.today().weekday() >= 5:
             return
-        if now.hour < 9 or (now.hour >= 15 and now.minute >= 30):
+        now_min = now.hour * 60 + now.minute
+        if now_min < 540 or now_min >= 930:  # 09:00=540, 15:30=930
             return
 
         try:
