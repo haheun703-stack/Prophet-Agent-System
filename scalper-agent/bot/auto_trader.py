@@ -449,6 +449,16 @@ class AutoTrader:
                         lines.append(f"    📐 {pl_line}")
                 except Exception:
                     pass
+                # Equal Level 1줄 추가
+                try:
+                    from strategies.equal_level_detector import format_telegram_eq
+                    eq_line = format_telegram_eq(
+                        c['code'], c['name'], c.get('entry') or c.get('close', 0)
+                    )
+                    if eq_line:
+                        lines.append(f"    🔲 {eq_line}")
+                except Exception:
+                    pass
             await _send("\n".join(lines))
             return
 
@@ -1981,9 +1991,34 @@ class AutoTrader:
                 await context.bot.send_message(chat_id=chat_id, text=text)
 
         try:
-            from strategies.premium_levels import run_premium_levels
+            from strategies.premium_levels import run_premium_levels, load_premium_levels, PL_DIR
             results = await asyncio.to_thread(run_premium_levels)
-            await _send(f"📐 프리미엄 레벨 {len(results)}종목 계산 완료")
+
+            # Equal Level 탐지 + PL 머지
+            eq_count = 0
+            try:
+                from strategies.equal_level_detector import (
+                    run_equal_levels, merge_eq_to_premium_levels,
+                )
+                eq_results = await asyncio.to_thread(run_equal_levels)
+                if eq_results:
+                    pl_data = load_premium_levels()
+                    for code, eq_info in eq_results.items():
+                        if code in pl_data:
+                            merge_eq_to_premium_levels(pl_data[code], eq_info)
+                            eq_count += 1
+                    if eq_count > 0:
+                        import json as _json
+                        out_path = PL_DIR / f"{dt_date.today().isoformat()}.json"
+                        with open(out_path, "w", encoding="utf-8") as f:
+                            _json.dump(pl_data, f, ensure_ascii=False, indent=2)
+            except Exception as e:
+                logger.warning(f"Equal Level 실패: {e}")
+
+            await _send(
+                f"📐 프리미엄 레벨 {len(results)}종목 계산 완료\n"
+                f"  EQ Level: {eq_count}종목 머지"
+            )
         except Exception as e:
             logger.error(f"프리미엄 레벨 실패: {e}")
             await _send(f"⚠️ 프리미엄 레벨 실패: {str(e)[:200]}")

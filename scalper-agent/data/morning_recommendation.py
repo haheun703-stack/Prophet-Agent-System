@@ -662,10 +662,19 @@ def _step5_cross_validate(
         except Exception:
             pass
 
+        # ── Equal Level 보정 (ICT EQ High/Low) ──
+        eq_adj = 0.0
+        try:
+            from strategies.equal_level_detector import get_eq_score_adjustment
+            eq_adj, _eq_reason = get_eq_score_adjustment(code, close)
+        except Exception:
+            pass
+
         # ── 합산 ──────────────────────────────
         raw_total = (relay_sc + premove_sc + tech_sc + bargain_sc + cross_bonus
                      + nat_sc + news_pen + obv_pen + rel_pen
-                     + shock_pen + opp_bonus + rotation_bonus + or_bias_adj)
+                     + shock_pen + opp_bonus + rotation_bonus + or_bias_adj
+                     + eq_adj)
         # CORTEX 체제 배수 적용
         total = raw_total * regime_mult
 
