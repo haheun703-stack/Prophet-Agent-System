@@ -476,13 +476,30 @@ class AutoTrader:
         usable_cash = int(available_cash * (1 - cash_reserve_ratio) * capital_use)
         buy_amount = usable_cash // num_targets if num_targets > 0 else 0
 
+        # ── BRAIN 자본 배분 캡 적용 ──
+        brain_alloc = self._load_brain_allocation()
+        brain_cap = 0
+        if brain_alloc:
+            brain_cap = brain_alloc.get("allocation_krw", {}).get("v10_swing", 0)
+            if brain_cap > 0 and usable_cash > brain_cap:
+                old_usable = usable_cash
+                usable_cash = brain_cap
+                buy_amount = usable_cash // num_targets if num_targets > 0 else 0
+                brain_regime = brain_alloc.get("effective_regime", "?")
+                await _send(
+                    f"BRAIN 캡 적용: {brain_regime}\n"
+                    f"스윙 배분 {brain_cap:,}원 "
+                    f"(잔고 {old_usable:,}원 → {usable_cash:,}원)"
+                )
+
         if buy_amount < 50000:
             await _send(f"가용 현금 부족: {available_cash:,}원 → 매수 불가")
             return
 
         await _send(
-            f"💰 자금 배분: 현금 {available_cash:,}원 "
-            f"→ {num_targets}종목 × {buy_amount:,}원"
+            f"자금 배분: 현금 {available_cash:,}원 "
+            f"→ {num_targets}종목 x {buy_amount:,}원"
+            + (f" (BRAIN {brain_alloc.get('effective_regime', '')})" if brain_cap else "")
         )
 
         registered = 0
@@ -1786,6 +1803,86 @@ class AutoTrader:
             await _send(f"❌ 미국장 체크 실패: {e}")
 
     # ═══════════════════════════════════════
+    #  JARVIS BRAIN 자본 배분
+    # ═══════════════════════════════════════
+
+    def _load_brain_allocation(self) -> dict:
+        """brain_allocation.json 로드 — 매수금액 캡에 사용"""
+        brain_path = BASE_DIR.parent / "jarvis" / "data" / "brain_allocation.json"
+        if not brain_path.exists():
+            return {}
+        try:
+            with open(brain_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"BRAIN 배분 로드 실패: {e}")
+            return {}
+
+    async def _run_brain_after_nightwatch(self, _send):
+        """NIGHTWATCH 완료 후 BRAIN 자본 배분 자동 실행"""
+        import sys
+        sys.path.insert(0, str(BASE_DIR.parent))
+
+        from jarvis.brain import run_brain
+
+        # 총 자금: 실시간 잔고 기준 (현금 + 평가액)
+        bal = self.trader.fetch_balance()
+        if bal.get("success"):
+            total = bal.get("cash", 0) + sum(
+                p.get("eval_amount", 0) for p in bal.get("positions", [])
+            )
+            total = max(total, 500_000)  # 최소 50만원
+        else:
+            total = 1_150_000  # 조회 실패 시 기본값
+
+        result = await asyncio.to_thread(run_brain, None, total)
+
+        msg = result.get("telegram_message", "")
+        if msg:
+            await _send(msg)
+        logger.info(
+            f"[BRAIN] 자동 실행 완료: {result['effective_regime']} "
+            f"(자금 {total:,}원)"
+        )
+
+    async def job_brain_allocation(self, context):
+        """16:36 — BRAIN 자본 배분 백업 스케줄 (NIGHTWATCH 실패 대비)"""
+        from datetime import date as dt_date
+        if dt_date.today().weekday() >= 5:
+            return
+
+        # NIGHTWATCH에서 이미 실행했으면 스킵
+        brain_path = BASE_DIR.parent / "jarvis" / "data" / "brain_allocation.json"
+        if brain_path.exists():
+            try:
+                with open(brain_path, "r", encoding="utf-8") as f:
+                    alloc = json.load(f)
+                alloc_date = alloc.get("timestamp", "")[:10]
+                if alloc_date == dt_date.today().isoformat():
+                    logger.info("[BRAIN] 오늘 이미 실행됨 — 백업 스킵")
+                    return
+            except Exception:
+                pass
+
+        chat_id = None
+        if not self._send_alert:
+            import os
+            chat_id = os.getenv("TELEGRAM_CHAT_ID")
+
+        async def _send(text):
+            if self._send_alert:
+                await self._send_alert(text)
+            elif chat_id:
+                await context.bot.send_message(chat_id=chat_id, text=text)
+
+        try:
+            await _send("BRAIN 백업 실행 (NIGHTWATCH 미실행)")
+            await self._run_brain_after_nightwatch(_send)
+        except Exception as e:
+            logger.error(f"BRAIN 백업 실패: {e}")
+            await _send(f"BRAIN 백업 실패: {e}")
+
+    # ═══════════════════════════════════════
     #  NIGHTWATCH NXT 야간매매
     # ═══════════════════════════════════════
 
@@ -1859,6 +1956,13 @@ class AutoTrader:
             report = await asyncio.to_thread(run_nightwatch)
             msg = format_nightwatch_report(report)
             await _send(msg)
+
+            # ── BRAIN 자본 배분 자동 실행 ──
+            try:
+                await self._run_brain_after_nightwatch(_send)
+            except Exception as e_brain:
+                logger.error(f"BRAIN 실행 실패: {e_brain}")
+                await _send(f"BRAIN 배분 실패: {e_brain}")
 
             # NXT 포지션 저장
             self._nightwatch_report = report

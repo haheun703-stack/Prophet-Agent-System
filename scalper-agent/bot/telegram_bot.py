@@ -63,7 +63,7 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
         ["시나리오", "현재잔고", "체결내역"],
         ["포트폴리오", "시작", "정지"],
         ["상태", "유니버스", "일지"],
-        ["도움", "청산"],
+        ["배분현황", "도움", "청산"],
     ],
     resize_keyboard=True,
 )
@@ -122,6 +122,10 @@ HELP_TEXT = """
   자동취소 — 대기 중 자동매수 취소
   위기모드 [사유] — 매수 완전 차단
   위기해제 — 위기 모드 해제
+
+[JARVIS BRAIN 자본 배분]
+  배분현황 — 현재 BRAIN 자본 배분 지시 조회
+  (자동: NIGHTWATCH 완료 후 배분 갱신)
 
 [NIGHTWATCH NXT 야간매매]
   NXT — NIGHTWATCH 상태 + NXT 포지션
@@ -1444,6 +1448,46 @@ class BodyHunterBot:
             await update.message.reply_text(f"❌ 추천 조회 실패: {e}")
 
     # ═══════════════════════════════════════
+    #  JARVIS BRAIN 자본 배분
+    # ═══════════════════════════════════════
+
+    async def cmd_brain(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """BRAIN 자본 배분 현황 조회"""
+        if not self._is_authorized(update):
+            return
+        try:
+            import sys
+            scalper_dir = Path(__file__).resolve().parent.parent
+            project_root = scalper_dir.parent
+            if str(project_root) not in sys.path:
+                sys.path.insert(0, str(project_root))
+
+            brain_path = project_root / "jarvis" / "data" / "brain_allocation.json"
+            if not brain_path.exists():
+                await update.message.reply_text(
+                    "BRAIN 배분 데이터 없음\n"
+                    "NIGHTWATCH 실행 후 자동 생성됩니다"
+                )
+                return
+
+            import json as _json
+            with open(brain_path, "r", encoding="utf-8") as f:
+                alloc = _json.load(f)
+
+            from jarvis.brain import format_allocation_report
+            msg = format_allocation_report(alloc)
+
+            # 마지막 갱신 시간 표시
+            ts = alloc.get("timestamp", "")
+            msg += f"\n\n(갱신: {ts})"
+
+            await update.message.reply_text(msg)
+
+        except Exception as e:
+            logger.error(f"BRAIN 조회 실패: {e}", exc_info=True)
+            await update.message.reply_text(f"BRAIN 조회 실패: {str(e)[:200]}")
+
+    # ═══════════════════════════════════════
     #  NIGHTWATCH NXT 명령어
     # ═══════════════════════════════════════
 
@@ -1616,6 +1660,7 @@ class BodyHunterBot:
             r"^릴레이종합$": self.cmd_relay_hub,
             r"^내일추천$": self.cmd_recommendation,
             r"^국적수급$": self.cmd_nationality,
+            r"^배분현황$": self.cmd_brain,
             r"^NXT$": self.cmd_nxt,
             r"^NXT켜기$": self.cmd_nxt_on,
             r"^NXT끄기$": self.cmd_nxt_off,
@@ -1776,6 +1821,10 @@ class BodyHunterBot:
         # Stage 2: 미국장 체크 (06:30 — 다음날 새벽)
         jq.run_daily(self.auto_trader.job_us_market_check, time=kst_time(6, 30))
         logger.info("미국장 체크 등록: 06:30 KST")
+
+        # ── JARVIS BRAIN 자본 배분 (백업용 — NIGHTWATCH 미실행 대비) ──
+        jq.run_daily(self.auto_trader.job_brain_allocation, time=kst_time(16, 36))
+        logger.info("BRAIN 배분 백업 등록: 16:36 KST")
 
         # ── NIGHTWATCH NXT 야간매매 ──
         nw_cfg = self.config.get("nightwatch", {})

@@ -221,74 +221,113 @@ SMALLCAP_FILE = DATA_DIR / "universe_smallcap.json"
 
 
 def build_smallcap_universe(min_cap_억: int = 30, max_cap_억: int = 500) -> dict:
-    """소형주 유니버스 빌드 (시총 300억~5000억)
+    """소형주 유니버스 빌드 (시총 300억~5000억) — 네이버 금융 기반
 
     대형주 유니버스와 완전 분리. 급등주 모멘텀 스캐너 전용.
+    pykrx 인코딩 이슈 우회를 위해 네이버 금융에서 시총/거래량 수집.
 
     Args:
         min_cap_억: 최소 시총 (기본 30 = 300억)
         max_cap_억: 최대 시총 (기본 500 = 5000억)
     """
-    from pykrx import stock
+    import requests
+    from bs4 import BeautifulSoup
 
     print(f"\n  소형주 유니버스 빌드 — 시총 {min_cap_억:,}~{max_cap_억:,}억원")
     print("=" * 60)
 
-    date = _find_latest_trading_day()
-    print(f"  기준일: {date}")
-
-    cap_df = stock.get_market_cap_by_ticker(date, market="ALL")
-    nonzero = cap_df[cap_df["시가총액"] > 0].copy()
-
-    min_won = min_cap_억 * 1_0000_0000
-    max_won = max_cap_억 * 1_0000_0000
-    filtered = nonzero[(nonzero["시가총액"] >= min_won) & (nonzero["시가총액"] <= max_won)].copy()
-
-    kospi_set = set(stock.get_market_ticker_list(date, market="KOSPI"))
-
-    # 스팩/리츠/우선주 제거
+    hdrs = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     exclude_keywords = ["스팩", "SPAC", "리츠", "우B", "우C"]
     universe = {}
 
-    for code in filtered.index:
-        name = stock.get_market_ticker_name(code)
-        if not name:
-            continue
+    # 코스피(sosok=0) + 코스닥(sosok=1) 전종목 시총순 크롤링
+    for sosok, market_name in [(0, "KOSPI"), (1, "KOSDAQ")]:
+        page = 1
+        last_page = 1
+        reached_min = False
 
-        skip = False
-        for kw in exclude_keywords:
-            if kw in name:
-                skip = True
-                break
-        # 우선주 제거 (코드 끝자리 5~9)
-        if code[-1] in "56789" and "우" in name:
-            skip = True
-        if skip:
-            continue
+        while page <= last_page and not reached_min:
+            url = f"https://finance.naver.com/sise/sise_market_sum.naver?sosok={sosok}&page={page}"
+            try:
+                resp = requests.get(url, headers=hdrs, timeout=10)
+                resp.encoding = "euc-kr"
+                soup = BeautifulSoup(resp.text, "html.parser")
 
-        cap_억 = filtered.loc[code, "시가총액"] / 1_0000_0000
-        vol = filtered.loc[code, "거래량"]
+                # 마지막 페이지 확인 (첫 페이지에서만)
+                if page == 1:
+                    pgn = soup.select(".pgRR a")
+                    if pgn:
+                        last_page = int(pgn[0]["href"].split("page=")[1])
+                    print(f"  {market_name}: {last_page}페이지 스캔...")
 
-        # 유동성 최소 기준: 거래량 1만주+
-        if vol < 10000:
-            continue
+                rows = soup.select("table.type_2 tr")
+                for tr in rows:
+                    tds = tr.select("td")
+                    if len(tds) < 10:
+                        continue
 
-        market = "KOSPI" if code in kospi_set else "KOSDAQ"
+                    # 종목명 + 코드 추출
+                    link = tds[1].select_one("a")
+                    if not link:
+                        continue
+                    name = link.text.strip()
+                    href = link.get("href", "")
+                    if "code=" not in href:
+                        continue
+                    code = href.split("code=")[1][:6]
 
-        universe[code] = {
-            "name": name,
-            "market": market,
-            "cap_억": int(cap_억),
-            "volume": int(vol),
-        }
+                    # 시총(억) — 7번째 컬럼 (인덱스 6)
+                    cap_text = tds[6].text.strip().replace(",", "")
+                    if not cap_text or not cap_text.isdigit():
+                        continue
+                    cap_억 = int(cap_text)
+
+                    # 시총 범위: 네이버는 시총 내림차순
+                    if cap_억 > max_cap_억:
+                        continue  # 아직 범위 안 진입
+                    if cap_억 < min_cap_억:
+                        reached_min = True
+                        break  # 이후 전부 작음 → 다음 시장으로
+
+                    # 거래량 — 10번째 컬럼 (인덱스 9)
+                    vol_text = tds[9].text.strip().replace(",", "")
+                    vol = int(vol_text) if vol_text.isdigit() else 0
+
+                    # 스팩/리츠/우선주 제거
+                    skip = False
+                    for kw in exclude_keywords:
+                        if kw in name:
+                            skip = True
+                            break
+                    if code[-1] in "56789" and "우" in name:
+                        skip = True
+                    if skip:
+                        continue
+
+                    # 유동성 최소 기준: 거래량 1만주+
+                    if vol < 10000:
+                        continue
+
+                    universe[code] = {
+                        "name": name,
+                        "market": market_name,
+                        "cap_억": cap_억,
+                        "volume": vol,
+                    }
+
+            except Exception as e:
+                print(f"  {market_name} p{page} 오류: {e}")
+
+            page += 1
+            time.sleep(0.3)  # 네이버 속도 제한
+
+        mkt_count = sum(1 for v in universe.values() if v["market"] == market_name)
+        print(f"  {market_name}: {mkt_count}종목")
 
     # 시총순 정렬
     universe = dict(sorted(universe.items(), key=lambda x: -x[1]["cap_억"]))
 
-    print(f"  시총 {min_cap_억:,}~{max_cap_억:,}억: {len(filtered)}개")
-    print(f"  필터 후: {len(universe)}개")
-    print(f"  KOSPI: {sum(1 for v in universe.values() if v['market']=='KOSPI')}개")
-    print(f"  KOSDAQ: {sum(1 for v in universe.values() if v['market']=='KOSDAQ')}개")
+    print(f"\n  필터 후 총: {len(universe)}종목")
 
     _ensure_dirs()
     with open(SMALLCAP_FILE, "w", encoding="utf-8") as f:
@@ -495,7 +534,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.smallcap:
-        build_smallcap_universe(args.min_cap, args.max_cap)
+        sc_min = args.min_cap if args.min_cap != 1000 else 30  # 소형주 기본 30억
+        build_smallcap_universe(sc_min, args.max_cap)
         if not args.build_only:
             collect_smallcap_daily(args.months, args.force)
     elif args.build_only:
