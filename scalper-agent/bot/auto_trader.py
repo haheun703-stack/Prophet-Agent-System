@@ -459,6 +459,16 @@ class AutoTrader:
                         lines.append(f"    🔲 {eq_line}")
                 except Exception:
                     pass
+                # 갭 레벨 1줄 추가
+                try:
+                    from strategies.gap_support import format_telegram_gap
+                    gap_line = format_telegram_gap(
+                        c['code'], c['name'], c.get('entry') or c.get('close', 0)
+                    )
+                    if gap_line:
+                        lines.append(f"    📊 {gap_line}")
+                except Exception:
+                    pass
             await _send("\n".join(lines))
             return
 
@@ -2022,6 +2032,55 @@ class AutoTrader:
         except Exception as e:
             logger.error(f"프리미엄 레벨 실패: {e}")
             await _send(f"⚠️ 프리미엄 레벨 실패: {str(e)[:200]}")
+
+    async def job_gap_support(self, context):
+        """09:05 — 갭 지지/저항 탐지 + PL 머지"""
+        from datetime import date as dt_date
+        if dt_date.today().weekday() >= 5:
+            return
+
+        chat_id = None
+        if not self._send_alert:
+            import os
+            chat_id = os.getenv("TELEGRAM_CHAT_ID")
+
+        async def _send(text):
+            if self._send_alert:
+                await self._send_alert(text)
+            elif chat_id:
+                await context.bot.send_message(chat_id=chat_id, text=text)
+
+        try:
+            from strategies.gap_support import run_gap_detection, merge_gap_to_premium_levels
+            gap_results = await asyncio.to_thread(run_gap_detection)
+
+            # PL 머지
+            merged = 0
+            if gap_results:
+                try:
+                    from strategies.premium_levels import load_premium_levels, PL_DIR
+                    import json as _json
+                    pl_data = load_premium_levels()
+                    for code, gap_info in gap_results.items():
+                        if code in pl_data:
+                            merge_gap_to_premium_levels(pl_data[code], gap_info)
+                            merged += 1
+                    if merged > 0:
+                        out_path = PL_DIR / f"{dt_date.today().isoformat()}.json"
+                        with open(out_path, "w", encoding="utf-8") as f:
+                            _json.dump(pl_data, f, ensure_ascii=False, indent=2)
+                except Exception as e:
+                    logger.warning(f"GAP→PL 머지 실패: {e}")
+
+            up = sum(1 for r in gap_results.values() if r["gap_type"] == "gap_up")
+            down = len(gap_results) - up
+            await _send(
+                f"📊 갭 레벨 {len(gap_results)}종목 탐지\n"
+                f"  갭업:{up} 갭다운:{down} (PL 머지:{merged})"
+            )
+        except Exception as e:
+            logger.error(f"갭 탐지 실패: {e}")
+            await _send(f"⚠️ 갭 탐지 실패: {str(e)[:200]}")
 
     async def job_opening_range(self, context):
         """10:05 — OR/IR 확정 + daily_bias 계산"""

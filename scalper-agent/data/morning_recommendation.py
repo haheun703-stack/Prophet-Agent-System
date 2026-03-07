@@ -670,11 +670,19 @@ def _step5_cross_validate(
         except Exception:
             pass
 
+        # ── 갭 지지/저항 보정 ──
+        gap_adj = 0.0
+        try:
+            from strategies.gap_support import get_gap_score_adjustment
+            gap_adj, _gap_reason = get_gap_score_adjustment(code, close)
+        except Exception:
+            pass
+
         # ── 합산 ──────────────────────────────
         raw_total = (relay_sc + premove_sc + tech_sc + bargain_sc + cross_bonus
                      + nat_sc + news_pen + obv_pen + rel_pen
                      + shock_pen + opp_bonus + rotation_bonus + or_bias_adj
-                     + eq_adj)
+                     + eq_adj + gap_adj)
         # CORTEX 체제 배수 적용
         total = raw_total * regime_mult
 

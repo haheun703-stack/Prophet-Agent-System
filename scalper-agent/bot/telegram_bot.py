@@ -1944,9 +1944,11 @@ class BodyHunterBot:
         jq.run_daily(self.auto_trader.job_us_market_check, time=kst_time(6, 30))
         logger.info("미국장 체크 등록: 06:30 KST")
 
-        # ── ICT 프리미엄 레벨 (08:30) + Opening Range (10:05) ──
+        # ── ICT 프리미엄 레벨 (08:30) + 갭 탐지 (09:05) + Opening Range (10:05) ──
         jq.run_daily(self.auto_trader.job_premium_levels, time=kst_time(8, 30))
         logger.info("프리미엄 레벨 등록: 08:30 KST")
+        jq.run_daily(self.auto_trader.job_gap_support, time=kst_time(9, 5))
+        logger.info("갭 지지/저항 등록: 09:05 KST")
         jq.run_daily(self.auto_trader.job_opening_range, time=kst_time(10, 5))
         logger.info("Opening Range 등록: 10:05 KST")
 
