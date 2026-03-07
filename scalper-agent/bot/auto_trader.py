@@ -361,6 +361,7 @@ class AutoTrader:
         candidates = []
 
         # 1) 저녁 추천 파이프라인 결과 우선 (Stage 1~3)
+        cross_regime = ""
         try:
             from data.morning_recommendation import load_recommendation
             rec = load_recommendation()
@@ -376,11 +377,30 @@ class AutoTrader:
                     }
                     for s in rec.stocks
                 ]
-                await _send(f"📊 저녁 추천 {len(candidates)}종목 로드 완료")
+                cross_regime = getattr(rec, "cross_regime", "")
+                await _send(f"저녁 추천 {len(candidates)}종목 로드 완료")
                 if rec.warning:
-                    await _send(f"⚠️ {rec.warning}")
+                    await _send(f"{rec.warning}")
         except Exception as e:
             logger.warning(f"추천 로드 실패: {e}")
+
+        # 1.5) NIGHTWATCH 채권 자경단 신호등 게이트
+        if cross_regime == "DIVERGENCE":
+            await _send(
+                f"NIGHTWATCH: DIVERGENCE (채권 자경단)\n"
+                f"주식하락 + 금리상승 = 절대 진입 금지\n"
+                f"→ 오늘 매수 0건"
+            )
+            return
+        elif cross_regime == "CORRECTION":
+            # 최대 1종목, capital_use 50%로 제한
+            if len(candidates) > 1:
+                candidates = candidates[:1]
+            regime_rules["capital_use"] = min(regime_rules.get("capital_use", 1.0), 0.5)
+            await _send(
+                f"NIGHTWATCH: CORRECTION (리스크오프)\n"
+                f"→ 최대 1종목, 사이즈 50%"
+            )
 
         # 2) 추천 없으면 사전감지 폴백
         if not candidates:

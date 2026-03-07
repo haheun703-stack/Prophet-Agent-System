@@ -67,6 +67,9 @@ class RecommendationReport:
     relay_summary: str = ""
     warning: str = ""
     etf_signal: dict = field(default_factory=dict)  # 위기 ETF 시그널
+    # NIGHTWATCH 채권 자경단 신호등
+    cross_regime: str = ""         # NORMAL / CORRECTION / DIVERGENCE
+    cross_regime_detail: str = ""  # "S&P -1.3% + TNX +0.12% → 자경단"
 
 
 # ═══════════════════════════════════════
@@ -950,6 +953,55 @@ def run_us_market_check(prev_report: RecommendationReport) -> RecommendationRepo
     except Exception:
         pass
 
+    # ── NIGHTWATCH 채권 자경단 신호등 (^TNX + S&P500 교차 판정) ──
+    sp500_chg = 0.0
+    tnx_chg = 0.0
+    try:
+        sp = yf.Ticker("^GSPC")
+        sp_hist = sp.history(period="2d")
+        if sp_hist is not None and len(sp_hist) >= 2:
+            sp500_chg = (float(sp_hist["Close"].iloc[-1]) / float(sp_hist["Close"].iloc[-2]) - 1) * 100
+    except Exception:
+        pass
+
+    try:
+        tnx = yf.Ticker("^TNX")
+        tnx_hist = tnx.history(period="2d")
+        if tnx_hist is not None and len(tnx_hist) >= 2:
+            # TNX는 금리(%) 자체이므로 변동폭(bp 아닌 %p)으로 계산
+            tnx_prev = float(tnx_hist["Close"].iloc[-2])
+            tnx_last = float(tnx_hist["Close"].iloc[-1])
+            tnx_chg = tnx_last - tnx_prev  # %p 변동 (예: 4.20→4.32 = +0.12)
+    except Exception:
+        pass
+
+    # 3색 신호등 판정
+    if sp500_chg < -1.0 and tnx_chg > 0.05:
+        cross_regime = "DIVERGENCE"
+        cross_detail = (
+            f"S&P {sp500_chg:+.1f}% + TNX {tnx_chg:+.2f}%p "
+            f"= 채권 자경단 (주식하락+금리상승)"
+        )
+        report.warning = (
+            f"{report.warning} | " if report.warning else ""
+        ) + f"NIGHTWATCH: DIVERGENCE — 절대 진입 금지"
+    elif sp500_chg < -1.0 and tnx_chg <= 0:
+        cross_regime = "CORRECTION"
+        cross_detail = (
+            f"S&P {sp500_chg:+.1f}% + TNX {tnx_chg:+.2f}%p "
+            f"= 일반 리스크오프 (관망)"
+        )
+        report.warning = (
+            f"{report.warning} | " if report.warning else ""
+        ) + f"NIGHTWATCH: CORRECTION — 관망 권고"
+    else:
+        cross_regime = "NORMAL"
+        cross_detail = f"S&P {sp500_chg:+.1f}% + TNX {tnx_chg:+.2f}%p = 정상"
+
+    report.cross_regime = cross_regime
+    report.cross_regime_detail = cross_detail
+    logger.info(f"[NIGHTWATCH] {cross_regime}: {cross_detail}")
+
     # 위기 ETF 시그널 생성 (인버스/레버리지 추천)
     try:
         from strategies.crisis_etf_signal import generate_signal, format_signal_telegram
@@ -1132,6 +1184,8 @@ def save_recommendation(report: RecommendationReport):
         "us_market_note": report.us_market_note,
         "relay_summary": report.relay_summary,
         "warning": report.warning,
+        "cross_regime": report.cross_regime,
+        "cross_regime_detail": report.cross_regime_detail,
         "stocks": [
             {
                 "code": s.code, "name": s.name, "close": s.close,
@@ -1177,6 +1231,8 @@ def load_recommendation() -> Optional[RecommendationReport]:
             us_market_note=data.get("us_market_note", ""),
             relay_summary=data.get("relay_summary", ""),
             warning=data.get("warning", ""),
+            cross_regime=data.get("cross_regime", ""),
+            cross_regime_detail=data.get("cross_regime_detail", ""),
         )
         for sd in data.get("stocks", []):
             report.stocks.append(RecommendedStock(
