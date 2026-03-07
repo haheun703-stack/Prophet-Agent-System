@@ -343,11 +343,19 @@ class AutoTrader:
         실제 매수 판단은 job_monitor 30초 루프의 _check_entry_watch()에서 처리
         """
 
-        # 0) 위기 모드 체크 (최우선)
-        from data.market_health import is_crisis_mode
+        # 0) CORTEX 체제 체크 (최우선) — 위기모드 수동 오버라이드 포함
+        from data.market_health import is_crisis_mode, get_regime_rules
         crisis_active, crisis_reason = is_crisis_mode()
         if crisis_active:
-            await _send(f"🚨 위기 모드 — 스캔 중단\n{crisis_reason}")
+            await _send(f"위기 모드 — 스캔 중단\n{crisis_reason}")
+            return
+
+        regime_rules = get_regime_rules()
+        if not regime_rules["new_buy"]:
+            await _send(
+                f"CORTEX 체제: {regime_rules['regime']} — 신규매수 중단\n"
+                f"자본사용: {regime_rules['capital_use']*100:.0f}%"
+            )
             return
 
         candidates = []
@@ -433,10 +441,12 @@ class AutoTrader:
 
         # ── 매수 금액: 실제 잔고 기반 동적 계산 ──
         # (하드코딩 480000 제거 → 가용 현금 / 매수할 종목수)
+        # CORTEX 체제 기반 자본사용 배수 적용
         available_cash = bal.get("cash", 0) if bal.get("success") else 0
         num_targets = min(len(candidates), slots)
         cash_reserve_ratio = self.config.get("risk", {}).get("min_cash_ratio", 0.10)
-        usable_cash = int(available_cash * (1 - cash_reserve_ratio))
+        capital_use = regime_rules.get("capital_use", 1.0)
+        usable_cash = int(available_cash * (1 - cash_reserve_ratio) * capital_use)
         buy_amount = usable_cash // num_targets if num_targets > 0 else 0
 
         if buy_amount < 50000:

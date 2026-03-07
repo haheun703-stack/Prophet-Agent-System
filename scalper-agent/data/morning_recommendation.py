@@ -492,11 +492,14 @@ def _step5_cross_validate(
     nationality: dict = None,
     bargain_result: dict = None,
     market_chg: float = 0.0,
+    regime_info: dict = None,
+    shock_info: dict = None,
 ) -> list[RecommendedStock]:
     """모든 스텝 결과 통합 → Soft Scoring → 최종 랭킹
 
     v2: Hard gate 제거 → 모든 요소를 점수로 변환
     v3: 줍줍(bargain) 소스 추가 — 낙폭+수급매집 종목
+    v4: CORTEX 체제별 점수 배수 + 충격 섹터 페널티/보너스
     """
     if macd_result is None:
         macd_result = {}
@@ -504,6 +507,26 @@ def _step5_cross_validate(
         nationality = {}
     if bargain_result is None:
         bargain_result = {}
+    if regime_info is None:
+        regime_info = {}
+    if shock_info is None:
+        shock_info = {}
+
+    # CORTEX 체제별 점수 배수
+    regime_multipliers = {
+        "NORMAL": 1.0,
+        "CAUTION": 0.85,
+        "SHOCK": 0.6,
+        "PANIC": 0.3,
+        "RECOVERY_EARLY": 1.2,      # 줍줍 부스트
+        "RECOVERY_CONFIRMED": 1.1,
+    }
+    regime = regime_info.get("regime", "NORMAL")
+    regime_mult = regime_multipliers.get(regime, 1.0)
+
+    # 충격 섹터 정보
+    affected_sectors = shock_info.get("affected_sectors", [])
+    opportunity_sectors = shock_info.get("opportunity_sectors", [])
 
     # 모든 종목 코드 수집
     all_codes = set()
@@ -583,9 +606,22 @@ def _step5_cross_validate(
         # 줍줍 점수 (0~30) — bargain_score를 0.3배로 변환
         bargain_sc = min(b_info.get("bargain_score", 0) * 0.3, 30) if b_info else 0
 
+        # ── CORTEX: 충격 섹터 보정 ──────────────
+        from data.market_health import get_stock_sector
+        sector = get_stock_sector(code)
+        shock_pen = 0.0
+        opp_bonus = 0.0
+        if sector and affected_sectors and sector in affected_sectors:
+            shock_pen = -15.0  # 충격 수혜 섹터 (이미 올랐으니 매수 제외)
+        if sector and opportunity_sectors and sector in opportunity_sectors:
+            opp_bonus = 5.0    # 기회 섹터 (충격 무관 과도 하락)
+
         # ── 합산 ──────────────────────────────
-        total = (relay_sc + premove_sc + tech_sc + bargain_sc + cross_bonus
-                 + nat_sc + news_pen + obv_pen + rel_pen)
+        raw_total = (relay_sc + premove_sc + tech_sc + bargain_sc + cross_bonus
+                     + nat_sc + news_pen + obv_pen + rel_pen
+                     + shock_pen + opp_bonus)
+        # CORTEX 체제 배수 적용
+        total = raw_total * regime_mult
 
         # 진입/SL/TP: premove → MACD Phase2 → bargain(고점80%복구) → 간단 계산
         # 줍줍 종목은 고점의 80% 복구를 TP로 설정
@@ -720,15 +756,28 @@ def run_evening_recommendation() -> RecommendationReport:
         timestamp=datetime.now().strftime("%Y-%m-%d %H:%M"),
     )
 
-    # 0) 시장 건전성 — CRITICAL이어도 경고만 (종목 추천은 계속)
+    # 0) 시장 건전성 + CORTEX 체제/충격 — CRITICAL이어도 경고만 (종목 추천은 계속)
+    regime_info = {}
+    shock_info = {}
     try:
         from data.market_health import diagnose, get_position_multiplier
         health = diagnose()
         report.market_health = health.alert_level.upper()
         if health.alert_level == "critical":
             report.warning = "시장 건전성 CRITICAL — 매수 규모 축소 권고"
+        # CORTEX 체제/충격 정보 추출
+        regime_info = {
+            "regime": getattr(health, "regime", "NORMAL"),
+            "new_buy": getattr(health, "regime_new_buy", True),
+            "capital_use": getattr(health, "position_multiplier", 1.0),
+        }
+        shock_info = {
+            "shock_type": getattr(health, "shock_type", "NONE"),
+            "affected_sectors": getattr(health, "affected_sectors", []),
+            "opportunity_sectors": getattr(health, "opportunity_sectors", []),
+        }
+        logger.info(f"[CORTEX] 체제: {regime_info['regime']} | 충격: {shock_info['shock_type']}")
     except Exception as e:
-        # diagnose 실패 시 캐시된 multiplier 확인
         try:
             from data.market_health import get_position_multiplier
             mult = get_position_multiplier()
@@ -823,6 +872,8 @@ def run_evening_recommendation() -> RecommendationReport:
         nationality=nationality_scores,
         bargain_result=bargain_result,
         market_chg=market_chg,
+        regime_info=regime_info,
+        shock_info=shock_info,
     )
     logger.info(f"  → {len(final_stocks)}종목 ({time.time()-t0:.0f}s)")
 

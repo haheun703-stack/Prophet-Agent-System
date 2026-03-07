@@ -183,6 +183,23 @@ risk:
     start: "14:00"
     end: "14:50"
 
+# --- CORTEX 체제/충격 분류 (Layer 1 + Layer 2) ---
+cortex:
+  # Layer 1: 체제 전환 임계값
+  regime_panic_threshold: -0.07    # 5일 수익률 -7% → PANIC
+  regime_shock_threshold: -0.03    # 당일 -3% → SHOCK
+  regime_caution_threshold: -0.02  # 당일 -2% → CAUTION
+  regime_vix_high: 25              # VIX 25+ → SHOCK 조건
+  regime_vix_normal: 20            # VIX 20 미만 → 정상 복귀
+  regime_recovery_vol_mult: 1.0    # 거래량 20일평균 배수 (회복 확인)
+  consecutive_down_panic: 3        # 연속 하락일 → PANIC
+  # Layer 2: 충격 분류 임계값
+  gdelt_spike_threshold: 2.0       # GDELT 평소 2배 → 지정학
+  oil_spike_threshold: 0.05        # 유가 5% → 에너지 충격
+  rate_spike_bp: 0.10              # 금리 10bp → 금리 충격
+  defense_surge: 0.03              # 방산 +3% → 지정학 확인
+  refinery_surge: 0.03             # 정유 +3% → 에너지 확인
+
 # --- Market Hours ---
 market:
   start_time: "09:00"
