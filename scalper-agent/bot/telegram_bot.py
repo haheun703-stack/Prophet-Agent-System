@@ -154,6 +154,11 @@ HELP_TEXT = """
   시나리오대기 ID — 테마 WATCH 전환
   시나리오삭제 ID — 테마 삭제
 
+[보유종목 모니터]
+  상태판 — 보유종목 1줄 요약 대시보드
+  (자동 10:00, 13:00, 14:30 발송)
+  (이상 감지 시 자동 알림 푸시)
+
 [데이터]
   분봉수집 — 당일 5분/15분봉 수집 (자동 15:40)
   유니버스 — 유니버스 종목 현황
@@ -495,6 +500,65 @@ class BodyHunterBot:
         lines.append(f"\n총 손익: {total_pnl:+,}원")
 
         await update.message.reply_text("\n".join(lines))
+
+    # ═══════════════════════════════════════
+    #  보유종목 대시보드 (타 계좌)
+    # ═══════════════════════════════════════
+
+    async def cmd_dashboard(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """보유종목 상태판 (수동 호출)"""
+        if not self._is_authorized(update):
+            return
+        await update.message.reply_text("\U0001f4cb 상태판 생성 중...")
+        try:
+            from bot.portfolio_monitor import generate_dashboard
+            text = await asyncio.to_thread(generate_dashboard, self.trader)
+            await update.message.reply_text(text)
+        except Exception as e:
+            logger.error(f"대시보드 생성 실패: {e}")
+            await update.message.reply_text(f"\u274c 대시보드 실패: {str(e)[:200]}")
+
+    async def _job_portfolio_dashboard(self, context):
+        """보유종목 대시보드 정기 발송 (장중 3회)"""
+        from datetime import date as _date
+        if _date.today().weekday() >= 5:
+            return
+        chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        try:
+            from bot.portfolio_monitor import generate_dashboard
+            text = await asyncio.to_thread(generate_dashboard, self.trader)
+            await context.bot.send_message(chat_id=chat_id, text=text)
+            logger.info("보유종목 대시보드 발송 완료")
+        except Exception as e:
+            logger.error(f"보유종목 대시보드 실패: {e}")
+
+    async def _job_portfolio_alert(self, context):
+        """보유종목 이상 감지 (장중 60초 간격)"""
+        from datetime import date as _date
+        now = datetime.now()
+        # 장중만 동작 (09:00~15:30)
+        if _date.today().weekday() >= 5:
+            return
+        if now.hour < 9 or (now.hour >= 15 and now.minute >= 30):
+            return
+
+        try:
+            from bot.portfolio_monitor import check_alerts, format_alerts
+
+            # prev_states 보존 (context.bot_data에 저장)
+            prev = context.bot_data.get("portfolio_alert_states", {})
+            alerts, new_states = await asyncio.to_thread(
+                check_alerts, self.trader, None, prev
+            )
+            context.bot_data["portfolio_alert_states"] = new_states
+
+            if alerts:
+                chat_id = os.getenv("TELEGRAM_CHAT_ID")
+                msg = format_alerts(alerts)
+                await context.bot.send_message(chat_id=chat_id, text=msg)
+                logger.info(f"보유종목 알림 발송: {len(alerts)}건")
+        except Exception as e:
+            logger.error(f"보유종목 알림 체크 실패: {e}")
 
     async def cmd_buy(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update):
@@ -1746,6 +1810,7 @@ class BodyHunterBot:
             r"^현재잔고$": self.cmd_balance,
             r"^체결내역$": self.cmd_executions,
             r"^포트폴리오$": self.cmd_portfolio,
+            r"^상태판$": self.cmd_dashboard,
             r"^청산$": self.cmd_liquidate,
             r"^일지$": self.cmd_journal,
             r"^유니버스$": self.cmd_universe,
@@ -1951,6 +2016,13 @@ class BodyHunterBot:
         logger.info("갭 지지/저항 등록: 09:05 KST")
         jq.run_daily(self.auto_trader.job_opening_range, time=kst_time(10, 5))
         logger.info("Opening Range 등록: 10:05 KST")
+
+        # ── 보유종목 대시보드 (장중 3회) + 알림 (60초) ──
+        jq.run_daily(self._job_portfolio_dashboard, time=kst_time(10, 0))
+        jq.run_daily(self._job_portfolio_dashboard, time=kst_time(13, 0))
+        jq.run_daily(self._job_portfolio_dashboard, time=kst_time(14, 30))
+        jq.run_repeating(self._job_portfolio_alert, interval=60, first=90)
+        logger.info("보유종목 대시보드 등록: 10:00/13:00/14:30 KST + 알림 60초")
 
         # ── JARVIS BRAIN 자본 배분 (백업용 — NIGHTWATCH 미실행 대비) ──
         jq.run_daily(self.auto_trader.job_brain_allocation, time=kst_time(16, 36))

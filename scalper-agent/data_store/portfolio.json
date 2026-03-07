@@ -1,0 +1,17 @@
+{
+  "account": "타 계좌 (수동 관리)",
+  "updated": "2026-03-07",
+  "note": "보유종목 변경 시 수동 업데이트 또는 텔레그램 '포트수정' 명령",
+  "positions": [
+    {"code": "042700", "name": "한미반도체", "qty": 17, "avg_price": 325176, "theme": "반도체"},
+    {"code": "010950", "name": "S-Oil", "qty": 25, "avg_price": 121600, "theme": "정유"},
+    {"code": "272210", "name": "한화시스템", "qty": 20, "avg_price": 162200, "theme": "방산"},
+    {"code": "068270", "name": "셀트리온", "qty": 13, "avg_price": 242500, "theme": "바이오"},
+    {"code": "024060", "name": "흥구석유", "qty": 100, "avg_price": 28350, "theme": "정유"},
+    {"code": "006800", "name": "미래에셋증권", "qty": 37, "avg_price": 64462, "theme": "금융"},
+    {"code": "010140", "name": "삼성중공업", "qty": 80, "avg_price": 29038, "theme": "조선"},
+    {"code": "218410", "name": "RFHIC", "qty": 26, "avg_price": 72400, "theme": "방산"},
+    {"code": "005380", "name": "현대차", "qty": 3, "avg_price": 612000, "theme": "자동차"},
+    {"code": "064350", "name": "현대로템", "qty": 1, "avg_price": 226500, "theme": "방산"}
+  ]
+}
