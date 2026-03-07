@@ -183,6 +183,38 @@ def _step_macd_zero_scan() -> dict:
 
 
 # ═══════════════════════════════════════
+#  Step 2.7: 줍줍 스캔 (낙폭+수급매집)
+# ═══════════════════════════════════════
+
+def _step_bargain_scan() -> dict:
+    """전쟁전 고점 대비 낙폭 + 기관/외인 진성매집 종목 발굴"""
+    try:
+        from strategies.bargain_scanner import scan_bargain
+        from data.kis_collector import UNIVERSE
+        candidates = scan_bargain(universe=UNIVERSE, top_n=10)
+
+        bargain_stocks = {}
+        for c in candidates:
+            bargain_stocks[c.code] = {
+                "name": c.name,
+                "close": c.close,
+                "source": "bargain",
+                "bargain_score": c.bargain_score,
+                "drop_pct": c.drop_pct,
+                "supply_grade": c.supply_grade,
+                "foreign_10d": c.foreign_10d,
+                "inst_10d": c.inst_10d,
+                "pre_war_high": c.pre_war_high,
+            }
+
+        logger.info(f"줍줍 스캔: {len(bargain_stocks)}종목")
+        return bargain_stocks
+    except Exception as e:
+        logger.warning(f"줍줍 스캔 실패: {e}")
+        return {}
+
+
+# ═══════════════════════════════════════
 #  시장 등락률 조회 (상대강도 기준)
 # ═══════════════════════════════════════
 
@@ -458,27 +490,27 @@ def _step5_cross_validate(
     relay: dict, premove: dict, tech: dict, news: dict,
     macd_result: dict = None,
     nationality: dict = None,
+    bargain_result: dict = None,
     market_chg: float = 0.0,
 ) -> list[RecommendedStock]:
     """모든 스텝 결과 통합 → Soft Scoring → 최종 랭킹
 
     v2: Hard gate 제거 → 모든 요소를 점수로 변환
-        - 뉴스 NEGATIVE: -20 페널티 (기존: 즉시 탈락)
-        - OBV DOWN: -10 페널티 (기존: 즉시 탈락)
-        - 기술 < 2.0: 그대로 반영 (기존: 즉시 탈락)
-        - 시장대비 상대약세: -15 페널티 (기존: 절대값 -5% 탈락)
-        유일한 hard cutoff: total_score <= 0 (모든 점수 합산 후)
+    v3: 줍줍(bargain) 소스 추가 — 낙폭+수급매집 종목
     """
     if macd_result is None:
         macd_result = {}
     if nationality is None:
         nationality = {}
+    if bargain_result is None:
+        bargain_result = {}
 
     # 모든 종목 코드 수집
     all_codes = set()
     all_codes.update(relay.get("stocks", {}).keys())
     all_codes.update(premove.get("stocks", {}).keys())
     all_codes.update(macd_result.keys())
+    all_codes.update(bargain_result.keys())
 
     candidates = []
     for code in all_codes:
@@ -487,12 +519,14 @@ def _step5_cross_validate(
         t_info = tech.get(code, {})
         n_info = news.get(code, {})
         m_info = macd_result.get(code, {})
+        b_info = bargain_result.get(code, {})
 
         name = (r_info.get("name") or p_info.get("name")
-                or m_info.get("name", code))
+                or m_info.get("name") or b_info.get("name", code))
         close = (t_info.get("close")
                  or r_info.get("close")
-                 or p_info.get("close", 0))
+                 or p_info.get("close")
+                 or b_info.get("close", 0))
 
         # ── 양의 점수 (가산) ──────────────────
         # 교차 등장 횟수
@@ -507,6 +541,10 @@ def _step5_cross_validate(
         if code in macd_result:
             cross += 1
             sources.append(f"macd_zero({m_info.get('source', '')})")
+        if code in bargain_result:
+            cross += 1
+            grade = b_info.get("supply_grade", "")
+            sources.append(f"bargain({grade})")
 
         relay_sc = min(r_info.get("signal_count", 0) * 15, 45)   # 0~45
         premove_sc = min(p_info.get("premove_score", 0), 100) * 0.3  # 0~30
@@ -542,14 +580,19 @@ def _step5_cross_validate(
         elif relative_str < -2.0:
             rel_pen = -5.0    # 시장보다 약간 약세
 
+        # 줍줍 점수 (0~30) — bargain_score를 0.3배로 변환
+        bargain_sc = min(b_info.get("bargain_score", 0) * 0.3, 30) if b_info else 0
+
         # ── 합산 ──────────────────────────────
-        total = (relay_sc + premove_sc + tech_sc + cross_bonus
+        total = (relay_sc + premove_sc + tech_sc + bargain_sc + cross_bonus
                  + nat_sc + news_pen + obv_pen + rel_pen)
 
-        # 진입/SL/TP: premove → MACD Phase2 → 간단 계산
+        # 진입/SL/TP: premove → MACD Phase2 → bargain(고점80%복구) → 간단 계산
+        # 줍줍 종목은 고점의 80% 복구를 TP로 설정
+        bargain_tp = int(b_info["pre_war_high"] * 0.8) if b_info.get("pre_war_high") else 0
         entry = int(p_info.get("entry") or m_info.get("entry") or close)
         sl = int(p_info.get("sl") or m_info.get("sl") or close * 0.95)
-        tp = int(p_info.get("tp") or m_info.get("tp") or close * 1.10)
+        tp = int(p_info.get("tp") or m_info.get("tp") or bargain_tp or close * 1.10)
         sl_source = p_info.get("sl_source", "ATR")
 
         # 신뢰도 (교차수 + 기술점수 기반)
@@ -729,8 +772,17 @@ def run_evening_recommendation() -> RecommendationReport:
             all_codes_set.add((code, info.get("name", code)))
     logger.info(f"  → {len(macd_result)}종목 ({time.time()-t0:.0f}s)")
 
+    # Step 2.7: 줍줍 스캔 (낙폭+수급매집)
+    t0 = time.time()
+    logger.info("[Step 2.7] 줍줍 스캔 (낙폭+수급매집)...")
+    bargain_result = _step_bargain_scan()
+    for code, info in bargain_result.items():
+        if (code, info.get("name", code)) not in all_codes_set:
+            all_codes_set.add((code, info.get("name", code)))
+    logger.info(f"  → {len(bargain_result)}종목 ({time.time()-t0:.0f}s)")
+
     if not all_codes_set:
-        report.warning = "릴레이+사전감지+MACD 결과 0건 — 추천 불가"
+        report.warning = "릴레이+사전감지+MACD+줍줍 결과 0건 — 추천 불가"
         return report
 
     codes_names = list(all_codes_set)
@@ -769,6 +821,7 @@ def run_evening_recommendation() -> RecommendationReport:
         relay_result, premove_result, tech_result, news_result,
         macd_result=macd_result,
         nationality=nationality_scores,
+        bargain_result=bargain_result,
         market_chg=market_chg,
     )
     logger.info(f"  → {len(final_stocks)}종목 ({time.time()-t0:.0f}s)")
