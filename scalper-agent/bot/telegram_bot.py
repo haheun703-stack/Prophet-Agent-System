@@ -127,6 +127,8 @@ HELP_TEXT = """
 [JARVIS BRAIN 자본 배분]
   배분현황 — 현재 BRAIN 자본 배분 지시 조회
   로테이션 — 섹터 로테이션 분석 (HOT/STAGING/다음섹터)
+  선행지표 — 채권시장 선행지표 (레짐 전환 감지)
+  스트레스 — 크로스에셋 상관관계 붕괴 감지
   (자동: NIGHTWATCH 완료 후 배분 갱신)
 
 [NIGHTWATCH NXT 야간매매]
@@ -1516,6 +1518,50 @@ class BodyHunterBot:
             logger.error(f"로테이션 조회 실패: {e}", exc_info=True)
             await update.message.reply_text(f"로테이션 조회 실패: {str(e)[:200]}")
 
+    async def cmd_leading(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """2D: 레짐 전환 선행지표 조회"""
+        if not self._is_authorized(update):
+            return
+        try:
+            import sys
+            jarvis_path = str(Path(__file__).resolve().parent.parent.parent / "jarvis")
+            if jarvis_path not in sys.path:
+                sys.path.insert(0, jarvis_path)
+            parent_path = str(Path(__file__).resolve().parent.parent.parent)
+            if parent_path not in sys.path:
+                sys.path.insert(0, parent_path)
+
+            from jarvis.regime_leading import analyze_leading, format_leading_report
+            await update.message.reply_text("선행지표 분석 중... (yfinance 6개 티커)")
+            report = analyze_leading()
+            msg = format_leading_report(report)
+            await update.message.reply_text(msg)
+        except Exception as e:
+            logger.error(f"선행지표 조회 실패: {e}", exc_info=True)
+            await update.message.reply_text(f"선행지표 조회 실패: {str(e)[:200]}")
+
+    async def cmd_stress(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """3D: 크로스에셋 스트레스 지수 조회"""
+        if not self._is_authorized(update):
+            return
+        try:
+            import sys
+            jarvis_path = str(Path(__file__).resolve().parent.parent.parent / "jarvis")
+            if jarvis_path not in sys.path:
+                sys.path.insert(0, jarvis_path)
+            parent_path = str(Path(__file__).resolve().parent.parent.parent)
+            if parent_path not in sys.path:
+                sys.path.insert(0, parent_path)
+
+            from jarvis.cross_asset_stress import analyze_stress, format_stress_report
+            await update.message.reply_text("크로스에셋 스트레스 분석 중... (yfinance 5개 자산)")
+            report = analyze_stress()
+            msg = format_stress_report(report)
+            await update.message.reply_text(msg)
+        except Exception as e:
+            logger.error(f"스트레스 조회 실패: {e}", exc_info=True)
+            await update.message.reply_text(f"스트레스 조회 실패: {str(e)[:200]}")
+
     # ═══════════════════════════════════════
     #  NIGHTWATCH NXT 명령어
     # ═══════════════════════════════════════
@@ -1691,6 +1737,8 @@ class BodyHunterBot:
             r"^국적수급$": self.cmd_nationality,
             r"^배분현황$": self.cmd_brain,
             r"^로테이션$": self.cmd_rotation,
+            r"^선행지표$": self.cmd_leading,
+            r"^스트레스$": self.cmd_stress,
             r"^NXT$": self.cmd_nxt,
             r"^NXT켜기$": self.cmd_nxt_on,
             r"^NXT끄기$": self.cmd_nxt_off,

@@ -448,18 +448,102 @@ def _load_rotation_info() -> Dict:
         return {}
 
 
+def _load_cross_asset_stress() -> Dict:
+    """3D: 크로스에셋 스트레스 지수 로드"""
+    try:
+        from jarvis.cross_asset_stress import analyze_stress, format_stress_report
+        report = analyze_stress()
+        return {
+            "stress_index": report.stress_index,
+            "stress_level": report.stress_level,
+            "anomaly_count": report.anomaly_count,
+            "signal": report.signal,
+            "stress_trend": report.stress_trend,
+            "allocation_adjust": report.allocation_adjust,
+            "telegram_block": format_stress_report(report),
+        }
+    except Exception as e:
+        logger.warning(f"[BRAIN] 크로스에셋 스트레스 로드 실패: {e}")
+        return {}
+
+
+def _load_regime_leading() -> Dict:
+    """2D: 레짐 전환 선행지표 로드"""
+    try:
+        from jarvis.regime_leading import analyze_leading, format_leading_report
+        report = analyze_leading()
+        return {
+            "transition_signal": report.transition_signal,
+            "transition_direction": report.transition_direction,
+            "warning_count": report.warning_count,
+            "confidence": report.confidence,
+            "signal": report.signal,
+            "preemptive_adjust": report.preemptive_adjust,
+            "telegram_block": format_leading_report(report),
+        }
+    except Exception as e:
+        logger.warning(f"[BRAIN] 선행지표 로드 실패: {e}")
+        return {}
+
+
+def _apply_sensor_adjustments(
+    alloc_pct: Dict[str, int],
+    stress_info: Dict,
+    leading_info: Dict,
+) -> tuple:
+    """2D+3D 센서 결과로 배분 미세 조정
+
+    Returns:
+        (adjusted_pct, adjustment_notes)
+    """
+    notes = []
+    adjusted = dict(alloc_pct)
+
+    # ── 3D: 크로스에셋 스트레스 조정 ──
+    stress_adj = stress_info.get("allocation_adjust", {})
+    cash_add = stress_adj.get("cash_add_pct", 0)
+    inverse_add = stress_adj.get("inverse_add_pct", 0)
+    swing_reduce = stress_adj.get("swing_reduce_pct", 0)
+
+    if swing_reduce > 0:
+        adjusted["v10_swing"] = max(0, adjusted.get("v10_swing", 0) - swing_reduce)
+        adjusted["inverse_etf"] = adjusted.get("inverse_etf", 0) + inverse_add
+        adjusted["cash"] = adjusted.get("cash", 0) + cash_add + (swing_reduce - inverse_add)
+        notes.append(f"3D 스트레스({stress_info.get('stress_level', '')}): "
+                     f"스윙 -{swing_reduce}%p")
+
+    # ── 2D: 선행지표 선제 조정 ──
+    leading_adj = leading_info.get("preemptive_adjust", {})
+    cash_shift = leading_adj.get("cash_shift_pct", 0)
+    inv_shift = leading_adj.get("inverse_shift_pct", 0)
+
+    if cash_shift != 0:
+        # 현금 증가분은 스윙에서 차감, 감소분은 스윙에 추가
+        adjusted["v10_swing"] = max(0, adjusted.get("v10_swing", 0) - cash_shift)
+        adjusted["cash"] = adjusted.get("cash", 0) + cash_shift
+        if inv_shift != 0:
+            adjusted["inverse_etf"] = max(0, adjusted.get("inverse_etf", 0) + inv_shift)
+            adjusted["cash"] = adjusted.get("cash", 0) - inv_shift
+        direction = leading_info.get("transition_direction", "")
+        notes.append(f"2D 선행({direction}): 현금 {cash_shift:+d}%p")
+
+    # 합계 100% 보정 (현금으로 조정)
+    non_cash = sum(adjusted.get(k, 0) for k in STRATEGY_KEYS if k != "cash")
+    adjusted["cash"] = max(0, 100 - non_cash)
+
+    return adjusted, notes
+
+
 def run_brain(
     regime_override: str = None,
     total_capital: int = 1_150_000,
 ) -> Dict:
-    """BRAIN 전체 실행
+    """BRAIN 전체 실행 — 5D 판단 엔진
 
-    1. NIGHTWATCH 점수 읽기 (또는 수동 레짐)
-    2. 레짐 판정
-    3. 자본 배분 계산 (안전장치 포함)
-    4. 섹터 로테이션 분석 로드
-    5. JSON 저장
-    6. 텔레그램 메시지 생성
+    1D: NIGHTWATCH 점수 → 레짐 판정 → 기본 배분
+    2D: 채권시장 선행지표 → 레짐 전환 직전 감지 → 선제 배분 조정
+    3D: 크로스에셋 상관 붕괴 → 유동성 위기 감지 → 방어 배분 강화
+    [1D] 섹터 로테이션 → 다음 섹터 정보 첨부
 
     Args:
         regime_override: 수동 레짐 ("PANIC" 등, None이면 NIGHTWATCH 자동)
@@ -468,9 +552,9 @@ def run_brain(
     Returns:
         배분 결과 dict
     """
-    logger.info("[BRAIN] 실행 시작")
+    logger.info("[BRAIN] 실행 시작 (1D~3D 센서)")
 
-    # 1. 레짐 판정
+    # ── 1D: 레짐 판정 (기존) ──
     if regime_override:
         regime = regime_override.upper()
         nw_score = 0.0
@@ -478,12 +562,42 @@ def run_brain(
         logger.info(f"[BRAIN] 수동 레짐: {regime}")
     else:
         regime, nw_score, nw_signal = load_nightwatch_regime()
-        logger.info(f"[BRAIN] NIGHTWATCH: {nw_score:+.1f} ({nw_signal}) → {regime}")
+        logger.info(f"[BRAIN] 1D NIGHTWATCH: {nw_score:+.1f} ({nw_signal}) → {regime}")
 
-    # 2. 자본 배분 계산
+    # 2. 기본 자본 배분 (1D 기반)
     result = get_capital_allocation(regime, total_capital)
 
-    # 3. 섹터 로테이션 분석 로드
+    # ── 2D: 선행지표 ──
+    logger.info("[BRAIN] 2D 선행지표 분석...")
+    leading_info = _load_regime_leading()
+    result["regime_leading"] = leading_info
+    if leading_info.get("signal"):
+        logger.info(f"[BRAIN] 2D: {leading_info['signal']}")
+
+    # ── 3D: 크로스에셋 스트레스 ──
+    logger.info("[BRAIN] 3D 크로스에셋 스트레스 분석...")
+    stress_info = _load_cross_asset_stress()
+    result["cross_asset_stress"] = stress_info
+    if stress_info.get("signal"):
+        logger.info(f"[BRAIN] 3D: {stress_info['signal']}")
+
+    # ── 2D+3D 센서 조정 적용 ──
+    if leading_info or stress_info:
+        adjusted_pct, adj_notes = _apply_sensor_adjustments(
+            result["allocation_pct"], stress_info, leading_info
+        )
+        if adj_notes:
+            # 기존 배분을 조정된 배분으로 교체
+            old_pct = dict(result["allocation_pct"])
+            result["allocation_pct"] = adjusted_pct
+            # 금액 재계산
+            for key in STRATEGY_KEYS:
+                result["allocation_krw"][key] = int(total_capital * adjusted_pct.get(key, 0) / 100)
+            result["sensor_adjustments"] = adj_notes
+            result["allocation_pct_before_sensor"] = old_pct
+            logger.info(f"[BRAIN] 센서 조정: {', '.join(adj_notes)}")
+
+    # ── 1D: 섹터 로테이션 ──
     rotation_info = _load_rotation_info()
     result["rotation"] = rotation_info
 
@@ -491,10 +605,27 @@ def run_brain(
     save_allocation(result)
     append_history(result)
 
-    # 5. 텔레그램 메시지 (배분 + 로테이션)
+    # 5. 텔레그램 메시지 (1D 배분 + 2D 선행 + 3D 스트레스 + 로테이션)
     telegram_msg = format_allocation_report(result, nw_score, nw_signal)
+
+    # 센서 조정 노트
+    if result.get("sensor_adjustments"):
+        telegram_msg += "\n\n📡 센서 조정"
+        for note in result["sensor_adjustments"]:
+            telegram_msg += f"\n  {note}"
+
+    # 2D 선행지표 블록
+    if leading_info.get("transition_signal") and leading_info["transition_signal"] != "CLEAR":
+        telegram_msg += "\n\n" + leading_info.get("telegram_block", "")
+
+    # 3D 스트레스 블록 (NORMAL이 아닐 때만)
+    if stress_info.get("stress_level") and stress_info["stress_level"] != "NORMAL":
+        telegram_msg += "\n\n" + stress_info.get("telegram_block", "")
+
+    # 로테이션 블록
     if rotation_info.get("rotation_signal"):
         telegram_msg += "\n\n" + rotation_info.get("telegram_block", "")
+
     result["telegram_message"] = telegram_msg
 
     logger.info(
@@ -504,6 +635,10 @@ def run_brain(
         f"인버스 {result['allocation_pct']['inverse_etf']}% "
         f"현금 {result['allocation_pct']['cash']}%"
     )
+    if leading_info.get("signal"):
+        logger.info(f"[BRAIN] 2D: {leading_info['signal']}")
+    if stress_info.get("signal"):
+        logger.info(f"[BRAIN] 3D: {stress_info['signal']}")
     if rotation_info.get("rotation_signal"):
         logger.info(f"[BRAIN] 로테이션: {rotation_info['rotation_signal']}")
 
