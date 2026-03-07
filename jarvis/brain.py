@@ -469,6 +469,28 @@ def _load_cot_smartmoney() -> Dict:
         return {}
 
 
+def _load_liquidity_cycle() -> Dict:
+    """5D: 유동성 사이클 (FRED RRP/TGA/M2) 로드"""
+    try:
+        from jarvis.liquidity_cycle import analyze_liquidity, format_liquidity_report
+        report = analyze_liquidity()
+        return {
+            "liquidity_score": report.liquidity_score,
+            "liquidity_level": report.liquidity_level,
+            "confidence": report.confidence,
+            "signal": report.signal,
+            "score_trend": report.score_trend,
+            "allocation_adjust": report.allocation_adjust,
+            "rrp_z": report.rrp.z_score,
+            "tga_z": report.tga.z_score,
+            "m2_z": report.m2.z_score,
+            "telegram_block": format_liquidity_report(report),
+        }
+    except Exception as e:
+        logger.warning(f"[BRAIN] 유동성 사이클 로드 실패: {e}")
+        return {}
+
+
 def _load_cross_asset_stress() -> Dict:
     """3D: 크로스에셋 스트레스 지수 로드"""
     try:
@@ -512,10 +534,11 @@ def _apply_sensor_adjustments(
     stress_info: Dict,
     leading_info: Dict,
     cot_info: Dict = None,
+    liquidity_info: Dict = None,
 ) -> tuple:
-    """2D+3D+4D 센서 결과로 배분 미세 조정
+    """2D+3D+4D+5D 센서 결과로 배분 미세 조정
 
-    적용 순서: 3D(빠른 위기) → 2D(선행 전환) → 4D(느린 포지셔닝)
+    적용 순서: 3D(빠른 위기) → 2D(선행 전환) → 4D(느린 포지셔닝) → 5D(유동성 방향)
 
     Returns:
         (adjusted_pct, adjustment_notes)
@@ -524,6 +547,8 @@ def _apply_sensor_adjustments(
     adjusted = dict(alloc_pct)
     if cot_info is None:
         cot_info = {}
+    if liquidity_info is None:
+        liquidity_info = {}
 
     # ── 3D: 크로스에셋 스트레스 조정 ──
     stress_adj = stress_info.get("allocation_adjust", {})
@@ -568,6 +593,21 @@ def _apply_sensor_adjustments(
         signal = cot_info.get("smart_money_signal", "")
         notes.append(f"4D COT({signal}): 스윙 {cot_swing:+d}%p")
 
+    # ── 5D: 유동성 사이클 조정 (초느린 — 방향만) ──
+    liq_adj = liquidity_info.get("allocation_adjust", {})
+    liq_swing = liq_adj.get("swing_shift_pct", 0)
+    liq_cash = liq_adj.get("cash_shift_pct", 0)
+    liq_inv = liq_adj.get("inverse_shift_pct", 0)
+
+    if liq_swing != 0 or liq_cash != 0:
+        adjusted["v10_swing"] = max(0, adjusted.get("v10_swing", 0) + liq_swing)
+        if liq_cash != 0:
+            adjusted["cash"] = adjusted.get("cash", 0) + liq_cash
+        if liq_inv != 0:
+            adjusted["inverse_etf"] = max(0, adjusted.get("inverse_etf", 0) + liq_inv)
+        level = liquidity_info.get("liquidity_level", "")
+        notes.append(f"5D 유동성({level}): 스윙 {liq_swing:+d}%p")
+
     # 합계 100% 보정 (현금으로 조정)
     non_cash = sum(adjusted.get(k, 0) for k in STRATEGY_KEYS if k != "cash")
     adjusted["cash"] = max(0, 100 - non_cash)
@@ -585,6 +625,7 @@ def run_brain(
     2D: 채권시장 선행지표 → 레짐 전환 직전 감지 → 선제 배분 조정
     3D: 크로스에셋 상관 붕괴 → 유동성 위기 감지 → 방어 배분 강화
     4D: COT 스마트머니 포지셔닝 → 주간 방향성 (느린 눈)
+    5D: FRED 유동성 사이클 (RRP/TGA/M2) → 중장기 유동성 방향
     [1D] 섹터 로테이션 → 다음 섹터 정보 첨부
 
     Args:
@@ -594,7 +635,7 @@ def run_brain(
     Returns:
         배분 결과 dict
     """
-    logger.info("[BRAIN] 실행 시작 (1D~4D 센서)")
+    logger.info("[BRAIN] 실행 시작 (1D~5D 센서)")
 
     # ── 1D: 레짐 판정 (기존) ──
     if regime_override:
@@ -630,10 +671,17 @@ def run_brain(
     if cot_info.get("signal"):
         logger.info(f"[BRAIN] 4D: {cot_info['signal']}")
 
-    # ── 2D+3D+4D 센서 조정 적용 ──
-    if leading_info or stress_info or cot_info:
+    # ── 5D: 유동성 사이클 (FRED RRP/TGA/M2) ──
+    logger.info("[BRAIN] 5D 유동성 사이클 분석...")
+    liquidity_info = _load_liquidity_cycle()
+    result["liquidity_cycle"] = liquidity_info
+    if liquidity_info.get("signal"):
+        logger.info(f"[BRAIN] 5D: {liquidity_info['signal']}")
+
+    # ── 2D+3D+4D+5D 센서 조정 적용 ──
+    if leading_info or stress_info or cot_info or liquidity_info:
         adjusted_pct, adj_notes = _apply_sensor_adjustments(
-            result["allocation_pct"], stress_info, leading_info, cot_info
+            result["allocation_pct"], stress_info, leading_info, cot_info, liquidity_info
         )
         if adj_notes:
             # 기존 배분을 조정된 배분으로 교체
@@ -675,6 +723,10 @@ def run_brain(
     if cot_info.get("smart_money_signal") and cot_info["smart_money_signal"] != "NEUTRAL":
         telegram_msg += "\n\n" + cot_info.get("telegram_block", "")
 
+    # 5D 유동성 블록 (NEUTRAL이 아닐 때만)
+    if liquidity_info.get("liquidity_level") and liquidity_info["liquidity_level"] != "NEUTRAL":
+        telegram_msg += "\n\n" + liquidity_info.get("telegram_block", "")
+
     # 로테이션 블록
     if rotation_info.get("rotation_signal"):
         telegram_msg += "\n\n" + rotation_info.get("telegram_block", "")
@@ -694,6 +746,8 @@ def run_brain(
         logger.info(f"[BRAIN] 3D: {stress_info['signal']}")
     if cot_info.get("signal"):
         logger.info(f"[BRAIN] 4D: {cot_info['signal']}")
+    if liquidity_info.get("signal"):
+        logger.info(f"[BRAIN] 5D: {liquidity_info['signal']}")
     if rotation_info.get("rotation_signal"):
         logger.info(f"[BRAIN] 로테이션: {rotation_info['rotation_signal']}")
 
