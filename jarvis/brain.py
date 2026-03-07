@@ -652,28 +652,44 @@ def run_brain(
 
     # ── 2D: 선행지표 ──
     logger.info("[BRAIN] 2D 선행지표 분석...")
-    leading_info = _load_regime_leading()
+    try:
+        leading_info = _load_regime_leading()
+    except Exception as e:
+        logger.error(f"[BRAIN] 2D 에러 (무시하고 진행): {e}")
+        leading_info = {}
     result["regime_leading"] = leading_info
     if leading_info.get("signal"):
         logger.info(f"[BRAIN] 2D: {leading_info['signal']}")
 
     # ── 3D: 크로스에셋 스트레스 ──
     logger.info("[BRAIN] 3D 크로스에셋 스트레스 분석...")
-    stress_info = _load_cross_asset_stress()
+    try:
+        stress_info = _load_cross_asset_stress()
+    except Exception as e:
+        logger.error(f"[BRAIN] 3D 에러 (무시하고 진행): {e}")
+        stress_info = {}
     result["cross_asset_stress"] = stress_info
     if stress_info.get("signal"):
         logger.info(f"[BRAIN] 3D: {stress_info['signal']}")
 
     # ── 4D: COT 스마트머니 (주간, 느린 눈) ──
     logger.info("[BRAIN] 4D COT 스마트머니 분석...")
-    cot_info = _load_cot_smartmoney()
+    try:
+        cot_info = _load_cot_smartmoney()
+    except Exception as e:
+        logger.error(f"[BRAIN] 4D 에러 (무시하고 진행): {e}")
+        cot_info = {}
     result["cot_smartmoney"] = cot_info
     if cot_info.get("signal"):
         logger.info(f"[BRAIN] 4D: {cot_info['signal']}")
 
     # ── 5D: 유동성 사이클 (FRED RRP/TGA/M2) ──
     logger.info("[BRAIN] 5D 유동성 사이클 분석...")
-    liquidity_info = _load_liquidity_cycle()
+    try:
+        liquidity_info = _load_liquidity_cycle()
+    except Exception as e:
+        logger.error(f"[BRAIN] 5D 에러 (무시하고 진행): {e}")
+        liquidity_info = {}
     result["liquidity_cycle"] = liquidity_info
     if liquidity_info.get("signal"):
         logger.info(f"[BRAIN] 5D: {liquidity_info['signal']}")
