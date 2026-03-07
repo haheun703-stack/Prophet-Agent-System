@@ -1405,6 +1405,18 @@ class AutoTrader:
         lines = ["📊 동적 목표가 재평가"]
         max_hold = self.config.get("bot", {}).get("max_hold_days", 10)
 
+        # ── REVERSAL 섹터 방어: 보유 종목이 반전 섹터에 속하면 SL 강화 ──
+        reversal_codes = set()
+        try:
+            from data.rotation_detector import analyze_rotation, get_next_sector_stocks
+            rotation = analyze_rotation()
+            rot_stocks = get_next_sector_stocks(rotation)
+            for rcode, rinfo in rot_stocks.items():
+                if rinfo.get("rotation_source") == "reversal_exit":
+                    reversal_codes.add(rcode)
+        except Exception as e:
+            logger.warning(f"로테이션 분석 실패 (REVERSAL 방어 스킵): {e}")
+
         for code, pos in list(self._positions.items()):
             try:
                 price_info = self.trader.fetch_price(code)
@@ -1456,11 +1468,38 @@ class AutoTrader:
                     action = ACTION_HOLD
                     reason = "타겟 상태 없음"
 
+                # ── REVERSAL 섹터 방어: SL 강화 + 보유일 단축 ──
+                if code in reversal_codes and action not in (ACTION_FULL_SELL, ACTION_STOP_LOSS):
+                    entry = pos["entry_price"]
+                    # SL을 진입가 or 현재가-2% 중 높은 값으로 강화
+                    reversal_sl = max(entry, int(cp * 0.98))
+                    old_sl = pos["stop_loss"]
+                    if reversal_sl > old_sl:
+                        pos["stop_loss"] = reversal_sl
+                        if target_state:
+                            target_state.dynamic_sl = reversal_sl
+                        lines.append(
+                            f"  ⚠️ {pos.get('name', code)} REVERSAL 방어\n"
+                            f"     SL 강화: {old_sl:,} → {reversal_sl:,}"
+                        )
+                    # TP도 축소 (현재가 +3%로 제한)
+                    reversal_tp = int(cp * 1.03)
+                    old_tp = pos["take_profit"]
+                    if reversal_tp < old_tp:
+                        pos["take_profit"] = reversal_tp
+                        if target_state:
+                            target_state.dynamic_tp = reversal_tp
+
                 # 최대 보유일 초과 (모멘텀 포지션은 5일, 스윙은 config값)
+                # REVERSAL 섹터 종목은 최대 3일로 단축
                 effective_max = 5 if pos.get("source") == "momentum" else max_hold
+                if code in reversal_codes:
+                    effective_max = min(effective_max, 3)
                 if hold_days >= effective_max:
                     action = ACTION_FULL_SELL
-                    reason = f"최대 보유일 {effective_max}일 도달"
+                    reason = f"최대 보유일 {effective_max}일 도달" + (
+                        " (REVERSAL 섹터)" if code in reversal_codes else ""
+                    )
 
                 # 판정 실행
                 name = pos.get("name", code)

@@ -645,10 +645,10 @@ def _step5_cross_validate(
         rotation_bonus = 0.0
         if rot_info:
             rot_src = rot_info.get("rotation_source", "")
-            if rot_src == "staging":
-                rotation_bonus = 15.0   # 스테이징 섹터 리더/mid → 진입 우선
-            elif rot_src == "hot_early":
-                rotation_bonus = 10.0   # HOT 초기 소부장 → 릴레이 기회
+            if rot_src == "hot_early":
+                rotation_bonus = 15.0   # HOT 초기 소부장 → 확인된 모멘텀, 최우선
+            elif rot_src == "staging":
+                rotation_bonus = 8.0    # 스테이징 섹터 → 미확인 모멘텀, 보수적
             elif rot_src == "hot_mid":
                 rotation_bonus = 5.0    # HOT 중기 → 아직 기회 있음
             elif rot_src == "reversal_exit":
