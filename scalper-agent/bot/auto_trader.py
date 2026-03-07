@@ -1468,27 +1468,37 @@ class AutoTrader:
                     action = ACTION_HOLD
                     reason = "타겟 상태 없음"
 
-                # ── REVERSAL 섹터 방어: SL 강화 + 보유일 단축 ──
+                # ── REVERSAL 섹터 방어: 손실 중이면 즉시 청산, 수익 중이면 SL 강화 ──
                 if code in reversal_codes and action not in (ACTION_FULL_SELL, ACTION_STOP_LOSS):
                     entry = pos["entry_price"]
-                    # SL을 진입가 or 현재가-2% 중 높은 값으로 강화
-                    reversal_sl = max(entry, int(cp * 0.98))
-                    old_sl = pos["stop_loss"]
-                    if reversal_sl > old_sl:
-                        pos["stop_loss"] = reversal_sl
-                        if target_state:
-                            target_state.dynamic_sl = reversal_sl
+
+                    if cp <= entry:
+                        # 이미 물려있는 상태 → REVERSAL + 손실 = 즉시 청산
+                        action = ACTION_FULL_SELL
+                        reason = f"REVERSAL 섹터 + 손실({pnl:+.1f}%) → 즉시 정리"
                         lines.append(
-                            f"  ⚠️ {pos.get('name', code)} REVERSAL 방어\n"
-                            f"     SL 강화: {old_sl:,} → {reversal_sl:,}"
+                            f"  🔴 {pos.get('name', code)} REVERSAL 즉시 청산\n"
+                            f"     진입:{entry:,} 현재:{cp:,} ({pnl:+.1f}%)"
                         )
-                    # TP도 축소 (현재가 +3%로 제한)
-                    reversal_tp = int(cp * 1.03)
-                    old_tp = pos["take_profit"]
-                    if reversal_tp < old_tp:
-                        pos["take_profit"] = reversal_tp
-                        if target_state:
-                            target_state.dynamic_tp = reversal_tp
+                    else:
+                        # 수익 중 → SL을 진입가로 올려 본전 확보 + TP 축소
+                        reversal_sl = max(entry, int(cp * 0.98))
+                        old_sl = pos["stop_loss"]
+                        if reversal_sl > old_sl:
+                            pos["stop_loss"] = reversal_sl
+                            if target_state:
+                                target_state.dynamic_sl = reversal_sl
+                            lines.append(
+                                f"  ⚠️ {pos.get('name', code)} REVERSAL 방어\n"
+                                f"     SL 강화: {old_sl:,} → {reversal_sl:,}"
+                            )
+                        # TP도 축소 (현재가 +3%로 제한)
+                        reversal_tp = int(cp * 1.03)
+                        old_tp = pos["take_profit"]
+                        if reversal_tp < old_tp:
+                            pos["take_profit"] = reversal_tp
+                            if target_state:
+                                target_state.dynamic_tp = reversal_tp
 
                 # 최대 보유일 초과 (모멘텀 포지션은 5일, 스윙은 config값)
                 # REVERSAL 섹터 종목은 최대 3일로 단축
