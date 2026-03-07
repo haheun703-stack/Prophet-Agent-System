@@ -333,6 +333,7 @@ class AutoTrader:
 
         if self.mode == "swing":
             await self._morning_swing(context, _send)
+            await self._morning_momentum(context, _send)  # 소형주 급등 포착
         else:
             await self._morning_day(context, _send)
 
@@ -553,6 +554,81 @@ class AutoTrader:
         lines.append(f"\n30초마다 KIS API로 가격/거래량/체결강도 관찰 중...")
         lines.append(f"진입 조건 충족 시 자동 매수 (최대 30분 관찰)")
         await _send("\n".join(lines))
+
+    async def _morning_momentum(self, context, _send):
+        """소형주 모멘텀: 급등 후보 로드 -> 진입감시 등록 (스윙과 별도)
+
+        - 최대 1종목 (스윙 포지션과 별도 카운트)
+        - 매수금액 = 가용현금 20% (소형주 소액)
+        - 2분할 매수, 최대 20분 관찰, 최대 5일 보유
+        """
+        if not self.is_running:
+            return
+
+        try:
+            from data.morning_recommendation import load_recommendation
+            rec = load_recommendation()
+            if not rec or not rec.momentum_stocks:
+                return
+        except Exception as e:
+            logger.warning(f"모멘텀 추천 로드 실패: {e}")
+            return
+
+        # 모멘텀 포지션 제한: 최대 1종목
+        bot_conf = self.config.get("bot", {})
+        momentum_max = bot_conf.get("max_momentum_positions", 1)
+        momentum_count = sum(
+            1 for p in self._positions.values() if p.get("source") == "momentum"
+        )
+        if momentum_count >= momentum_max:
+            await _send(f"모멘텀 포지션 {momentum_count}/{momentum_max} — 추가 불가")
+            return
+
+        # 가용 현금 20% 사용
+        bal = self.trader.fetch_balance()
+        cash = bal.get("cash", 0) if bal.get("success") else 0
+        buy_amount = int(cash * 0.20)
+        if buy_amount < 50000:
+            return
+
+        registered = 0
+        for s in rec.momentum_stocks[:1]:  # 최대 1종목
+            code = s["code"]
+            if code in self._positions or code in self._entry_watch:
+                continue
+
+            self._entry_watch[code] = {
+                "name": s["name"],
+                "buy_amount": buy_amount,
+                "sl": s["sl"],
+                "tp": s["tp"],
+                "tp1_quick": s["tp"],
+                "score": s.get("momentum_score", 0),
+                "source": "momentum",           # 소스 표시 (vs swing/pipeline)
+                "confidence": "MOMENTUM",
+                "size_mult": 1.0,
+                "prev_close": s.get("entry", 0),
+                "open_price": 0,
+                "min_price": 999999999,
+                "max_price": 0,
+                "checks": 0,
+                "max_checks": 40,               # 최대 20분 (스윙 30분보다 짧게)
+                "ai_scores": [],
+                "registered_at": datetime.now().strftime("%H:%M"),
+                "entry_triggered": False,
+                "split_count": 2,               # 2분할 (스윙은 3분할)
+                "split_done": 0,
+                "split_amount": buy_amount // 2,
+                "last_split_check": 0,
+                "split_interval": 10,           # 5분 간격
+            }
+            registered += 1
+
+        if registered:
+            await _send(
+                f"급등주 감시 등록: {registered}종목\n"
+                f"  금액: {buy_amount:,}원 (2분할), 최대 20분 관찰"
+            )
 
     async def _check_entry_watch(self):
         """진입감시 대기열 체크 — job_monitor에서 30초마다 호출
@@ -794,6 +870,7 @@ class AutoTrader:
                                     "take_profit": tp,
                                     "entry_date": datetime.now().strftime("%Y-%m-%d"),
                                     "name": watch["name"],
+                                    "source": watch.get("source", "swing"),
                                     "target_state": target_state,
                                     "high_watermark": cp,
                                     "trailing_activated": False,
@@ -1023,6 +1100,7 @@ class AutoTrader:
                                 "take_profit": tp,
                                 "entry_date": datetime.now().strftime("%Y-%m-%d"),
                                 "name": watch["name"],
+                                "source": watch.get("source", "swing"),
                                 "target_state": target_state,
                                 "high_watermark": cp,
                                 "trailing_activated": False,
@@ -1361,10 +1439,11 @@ class AutoTrader:
                     action = ACTION_HOLD
                     reason = "타겟 상태 없음"
 
-                # 최대 보유일 초과
-                if hold_days >= max_hold:
+                # 최대 보유일 초과 (모멘텀 포지션은 5일, 스윙은 config값)
+                effective_max = 5 if pos.get("source") == "momentum" else max_hold
+                if hold_days >= effective_max:
                     action = ACTION_FULL_SELL
-                    reason = f"최대 보유일 {max_hold}일 도달"
+                    reason = f"최대 보유일 {effective_max}일 도달"
 
                 # 판정 실행
                 name = pos.get("name", code)

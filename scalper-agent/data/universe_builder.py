@@ -213,6 +213,110 @@ def load_universe() -> dict:
     return {}
 
 
+# ═══════════════════════════════════════════════════
+#  소형주 유니버스 (급등주 모멘텀 모듈용)
+# ═══════════════════════════════════════════════════
+
+SMALLCAP_FILE = DATA_DIR / "universe_smallcap.json"
+
+
+def build_smallcap_universe(min_cap_억: int = 30, max_cap_억: int = 500) -> dict:
+    """소형주 유니버스 빌드 (시총 300억~5000억)
+
+    대형주 유니버스와 완전 분리. 급등주 모멘텀 스캐너 전용.
+
+    Args:
+        min_cap_억: 최소 시총 (기본 30 = 300억)
+        max_cap_억: 최대 시총 (기본 500 = 5000억)
+    """
+    from pykrx import stock
+
+    print(f"\n  소형주 유니버스 빌드 — 시총 {min_cap_억:,}~{max_cap_억:,}억원")
+    print("=" * 60)
+
+    date = _find_latest_trading_day()
+    print(f"  기준일: {date}")
+
+    cap_df = stock.get_market_cap_by_ticker(date, market="ALL")
+    nonzero = cap_df[cap_df["시가총액"] > 0].copy()
+
+    min_won = min_cap_억 * 1_0000_0000
+    max_won = max_cap_억 * 1_0000_0000
+    filtered = nonzero[(nonzero["시가총액"] >= min_won) & (nonzero["시가총액"] <= max_won)].copy()
+
+    kospi_set = set(stock.get_market_ticker_list(date, market="KOSPI"))
+
+    # 스팩/리츠/우선주 제거
+    exclude_keywords = ["스팩", "SPAC", "리츠", "우B", "우C"]
+    universe = {}
+
+    for code in filtered.index:
+        name = stock.get_market_ticker_name(code)
+        if not name:
+            continue
+
+        skip = False
+        for kw in exclude_keywords:
+            if kw in name:
+                skip = True
+                break
+        # 우선주 제거 (코드 끝자리 5~9)
+        if code[-1] in "56789" and "우" in name:
+            skip = True
+        if skip:
+            continue
+
+        cap_억 = filtered.loc[code, "시가총액"] / 1_0000_0000
+        vol = filtered.loc[code, "거래량"]
+
+        # 유동성 최소 기준: 거래량 1만주+
+        if vol < 10000:
+            continue
+
+        market = "KOSPI" if code in kospi_set else "KOSDAQ"
+
+        universe[code] = {
+            "name": name,
+            "market": market,
+            "cap_억": int(cap_억),
+            "volume": int(vol),
+        }
+
+    # 시총순 정렬
+    universe = dict(sorted(universe.items(), key=lambda x: -x[1]["cap_억"]))
+
+    print(f"  시총 {min_cap_억:,}~{max_cap_억:,}억: {len(filtered)}개")
+    print(f"  필터 후: {len(universe)}개")
+    print(f"  KOSPI: {sum(1 for v in universe.values() if v['market']=='KOSPI')}개")
+    print(f"  KOSDAQ: {sum(1 for v in universe.values() if v['market']=='KOSDAQ')}개")
+
+    _ensure_dirs()
+    with open(SMALLCAP_FILE, "w", encoding="utf-8") as f:
+        json.dump(universe, f, ensure_ascii=False, indent=2)
+    print(f"  저장: {SMALLCAP_FILE}")
+
+    return universe
+
+
+def load_smallcap_universe() -> dict:
+    """소형주 유니버스 로드"""
+    if SMALLCAP_FILE.exists():
+        with open(SMALLCAP_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
+def collect_smallcap_daily(months: int = 6, force: bool = False):
+    """소형주 일봉 수집 (6개월, 경량화)"""
+    universe = load_smallcap_universe()
+    if not universe:
+        print("소형주 유니버스 없음 — 먼저 build_smallcap_universe() 실행")
+        return 0
+    codes = list(universe.keys())
+    print(f"\n  소형주 일봉 수집: {len(codes)}종목 ({months}개월)")
+    return collect_daily_pykrx(codes, months, force)
+
+
 def collect_daily_pykrx(codes: list, months: int = 24, force: bool = False):
     """pykrx로 일봉 데이터 수집"""
     from pykrx import stock
@@ -386,9 +490,15 @@ if __name__ == "__main__":
     parser.add_argument("--force", action="store_true", help="캐시 무시")
     parser.add_argument("--months", type=int, default=24, help="수집 기간 (월)")
     parser.add_argument("--build-only", action="store_true", help="유니버스만 빌드 (수집X)")
+    parser.add_argument("--smallcap", action="store_true", help="소형주 유니버스 빌드 (300억~5000억)")
+    parser.add_argument("--max-cap", type=int, default=500, help="소형주 최대 시총 (억원, 기본 500=5000억)")
     args = parser.parse_args()
 
-    if args.build_only:
+    if args.smallcap:
+        build_smallcap_universe(args.min_cap, args.max_cap)
+        if not args.build_only:
+            collect_smallcap_daily(args.months, args.force)
+    elif args.build_only:
         build_universe(args.min_cap)
     else:
         collect_all_universe(args.min_cap, args.months, args.force)

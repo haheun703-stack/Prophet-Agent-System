@@ -70,6 +70,8 @@ class RecommendationReport:
     # NIGHTWATCH 채권 자경단 신호등
     cross_regime: str = ""         # NORMAL / CORRECTION / DIVERGENCE
     cross_regime_detail: str = ""  # "S&P -1.3% + TNX +0.12% → 자경단"
+    # 소형주 급등 후보 (Momentum Hunter)
+    momentum_stocks: list = field(default_factory=list)
 
 
 # ═══════════════════════════════════════
@@ -833,6 +835,28 @@ def run_evening_recommendation() -> RecommendationReport:
             all_codes_set.add((code, info.get("name", code)))
     logger.info(f"  → {len(bargain_result)}종목 ({time.time()-t0:.0f}s)")
 
+    # Step 2.8: 소형주 모멘텀 스캔 (급등주 포착)
+    t0 = time.time()
+    logger.info("[Step 2.8] 소형주 모멘텀 스캔...")
+    try:
+        from strategies.momentum_scanner import scan_momentum
+        momentum_result = scan_momentum(top_n=5)
+        report.momentum_stocks = [
+            {
+                "code": c.code, "name": c.name,
+                "momentum_score": c.momentum_score,
+                "theme": c.theme, "theme_detail": c.theme_detail,
+                "volume_spike": c.volume_spike,
+                "price_change_5d": c.price_change_5d,
+                "entry": c.entry, "sl": c.sl, "tp": c.tp,
+                "cap_억": c.cap_억,
+            }
+            for c in momentum_result
+        ]
+        logger.info(f"  → {len(momentum_result)}종목 ({time.time()-t0:.0f}s)")
+    except Exception as e:
+        logger.warning(f"모멘텀 스캔 실패: {e}")
+
     if not all_codes_set:
         report.warning = "릴레이+사전감지+MACD+줍줍 결과 0건 — 추천 불가"
         return report
@@ -1206,10 +1230,11 @@ def save_recommendation(report: RecommendationReport):
             }
             for s in report.stocks
         ],
+        "momentum_stocks": report.momentum_stocks,  # 소형주 급등 후보 (dict list)
     }
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-    logger.info(f"추천 저장: {path} ({report.stage}, {len(report.stocks)}종목)")
+    logger.info(f"추천 저장: {path} ({report.stage}, {len(report.stocks)}종목, 모멘텀 {len(report.momentum_stocks)}종목)")
 
 
 def load_recommendation() -> Optional[RecommendationReport]:
@@ -1257,6 +1282,8 @@ def load_recommendation() -> Optional[RecommendationReport]:
                 today_chg=sd.get("today_chg", 0),
                 relative_str=sd.get("relative_str", 0),
             ))
+        # 소형주 모멘텀 후보 로드
+        report.momentum_stocks = data.get("momentum_stocks", [])
         return report
     except Exception as e:
         logger.error(f"추천 로드 실패: {e}")
