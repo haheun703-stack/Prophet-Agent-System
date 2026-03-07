@@ -141,6 +141,8 @@ class COTReport:
     signal: str = ""                 # 텔레그램 1줄 요약
     # BRAIN 연동
     allocation_adjust: dict = field(default_factory=dict)
+    # per-contract 극단 경보 (개별 계약 |KOSPI기여| >= 2.0)
+    contract_alerts: list = field(default_factory=list)
     # 히스토리
     score_trend: str = ""            # UP / FLAT / DOWN
 
@@ -564,6 +566,22 @@ def analyze_cot() -> COTReport:
         pos.kospi_contribution = round(contract_bullish * kospi_beta, 2)
         total_score += pos.kospi_contribution
 
+        # per-contract 극단 경보: |KOSPI기여| >= 2.0이면 독립 경고
+        # (합산 스코어에서 다른 계약에 의해 상쇄되어도 개별 위험 표시)
+        CONTRACT_ALERT_THRESHOLD = 2.0
+        if abs(pos.kospi_contribution) >= CONTRACT_ALERT_THRESHOLD:
+            direction = "BEARISH" if pos.kospi_contribution < 0 else "BULLISH"
+            alert = {
+                "contract": cid,
+                "name": cdef["name"],
+                "contribution": pos.kospi_contribution,
+                "direction": direction,
+                "comm_z": pos.comm_z,
+                "spec_z": pos.noncomm_z,
+                "impact": cdef["korea_impact"],
+            }
+            report.contract_alerts.append(alert)
+
         # 신호 텍스트
         signals = []
         if abs(pos.comm_z) >= Z_EXTREME:
@@ -804,6 +822,19 @@ def format_cot_report(report: COTReport) -> str:
         )
         if p.signal and "중립" not in p.signal:
             lines.append(f"    → {p.signal}")
+
+    # per-contract 극단 경보 (합산에서 상쇄되어도 개별 위험 표시)
+    if report.contract_alerts:
+        lines.append("")
+        lines.append("⚠️ 개별 계약 극단 경보:")
+        for alert in report.contract_alerts:
+            direction_kr = "KOSPI↓" if alert["direction"] == "BEARISH" else "KOSPI↑"
+            lines.append(
+                f"  🔸 {alert['name']} {direction_kr}"
+                f" (기여 {alert['contribution']:+.1f})"
+                f" C={alert['comm_z']:+.1f} S={alert['spec_z']:+.1f}"
+            )
+            lines.append(f"     {alert['impact']}")
 
     # 배분 조정
     adj = report.allocation_adjust

@@ -462,6 +462,7 @@ def _load_cot_smartmoney() -> Dict:
             "data_date": report.data_date,
             "score_trend": report.score_trend,
             "allocation_adjust": report.allocation_adjust,
+            "contract_alerts": [a for a in (report.contract_alerts or [])],
             "telegram_block": format_cot_report(report),
         }
     except Exception as e:
@@ -738,6 +739,21 @@ def run_brain(
     # 4D COT 블록 (NEUTRAL이 아닐 때만)
     if cot_info.get("smart_money_signal") and cot_info["smart_money_signal"] != "NEUTRAL":
         telegram_msg += "\n\n" + cot_info.get("telegram_block", "")
+
+    # 4D per-contract 극단 경보 (합산 NEUTRAL이어도 독립 표시)
+    cot_alerts = cot_info.get("contract_alerts", [])
+    if cot_alerts and cot_info.get("smart_money_signal") == "NEUTRAL":
+        lines = ["", "⚠️ 4D 개별 계약 극단 경보:"]
+        for alert in cot_alerts:
+            direction_kr = "KOSPI↓" if alert["direction"] == "BEARISH" else "KOSPI↑"
+            lines.append(
+                f"  🔸 {alert['name']} {direction_kr}"
+                f" (기여 {alert['contribution']:+.1f})"
+                f" C={alert['comm_z']:+.1f} S={alert['spec_z']:+.1f}"
+            )
+            lines.append(f"     {alert['impact']}")
+        lines.append("  (합산 스코어는 다른 계약이 상쇄 → NEUTRAL)")
+        telegram_msg += "\n".join(lines)
 
     # 5D 유동성 블록 (NEUTRAL이 아닐 때만)
     if liquidity_info.get("liquidity_level") and liquidity_info["liquidity_level"] != "NEUTRAL":
