@@ -539,45 +539,97 @@ def _apply_sensor_adjustments(
 ) -> tuple:
     """2D+3D+4D+5D 센서 결과로 배분 미세 조정
 
-    적용 순서: 3D(빠른 위기) → 2D(선행 전환) → 4D(느린 포지셔닝) → 5D(유동성 방향)
+    교차 신호 룰 (2D/3D 백테스트 검증 — 4개 위기 전부 확인):
+    - 2D IMMINENT 단독 (3D<ELEVATED) → 경계: 배분 유지, 신규진입 캡 50%
+    - 2D IMMINENT + 3D ELEVATED/HIGH → 방어: 스윙 -15%p, 현금 +12%p, 인버스 +5%p
+    - 2D IMMINENT + 3D CRITICAL → 최대방어: 스윙 -25%p, 현금 +20%p, 인버스 +10%p
+
+    교차 신호 비활성 시 기존 개별 조정 유지.
+    4D/5D는 항상 독립 적용.
 
     Returns:
-        (adjusted_pct, adjustment_notes)
+        (adjusted_pct, adjustment_notes, cross_signal)
+        cross_signal: {"mode": ..., "max_positions_cap": ..., ...} or {}
     """
     notes = []
     adjusted = dict(alloc_pct)
+    cross_signal = {}
     if cot_info is None:
         cot_info = {}
     if liquidity_info is None:
         liquidity_info = {}
 
-    # ── 3D: 크로스에셋 스트레스 조정 ──
-    stress_adj = stress_info.get("allocation_adjust", {})
-    cash_add = stress_adj.get("cash_add_pct", 0)
-    inverse_add = stress_adj.get("inverse_add_pct", 0)
-    swing_reduce = stress_adj.get("swing_reduce_pct", 0)
+    # ── 2D+3D 교차 신호 판정 ──
+    leading_signal = leading_info.get("transition_signal", "")
+    leading_dir = leading_info.get("transition_direction", "")
+    stress_level = stress_info.get("stress_level", "NORMAL")
 
-    if swing_reduce > 0:
-        adjusted["v10_swing"] = max(0, adjusted.get("v10_swing", 0) - swing_reduce)
-        adjusted["inverse_etf"] = adjusted.get("inverse_etf", 0) + inverse_add
-        adjusted["cash"] = adjusted.get("cash", 0) + cash_add + (swing_reduce - inverse_add)
-        notes.append(f"3D 스트레스({stress_info.get('stress_level', '')}): "
-                     f"스윙 -{swing_reduce}%p")
+    is_2d_imminent = (leading_signal == "IMMINENT" and leading_dir == "RISK_OFF")
+    _STRESS_RANK = {"NORMAL": 0, "ELEVATED": 1, "HIGH": 2, "CRITICAL": 3}
+    stress_rank = _STRESS_RANK.get(stress_level, 0)
 
-    # ── 2D: 선행지표 선제 조정 ──
-    leading_adj = leading_info.get("preemptive_adjust", {})
-    cash_shift = leading_adj.get("cash_shift_pct", 0)
-    inv_shift = leading_adj.get("inverse_shift_pct", 0)
+    if is_2d_imminent:
+        # ── 교차 신호 활성 → 2D/3D 개별 조정을 교차 룰로 대체 ──
+        if stress_rank >= 3:  # CRITICAL
+            adjusted["v10_swing"] = max(0, adjusted.get("v10_swing", 0) - 25)
+            adjusted["inverse_etf"] = adjusted.get("inverse_etf", 0) + 10
+            adjusted["cash"] = adjusted.get("cash", 0) + 20
+            cross_signal = {
+                "mode": "MAX_DEFENSE",
+                "mode_kr": "최대방어",
+                "max_positions_cap": 0.25,
+                "reason": "2D IMMINENT + 3D CRITICAL → 최대 방어",
+            }
+            notes.append("🚨 교차신호 최대방어: 2D+3D CRITICAL → 스윙 -25%p")
+        elif stress_rank >= 1:  # ELEVATED or HIGH
+            adjusted["v10_swing"] = max(0, adjusted.get("v10_swing", 0) - 15)
+            adjusted["inverse_etf"] = adjusted.get("inverse_etf", 0) + 5
+            adjusted["cash"] = adjusted.get("cash", 0) + 12
+            cross_signal = {
+                "mode": "DEFENSE",
+                "mode_kr": "방어",
+                "max_positions_cap": 0.5,
+                "reason": f"2D IMMINENT + 3D {stress_level} → 교차 확인 방어",
+            }
+            notes.append(f"🛡️ 교차신호 방어: 2D+3D({stress_level}) → 스윙 -15%p")
+        else:
+            # 2D IMMINENT 단독 (3D NORMAL) → 경계: 배분 유지, 진입만 제한
+            cross_signal = {
+                "mode": "ALERT",
+                "mode_kr": "경계",
+                "max_positions_cap": 0.5,
+                "reason": f"2D IMMINENT 단독 (3D {stress_level}) → 신규진입만 제한",
+            }
+            notes.append("⚠️ 교차신호 경계: 2D IMMINENT 단독 → 신규진입 캡 50%")
+    else:
+        # ── 교차 신호 비활성 → 기존 개별 조정 ──
 
-    if cash_shift != 0:
-        # 현금 증가분은 스윙에서 차감, 감소분은 스윙에 추가
-        adjusted["v10_swing"] = max(0, adjusted.get("v10_swing", 0) - cash_shift)
-        adjusted["cash"] = adjusted.get("cash", 0) + cash_shift
-        if inv_shift != 0:
-            adjusted["inverse_etf"] = max(0, adjusted.get("inverse_etf", 0) + inv_shift)
-            adjusted["cash"] = adjusted.get("cash", 0) - inv_shift
-        direction = leading_info.get("transition_direction", "")
-        notes.append(f"2D 선행({direction}): 현금 {cash_shift:+d}%p")
+        # 3D: 크로스에셋 스트레스 조정
+        stress_adj = stress_info.get("allocation_adjust", {})
+        cash_add = stress_adj.get("cash_add_pct", 0)
+        inverse_add = stress_adj.get("inverse_add_pct", 0)
+        swing_reduce = stress_adj.get("swing_reduce_pct", 0)
+
+        if swing_reduce > 0:
+            adjusted["v10_swing"] = max(0, adjusted.get("v10_swing", 0) - swing_reduce)
+            adjusted["inverse_etf"] = adjusted.get("inverse_etf", 0) + inverse_add
+            adjusted["cash"] = adjusted.get("cash", 0) + cash_add + (swing_reduce - inverse_add)
+            notes.append(f"3D 스트레스({stress_info.get('stress_level', '')}): "
+                         f"스윙 -{swing_reduce}%p")
+
+        # 2D: 선행지표 선제 조정
+        leading_adj = leading_info.get("preemptive_adjust", {})
+        cash_shift = leading_adj.get("cash_shift_pct", 0)
+        inv_shift = leading_adj.get("inverse_shift_pct", 0)
+
+        if cash_shift != 0:
+            adjusted["v10_swing"] = max(0, adjusted.get("v10_swing", 0) - cash_shift)
+            adjusted["cash"] = adjusted.get("cash", 0) + cash_shift
+            if inv_shift != 0:
+                adjusted["inverse_etf"] = max(0, adjusted.get("inverse_etf", 0) + inv_shift)
+                adjusted["cash"] = adjusted.get("cash", 0) - inv_shift
+            direction = leading_info.get("transition_direction", "")
+            notes.append(f"2D 선행({direction}): 현금 {cash_shift:+d}%p")
 
     # ── 4D: COT 스마트머니 조정 (느린 눈 — 주간) ──
     cot_adj = cot_info.get("allocation_adjust", {})
@@ -613,7 +665,7 @@ def _apply_sensor_adjustments(
     non_cash = sum(adjusted.get(k, 0) for k in STRATEGY_KEYS if k != "cash")
     adjusted["cash"] = max(0, 100 - non_cash)
 
-    return adjusted, notes
+    return adjusted, notes, cross_signal
 
 
 def run_brain(
@@ -697,9 +749,12 @@ def run_brain(
 
     # ── 2D+3D+4D+5D 센서 조정 적용 ──
     if leading_info or stress_info or cot_info or liquidity_info:
-        adjusted_pct, adj_notes = _apply_sensor_adjustments(
+        adjusted_pct, adj_notes, cross_signal = _apply_sensor_adjustments(
             result["allocation_pct"], stress_info, leading_info, cot_info, liquidity_info
         )
+        if cross_signal:
+            result["cross_signal"] = cross_signal
+            logger.info(f"[BRAIN] 교차신호: {cross_signal['mode']} ({cross_signal['reason']})")
         if adj_notes:
             # 기존 배분을 조정된 배분으로 교체
             old_pct = dict(result["allocation_pct"])
@@ -721,6 +776,17 @@ def run_brain(
 
     # 5. 텔레그램 메시지 (1D 배분 + 2D~4D 센서 + 로테이션)
     telegram_msg = format_allocation_report(result, nw_score, nw_signal)
+
+    # 교차 신호 블록
+    cs = result.get("cross_signal", {})
+    if cs:
+        mode_emoji = {"ALERT": "⚠️", "DEFENSE": "🛡️", "MAX_DEFENSE": "🚨"}.get(cs["mode"], "")
+        cap_pct = int(cs.get("max_positions_cap", 1) * 100)
+        telegram_msg += (
+            f"\n\n{mode_emoji} 교차신호 [{cs['mode_kr']}모드]"
+            f"\n  {cs['reason']}"
+            f"\n  신규진입 캡: {cap_pct}%"
+        )
 
     # 센서 조정 노트
     if result.get("sensor_adjustments"):

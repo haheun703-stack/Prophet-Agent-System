@@ -452,6 +452,18 @@ class AutoTrader:
         bot_conf = self.config.get("bot", {})
         max_pos = bot_conf.get("max_auto_positions", 5)
 
+        # BRAIN 교차 신호 — 경계/방어 모드 시 진입 캡 축소
+        brain_alloc = self._load_brain_allocation()
+        cross = brain_alloc.get("cross_signal", {})
+        if cross.get("max_positions_cap"):
+            original_max = max_pos
+            max_pos = max(1, int(max_pos * cross["max_positions_cap"]))
+            if max_pos < original_max:
+                await _send(
+                    f"🛡️ BRAIN 교차신호 [{cross.get('mode_kr', '')}모드]"
+                    f" — 진입 캡 {original_max}→{max_pos}"
+                )
+
         bal = self.trader.fetch_balance()
         current_positions = len(bal.get("positions", [])) if bal.get("success") else 0
         slots = max_pos - current_positions
@@ -1189,6 +1201,12 @@ class AutoTrader:
         bot_conf = self.config.get("bot", {})
         max_pos = bot_conf.get("max_auto_positions", 3)
         buy_amount = bot_conf.get("auto_buy_amount", 500000)
+
+        # BRAIN 교차 신호 — 경계/방어 모드 시 진입 캡 축소
+        brain_alloc = self._load_brain_allocation()
+        cross = brain_alloc.get("cross_signal", {})
+        if cross.get("max_positions_cap"):
+            max_pos = max(1, int(max_pos * cross["max_positions_cap"]))
 
         bal = self.trader.fetch_balance()
         current_positions = len(bal.get("positions", [])) if bal.get("success") else 0
