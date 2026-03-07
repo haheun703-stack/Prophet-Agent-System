@@ -72,3 +72,6 @@ desktop.ini
 
 # NIGHTWATCH 참고 문서
 NIGHTWATCH_*.md
+
+# JARVIS runtime data
+jarvis/data/

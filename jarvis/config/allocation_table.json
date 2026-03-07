@@ -1,0 +1,76 @@
+{
+  "_comment": "JARVIS BRAIN 자본 배분 테이블 v1.0 (초기값, 백테스트 미완료, 추후 교정 예정)",
+  "_updated": "2026-03-07",
+  "_note": "합계는 반드시 100%. severity는 경계 수준 (높을수록 방어적)",
+
+  "PANIC": {
+    "severity": 5,
+    "v10_swing": 0,
+    "group_etf": 0,
+    "gold_etf": 25,
+    "inverse_etf": 15,
+    "small_cap": 0,
+    "cash": 60,
+    "description": "전면 방어 — 현금+금+인버스만"
+  },
+  "FEAR_EXTREME": {
+    "severity": 4,
+    "v10_swing": 15,
+    "group_etf": 10,
+    "gold_etf": 20,
+    "inverse_etf": 10,
+    "small_cap": 0,
+    "cash": 45,
+    "description": "극단적 공포 — 최소 노출 + 방어자산"
+  },
+  "RISK_OFF": {
+    "severity": 3,
+    "v10_swing": 30,
+    "group_etf": 20,
+    "gold_etf": 15,
+    "inverse_etf": 5,
+    "small_cap": 0,
+    "cash": 30,
+    "description": "위험 회피 — 주식 축소, 방어 유지"
+  },
+  "CAUTIOUS": {
+    "severity": 2,
+    "v10_swing": 45,
+    "group_etf": 30,
+    "gold_etf": 5,
+    "inverse_etf": 0,
+    "small_cap": 5,
+    "cash": 15,
+    "description": "관망 — 핵심만 유지, 공격 자제"
+  },
+  "NEUTRAL": {
+    "severity": 1,
+    "v10_swing": 55,
+    "group_etf": 30,
+    "gold_etf": 5,
+    "inverse_etf": 0,
+    "small_cap": 10,
+    "cash": 0,
+    "description": "평시 — 정상 운용"
+  },
+  "RISK_ON": {
+    "severity": 0,
+    "v10_swing": 45,
+    "group_etf": 25,
+    "gold_etf": 0,
+    "inverse_etf": 0,
+    "small_cap": 20,
+    "cash": 10,
+    "description": "공격 — 소형주 확대, 금 없음"
+  },
+  "EUPHORIA": {
+    "severity": 2,
+    "v10_swing": 30,
+    "group_etf": 15,
+    "gold_etf": 10,
+    "inverse_etf": 10,
+    "small_cap": 5,
+    "cash": 30,
+    "description": "과열 경계 — CAUTIOUS와 동급, 인버스 헤지 추가"
+  }
+}
