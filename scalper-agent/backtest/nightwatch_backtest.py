@@ -127,7 +127,7 @@ def download_all_data(
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     글로벌 + 한국 티커 전부 다운로드
-    Returns: (global_df, kr_df) — 멀티인덱스 컬럼 (ticker, OHLCV)
+    Returns: (global_df, kr_df) - 멀티인덱스 컬럼 (ticker, OHLCV)
     """
     print(f"\n{'='*50}")
     print(f"  데이터 다운로드: {start} ~ {end}")

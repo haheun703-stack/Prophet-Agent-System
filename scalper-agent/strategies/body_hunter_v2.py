@@ -1,5 +1,5 @@
 """
-몸통 포착 엔진 v2.3 (Body Hunter v2.3) — Prop Firm Edition
+몸통 포착 엔진 v2.3 (Body Hunter v2.3) - Prop Firm Edition
 
 v2.3 (Prop Firm):
   9. Fixed TP 모드: 고정 2:1 TP (trailing/소진감지 대신 단순 청산)
@@ -88,7 +88,7 @@ class ExhaustionSignal:
 
 class BodyHunterV2:
     """
-    몸통 포착 엔진 v2.3 — Prop Firm Edition
+    몸통 포착 엔진 v2.3 - Prop Firm Edition
 
     v2.3 핵심:
       - fixed_tp_rr > 0 이면 고정 TP 모드 (trailing/소진감지 비활성)
@@ -101,7 +101,7 @@ class BodyHunterV2:
       - 시간대: 장중 시간에 따라 진입 허용/차단
     """
 
-    # 수익잠금 테이블: (RR 도달, 바닥 RR) — v2.2: 더 촘촘하게
+    # 수익잠금 테이블: (RR 도달, 바닥 RR) - v2.2: 더 촘촘하게
     PROFIT_LOCK_TABLE = [
         (0.8, 0.3),   # 작은 이익이라도 보호 시작
         (1.0, 0.5),
@@ -126,7 +126,7 @@ class BodyHunterV2:
         volume_drop_ratio: float = 0.65,
         wick_ratio_min:    float = 0.003,
         choppy_max_attempts: int = 3,
-        sl_ratio:          float = 0.6,    # v2.3: SL 위치 (range의 60%) — 0.7→0.6 축소
+        sl_ratio:          float = 0.6,    # v2.3: SL 위치 (range의 60%) - 0.7→0.6 축소
         fixed_tp_rr:       float = 0.0,    # v2.3: 고정 TP (0=비활성, 2.0=2:1 TP)
         cutoff_time:       str   = "15:00",
         golden_start:      str   = "09:20",
@@ -206,7 +206,7 @@ class BodyHunterV2:
         h, l = candle["high"], candle["low"]
         v    = candle["volume"]
 
-        # v2.1: 박스권 감지 — 이탈 시도만 반복하고 확인 못 하면 포기
+        # v2.1: 박스권 감지 - 이탈 시도만 반복하고 확인 못 하면 포기
         if self._breakout_attempts >= self.choppy_max_attempts:
             self.state = BodyState.DONE
             logger.warning(
@@ -292,14 +292,14 @@ class BodyHunterV2:
             return dict(action="WAIT", reason=f"리테스트실패→재감시({self._retest_fails}회)")
 
         logger.debug(
-            f"[{self.ticker}] FOMO 방지: 리테스트 대기 중 — 아직 레벨 터치 안 됨"
+            f"[{self.ticker}] FOMO 방지: 리테스트 대기 중 - 아직 레벨 터치 안 됨"
         )
         return dict(action="WAIT", reason="리테스트대기중")
 
     def _enter(self, candle: pd.Series, entry_price: float) -> dict:
         """진입 (v2.2: SL 위치 조절 가능)"""
         lv  = self.levels
-        # v2.2: sl_ratio로 SL 위치 조절 — 기존 mid 대신 high↔low 사이를 비율로
+        # v2.2: sl_ratio로 SL 위치 조절 - 기존 mid 대신 high↔low 사이를 비율로
         # sl_ratio=1.0 → mid (기존), sl_ratio=0.7 → high에서 range*0.7 아래
         if self.direction == "LONG":
             sl = lv.high - lv.range_size * self.sl_ratio
@@ -385,7 +385,7 @@ class BodyHunterV2:
         )
 
     def _manage_fixed_tp(self, candle: pd.Series, pos, risk) -> dict:
-        """v2.3: 고정 TP 모드 — SL or TP, 그 외 없음
+        """v2.3: 고정 TP 모드 - SL or TP, 그 외 없음
 
         장중 고가/저가로 TP/SL 히트 판정 (봉 내 동시 히트 시 불리한 쪽 우선)
         """
@@ -401,7 +401,7 @@ class BodyHunterV2:
             tp_hit = l <= tp_price
             sl_hit = h >= pos.stop_loss
 
-        # 동시 히트: SL 우선 (보수적 — 봉 내에서 SL 먼저 맞았을 가능성)
+        # 동시 히트: SL 우선 (보수적 - 봉 내에서 SL 먼저 맞았을 가능성)
         if sl_hit and tp_hit:
             return self._exit(candle, ExitReason.STOP_LOSS, pos.stop_loss)
 
@@ -458,7 +458,7 @@ class BodyHunterV2:
                 pos.trailing_sl = min(pos.trailing_sl, pos.entry_price)
 
         # Phase 3: RR >= trailing_rr → ATR 트레일링
-        #   본격 추세구간 — 피크에서 ATR 만큼 뒤에서 따라감
+        #   본격 추세구간 - 피크에서 ATR 만큼 뒤에서 따라감
         else:
             atr_dist = lv.atr * self.trailing_atr_mult
             if self.direction == "LONG":

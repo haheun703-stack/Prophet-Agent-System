@@ -1,5 +1,5 @@
 """
-뉴스 수집 + 감성분석 — 네이버증권 + Grok API
+뉴스 수집 + 감성분석 - 네이버증권 + Grok API
 ================================================
 배치 스캔: 키워드 기반 빠른 감성분석 (API 호출 없음)
 개별 분석: Grok API (grok-3-mini-fast) 상세 감성분석
@@ -59,7 +59,7 @@ class NewsCollector:
             resp.encoding = "euc-kr"
             page_html = resp.text
 
-            # 뉴스 제목 추출 — <a> 태그 내 title 속성 또는 텍스트
+            # 뉴스 제목 추출 - <a> 태그 내 title 속성 또는 텍스트
             # 패턴: <td class="title"><a ... title="뉴스제목" ...>뉴스제목</a>
             pattern = r'class="title"[^>]*>\s*<a[^>]*?title="([^"]+)"'
             matches = re.findall(pattern, page_html)
@@ -89,7 +89,7 @@ class NewsCollector:
             return self._load_cache(code) or []
 
     def quick_sentiment(self, headlines: List[Dict]) -> float:
-        """키워드 기반 빠른 감성분석 — 배치 스캔용
+        """키워드 기반 빠른 감성분석 - 배치 스캔용
 
         Returns: -10 ~ +10 점수
         """
@@ -105,7 +105,7 @@ class NewsCollector:
         return max(-10, min(10, score))
 
     def grok_sentiment(self, code: str, name: str, headlines: List[Dict]) -> Dict:
-        """Grok API로 상세 감성분석 — 개별 분석용
+        """Grok API로 상세 감성분석 - 개별 분석용
 
         Returns: {"score": int, "summary": str, "sentiment": str, "key_factor": str}
         """
@@ -251,4 +251,4 @@ if __name__ == "__main__":
         grok = collector.grok_sentiment(code, name, headlines)
         print(f"  Grok 결과: {grok}")
     else:
-        print("\n  XAI_API_KEY 없음 — Grok 분석 생략")
+        print("\n  XAI_API_KEY 없음 - Grok 분석 생략")

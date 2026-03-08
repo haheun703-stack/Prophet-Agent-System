@@ -1,5 +1,5 @@
 """
-몸통 포착 엔진 v3 (Body Hunter v3) — FVG + Engulfing Edition
+몸통 포착 엔진 v3 (Body Hunter v3) - FVG + Engulfing Edition
 
 v3 (vs v2.3):
   - FVG (Fair Value Gap) 감지: 돌파 후 3봉 구조의 갭 자동 탐지
@@ -97,13 +97,13 @@ class ExhaustionSignal:
 
 class BodyHunterV3:
     """
-    몸통 포착 엔진 v3 — FVG + Engulfing Edition
+    몸통 포착 엔진 v3 - FVG + Engulfing Edition
 
     핵심:
-      1. 첫봉 레벨 마킹 (FCR) — v2와 동일
-      2. 돌파 확인 — v2와 동일
-      3. FVG 감지 — v3 신규 (3봉 구조에서 갭 찾기)
-      4. Engulfing 진입 — v3 신규 (FVG 안에서 감싸기봉)
+      1. 첫봉 레벨 마킹 (FCR) - v2와 동일
+      2. 돌파 확인 - v2와 동일
+      3. FVG 감지 - v3 신규 (3봉 구조에서 갭 찾기)
+      4. Engulfing 진입 - v3 신규 (FVG 안에서 감싸기봉)
       5. SL = FVG 하단, TP = 3:1 RR
     """
 
@@ -220,7 +220,7 @@ class BodyHunterV3:
     # ═══════════════════════════════════════
 
     def _check_breakout(self, candle: pd.Series) -> dict:
-        """이탈 확인 — 박스권 감지 포함"""
+        """이탈 확인 - 박스권 감지 포함"""
         lv = self.levels
         o, c = candle["open"], candle["close"]
         h, l = candle["high"], candle["low"]
@@ -269,7 +269,7 @@ class BodyHunterV3:
     # ═══════════════════════════════════════
 
     def _check_fvg(self, candle: pd.Series) -> dict:
-        """FVG (Fair Value Gap) 감지 — FCR high/low 근처에서만 유효 (v3.1)"""
+        """FVG (Fair Value Gap) 감지 - FCR high/low 근처에서만 유효 (v3.1)"""
         self._bars_since_breakout += 1
 
         # 타임아웃: FVG 안 생기면 포기
@@ -426,7 +426,7 @@ class BodyHunterV3:
         return dict(action="WAIT", reason=f"Engulfing탐색중({self._bars_since_fvg}/{self.engulf_timeout_bars})")
 
     def _enter_fvg(self, candle: pd.Series, entry_price: float) -> dict:
-        """FVG 기반 진입 — SL = FVG 하단 바깥쪽 (v3.1)"""
+        """FVG 기반 진입 - SL = FVG 하단 바깥쪽 (v3.1)"""
         fvg = self.fvg
         buffer = fvg.size * self.sl_buffer_ratio  # FVG 크기의 N% 바깥
 
@@ -463,7 +463,7 @@ class BodyHunterV3:
     # ═══════════════════════════════════════
 
     def _manage_position(self, candle: pd.Series) -> dict:
-        """포지션 관리 — Fixed TP 모드 (3:1 RR)"""
+        """포지션 관리 - Fixed TP 모드 (3:1 RR)"""
         pos = self.position
         pos.hold_bars += 1
         c, h, l = candle["close"], candle["high"], candle["low"]
@@ -480,7 +480,7 @@ class BodyHunterV3:
         return self._manage_fixed_tp(candle, pos, risk)
 
     def _manage_fixed_tp(self, candle: pd.Series, pos, risk) -> dict:
-        """Fixed TP — SL or TP only (3:1 RR)"""
+        """Fixed TP - SL or TP only (3:1 RR)"""
         c, h, l = candle["close"], candle["high"], candle["low"]
 
         if self.direction == "LONG":

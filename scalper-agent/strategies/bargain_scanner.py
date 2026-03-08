@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-줍줍 스캐너 (Bargain Scanner) — 추천 파이프라인 자동 통합용
+줍줍 스캐너 (Bargain Scanner) - 추천 파이프라인 자동 통합용
 =============================================================
 전쟁 전 고점(2025-12 ~ 2026-02-27) 대비 낙폭이 큰 종목 중
 기관/외국인 진성매집이 확인된 종목을 자동 발굴.
@@ -8,7 +8,7 @@
 파이프라인 Step 2.7로 동작:
   1. processed parquet에서 전쟁전고점 vs 최신종가 낙폭 계산
   2. Flow(investor) CSV에서 기관/외인 N일 순매수 합산
-  3. 기술적 과매도 (RSI/BB) — parquet에 이미 계산됨
+  3. 기술적 과매도 (RSI/BB) - parquet에 이미 계산됨
   4. 종합 점수 → 상위 종목 반환
 
 릴레이/사전감지와 함께 step5 교차검증에 투입됨.
@@ -120,7 +120,7 @@ def _grade_supply(foreign: dict, inst: dict) -> str:
 
 
 def scan_bargain(universe: dict = None, top_n: int = 10) -> list[BargainCandidate]:
-    """줍줍 스캐너 메인 — 전쟁전 고점 대비 낙폭 + 수급매집 종목 발굴
+    """줍줍 스캐너 메인 - 전쟁전 고점 대비 낙폭 + 수급매집 종목 발굴
 
     Args:
         universe: {code: (name, suffix, market)} dict
@@ -265,7 +265,7 @@ def scan_bargain(universe: dict = None, top_n: int = 10) -> list[BargainCandidat
             elif bb_pctb < 0.5:
                 score += 5
 
-            # 5. 순매수 규모 보너스 (최대 15) — 데이터 단위: 백만원
+            # 5. 순매수 규모 보너스 (최대 15) - 데이터 단위: 백만원
             combined_bil = combined_10d / 100  # 억원 단위 (백만원 → 억원)
             if combined_bil >= 100:
                 score += 15

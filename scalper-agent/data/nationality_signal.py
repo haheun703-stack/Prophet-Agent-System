@@ -41,7 +41,7 @@ HEDGE_FUND = {"케이맨 제도", "영국령 버진아일랜드", "버뮤다"}
 ASIA_MONEY = {"중국", "홍콩", "싱가포르", "일본", "대만"}
 NORTH_AMERICA = {"미국", "캐나다"}
 
-# 주요국 (보고 대상) — 순서대로 표시
+# 주요국 (보고 대상) - 순서대로 표시
 MAJOR_COUNTRIES = [
     "영국", "미국", "케이맨 제도", "싱가포르", "중국", "홍콩",
     "노르웨이", "스위스", "오스트레일리아", "프랑스", "일본",
@@ -106,7 +106,7 @@ def collect_daily_snapshots(
 
     Args:
         codes: 종목코드 리스트
-        date: 수집일 YYYYMMDD (기본: 전일 — T-1 지연 감안)
+        date: 수집일 YYYYMMDD (기본: 전일 - T-1 지연 감안)
 
     Returns: {code: {국가명: 거래량}}
     """
@@ -284,7 +284,7 @@ def format_nationality_report(
     if changes is None:
         changes = compare_nationality(code, date_new, date_old)
     if not changes:
-        return f"🌍 {name or code} — 비교 데이터 없음"
+        return f"🌍 {name or code} - 비교 데이터 없음"
 
     if not date_new:
         date_new = _get_latest_data_date()
@@ -393,7 +393,7 @@ def generate_nationality_report(
             )
             reports.append(report)
         else:
-            reports.append(f"🌍 {name}({code}) — 데이터 없음")
+            reports.append(f"🌍 {name}({code}) - 데이터 없음")
 
     return "\n\n".join(reports)
 

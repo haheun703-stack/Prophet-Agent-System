@@ -1,13 +1,13 @@
 """
-수급 데이터 수집기 — 외국인/기관/공매도/소진율
+수급 데이터 수집기 - 외국인/기관/공매도/소진율
 
 데이터 소스: KIS API (투자자수급, 외국인소진율) + 캐시 (공매도)
 pykrx 수급 API 전면 깨짐 → KIS API로 대체 (2026-03-04)
 
 수집 항목:
-  1순위: 외국인/기관 순매수 (금액+수량) — KIS API FHKST01010900
-  1순위: 외국인 소진율 — KIS 현재가 API hts_frgn_ehrt
-  2순위: 공매도 잔고/거래량 — 캐시 반환 (pykrx 깨짐)
+  1순위: 외국인/기관 순매수 (금액+수량) - KIS API FHKST01010900
+  1순위: 외국인 소진율 - KIS 현재가 API hts_frgn_ehrt
+  2순위: 공매도 잔고/거래량 - 캐시 반환 (pykrx 깨짐)
 
 사용법:
   python -m data.flow_collector
@@ -76,7 +76,7 @@ def _get_kis_session() -> Tuple[str, dict]:
 
 
 # ============================================================
-#  1순위: 투자자별 순매수 (외국인/기관) — KIS API
+#  1순위: 투자자별 순매수 (외국인/기관) - KIS API
 # ============================================================
 
 def collect_investor_flow(
@@ -86,7 +86,7 @@ def collect_investor_flow(
 ) -> Dict[str, pd.DataFrame]:
     """투자자별 순매수 금액+수량 수집 (KIS API, pykrx 깨짐 대체 2026-03-04)
 
-    KIS API tr_id=FHKST01010900 — 30일치 일별 투자자 매매동향
+    KIS API tr_id=FHKST01010900 - 30일치 일별 투자자 매매동향
     컬럼: 기관_금액, 개인_금액, 외국인_금액, 기관_수량, 개인_수량, 외국인_수량
 
     Returns: {code: DataFrame(date index)}
@@ -215,7 +215,7 @@ def collect_foreign_exhaustion(
     months: int = 24,
     force: bool = False,
 ) -> Dict[str, pd.DataFrame]:
-    """외국인 보유비율(소진율) 수집 — KIS 현재가 API
+    """외국인 보유비율(소진율) 수집 - KIS 현재가 API
 
     pykrx get_exhaustion_rates 깨짐 → KIS 현재가에서 hts_frgn_ehrt 필드 사용
     일별 추이 대신 현재 보유비율 + 투자자수급 외국인_수량으로 추이 보완
@@ -324,7 +324,7 @@ def _fetch_foreign_rate_api(base_url: str, headers: dict, code: str) -> Optional
 
 
 # ============================================================
-#  2순위: 공매도 잔고 (pykrx — 현재 깨짐, 캐시 반환 모드)
+#  2순위: 공매도 잔고 (pykrx - 현재 깨짐, 캐시 반환 모드)
 # ============================================================
 
 def collect_short_balance(
@@ -363,7 +363,7 @@ def collect_short_balance(
 
 
 # ============================================================
-#  2순위: 공매도 거래량 (pykrx — 현재 깨짐, 캐시 반환 모드)
+#  2순위: 공매도 거래량 (pykrx - 현재 깨짐, 캐시 반환 모드)
 # ============================================================
 
 def collect_short_volume(
@@ -465,7 +465,7 @@ def collect_nationality(
     하이브리드: Playwright(네이버 로그인) + HTTP(JSON API 데이터).
     전체 유니버스(346종목) 대신 추천/보유 종목만 대상으로 할 것.
 
-    캐시: data_store/nationality/{code}.csv — 당일 캐시 있으면 스킵
+    캐시: data_store/nationality/{code}.csv - 당일 캐시 있으면 스킵
     쿠키 만료 시 빈 dict 반환 (에러 로그만, 전체 파이프라인 안 멈춤)
 
     Returns: {code: DataFrame(국가명, 거래규모)}

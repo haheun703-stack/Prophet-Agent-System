@@ -92,7 +92,7 @@ class TelegramAlert:
         self._send(msg)
 
     def send_report(self, report_text: str):
-        """긴 리포트 전송 (4D 디스크법 등) — 자동 분할"""
+        """긴 리포트 전송 (4D 디스크법 등) - 자동 분할"""
         if not self.enabled:
             return
 

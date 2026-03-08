@@ -591,7 +591,7 @@ async def afetch_nationality_batch(
     date_to: str = None,
     **kwargs,
 ) -> dict:
-    """여러 종목 배치 조회 (async — 텔레그램 봇용)
+    """여러 종목 배치 조회 (async - 텔레그램 봇용)
 
     Args:
         stock_codes: 종목코드 리스트

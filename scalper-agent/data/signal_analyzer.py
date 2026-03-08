@@ -7,8 +7,8 @@
 
 1D: 가격 구조 (봉 형태, 꼬리 비율, 캔들 패턴)
 2D: 거래량 에너지 (거래량비, 소진/스파이크, 다이버전스)
-3D: 수급 흐름 (기관/외인 순매수, 공매도) — SupplyAnalyzer 재사용
-4D: 모멘텀 (RSI, MACD, 볼린저, MA배열) — SupplyAnalyzer 재사용
+3D: 수급 흐름 (기관/외인 순매수, 공매도) - SupplyAnalyzer 재사용
+4D: 모멘텀 (RSI, MACD, 볼린저, MA배열) - SupplyAnalyzer 재사용
 
 저장: data_store/signals/YYYYMMDD.csv (일간 전종목 레코드)
       data_store/signals/{code}_history.csv (종목별 히스토리)
@@ -209,7 +209,7 @@ class SignalAnalyzer:
         if c1 > o1 and c0 < o0 and c0 < o1 and o0 > c1:
             return "bearish_engulfing"
 
-        # 망치형 (Hammer) — 하락 후 긴 아래꼬리
+        # 망치형 (Hammer) - 하락 후 긴 아래꼬리
         lower_wick0 = (min(o0, c0) - l0)
         if lower_wick0 > body0 * 2 and (h0 - max(o0, c0)) < body0 * 0.3:
             if c1 < o1:  # 이전 음봉 후
@@ -221,7 +221,7 @@ class SignalAnalyzer:
             if c1 < o1:
                 return "inverted_hammer"
 
-        # 샛별형 (Morning Star) — 3봉 패턴
+        # 샛별형 (Morning Star) - 3봉 패턴
         o2, c2 = float(r2["open"]), float(r2["close"])
         body2 = abs(c2 - o2)
         if c2 < o2 and body1 < body2 * 0.3 and c0 > o0 and c0 > (o2 + c2) / 2:

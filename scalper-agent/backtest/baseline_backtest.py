@@ -118,7 +118,7 @@ def forward_check(analyzer, code, entry_date, baseline, hold_days=10):
             result['r_multiple'] = (tp1 - entry) / (entry - sl) if entry > sl else 0
             return result
 
-    # 만기 종료 — 마지막 종가로 청산
+    # 만기 종료 - 마지막 종가로 청산
     last_row = future.iloc[-1]
     last_close = last_row.get('close', last_row.get('종가', entry))
     last_date = last_row['_date']

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-모멘텀 헌터 백테스트 — 소형주 급등 포착 전략 검증
+모멘텀 헌터 백테스트 - 소형주 급등 포착 전략 검증
 ===================================================
 3개월 일봉 데이터로 "거래량 폭발 + 기술 확인" 전략 검증.
 
@@ -72,7 +72,7 @@ class MomentumTrade:
 # ════════════════════════════════════════════════════
 
 class MomentumBacktester:
-    """소형주 모멘텀 백테스트 — 거래량 폭발 + 기술 확인"""
+    """소형주 모멘텀 백테스트 - 거래량 폭발 + 기술 확인"""
 
     def __init__(self, start: str = "2026-01-05", end: str = "2026-03-06",
                  initial_cash: int = 230_000,  # 총자금 115만 × 20%
@@ -195,7 +195,7 @@ class MomentumBacktester:
 
     def load_all(self):
         print("=" * 60)
-        print("  모멘텀 백테스트 — 데이터 로딩")
+        print("  모멘텀 백테스트 - 데이터 로딩")
         print("-" * 60)
         self._load_universe()
         self._load_daily_data()

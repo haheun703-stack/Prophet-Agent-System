@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-스윙매매 종합 스크리너 — 4층 파이프라인
+스윙매매 종합 스크리너 - 4층 파이프라인
 ==========================================
 매일 20:00 실행. 전종목 → 수급(5D) + 기술(OBV/EMA/RSI/히스토그램) + 이상거래 → TOP 10
 
@@ -117,7 +117,7 @@ class SwingCandidate:
             sources.append("이벤트")
         if self.spike_score >= 30:
             sources.append("이상")
-        self.source = "+".join(sources) if sources else "—"
+        self.source = "+".join(sources) if sources else "-"
 
         # 리스크 %
         if self.close > 0 and self.swing_sl > 0:
@@ -138,7 +138,7 @@ def run_supply_analysis(codes: list, universe: dict) -> dict:
     analyzer = SupplyAnalyzer()
     results = {}
 
-    print(f"\n[L2] 수급 분석 — {len(codes)}종목...")
+    print(f"\n[L2] 수급 분석 - {len(codes)}종목...")
 
     fulls = analyzer.scan_all_full(codes)
 
@@ -185,7 +185,7 @@ def run_tech_analysis(candidates: dict) -> dict:
     """
     from data.swing_indicators import analyze_stock
 
-    print(f"\n[L3] 기술 분석 — {len(candidates)}종목...")
+    print(f"\n[L3] 기술 분석 - {len(candidates)}종목...")
 
     passed = {}
     vetoed = 0
@@ -242,7 +242,7 @@ def apply_event_bonus(candidates: dict) -> dict:
 
     event_file = DATA_DIR / "events.json"
     if not event_file.exists():
-        print("  events.json 없음 — 건너뜀 (이벤트 스캔 먼저 실행)")
+        print("  events.json 없음 - 건너뜀 (이벤트 스캔 먼저 실행)")
         return candidates
 
     with open(event_file, "r", encoding="utf-8") as f:
@@ -423,7 +423,7 @@ def format_report(ranked: List[SwingCandidate], pos_mult: float = 1.0) -> str:
 
     for i, c in enumerate(ranked, 1):
         # 수급 등급 아이콘
-        supply_icon = {"STRONG_BUY": "🔥", "BUY": "💪", "ENTER": "👍", "WATCH": "👀"}.get(c.action, "—")
+        supply_icon = {"STRONG_BUY": "🔥", "BUY": "💪", "ENTER": "👍", "WATCH": "👀"}.get(c.action, "-")
         # 기술 시그널 아이콘
         tech_icon = {"STRONG_BUY": "🟢", "BUY": "🟢", "WATCH": "🟡", "NO_ENTRY": "🔴"}.get(c.tech_signal, "⚪")
         # 이상거래 아이콘
@@ -434,7 +434,7 @@ def format_report(ranked: List[SwingCandidate], pos_mult: float = 1.0) -> str:
         }
         spike_str = "".join(spike_icons.get(p, "") for p in c.spike_patterns)
 
-        lines.append(f"\n{i}. {c.name}({c.code}) — {c.final_score:.0f}점")
+        lines.append(f"\n{i}. {c.name}({c.code}) - {c.final_score:.0f}점")
         lines.append(f"   수급: {c.supply_grade}/{c.momentum_signal} {supply_icon} | 기술: {c.tech_signal} {tech_icon}")
         lines.append(f"   추세: {c.ema_trend} | RSI: {c.rsi:.0f} | OBV: {c.obv_trend}")
 
@@ -569,7 +569,7 @@ def analyze_single(code: str) -> Optional[SwingCandidate]:
 def print_single(cand: SwingCandidate):
     """개별 종목 상세 출력"""
     print(f"\n{'='*50}")
-    print(f"  {cand.name} ({cand.code}) — 스윙 분석")
+    print(f"  {cand.name} ({cand.code}) - 스윙 분석")
     print(f"{'='*50}")
     print(f"\n  📊 최종 점수: {cand.final_score:.0f}점 [{cand.source}]")
     print(f"\n  ━━ 수급 (5D) ━━")
@@ -610,25 +610,25 @@ def run_pipeline(top_n: int = 10) -> List[SwingCandidate]:
 
     print()
     print("═" * 60)
-    print("  📊 스윙 스크리너 — 4층 파이프라인")
+    print("  📊 스윙 스크리너 - 4층 파이프라인")
     print(f"  📅 {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     print("═" * 60)
 
     # L0: 시장 건전성 게이트
     pos_mult = get_position_multiplier()
     if pos_mult <= 0:
-        print(f"\n🚨 시장 건전성 CRITICAL — 신규 진입 금지 (배수: {pos_mult})")
+        print(f"\n🚨 시장 건전성 CRITICAL - 신규 진입 금지 (배수: {pos_mult})")
         print("  → 건전성 진단: python -m data.market_health")
         return []
     elif pos_mult < 1.0:
-        print(f"\n⚠️ 시장 건전성 WARNING — 포지션 {pos_mult*100:.0f}% 축소 권장")
+        print(f"\n⚠️ 시장 건전성 WARNING - 포지션 {pos_mult*100:.0f}% 축소 권장")
     else:
-        print(f"\n✅ 시장 건전성 NORMAL — 풀사이즈 진입 가능")
+        print(f"\n✅ 시장 건전성 NORMAL - 풀사이즈 진입 가능")
 
     # L1: 유니버스
     universe = get_universe_dict()
     if not universe:
-        print("  ❌ 유니버스 없음 — python -m data.universe_builder --build-only 실행")
+        print("  ❌ 유니버스 없음 - python -m data.universe_builder --build-only 실행")
         return []
 
     exclude = {'069500', '371160', '102780', '305720'}  # ETF
@@ -667,7 +667,7 @@ def run_pipeline(top_n: int = 10) -> List[SwingCandidate]:
     save_watchlist(ranked)
 
     print(f"\n{'='*60}")
-    print(f"  ✅ 스윙 스크리너 완료 — TOP {len(ranked)}종목")
+    print(f"  ✅ 스윙 스크리너 완료 - TOP {len(ranked)}종목")
     print(f"{'='*60}")
 
     return ranked

@@ -16,7 +16,7 @@ import logging
 from pathlib import Path
 from datetime import datetime, time as dtime, timezone, timedelta
 
-# 한국 표준시 (UTC+9) — 스케줄러에 반드시 전달
+# 한국 표준시 (UTC+9) - 스케줄러에 반드시 전달
 KST = timezone(timedelta(hours=9))
 
 from telegram import Update, ReplyKeyboardMarkup, BotCommand
@@ -78,100 +78,100 @@ HELP_TEXT = """
 🔮 Body Hunter v3 명령어
 
 [사전감지 + AI모니터]
-  사전감지 — 폭발 직전 종목 포착 (3Gate+10신호)
-  AI모니터 — 보유종목 실시간 4팩터 분석
-  뉴스AI — Claude AI 뉴스 분석 (전자신문+네이버+DART)
+  사전감지 - 폭발 직전 종목 포착 (3Gate+10신호)
+  AI모니터 - 보유종목 실시간 4팩터 분석
+  뉴스AI - Claude AI 뉴스 분석 (전자신문+네이버+DART)
 
 [스윙매매]
-  스윙스캔 — 4층 파이프라인 (수급+기술+이상거래→TOP10)
-  이상거래 — 이상거래 감지기 (조용한 매집/큰손 포착)
-  건전성 — 시장 수급 건전성 진단
-  이벤트 — DART+뉴스 이벤트 감지
-  해외이벤트 — 해외 실적발표/경제지표 D-3 알림
-  종목선정 — 7팩터 스윙 종목 선정 (TOP 10)
-  MACD스캔 — MACD 제로선 크로스 + 수급폭발 스캔
-  스윙 삼성전자 — 개별 종목 스윙 분석
-  워치리스트 — 최근 스윙 워치리스트
+  스윙스캔 - 4층 파이프라인 (수급+기술+이상거래→TOP10)
+  이상거래 - 이상거래 감지기 (조용한 매집/큰손 포착)
+  건전성 - 시장 수급 건전성 진단
+  이벤트 - DART+뉴스 이벤트 감지
+  해외이벤트 - 해외 실적발표/경제지표 D-3 알림
+  종목선정 - 7팩터 스윙 종목 선정 (TOP 10)
+  MACD스캔 - MACD 제로선 크로스 + 수급폭발 스캔
+  스윙 삼성전자 - 개별 종목 스윙 분석
+  워치리스트 - 최근 스윙 워치리스트
 
 [릴레이 에이전트]
-  섹터릴레이 — 12섹터 순환 감지 (HOT/RELAY)
-  그룹릴레이 — 7대 그룹 순환 감지
-  ETF릴레이 — ETF→종목 후행 감지
-  릴레이종합 — 3개 에이전트 교차 검증 통합
+  섹터릴레이 - 12섹터 순환 감지 (HOT/RELAY)
+  그룹릴레이 - 7대 그룹 순환 감지
+  ETF릴레이 - ETF→종목 후행 감지
+  릴레이종합 - 3개 에이전트 교차 검증 통합
 
 [내일 추천]
-  내일추천 — 5단계 파이프라인 추천 조회/실행
+  내일추천 - 5단계 파이프라인 추천 조회/실행
   (자동 16:45 저녁분석 → 06:30 미국장체크 → 08:50 최종확인)
 
 [국적별 수급]
-  국적수급 — 추천/보유 종목 외국인 국적별 매매
-  국적수급 SK하이닉스 — 특정 종목 국적별 조회
+  국적수급 - 추천/보유 종목 외국인 국적별 매매
+  국적수급 SK하이닉스 - 특정 종목 국적별 조회
 
 [분석]
-  스캔 — 5D 전종목 수급 스캔
-  분석 삼성전자 — 개별 종목 6D 분석
-  뉴스 삼성전자 — 뉴스 + Grok 감성분석
+  스캔 - 5D 전종목 수급 스캔
+  분석 삼성전자 - 개별 종목 6D 분석
+  뉴스 삼성전자 - 뉴스 + Grok 감성분석
 
 [매매]
-  매수 삼성전자 10 — 시장가 매수
-  매도 삼성전자 — 전량 매도
-  청산 — 전종목 청산
-  현재잔고 — 계좌 잔고
-  체결내역 — 당일 체결
-  포트폴리오 — 보유 + 손익
+  매수 삼성전자 10 - 시장가 매수
+  매도 삼성전자 - 전량 매도
+  청산 - 전종목 청산
+  현재잔고 - 계좌 잔고
+  체결내역 - 당일 체결
+  포트폴리오 - 보유 + 손익
 
 [자동매매]
-  시작 — 자동매매 ON
-  정지 — 자동매매 OFF
-  자동확인 — 대기 중 자동매수 실행
-  자동취소 — 대기 중 자동매수 취소
-  위기모드 [사유] — 매수 완전 차단
-  위기해제 — 위기 모드 해제
+  시작 - 자동매매 ON
+  정지 - 자동매매 OFF
+  자동확인 - 대기 중 자동매수 실행
+  자동취소 - 대기 중 자동매수 취소
+  위기모드 [사유] - 매수 완전 차단
+  위기해제 - 위기 모드 해제
 
 [JARVIS BRAIN 자본 배분]
-  배분현황 — 현재 BRAIN 자본 배분 지시 조회
-  로테이션 — 섹터 로테이션 분석 (HOT/STAGING/다음섹터)
-  선행지표 — 채권시장 선행지표 (레짐 전환 감지)
-  스트레스 — 크로스에셋 상관관계 붕괴 감지
-  COT — CFTC 스마트머니 포지션 (주간)
-  유동성 — FRED 유동성 사이클 (RRP/TGA/M2)
+  배분현황 - 현재 BRAIN 자본 배분 지시 조회
+  로테이션 - 섹터 로테이션 분석 (HOT/STAGING/다음섹터)
+  선행지표 - 채권시장 선행지표 (레짐 전환 감지)
+  스트레스 - 크로스에셋 상관관계 붕괴 감지
+  COT - CFTC 스마트머니 포지션 (주간)
+  유동성 - FRED 유동성 사이클 (RRP/TGA/M2)
   (자동: NIGHTWATCH 완료 후 배분 갱신)
 
 [NIGHTWATCH NXT 야간매매]
-  NXT — NIGHTWATCH 상태 + NXT 포지션
-  NXT실행 — NIGHTWATCH 즉시 실행 (테스트)
-  NXT켜기 — NXT 자동매매 ON
-  NXT끄기 — NXT 알림만 모드
+  NXT - NIGHTWATCH 상태 + NXT 포지션
+  NXT실행 - NIGHTWATCH 즉시 실행 (테스트)
+  NXT켜기 - NXT 자동매매 ON
+  NXT끄기 - NXT 알림만 모드
   (자동 16:00 수집 → 16:35 판단 → 08:00 매도)
 
 [복기]
-  일지 — 오늘 매매 일지
-  일지 2026-02-18 — 특정일 일지
+  일지 - 오늘 매매 일지
+  일지 2026-02-18 - 특정일 일지
 
 [시그널]
-  시그널 — 일간 1D~4D 시그널 요약
-  (자동 16:30 — 전종목 시그널 기록)
+  시그널 - 일간 1D~4D 시그널 요약
+  (자동 16:30 - 전종목 시그널 기록)
 
 [시나리오]
-  시나리오 — 매크로 테마 시나리오 목록
-  시나리오활성 ID — 테마 ACTIVE 전환
-  시나리오대기 ID — 테마 WATCH 전환
-  시나리오삭제 ID — 테마 삭제
+  시나리오 - 매크로 테마 시나리오 목록
+  시나리오활성 ID - 테마 ACTIVE 전환
+  시나리오대기 ID - 테마 WATCH 전환
+  시나리오삭제 ID - 테마 삭제
 
 [보유종목 모니터]
-  상태판 — 보유종목 1줄 요약 대시보드
+  상태판 - 보유종목 1줄 요약 대시보드
   (자동 10:00, 13:00, 14:30 발송)
   (이상 감지 시 자동 알림 푸시)
 
 [데이터]
-  분봉수집 — 당일 5분/15분봉 수집 (자동 15:40)
-  유니버스 — 유니버스 종목 현황
-  유니버스갱신 — 시총 1000억+ 리빌드
+  분봉수집 - 당일 5분/15분봉 수집 (자동 15:40)
+  유니버스 - 유니버스 종목 현황
+  유니버스갱신 - 시총 1000억+ 리빌드
 
 [시스템]
-  상태 — 봇 상태
-  로그 — 최근 로그
-  도움 — 이 메시지
+  상태 - 봇 상태
+  로그 - 최근 로그
+  도움 - 이 메시지
 """.strip()
 
 
@@ -1024,7 +1024,7 @@ class BodyHunterBot:
             await update.message.reply_text("대기 중인 자동매수가 없습니다")
 
     async def cmd_crisis_on(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """위기 모드 활성화 — 모든 매수 차단"""
+        """위기 모드 활성화 - 모든 매수 차단"""
         if not self._is_authorized(update):
             return
         text = update.message.text.strip()
@@ -1064,7 +1064,7 @@ class BodyHunterBot:
     # ═══════════════════════════════════════
 
     async def cmd_premove_scan(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """사전감지 스캔 — 폭발 직전 종목 포착"""
+        """사전감지 스캔 - 폭발 직전 종목 포착"""
         if not self._is_authorized(update):
             return
         await update.message.reply_text("사전감지 스캔 실행중... (3~5분 소요)")
@@ -1080,7 +1080,7 @@ class BodyHunterBot:
             await update.message.reply_text(f"사전감지 실패: {e}")
 
     async def cmd_ai_monitor(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """AI 모니터 — 보유종목 실시간 4팩터 분석"""
+        """AI 모니터 - 보유종목 실시간 4팩터 분석"""
         if not self._is_authorized(update):
             return
 
@@ -1107,7 +1107,7 @@ class BodyHunterBot:
             await update.message.reply_text(f"AI 모니터 실패: {e}")
 
     async def cmd_news_ai(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """뉴스 AI 분석 — 후보 종목 다중소스 뉴스 + Claude AI"""
+        """뉴스 AI 분석 - 후보 종목 다중소스 뉴스 + Claude AI"""
         if not self._is_authorized(update):
             return
 
@@ -1134,7 +1134,7 @@ class BodyHunterBot:
                     with open(candidates_path, "r", encoding="utf-8") as f:
                         targets = json.load(f)[:5]
                 else:
-                    await update.message.reply_text("사전감지 후보 없음 — 먼저 '사전감지' 실행")
+                    await update.message.reply_text("사전감지 후보 없음 - 먼저 '사전감지' 실행")
                     return
 
             results = await asyncio.to_thread(scan_news_ai, targets, True)
@@ -1210,7 +1210,7 @@ class BodyHunterBot:
             from tools.swing_scan import analyze_single
             cand = await asyncio.to_thread(analyze_single, code)
             if not cand:
-                await update.message.reply_text(f"데이터 부족 — 일봉 수집 필요")
+                await update.message.reply_text(f"데이터 부족 - 일봉 수집 필요")
                 return
 
             lines = []
@@ -1250,7 +1250,7 @@ class BodyHunterBot:
         import json
         wl_path = Path(__file__).resolve().parent.parent / "data_store" / "watchlist.json"
         if not wl_path.exists():
-            await update.message.reply_text("워치리스트 없음 — '스윙스캔' 먼저 실행")
+            await update.message.reply_text("워치리스트 없음 - '스윙스캔' 먼저 실행")
             return
 
         with open(wl_path, "r", encoding="utf-8") as f:
@@ -1265,7 +1265,7 @@ class BodyHunterBot:
         lines.append(f"━━━━━━━━━━━━━━━━━━━")
 
         for i, w in enumerate(wl, 1):
-            lines.append(f"{i}. {w['name']}({w['code']}) — {w['final_score']:.0f}점")
+            lines.append(f"{i}. {w['name']}({w['code']}) - {w['final_score']:.0f}점")
             lines.append(f"   {w['supply_grade']}/{w['momentum']} | {w['tech_signal']} | {w['ema_trend']}")
             if w.get('swing_sl'):
                 lines.append(f"   SL:{w['swing_sl']:,.0f} → TP:{w['swing_tp']:,.0f}")
@@ -1512,7 +1512,7 @@ class BodyHunterBot:
                 for chunk in _split_message(msg):
                     await update.message.reply_text(chunk)
             else:
-                await update.message.reply_text("저장된 추천 없음 — 5단계 분석 즉시 실행 중... (3~5분)")
+                await update.message.reply_text("저장된 추천 없음 - 5단계 분석 즉시 실행 중... (3~5분)")
                 report = await asyncio.to_thread(run_evening_recommendation)
                 save_recommendation(report)
                 msg = format_recommendation(report)
@@ -1747,7 +1747,7 @@ class BodyHunterBot:
 
     async def _on_startup(self, app: Application):
         """봇 시작 시 자동매매 자동 시작 + 키보드 전송"""
-        logger.info("봇 초기화 완료 — 자동매매 자동 시작")
+        logger.info("봇 초기화 완료 - 자동매매 자동 시작")
 
         chat_id = int(self.chat_id)
 
@@ -1773,7 +1773,7 @@ class BodyHunterBot:
         else:
             startup_msg = (
                 "🔮 Body Hunter v4 봇 시작됨\n"
-                "자동매매 OFF — '시작' 입력으로 켜기"
+                "자동매매 OFF - '시작' 입력으로 켜기"
             )
 
         try:
@@ -1801,10 +1801,10 @@ class BodyHunterBot:
         # 시작 시 키보드 전송
         app.post_init = self._on_startup
 
-        # /start — 인증 없이 (최초 접속용)
+        # /start - 인증 없이 (최초 접속용)
         app.add_handler(CommandHandler("start", self.cmd_start))
 
-        # 한글 명령어 (정확히 일치) — 인증은 핸들러 내부에서 처리
+        # 한글 명령어 (정확히 일치) - 인증은 핸들러 내부에서 처리
         exact_commands = {
             r"^도움$": self.cmd_help,
             r"^상태$": self.cmd_status,
@@ -1927,7 +1927,7 @@ class BodyHunterBot:
         """자동매매 JobQueue 스케줄 등록"""
         jq = app.job_queue
         if jq is None:
-            logger.warning("JobQueue 사용 불가 — 자동매매 스케줄 등록 건너뜀")
+            logger.warning("JobQueue 사용 불가 - 자동매매 스케줄 등록 건너뜀")
             return
 
         bot_conf = self.config.get("bot", {})
@@ -1947,7 +1947,7 @@ class BodyHunterBot:
         jq.run_repeating(self.auto_trader.job_monitor, interval=interval, first=10)
         logger.info(f"포지션 감시 등록: {interval}초")
 
-        # ★ 동적 목표가 재평가 + 트레일링 스탑 (15:00 — 장마감 전)
+        # ★ 동적 목표가 재평가 + 트레일링 스탑 (15:00 - 장마감 전)
         reeval_str = bot_conf.get("reeval_time", "15:00")
         h_re, m_re = map(int, reeval_str.split(":"))
         jq.run_daily(self.auto_trader.job_daily_reeval, time=kst_time(h_re, m_re))
@@ -1971,7 +1971,7 @@ class BodyHunterBot:
         jq.run_daily(self._job_collect_daily, time=kst_time(h4, m4))
         logger.info(f"일봉 수집 등록: {daily_str} KST")
 
-        # 체결 스냅샷 폴링 — 장 시작 시 자동 시작 (09:01)
+        # 체결 스냅샷 폴링 - 장 시작 시 자동 시작 (09:01)
         tick_enabled = self.config.get("schedule", {}).get(
             "tick_collect", {}
         ).get("enabled", True)
@@ -1985,32 +1985,32 @@ class BodyHunterBot:
         jq.run_daily(self._job_rebuild_universe, time=kst_time(h5, m5))
         logger.info(f"유니버스 리빌드 등록: {uni_str} KST")
 
-        # 일간 시그널 기록 (16:30 — 일봉 수집 후)
+        # 일간 시그널 기록 (16:30 - 일봉 수집 후)
         jq.run_daily(self._job_record_signals, time=kst_time(16, 30))
         logger.info("일간 시그널 기록 등록: 16:30 KST")
 
-        # 해외 이벤트 캘린더 스캔 (08:00 — 장 전 D-3 알림)
+        # 해외 이벤트 캘린더 스캔 (08:00 - 장 전 D-3 알림)
         jq.run_daily(self._job_global_event_scan, time=kst_time(8, 0))
         logger.info("해외 이벤트 스캔 등록: 08:00 KST")
 
-        # 스윙 종목 선정 (16:35 — 시그널 기록 후)
+        # 스윙 종목 선정 (16:35 - 시그널 기록 후)
         jq.run_daily(self._job_swing_picker, time=kst_time(16, 35))
         logger.info("스윙 종목 선정 등록: 16:35 KST")
 
-        # MACD 제로선 크로스 스캔 (16:40 — 일봉+수급 수집 후)
+        # MACD 제로선 크로스 스캔 (16:40 - 일봉+수급 수집 후)
         jq.run_daily(self._job_macd_scan, time=kst_time(16, 40))
         logger.info("MACD 크로스 스캔 등록: 16:40 KST")
 
-        # 사전감지 스캔 (08:50 — 장 시작 전)
+        # 사전감지 스캔 (08:50 - 장 시작 전)
         jq.run_daily(self._job_premove_scan, time=kst_time(8, 50))
         logger.info("사전감지 스캔 등록: 08:50 KST")
 
         # ── 추천 파이프라인 3-Stage ──
-        # Stage 1: 저녁 분석 (16:45 — 데이터 수집 완료 후)
+        # Stage 1: 저녁 분석 (16:45 - 데이터 수집 완료 후)
         jq.run_daily(self.auto_trader.job_evening_analysis, time=kst_time(16, 45))
         logger.info("저녁 추천 분석 등록: 16:45 KST")
 
-        # Stage 2: 미국장 체크 (06:30 — 다음날 새벽)
+        # Stage 2: 미국장 체크 (06:30 - 다음날 새벽)
         jq.run_daily(self.auto_trader.job_us_market_check, time=kst_time(6, 30))
         logger.info("미국장 체크 등록: 06:30 KST")
 
@@ -2029,7 +2029,7 @@ class BodyHunterBot:
         jq.run_repeating(self._job_portfolio_alert, interval=60, first=90)
         logger.info("보유종목 대시보드 등록: 10:00/13:00/14:30 KST + 알림 60초")
 
-        # ── JARVIS BRAIN 자본 배분 (백업용 — NIGHTWATCH 미실행 대비) ──
+        # ── JARVIS BRAIN 자본 배분 (백업용 - NIGHTWATCH 미실행 대비) ──
         jq.run_daily(self.auto_trader.job_brain_allocation, time=kst_time(16, 36))
         logger.info("BRAIN 배분 백업 등록: 16:36 KST")
 
@@ -2149,7 +2149,7 @@ class BodyHunterBot:
     async def _job_collect_daily(self, context):
         """장마감 후 일봉(pykrx) + 수급(pykrx) 데이터 수집
 
-        force=True로 캐시 무시 — 당일 데이터 확실히 갱신
+        force=True로 캐시 무시 - 당일 데이터 확실히 갱신
         NOTE: KIS 일봉은 영문 컬럼(open/close)이라 한글 컬럼(시가/종가) CSV를
               덮어쓰는 버그가 있어 제거함. pykrx만 사용.
         """
@@ -2192,7 +2192,7 @@ class BodyHunterBot:
             text=f"📈 일봉 수집 완료: {pykrx_cnt}종목",
         )
 
-        # 2. 수급 데이터 (pykrx — 투자자순매수, 외인소진율, 공매도) force=True
+        # 2. 수급 데이터 (pykrx - 투자자순매수, 외인소진율, 공매도) force=True
         try:
             from data.kis_collector import UNIVERSE
             from data.flow_collector import (
@@ -2224,7 +2224,7 @@ class BodyHunterBot:
                 chat_id=chat_id, text=f"⚠️ 수급 수집 실패: {str(e)[:200]}"
             )
 
-        # 3. 외국인 국적별 수급 (추천/보유 종목만 — HTTP JSON API)
+        # 3. 외국인 국적별 수급 (추천/보유 종목만 - HTTP JSON API)
         try:
             nat_codes = self._get_nationality_targets()
             if nat_codes:
@@ -2327,7 +2327,7 @@ class BodyHunterBot:
         return list(codes) if codes else []
 
     async def cmd_nationality(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """국적수급 — 추천/보유 종목 외국인 국적별 수급 변화 보고"""
+        """국적수급 - 추천/보유 종목 외국인 국적별 수급 변화 보고"""
         text = update.message.text.strip()
 
         # "국적수급 삼성전자" or "국적수급 005930" → 특정 종목
@@ -2420,7 +2420,7 @@ class BodyHunterBot:
             )
 
     async def _job_record_signals(self, context):
-        """일간 1D~4D 시그널 기록 (16:30 — 일봉 수집 완료 후)"""
+        """일간 1D~4D 시그널 기록 (16:30 - 일봉 수집 완료 후)"""
         from datetime import date
         if date.today().weekday() >= 5:
             return
@@ -2454,7 +2454,7 @@ class BodyHunterBot:
             )
 
     async def _job_global_event_scan(self, context):
-        """해외 이벤트 캘린더 스캔 (08:00 — D-3 알림)"""
+        """해외 이벤트 캘린더 스캔 (08:00 - D-3 알림)"""
         from datetime import date
         if date.today().weekday() >= 5:
             return
@@ -2479,7 +2479,7 @@ class BodyHunterBot:
             )
 
     async def _job_swing_picker(self, context):
-        """스윙 종목 선정 (16:35 — 시그널 기록 후)"""
+        """스윙 종목 선정 (16:35 - 시그널 기록 후)"""
         from datetime import date
         if date.today().weekday() >= 5:
             return
@@ -2505,7 +2505,7 @@ class BodyHunterBot:
             )
 
     async def _job_macd_scan(self, context):
-        """MACD 제로선 크로스 스캔 (16:40 — 일봉+수급 수집 후)"""
+        """MACD 제로선 크로스 스캔 (16:40 - 일봉+수급 수집 후)"""
         from datetime import date
         if date.today().weekday() >= 5:
             return
@@ -2535,7 +2535,7 @@ class BodyHunterBot:
             )
 
     async def _job_premove_scan(self, context):
-        """사전감지 스캔 (08:50 — 장 시작 전)"""
+        """사전감지 스캔 (08:50 - 장 시작 전)"""
         from datetime import date
         if date.today().weekday() >= 5:
             return

@@ -132,7 +132,7 @@ class IndicatorCalc:
 
     @staticmethod
     def obv(close: pd.Series, volume: pd.Series) -> pd.Series:
-        """OBV 계산 — 가격 방향에 따라 거래량 누적"""
+        """OBV 계산 - 가격 방향에 따라 거래량 누적"""
         direction = close.diff().apply(lambda x: 1 if x > 0 else (-1 if x < 0 else 0))
         return (direction * volume).cumsum()
 

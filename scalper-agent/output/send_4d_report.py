@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Body Hunter v3 — 6D 디스크법 리포트 텔레그램 전송
+"""Body Hunter v3 - 6D 디스크법 리포트 텔레그램 전송
 
 TOP 5 추천 + 특이종목 태그 방식
 - 종합점수(composite_score)로 전종목 순위
@@ -116,7 +116,7 @@ def generate_report():
     nc = NewsCollector()
     logger = logging.getLogger("BH.Report")
 
-    # 1단계: BUY+ 전체 — 네이버 키워드 감성 (API 호출 없음, 빠름)
+    # 1단계: BUY+ 전체 - 네이버 키워드 감성 (API 호출 없음, 빠름)
     for f in buy_plus:
         code = f.score.code
         name = NAMES.get(code, code)
@@ -130,7 +130,7 @@ def generate_report():
     # 1차 정렬 (뉴스 반영된 종합점수)
     buy_plus.sort(key=lambda f: f.composite_score, reverse=True)
 
-    # 2단계: TOP 10 — Grok API 상세 감성분석
+    # 2단계: TOP 10 - Grok API 상세 감성분석
     for f in buy_plus[:10]:
         code = f.score.code
         name = NAMES.get(code, code)

@@ -3,8 +3,8 @@
 보유종목 포트폴리오 모니터 (Portfolio Monitor)
 ==============================================
 2-Layer 시스템:
-  Layer 1 — 대시보드: 1줄 1종목 요약, 정기 발송 (장중 3회)
-  Layer 2 — 알림: ICT/수급 이벤트 발생 시에만 자동 푸시
+  Layer 1 - 대시보드: 1줄 1종목 요약, 정기 발송 (장중 3회)
+  Layer 2 - 알림: ICT/수급 이벤트 발생 시에만 자동 푸시
 """
 
 import json
@@ -131,7 +131,7 @@ def _pnl_color(pnl: float) -> str:
 
 
 # ══════════════════════════════════════════
-#  Layer 1 — 대시보드
+#  Layer 1 - 대시보드
 # ══════════════════════════════════════════
 
 def generate_dashboard(kis_trader, portfolio: list[dict] = None) -> str:
@@ -239,7 +239,7 @@ def generate_dashboard(kis_trader, portfolio: list[dict] = None) -> str:
 
 
 # ══════════════════════════════════════════
-#  Layer 2 — 이상 감지 알림
+#  Layer 2 - 이상 감지 알림
 # ══════════════════════════════════════════
 
 def check_alerts(
@@ -255,7 +255,7 @@ def check_alerts(
         prev_states: 이전 상태 (delta 감지용)
 
     Returns:
-        (alerts, new_states) — alerts는 알림 문자열 리스트
+        (alerts, new_states) - alerts는 알림 문자열 리스트
     """
     if portfolio is None:
         portfolio = load_portfolio()

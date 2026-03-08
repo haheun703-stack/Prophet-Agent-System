@@ -234,7 +234,7 @@ def _step_bargain_scan() -> dict:
 # ═══════════════════════════════════════
 
 def _get_market_change_today() -> float:
-    """오늘 KOSPI(KODEX200) 등락률 — 상대강도 계산 기준"""
+    """오늘 KOSPI(KODEX200) 등락률 - 상대강도 계산 기준"""
     try:
         from pykrx import stock
         from datetime import datetime, timedelta
@@ -409,7 +409,7 @@ def _step3_tech_filter(codes_names: list[tuple[str, str]], market_chg: float = 0
             }
 
     if data_date_ok is False:
-        logger.error("pykrx 당일 데이터 미반영 — 추천 정확도 저하 가능")
+        logger.error("pykrx 당일 데이터 미반영 - 추천 정확도 저하 가능")
 
     return results
 
@@ -487,7 +487,7 @@ def _step4_news_filter(codes_names: list[tuple[str, str]]) -> dict:
                 "score": r.news_score if hasattr(r, "news_score") else 0,
             }
     except Exception as e:
-        logger.warning(f"뉴스AI 실패: {e} — 미분석 종목 NEUTRAL 처리")
+        logger.warning(f"뉴스AI 실패: {e} - 미분석 종목 NEUTRAL 처리")
 
     # 누락 종목 NEUTRAL 처리
     for code, _ in codes_names:
@@ -514,9 +514,9 @@ def _step5_cross_validate(
     """모든 스텝 결과 통합 → Soft Scoring → 최종 랭킹
 
     v2: Hard gate 제거 → 모든 요소를 점수로 변환
-    v3: 줍줍(bargain) 소스 추가 — 낙폭+수급매집 종목
+    v3: 줍줍(bargain) 소스 추가 - 낙폭+수급매집 종목
     v4: CORTEX 체제별 점수 배수 + 충격 섹터 페널티/보너스
-    v5: 로테이션 디텍터 — 다음 섹터 종목 보너스 + 반전 섹터 페널티
+    v5: 로테이션 디텍터 - 다음 섹터 종목 보너스 + 반전 섹터 페널티
     """
     if macd_result is None:
         macd_result = {}
@@ -634,7 +634,7 @@ def _step5_cross_validate(
         elif relative_str < -2.0:
             rel_pen = -5.0    # 시장보다 약간 약세
 
-        # 줍줍 점수 (0~30) — bargain_score를 0.3배로 변환
+        # 줍줍 점수 (0~30) - bargain_score를 0.3배로 변환
         bargain_sc = min(b_info.get("bargain_score", 0) * 0.3, 30) if b_info else 0
 
         # ── CORTEX: 충격 섹터 보정 ──────────────
@@ -759,7 +759,7 @@ def _step6_kis_verify(stocks: list[RecommendedStock], market_chg: float = 0.0) -
         from bot.kis_trader import KISTrader
         trader = KISTrader()
     except Exception as e:
-        logger.warning(f"KIS API 초기화 실패: {e} — 검증 생략")
+        logger.warning(f"KIS API 초기화 실패: {e} - 검증 생략")
         return stocks
 
     verified = []
@@ -804,7 +804,7 @@ def _step6_kis_verify(stocks: list[RecommendedStock], market_chg: float = 0.0) -
 # ═══════════════════════════════════════
 
 def run_evening_recommendation() -> RecommendationReport:
-    """Stage 1: 저녁 분석 (16:45) — Soft Scoring 파이프라인
+    """Stage 1: 저녁 분석 (16:45) - Soft Scoring 파이프라인
 
     v2 변경점:
     - market_health: diagnose() 사용 + CRITICAL이어도 경고만 (early return 제거)
@@ -825,7 +825,7 @@ def run_evening_recommendation() -> RecommendationReport:
         timestamp=datetime.now().strftime("%Y-%m-%d %H:%M"),
     )
 
-    # 0) 시장 건전성 + CORTEX 체제/충격 — CRITICAL이어도 경고만 (종목 추천은 계속)
+    # 0) 시장 건전성 + CORTEX 체제/충격 - CRITICAL이어도 경고만 (종목 추천은 계속)
     regime_info = {}
     shock_info = {}
     try:
@@ -833,7 +833,7 @@ def run_evening_recommendation() -> RecommendationReport:
         health = diagnose()
         report.market_health = health.alert_level.upper()
         if health.alert_level == "critical":
-            report.warning = "시장 건전성 CRITICAL — 매수 규모 축소 권고"
+            report.warning = "시장 건전성 CRITICAL - 매수 규모 축소 권고"
         # CORTEX 체제/충격 정보 추출
         regime_info = {
             "regime": getattr(health, "regime", "NORMAL"),
@@ -963,7 +963,7 @@ def run_evening_recommendation() -> RecommendationReport:
         logger.warning(f"모멘텀 스캔 실패: {e}")
 
     if not all_codes_set:
-        report.warning = "릴레이+사전감지+MACD+줍줍 결과 0건 — 추천 불가"
+        report.warning = "릴레이+사전감지+MACD+줍줍 결과 0건 - 추천 불가"
         try:
             save_recommendation(report)
         except Exception:
@@ -978,7 +978,7 @@ def run_evening_recommendation() -> RecommendationReport:
     tech_result = _step3_tech_filter(codes_names, market_chg=market_chg)
     logger.info(f"  → 완료 ({time.time()-t0:.0f}s)")
 
-    # Step 4: 뉴스AI — 전종목 분석 (사전필터 제거)
+    # Step 4: 뉴스AI - 전종목 분석 (사전필터 제거)
     t0 = time.time()
     logger.info(f"[Step 4/6] 뉴스AI ({len(codes_names)}종목, 전체)...")
     news_result = _step4_news_filter(codes_names)
@@ -1047,7 +1047,7 @@ def run_evening_recommendation() -> RecommendationReport:
 
 
 def run_us_market_check(prev_report: RecommendationReport) -> RecommendationReport:
-    """Stage 2: 미국장 체크 (06:30) — 미국 지수 확인 → 추천 조정"""
+    """Stage 2: 미국장 체크 (06:30) - 미국 지수 확인 → 추천 조정"""
     from datetime import datetime
     import yfinance as yf
 
@@ -1089,9 +1089,9 @@ def run_us_market_check(prev_report: RecommendationReport) -> RecommendationRepo
         if vix_hist is not None and len(vix_hist) >= 1:
             vix_val = float(vix_hist["Close"].iloc[-1])
             if vix_val > 30:
-                report.warning = f"VIX {vix_val:.1f} — 공포 급등! 매수 규모 축소 권고"
+                report.warning = f"VIX {vix_val:.1f} - 공포 급등! 매수 규모 축소 권고"
             elif vix_val > 25:
-                report.warning = f"VIX {vix_val:.1f} — 경계, 1/2 규모 매수 고려"
+                report.warning = f"VIX {vix_val:.1f} - 경계, 1/2 규모 매수 고려"
     except Exception:
         pass
 
@@ -1137,7 +1137,7 @@ def run_us_market_check(prev_report: RecommendationReport) -> RecommendationRepo
         )
         report.warning = (
             f"{report.warning} | " if report.warning else ""
-        ) + f"NIGHTWATCH: DIVERGENCE — 절대 진입 금지"
+        ) + f"NIGHTWATCH: DIVERGENCE - 절대 진입 금지"
     elif sp500_chg < -1.0 and tnx_chg <= 0:
         cross_regime = "CORRECTION"
         cross_detail = (
@@ -1146,7 +1146,7 @@ def run_us_market_check(prev_report: RecommendationReport) -> RecommendationRepo
         )
         report.warning = (
             f"{report.warning} | " if report.warning else ""
-        ) + f"NIGHTWATCH: CORRECTION — 관망 권고"
+        ) + f"NIGHTWATCH: CORRECTION - 관망 권고"
     else:
         cross_regime = "NORMAL"
         cross_detail = f"S&P {sp500_chg:+.1f}% + TNX {tnx_chg:+.2f}%p = 정상"
@@ -1202,7 +1202,7 @@ def run_morning_confirmation(prev_report: RecommendationReport) -> Recommendatio
         from data.market_health import is_crisis_mode
         crisis, reason = is_crisis_mode()
         if crisis:
-            report.warning = f"위기모드 활성: {reason} — 전종목 매수 중단"
+            report.warning = f"위기모드 활성: {reason} - 전종목 매수 중단"
             report.stocks = []
     except Exception:
         pass

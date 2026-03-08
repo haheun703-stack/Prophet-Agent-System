@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""전종목 세부 섹터 분류 — 토스증권 수준"""
+"""전종목 세부 섹터 분류 - 토스증권 수준"""
 import sys, io, json, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
@@ -9,7 +9,7 @@ with open("data_store/universe.json", "r", encoding="utf-8") as f:
     uni = json.load(f)
 
 # ═══════════════════════════════════════════════════════════
-# 코드 직접매핑 — 815개 전부
+# 코드 직접매핑 - 815개 전부
 # ═══════════════════════════════════════════════════════════
 M = {
     # ── 반도체 ──

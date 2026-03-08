@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-NIGHTWATCH — 3단 예측 체인 야간매매 신호 엔진
+NIGHTWATCH - 3단 예측 체인 야간매매 신호 엔진
 ═══════════════════════════════════════════════
 미국장 개장 7시간 전에 방향을 읽는다.
 
@@ -469,7 +469,7 @@ def collect_europe_open() -> Tuple[float, Dict]:
 # ═══════════════════════════════════════════════════
 def detect_divergence() -> Tuple[float, List[str], Dict]:
     """
-    시장 간 괴리 감지 — 진짜 엣지
+    시장 간 괴리 감지 - 진짜 엣지
     Returns: (penalty_score, divergence_list, raw_data)
     """
     penalty = 0.0
@@ -483,11 +483,11 @@ def detect_divergence() -> Tuple[float, List[str], Dict]:
         if vix.value >= 30:
             vix.signal = "💀"
             penalty -= 3.0
-            divergences.append(f"💀 VIX {vix.value:.1f} — 패닉 구간")
+            divergences.append(f"💀 VIX {vix.value:.1f} - 패닉 구간")
         elif vix.value >= 25:
             vix.signal = "🔴"
             penalty -= 2.0
-            divergences.append(f"🔴 VIX {vix.value:.1f} — 공포 구간")
+            divergences.append(f"🔴 VIX {vix.value:.1f} - 공포 구간")
         elif vix.value >= 20:
             vix.signal = "🟡"
             penalty -= 0.5
@@ -508,7 +508,7 @@ def detect_divergence() -> Tuple[float, List[str], Dict]:
             penalty -= 2.0
             divergences.append(
                 f"⚠️ HYG {hyg.change_pct:+.2f}% vs ES {es.change_pct:+.2f}%"
-                f" — 숨은 크레딧 스트레스"
+                f" - 숨은 크레딧 스트레스"
             )
 
     # --- 괴리 2: 채권 상승(금리 하락) + 금 하락 = 위험선호 전환 ---
@@ -522,13 +522,13 @@ def detect_divergence() -> Tuple[float, List[str], Dict]:
             penalty += 1.5
             divergences.append(
                 f"💡 TNX {tnx.change_abs:+.3f} + Gold {gold.change_pct:+.2f}%"
-                f" — 스마트머니 위험선호 전환"
+                f" - 스마트머니 위험선호 전환"
             )
         elif tnx.change_abs > 0.05 and gold.change_pct > 0.3:
             penalty -= 1.5
             divergences.append(
                 f"🔴 TNX {tnx.change_abs:+.3f} + Gold {gold.change_pct:+.2f}%"
-                f" — 안전자산 쏠림"
+                f" - 안전자산 쏠림"
             )
 
     # --- 괴리 3: 원/달러 급등 ---
@@ -538,7 +538,7 @@ def detect_divergence() -> Tuple[float, List[str], Dict]:
         if usdkrw.change_pct > 0.5:  # 원화 약세 급등
             penalty -= 1.0
             divergences.append(
-                f"🔴 원/달러 {usdkrw.change_pct:+.2f}% — 원화 급락"
+                f"🔴 원/달러 {usdkrw.change_pct:+.2f}% - 원화 급락"
             )
         elif usdkrw.change_pct < -0.3:  # 원화 강세
             penalty += 0.5
@@ -687,7 +687,7 @@ def select_sectors_and_targets(
 
     # ── 관망 (-1.9 ~ 1.9) ──
     else:
-        return [], [], "🟡 관망 — 진입 없음"
+        return [], [], "🟡 관망 - 진입 없음"
 
     # 섹터 키 → 종목 목록 변환
     nxt_targets = []
@@ -745,7 +745,7 @@ def calculate_nightwatch_score(
     total = asian_score + europe_score + div_score
     total = max(-10.0, min(10.0, total))
 
-    # 신호 변환 (v2: 관망 확대, 금지/패닉 축소 — 백테스트 44%→개선)
+    # 신호 변환 (v2: 관망 확대, 금지/패닉 축소 - 백테스트 44%→개선)
     if total >= 5:
         signal, text = "🟢🟢", "강한 매수"
     elif total >= 2:

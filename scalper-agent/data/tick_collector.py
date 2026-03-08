@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-KIS API 체결 스냅샷 수집기 — 전종목 1분 폴링
+KIS API 체결 스냅샷 수집기 - 전종목 1분 폴링
 
 매분 354종목 REST API 호출 → CSV 누적 저장
 - 시세 API (FHKST01010100): 현재가, 전일대비, 등락률, 누적거래량
@@ -90,7 +90,7 @@ class TickCollector:
         row = {"time": now_str}
 
         try:
-            # 1) 시세 — 현재가, 전일대비, 등락률, 거래량
+            # 1) 시세 - 현재가, 전일대비, 등락률, 거래량
             h1 = {**common_headers, "tr_id": "FHKST01010100"}
             r1 = requests.get(
                 f"{base}/uapi/domestic-stock/v1/quotations/inquire-price",
@@ -120,7 +120,7 @@ class TickCollector:
 
             time.sleep(0.05)
 
-            # 2) 체결 — 체결강도
+            # 2) 체결 - 체결강도
             h2 = {**common_headers, "tr_id": "FHKST01010300"}
             r2 = requests.get(
                 f"{base}/uapi/domestic-stock/v1/quotations/inquire-ccnl",
@@ -134,7 +134,7 @@ class TickCollector:
 
             time.sleep(0.05)
 
-            # 3) 호가 — 매도호가1, 매수호가1
+            # 3) 호가 - 매도호가1, 매수호가1
             h3 = {**common_headers, "tr_id": "FHKST01010200"}
             r3 = requests.get(
                 f"{base}/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn",
@@ -200,7 +200,7 @@ class TickCollector:
 
             # 장 마감 후 종료
             if t > "1530":
-                logger.info("장 마감 — 체결 폴링 종료")
+                logger.info("장 마감 - 체결 폴링 종료")
                 break
 
             cycle += 1

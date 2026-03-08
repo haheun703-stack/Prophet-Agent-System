@@ -213,7 +213,7 @@ def format_supply_report(signals: list[SupplySignal], date_str: str = "") -> str
     accel_emoji = lambda a: "🚀" if a >= 1.5 else ("📈" if a >= 1.0 else "📉")
 
     if explosive:
-        lines.append(f"🔴 수급 폭발 (3x+) — {len(explosive)}종목")
+        lines.append(f"🔴 수급 폭발 (3x+) - {len(explosive)}종목")
         for s in explosive[:7]:
             oe = obv_emoji.get(s.obv_direction, "─")
             ae = accel_emoji(s.afternoon_accel)
@@ -227,7 +227,7 @@ def format_supply_report(signals: list[SupplySignal], date_str: str = "") -> str
         lines.append("")
 
     if strong:
-        lines.append(f"🟡 수급 강함 (2x+) — {len(strong)}종목")
+        lines.append(f"🟡 수급 강함 (2x+) - {len(strong)}종목")
         for s in strong[:7]:
             oe = obv_emoji.get(s.obv_direction, "─")
             ae = accel_emoji(s.afternoon_accel)
@@ -241,7 +241,7 @@ def format_supply_report(signals: list[SupplySignal], date_str: str = "") -> str
         lines.append("")
 
     if inflow:
-        lines.append(f"🟢 수급 유입 (1.5x+) — {len(inflow)}종목")
+        lines.append(f"🟢 수급 유입 (1.5x+) - {len(inflow)}종목")
         for s in inflow[:6]:
             oe = obv_emoji.get(s.obv_direction, "─")
             lines.append(

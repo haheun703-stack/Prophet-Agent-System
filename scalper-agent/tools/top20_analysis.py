@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""TOP 20 매물소진 종목 — 1D~4D 상세 분석"""
+"""TOP 20 매물소진 종목 - 1D~4D 상세 분석"""
 import sys, io, os, json
 sys.path.insert(0, 'd:/Prophet_Agent_System_예언자/scalper-agent')
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
@@ -29,7 +29,7 @@ extra_codes = ['006805']  # 미래에셋증권우
 top_codes.extend(extra_codes)
 
 print("=" * 100)
-print("  매물소진 TOP 20+α — 1D~4D 상세 분석")
+print("  매물소진 TOP 20+α - 1D~4D 상세 분석")
 print("  2026-02-19 기준")
 print("=" * 100)
 
@@ -53,7 +53,7 @@ for code in top_codes:
 
 # ── 종합 순위 ──
 print("\n\n" + "=" * 100)
-print("  종합 순위 — 매물소진 + 1D~4D 통합")
+print("  종합 순위 - 매물소진 + 1D~4D 통합")
 print("=" * 100)
 
 # Sort by confidence
@@ -147,5 +147,5 @@ for r in results:
         marker = " ★ 대기"
 
     print(f"  {r.get('name',''):>14}({r.get('code','')}) "
-          f"패턴매칭: {match_score}/100 — "
+          f"패턴매칭: {match_score}/100 - "
           f"{' | '.join(match_reasons)}{marker}")

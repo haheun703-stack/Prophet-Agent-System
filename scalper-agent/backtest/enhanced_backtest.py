@@ -1,17 +1,17 @@
 """
-강화 백테스트 v3 — 8가지 개선 적용
+강화 백테스트 v3 - 8가지 개선 적용
 ════════════════════════════════════
 v2 (5가지):
-1. BUY만 진입 (STRONG_BUY 제외 — 승률 48% vs 33%)
-2. 눌림목 진입 — 종가 진입 → 다음 2일 내 저가가 종가*0.98 이하면 그 가격으로 진입
-3. 분할 익절 — TP1에서 50% 청산 + 나머지 트레일링(SL=진입가, TP2까지)
+1. BUY만 진입 (STRONG_BUY 제외 - 승률 48% vs 33%)
+2. 눌림목 진입 - 종가 진입 → 다음 2일 내 저가가 종가*0.98 이하면 그 가격으로 진입
+3. 분할 익절 - TP1에서 50% 청산 + 나머지 트레일링(SL=진입가, TP2까지)
 4. 보유일 컷오프 5일 (10일 → 5일)
-5. 사전감지 필터 — premove 신호 2개 이상인 종목만 진입
+5. 사전감지 필터 - premove 신호 2개 이상인 종목만 진입
 
 v3 추가 (3가지):
-6. INST_COST SL 제거 — 25% 승률, 유일한 마이너스 EV SL 유형
-7. 눌림목 진입 비활성화 — 종가 진입이 +6.36% vs 눌림목 +2.49%
-8. RSI 필터 — RSI 35~65 범위만 진입 (과열/과매도 제외)
+6. INST_COST SL 제거 - 25% 승률, 유일한 마이너스 EV SL 유형
+7. 눌림목 진입 비활성화 - 종가 진입이 +6.36% vs 눌림목 +2.49%
+8. RSI 필터 - RSI 35~65 범위만 진입 (과열/과매도 제외)
 
 + v1/v2 대비 비교 결과 출력
 """
@@ -53,7 +53,7 @@ def get_trading_days_from_cache(analyzer, lookback=60):
 
 
 def count_premove_signals(full, day_df):
-    """사전감지 신호 개수 (간이 버전 — 백테스트용)"""
+    """사전감지 신호 개수 (간이 버전 - 백테스트용)"""
     signals = 0
     momentum = full.momentum
 
@@ -262,7 +262,7 @@ def forward_check_enhanced(analyzer, code, entry_date, baseline, full,
                 if trail_sl > pos_b_sl:
                     pos_b_sl = trail_sl
 
-    # ── 개선4: 5일 컷오프 — 만기 종료 ──
+    # ── 개선4: 5일 컷오프 - 만기 종료 ──
     last_row = future.iloc[-1]
     last_close = last_row.get('close', last_row.get('종가', entry))
     last_date = last_row['_date']
@@ -287,7 +287,7 @@ def forward_check_enhanced(analyzer, code, entry_date, baseline, full,
 
 def run_backtest():
     print("=" * 70)
-    print("  강화 백테스트 v3 — 8가지 개선 적용")
+    print("  강화 백테스트 v3 - 8가지 개선 적용")
     print("=" * 70)
     print()
     print("  [v2] BUY만 / 분할익절 / 5일컷오프 / 사전감지2+")
@@ -522,11 +522,11 @@ def run_backtest():
 
     ev = avg_pnl
     if ev > 3:
-        print(f"  기대값 {ev:+.2f}% — 실전 투입 가능 수준")
+        print(f"  기대값 {ev:+.2f}% - 실전 투입 가능 수준")
     elif ev > 0:
-        print(f"  기대값 {ev:+.2f}% — 양수지만 추가 개선 필요")
+        print(f"  기대값 {ev:+.2f}% - 양수지만 추가 개선 필요")
     else:
-        print(f"  기대값 {ev:+.2f}% — 개선 실패, 다른 접근 필요")
+        print(f"  기대값 {ev:+.2f}% - 개선 실패, 다른 접근 필요")
     print(f"{'='*70}")
 
 

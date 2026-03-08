@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-이벤트 감지기 — DART 공시 + 네이버 뉴스 테마 스캔
+이벤트 감지기 - DART 공시 + 네이버 뉴스 테마 스캔
 ====================================================
 DART 전자공시에서 자사주/대규모수주/임상 등을 자동 분류하고,
 네이버 뉴스에서 10대 테마 키워드를 스캔하여 수혜주를 매칭한다.
@@ -17,7 +17,7 @@ DART 전자공시에서 자사주/대규모수주/임상 등을 자동 분류하
   python -m data.event_detector --telegram         # 텔레그램 전송
 
 환경변수:
-  DART_API_KEY — DART OpenAPI 인증키 (opendart.fss.or.kr)
+  DART_API_KEY - DART OpenAPI 인증키 (opendart.fss.or.kr)
 """
 
 import os
@@ -343,7 +343,7 @@ def fetch_dart_disclosures(days_back: int = 3) -> list:
     """
     api_key = os.getenv("DART_API_KEY", "")
     if not api_key:
-        logger.info("DART_API_KEY 미설정 — 공시 스캔 건너뜀")
+        logger.info("DART_API_KEY 미설정 - 공시 스캔 건너뜀")
         return []
 
     end_date = datetime.now().strftime("%Y%m%d")
@@ -574,7 +574,7 @@ def run_event_scan(scan_dart: bool = True, scan_news: bool = True) -> dict:
         all_events.extend(dart_events)
         for evt in dart_events:
             icon = {"POSITIVE": "+", "NEGATIVE": "-", "NEUTRAL": "~"}.get(evt["direction"], "?")
-            print(f"  [{icon}] {evt['corp_name']} — {evt['event_type']} ({evt['impact']})")
+            print(f"  [{icon}] {evt['corp_name']} - {evt['event_type']} ({evt['impact']})")
 
     # 2. 네이버 뉴스
     if scan_news:
@@ -583,7 +583,7 @@ def run_event_scan(scan_dart: bool = True, scan_news: bool = True) -> dict:
         all_events.extend(news_events)
         for evt in news_events:
             icon = {"POSITIVE": "+", "NEGATIVE": "-"}.get(evt["direction"], "~")
-            print(f"  [{icon}] {evt['theme']} — '{evt['keyword']}' ({evt['news_count']}건)")
+            print(f"  [{icon}] {evt['theme']} - '{evt['keyword']}' ({evt['news_count']}건)")
 
     # 3. 수혜주 매칭
     print(f"\n[3] 수혜주 매칭...")
@@ -595,7 +595,7 @@ def run_event_scan(scan_dart: bool = True, scan_news: bool = True) -> dict:
         print(f"\n  ━━ 수혜주 TOP 10 ━━")
         for i, b in enumerate(beneficiaries[:10], 1):
             icon = {"POSITIVE": "+", "NEGATIVE": "-", "MIXED": "~"}.get(b["direction"], "?")
-            print(f"  {i:>2}. [{icon}] {b['name']}({b['ticker']}) — {b['total_score']:.0f}점 | {', '.join(b['events'])}")
+            print(f"  {i:>2}. [{icon}] {b['name']}({b['ticker']}) - {b['total_score']:.0f}점 | {', '.join(b['events'])}")
 
     # 저장
     result = {
@@ -627,7 +627,7 @@ def format_event_report(result: dict) -> str:
         lines.append(f"\n📋 DART 공시 ({len(dart)}건)")
         for e in dart[:5]:
             icon = {"POSITIVE": "🟢", "NEGATIVE": "🔴", "NEUTRAL": "🟡"}.get(e["direction"], "⚪")
-            lines.append(f"  {icon} {e['corp_name']} — {e['event_type']}")
+            lines.append(f"  {icon} {e['corp_name']} - {e['event_type']}")
 
     # 테마 뉴스
     news = [e for e in result["events"] if e["source"] == "NAVER_NEWS"]
@@ -635,7 +635,7 @@ def format_event_report(result: dict) -> str:
         lines.append(f"\n📰 테마 뉴스 ({len(news)}개)")
         for e in news:
             icon = {"POSITIVE": "🟢", "NEGATIVE": "🔴"}.get(e["direction"], "🟡")
-            lines.append(f"  {icon} {e['theme']} — '{e['keyword']}' ({e['news_count']}건)")
+            lines.append(f"  {icon} {e['theme']} - '{e['keyword']}' ({e['news_count']}건)")
 
     # 수혜주
     bens = result.get("beneficiaries", [])
@@ -644,7 +644,7 @@ def format_event_report(result: dict) -> str:
         for i, b in enumerate(bens[:5], 1):
             icon = {"POSITIVE": "🟢", "NEGATIVE": "🔴", "MIXED": "🟡"}.get(b["direction"], "⚪")
             events_str = ", ".join(b["events"][:2])
-            lines.append(f"  {i}. {icon} {b['name']}({b['ticker']}) — {b['total_score']:.0f}점")
+            lines.append(f"  {i}. {icon} {b['name']}({b['ticker']}) - {b['total_score']:.0f}점")
             lines.append(f"     {events_str}")
 
     lines.append("\n━━━━━━━━━━━━━━━━━━━")

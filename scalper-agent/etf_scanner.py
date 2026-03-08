@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-ETF Universe Scanner — Body Hunter v2.3 일봉 적용
+ETF Universe Scanner - Body Hunter v2.3 일봉 적용
 ===================================================
 pykrx로 전체 ETF 유니버스에서:
   1. 거래대금 필터 (유동성 확보)
@@ -468,13 +468,13 @@ def format_report(df: pd.DataFrame, top_n: int = 20) -> str:
     total_scanned = len(df)
 
     lines.append(f"{'='*55}")
-    lines.append(f"  ETF Universe Scanner — Body Hunter v2.3")
+    lines.append(f"  ETF Universe Scanner - Body Hunter v2.3")
     lines.append(f"  {now}")
     lines.append(f"  스캔: {total_scanned}개 ETF | 시그널: {total_signal}개")
     lines.append(f"{'='*55}")
 
     if with_signal.empty:
-        lines.append("\n  시그널 없음 — 관망")
+        lines.append("\n  시그널 없음 - 관망")
         return "\n".join(lines)
 
     # LONG / SHORT 분리

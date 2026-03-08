@@ -5,10 +5,10 @@
 30초마다 보유 종목 4팩터 분석 → HOLD/SELL/트레일링 자동 결정
 
 4팩터 (각 0~25점, 합산 0~100):
-  1. 가격 모멘텀  — 등락률 + 분봉 추세
-  2. 거래량 흐름  — 체결량 vs 평균 + 추세
-  3. 체결강도     — KIS 체결강도 (100 기준)
-  4. 호가 불균형  — 매수/매도호가 비율
+  1. 가격 모멘텀  - 등락률 + 분봉 추세
+  2. 거래량 흐름  - 체결량 vs 평균 + 추세
+  3. 체결강도     - KIS 체결강도 (100 기준)
+  4. 호가 불균형  - 매수/매도호가 비율
 
 결정 엔진:
   - 긴급: price ≤ SL → FULL_SELL
@@ -86,7 +86,7 @@ class PositionState:
 
 
 class RealtimeMonitor:
-    """장중 AI 모니터 — KIS API로 4팩터 실시간 분석"""
+    """장중 AI 모니터 - KIS API로 4팩터 실시간 분석"""
 
     def __init__(self, config: dict = None):
         self._broker = None
@@ -171,7 +171,7 @@ class RealtimeMonitor:
         row = {"time": now_str}
 
         try:
-            # 1) 시세 — 현재가, 전일대비, 등락률, 거래량
+            # 1) 시세 - 현재가, 전일대비, 등락률, 거래량
             h1 = {**headers, "tr_id": "FHKST01010100"}
             r1 = requests.get(
                 f"{base}/uapi/domestic-stock/v1/quotations/inquire-price",
@@ -194,7 +194,7 @@ class RealtimeMonitor:
 
             time.sleep(0.05)
 
-            # 2) 체결 — 체결강도
+            # 2) 체결 - 체결강도
             h2 = {**headers, "tr_id": "FHKST01010300"}
             r2 = requests.get(
                 f"{base}/uapi/domestic-stock/v1/quotations/inquire-ccnl",
@@ -205,7 +205,7 @@ class RealtimeMonitor:
 
             time.sleep(0.05)
 
-            # 3) 호가 — 매도호가1, 매수호가1
+            # 3) 호가 - 매도호가1, 매수호가1
             h3 = {**headers, "tr_id": "FHKST01010200"}
             r3 = requests.get(
                 f"{base}/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn",

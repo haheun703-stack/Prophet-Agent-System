@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-시그널 패턴 백테스트 v2 — 스토캐스틱 중심 세분화
+시그널 패턴 백테스트 v2 - 스토캐스틱 중심 세분화
 매일 전일 시그널 스캔 → 다음날/3일/5일 수익률 → 패턴별 승률/평균수익
 """
 import sys, io, json, os
@@ -28,11 +28,11 @@ def compute_stochastic(close, high, low, k_period=14, slow_k=3, slow_d=3):
 
 
 def compute_signals(close, high, low, volume, opn):
-    """전일 데이터 기준 시그널 계산 — 스토캐스틱 세분화"""
+    """전일 데이터 기준 시그널 계산 - 스토캐스틱 세분화"""
     signals = []
     sto_detail = {}
 
-    # ═══ 1. Stochastic (14,3,3) — 핵심 세분화 ═══
+    # ═══ 1. Stochastic (14,3,3) - 핵심 세분화 ═══
     k_slow, d_vals = compute_stochastic(close, high, low)
     if k_slow is not None and len(k_slow) >= 4:
         k_now = k_slow[-1] if not np.isnan(k_slow[-1]) else 50
@@ -373,7 +373,7 @@ def run_backtest():
 
     # ═══════════════════════════ REPORT ═══════════════════════════
     print("=" * 120)
-    print("  시그널 패턴 백테스트 v2 — 스토캐스틱 중심 세분화")
+    print("  시그널 패턴 백테스트 v2 - 스토캐스틱 중심 세분화")
     print("=" * 120)
     print(f"  분석: {processed}종목, {total_signals:,}건")
     base_1d = np.mean(random_returns['1d'])
@@ -404,7 +404,7 @@ def run_backtest():
 
     # ── SECTION 2: STO 골든크로스 위치별 ──
     print(f"\n{'=' * 120}")
-    print("  ■ [2] STO 골든크로스 — 어디서 발생하느냐에 따른 수익률 차이")
+    print("  ■ [2] STO 골든크로스 - 어디서 발생하느냐에 따른 수익률 차이")
     print("=" * 120)
     golden_zones = [
         'STO골든_과매도(0~20)', 'STO골든_저구간(20~40)',
@@ -448,7 +448,7 @@ def run_backtest():
 
     # ── SECTION 4: STO 중심 복합 패턴 ──
     print(f"\n{'=' * 120}")
-    print("  ■ [4] STO 중심 복합 패턴 — 핵심 전략")
+    print("  ■ [4] STO 중심 복합 패턴 - 핵심 전략")
     print("=" * 120)
     print(f"  {'패턴':40s} {'건수':>7s} {'1일':>8s} {'승률':>6s} {'3일':>8s} {'5일':>8s} {'5%+':>7s} {'vs기준':>7s}")
     print("-" * 120)

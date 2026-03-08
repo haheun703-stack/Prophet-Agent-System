@@ -1,4 +1,4 @@
-"""ICT Phase 3-1 — HP Gap 백테스트
+"""ICT Phase 3-1 - HP Gap 백테스트
 
 HP Gap 정의:
 - 갭업 + 당일 고가가 전일 고가 돌파 = HP Gap Up (상방 유동성 흡수)
@@ -274,7 +274,7 @@ def run_backtest(
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("  ICT Phase 3-1 — HP Gap 백테스트")
+    print("  ICT Phase 3-1 - HP Gap 백테스트")
     print("=" * 60)
 
     result = run_backtest()

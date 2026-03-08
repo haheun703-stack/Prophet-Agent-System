@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-KIS API 실매매 래퍼 — mojito2 기반
+KIS API 실매매 래퍼 - mojito2 기반
 ===================================
 한국투자증권 REST API를 통한 주문/잔고/현재가 조회
 
@@ -254,7 +254,7 @@ class KISTrader:
     # ═══════════════════════════════════════
 
     def _check_danger_time(self) -> Optional[str]:
-        """위험 시간대 체크 — 14:00~14:50은 매수 금지 (알고리즘 장난 구간)"""
+        """위험 시간대 체크 - 14:00~14:50은 매수 금지 (알고리즘 장난 구간)"""
         now = datetime.now()
         danger = self.config.get("risk", {}).get("danger_hours", {"start": "14:00", "end": "14:50"})
         start_h, start_m = map(int, danger["start"].split(":"))
@@ -263,7 +263,7 @@ class KISTrader:
         ds = start_h * 60 + start_m
         de = end_h * 60 + end_m
         if ds <= t <= de:
-            return f"위험 시간대 ({danger['start']}~{danger['end']}) — 매수 차단"
+            return f"위험 시간대 ({danger['start']}~{danger['end']}) - 매수 차단"
         return None
 
     def _check_volume_ratio(self, code: str, qty: int) -> Optional[str]:
@@ -282,7 +282,7 @@ class KISTrader:
     # ═══════════════════════════════════════
 
     def buy_market(self, code: str, qty: int, split: int = None) -> dict:
-        """시장가 매수 — 분할 주문 지원
+        """시장가 매수 - 분할 주문 지원
 
         Args:
             split: 분할 횟수 (None=config 기본값, 1=원샷)
@@ -342,7 +342,7 @@ class KISTrader:
             return {"success": False, "message": f"매수 실패: {e}"}
 
     def sell_market(self, code: str, qty: int, split: int = None) -> dict:
-        """시장가 매도 — 분할 주문 지원"""
+        """시장가 매도 - 분할 주문 지원"""
         if split is None:
             split = self.config.get("risk", {}).get("split_count", 3)
         split = max(1, min(split, 10))
@@ -421,7 +421,7 @@ class KISTrader:
             return int(-(-price // tick)) * tick  # ceil
 
     def smart_buy(self, code: str, qty: int, max_wait_sec: int = 90) -> dict:
-        """스마트 지정가 매수 — 3단계 에스컬레이션
+        """스마트 지정가 매수 - 3단계 에스컬레이션
 
         1단계: 현재가 -0.5% 지정가 → 30초 대기
         2단계: 미체결 시 현재가 -0.2% 수정 → 30초 대기
@@ -524,16 +524,16 @@ class KISTrader:
         # 최종 실패 → 취소
         self.cancel_order(order_no)
         self._log_trade("SMART_BUY_FAIL", code, name, 0, 3)
-        return {"success": False, "message": f"스마트매수 실패 — {max_wait_sec}초 내 미체결 ({name})"}
+        return {"success": False, "message": f"스마트매수 실패 - {max_wait_sec}초 내 미체결 ({name})"}
 
     def smart_sell(self, code: str, qty: int, max_wait_sec: int = 60) -> dict:
-        """스마트 지정가 매도 — 3단계 에스컬레이션
+        """스마트 지정가 매도 - 3단계 에스컬레이션
 
         1단계: 현재가 +0.5% 지정가 → 20초 대기
         2단계: 미체결 시 현재가 +0.2% 수정 → 20초 대기
         3단계: 미체결 시 현재가로 수정 (사실상 시장가)
 
-        긴급 매도(SL)에는 사용하지 않음 — 시장가 직행
+        긴급 매도(SL)에는 사용하지 않음 - 시장가 직행
         """
         name = CODE_TO_NAME.get(code, code)
 
@@ -664,7 +664,7 @@ class KISTrader:
             except Exception as e:
                 logger.warning(f"체결 확인 실패: {e}")
 
-        # 타임아웃 — 부분 체결 확인
+        # 타임아웃 - 부분 체결 확인
         try:
             orders = self.fetch_open_orders()
             if orders.get("success"):
@@ -706,7 +706,7 @@ class KISTrader:
             bid1 = int(d.get("bidp1", 0))
 
             if ask1 <= 0 or bid1 <= 0:
-                return {"ok": True, "spread_pct": 0, "message": "호가 조회 실패 — 통과"}
+                return {"ok": True, "spread_pct": 0, "message": "호가 조회 실패 - 통과"}
 
             mid = (ask1 + bid1) / 2
             spread_pct = (ask1 - bid1) / mid * 100
@@ -716,7 +716,7 @@ class KISTrader:
                 return {
                     "ok": False, "spread_pct": round(spread_pct, 2),
                     "ask": ask1, "bid": bid1,
-                    "message": f"스프레드 {spread_pct:.2f}% > {max_spread}% — 주문 보류",
+                    "message": f"스프레드 {spread_pct:.2f}% > {max_spread}% - 주문 보류",
                 }
             return {
                 "ok": True, "spread_pct": round(spread_pct, 2),
@@ -725,7 +725,7 @@ class KISTrader:
             }
         except Exception as e:
             logger.warning(f"스프레드 체크 실패 {code}: {e}")
-            return {"ok": True, "spread_pct": 0, "message": f"스프레드 체크 실패: {e} — 통과"}
+            return {"ok": True, "spread_pct": 0, "message": f"스프레드 체크 실패: {e} - 통과"}
 
     # ═══════════════════════════════════════
     #  매매 일지

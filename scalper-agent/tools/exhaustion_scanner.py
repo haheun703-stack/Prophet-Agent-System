@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-미래에셋증권우 패턴 스캐너 v2 — 진짜 매물소진 → 반등 시작 종목
+미래에셋증권우 패턴 스캐너 v2 - 진짜 매물소진 → 반등 시작 종목
 ================================================================
 v1 문제: 거래량만 줄면 다 잡음 → 관심 없는 횡보 종목 대량 혼입
 v2 핵심 변경:
@@ -30,7 +30,7 @@ with open(DATA_DIR / "universe.json", "r", encoding="utf-8") as f:
 
 today = datetime.now().strftime("%Y-%m-%d")
 print("=" * 95)
-print("  매물소진 스캐너 v2 — 스토캐스틱 반전 + 거래량 살아남 + 수급 확인")
+print("  매물소진 스캐너 v2 - 스토캐스틱 반전 + 거래량 살아남 + 수급 확인")
 print(f"  {today} 기준")
 print("=" * 95)
 
@@ -235,7 +235,7 @@ for csv_path in sorted(DAILY_DIR.glob("*.csv")):
         score = 0
         signals = []
 
-        # 스토캐스틱 (핵심 — 최대 30점)
+        # 스토캐스틱 (핵심 - 최대 30점)
         if sto_golden and cur_k < 30:
             score += 30
             signals.append(f"STO골든({cur_k:.0f}/{cur_d:.0f})")
@@ -264,7 +264,7 @@ for csv_path in sorted(DAILY_DIR.glob("*.csv")):
             score += 15
             signals.append(f"거래량살아남")
         else:
-            score += 5  # 거래량 아직 안 살아남 — 감점
+            score += 5  # 거래량 아직 안 살아남 - 감점
 
         # 매물소진 강도 (최대 15점)
         if low_vol_days >= 5 and avg_vol_ratio < 0.3:
@@ -487,7 +487,7 @@ if results:
             lst_sorted = sorted(lst, key=lambda x: -x["score"])
             total_smart = sum(r["smart_net"] for r in lst)
             avg_score = sum(r["score"] for r in lst) / len(lst)
-            print(f"\n  ▶ {sect} ({len(lst)}종목) — 평균점수:{avg_score:.0f} | 섹터합산수급:{total_smart:+,.0f}억")
+            print(f"\n  ▶ {sect} ({len(lst)}종목) - 평균점수:{avg_score:.0f} | 섹터합산수급:{total_smart:+,.0f}억")
             for r in lst_sorted:
                 star = "★★★" if r["score"] >= 85 else ("★★" if r["score"] >= 70 else "★")
                 print(
@@ -498,5 +498,5 @@ if results:
                     f" {r['signals']}"
                 )
 else:
-    print("  조건 충족 종목 없음 — 필터가 매우 엄격합니다.")
+    print("  조건 충족 종목 없음 - 필터가 매우 엄격합니다.")
     print("  (스토캐스틱 반전 + 거래량 살아남 + 매물소진 3일+ 동시 충족 필요)")

@@ -276,7 +276,7 @@ def collect_5min_yfinance(
 # ============================================================
 
 def _fetch_1min_safe(broker, code: str) -> Optional[pd.DataFrame]:
-    """KIS 당일 1분봉 수집 — rate limit 포함 자체 페이징
+    """KIS 당일 1분봉 수집 - rate limit 포함 자체 페이징
 
     mojito의 fetch_today_1m_ohlcv 내부 루프에 sleep이 없어서
     직접 _fetch_today_1m_ohlcv를 호출하며 rate limit 적용
@@ -424,7 +424,7 @@ def collect_today_minutes(
 
 # 하위호환 별칭
 def collect_today_5min_kis(codes=None):
-    """기존 호환용 — collect_today_minutes() 사용 권장"""
+    """기존 호환용 - collect_today_minutes() 사용 권장"""
     return collect_today_minutes(codes, save_1min=False)
 
 

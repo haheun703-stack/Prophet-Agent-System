@@ -11,10 +11,10 @@
 4. 다음 섹터 예측 (현재 HOT 뒤에 바톤 이어받을 후보)
 
 로테이션 페이즈 정의:
-  EARLY  — HOT 1~2일차, 리더만 급등, 소부장 미반응
-  MID    — HOT 3~5일차, 소부장까지 확산, 거래량 유지
-  LATE   — HOT 6일+, 브레드쓰 하락, 거래량 감소
-  REVERSAL — 모멘텀 꺾임, 다음 섹터로 전환 시작
+  EARLY  - HOT 1~2일차, 리더만 급등, 소부장 미반응
+  MID    - HOT 3~5일차, 소부장까지 확산, 거래량 유지
+  LATE   - HOT 6일+, 브레드쓰 하락, 거래량 감소
+  REVERSAL - 모멘텀 꺾임, 다음 섹터로 전환 시작
 
 스테이징 섹터 조건:
   - 최근 3일 중 COLD→WARMING 전환 (상태 개선)
@@ -91,7 +91,7 @@ class RotationReport:
 # ═══════════════════════════════════════
 
 def load_history() -> dict:
-    """sector_history.json 로드 — {date: {sector_id: snapshot_dict}}"""
+    """sector_history.json 로드 - {date: {sector_id: snapshot_dict}}"""
     if HISTORY_PATH.exists():
         try:
             data = json.loads(HISTORY_PATH.read_text(encoding="utf-8"))
@@ -208,32 +208,32 @@ def _detect_phase(
     if status in ("HOT", "WARMING"):
         if hot_days <= 2:
             phase = PHASE_EARLY
-            signal = f"초기 진입({hot_days}일차) — 소부장 기회"
+            signal = f"초기 진입({hot_days}일차) - 소부장 기회"
         elif hot_days <= 5:
             if breadth_trend == "DOWN" or momentum_trend == "DOWN":
                 phase = PHASE_LATE
-                signal = f"후반({hot_days}일차) — 모멘텀/확산 둔화, 진입 주의"
+                signal = f"후반({hot_days}일차) - 모멘텀/확산 둔화, 진입 주의"
             else:
                 phase = PHASE_MID
-                signal = f"중기({hot_days}일차) — 확산 진행 중"
+                signal = f"중기({hot_days}일차) - 확산 진행 중"
         else:
             if momentum_trend == "DOWN":
                 phase = PHASE_REVERSAL
-                signal = f"반전({hot_days}일차) — 매도 고려, 다음 섹터 주시"
+                signal = f"반전({hot_days}일차) - 매도 고려, 다음 섹터 주시"
             else:
                 phase = PHASE_LATE
-                signal = f"후반({hot_days}일차) — 장기 지속, 신규진입 비추"
+                signal = f"후반({hot_days}일차) - 장기 지속, 신규진입 비추"
 
     elif status == "RELAY":
         # 릴레이 = 아직 소부장 기회 있음
         phase = PHASE_MID
-        signal = f"릴레이({hot_days}일차) — 소부장 캐치업 구간"
+        signal = f"릴레이({hot_days}일차) - 소부장 캐치업 구간"
 
     elif status == "COOLING":
         if hot_days > 0:
             # 실제로 HOT이었다가 쿨링 → 진짜 반전
             phase = PHASE_REVERSAL
-            signal = f"반전({hot_days}일 활성 후 쿨링) — 포지션 정리"
+            signal = f"반전({hot_days}일 활성 후 쿨링) - 포지션 정리"
         else:
             # 한번도 HOT 아니었는데 모멘텀만 마이너스 → 비활성
             phase = PHASE_DORMANT
@@ -252,10 +252,10 @@ def _detect_phase(
 
                 if len(momentums) >= 2 and momentums[0] > momentums[-1] + 1.0:
                     phase = PHASE_STAGING
-                    signal = f"웜업 중 — 모멘텀 {momentums[-1]:+.1f}→{momentums[0]:+.1f}% 개선"
+                    signal = f"웜업 중 - 모멘텀 {momentums[-1]:+.1f}→{momentums[0]:+.1f}% 개선"
                 elif momentum > -1.0 and breadth >= 0.4:
                     phase = PHASE_STAGING
-                    signal = f"스테이징 — 모멘텀 {momentum:+.1f}%, 브레드쓰 {breadth:.0%}"
+                    signal = f"스테이징 - 모멘텀 {momentum:+.1f}%, 브레드쓰 {breadth:.0%}"
 
     return RotationPhase(
         sector_id=sector_id,
@@ -286,7 +286,7 @@ def analyze_rotation(history: dict = None) -> RotationReport:
     dates = _get_recent_days(history, 5)
 
     if not dates:
-        return RotationReport(date=today, rotation_signal="히스토리 없음 — 첫 스캔 필요")
+        return RotationReport(date=today, rotation_signal="히스토리 없음 - 첫 스캔 필요")
 
     latest_date = dates[0]
     today_data = history.get(latest_date, {})
@@ -510,7 +510,7 @@ if __name__ == "__main__":
         print("\n다음 섹터 종목:")
         next_stocks = get_next_sector_stocks(rotation)
         for code, info in next_stocks.items():
-            print(f"  {info['name']}({code}) [{info['sector']}] {info['phase']} {info['tier']} — {info['signal']}")
+            print(f"  {info['name']}({code}) [{info['sector']}] {info['phase']} {info['tier']} - {info['signal']}")
     else:
         # 기존 히스토리로 분석만
         print("로테이션 분석 (기존 히스토리)...")

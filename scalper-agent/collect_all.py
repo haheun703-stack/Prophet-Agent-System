@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-독립 데이터 수집 스크립트 — 봇 무관하게 매일 자동 실행
+독립 데이터 수집 스크립트 - 봇 무관하게 매일 자동 실행
 =======================================================
 봇이 꺼져 있어도 Windows 작업 스케줄러로 매일 16:10에 실행.
 
 수집 항목:
   1. pykrx 일봉 OHLCV (data_store/daily/)
-  2. 수급 데이터 — 투자자/외인소진/공매도잔고/공매도거래량 (data_store/flow/, short/)
-  3. 국적별 외국인 수급 (data_store/nationality/) — 추천+보유 종목
+  2. 수급 데이터 - 투자자/외인소진/공매도잔고/공매도거래량 (data_store/flow/, short/)
+  3. 국적별 외국인 수급 (data_store/nationality/) - 추천+보유 종목
   4. Parquet 통합 빌드 (data_store/raw/, processed/)
   5. stock_data_daily 동기화 (data_store/daily → stock_data_daily)
 
@@ -337,7 +337,7 @@ def main():
 
     # 주말 체크
     if date.today().weekday() >= 5:
-        logger.info("주말 — 수집 스킵")
+        logger.info("주말 - 수집 스킵")
         return
 
     logger.info(f"{'='*60}")

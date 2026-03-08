@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Body Hunter v4 자동매매 루프 — 동적 목표가 + 보이지않는 목표가 통합
+Body Hunter v4 자동매매 루프 - 동적 목표가 + 보이지않는 목표가 통합
 ================================================================
 로직 축적:
   1. ATR 기반 SL/TP (고정% → 동적)
@@ -14,8 +14,8 @@ Body Hunter v4 자동매매 루프 — 동적 목표가 + 보이지않는 목표
      (가격안정/양봉/체결강도/AI EYE/MACD 0선/목표가 업사이드)
 
 모드 2개:
-  day  — 당일 매매 (15:10 전량 청산)
-  swing — 스윙 매매 (동적 목표가 재평가, 최대 N일 보유)
+  day  - 당일 매매 (15:10 전량 청산)
+  swing - 스윙 매매 (동적 목표가 재평가, 최대 N일 보유)
 
 JobQueue (python-telegram-bot)로 스케줄:
   09:00 → 추천종목 로드 + 실시간 관찰 시작
@@ -39,7 +39,7 @@ RISK_STATE_PATH = BASE_DIR / "data_store" / "risk_state.json"
 
 
 class AutoTrader:
-    """Body Hunter v4 자동매매 — 사전감지 + AI 모니터 통합"""
+    """Body Hunter v4 자동매매 - 사전감지 + AI 모니터 통합"""
 
     def __init__(self, config: dict, trader):
         self.config = config
@@ -344,17 +344,17 @@ class AutoTrader:
         실제 매수 판단은 job_monitor 30초 루프의 _check_entry_watch()에서 처리
         """
 
-        # 0) CORTEX 체제 체크 (최우선) — 위기모드 수동 오버라이드 포함
+        # 0) CORTEX 체제 체크 (최우선) - 위기모드 수동 오버라이드 포함
         from data.market_health import is_crisis_mode, get_regime_rules
         crisis_active, crisis_reason = is_crisis_mode()
         if crisis_active:
-            await _send(f"위기 모드 — 스캔 중단\n{crisis_reason}")
+            await _send(f"위기 모드 - 스캔 중단\n{crisis_reason}")
             return
 
         regime_rules = get_regime_rules()
         if not regime_rules["new_buy"]:
             await _send(
-                f"CORTEX 체제: {regime_rules['regime']} — 신규매수 중단\n"
+                f"CORTEX 체제: {regime_rules['regime']} - 신규매수 중단\n"
                 f"자본사용: {regime_rules['capital_use']*100:.0f}%"
             )
             return
@@ -429,11 +429,11 @@ class AutoTrader:
             candidates = self._load_swing_candidates()
 
         if not candidates:
-            await _send("매수 후보 없음 — 오늘 관망")
+            await _send("매수 후보 없음 - 오늘 관망")
             return
 
         if not self.is_running:
-            lines = ["📋 매수 후보 (자동매매 OFF — 리포트만)"]
+            lines = ["📋 매수 후보 (자동매매 OFF - 리포트만)"]
             for c in candidates:
                 lines.append(
                     f"  {c['name']}({c['code']}) 점수:{c['total_score']:.0f} "
@@ -482,7 +482,7 @@ class AutoTrader:
         bot_conf = self.config.get("bot", {})
         max_pos = bot_conf.get("max_auto_positions", 5)
 
-        # BRAIN 교차 신호 — 경계/방어 모드 시 진입 캡 축소
+        # BRAIN 교차 신호 - 경계/방어 모드 시 진입 캡 축소
         brain_alloc = self._load_brain_allocation()
         cross = brain_alloc.get("cross_signal", {})
         if cross.get("max_positions_cap"):
@@ -491,7 +491,7 @@ class AutoTrader:
             if max_pos < original_max:
                 await _send(
                     f"🛡️ BRAIN 교차신호 [{cross.get('mode_kr', '')}모드]"
-                    f" — 진입 캡 {original_max}→{max_pos}"
+                    f" - 진입 캡 {original_max}→{max_pos}"
                 )
 
         bal = self.trader.fetch_balance()
@@ -499,7 +499,7 @@ class AutoTrader:
         slots = max_pos - current_positions
 
         if slots <= 0:
-            await _send(f"보유 {current_positions}종목 — 추가 매수 불가")
+            await _send(f"보유 {current_positions}종목 - 추가 매수 불가")
             return
 
         # ── 연말 계절성 필터 (12/15~1/5): 사이즈 축소 ──
@@ -560,7 +560,7 @@ class AutoTrader:
                 )
                 if not entry_check["pass"]:
                     skipped += 1
-                    await _send(f"⛔ 차트 거부: {c['name']} — {entry_check['reason']}")
+                    await _send(f"⛔ 차트 거부: {c['name']} - {entry_check['reason']}")
                     continue
                 size_mult = entry_check["size_mult"]
             except Exception as e:
@@ -601,7 +601,7 @@ class AutoTrader:
             }
             registered += 1
 
-        lines = [f"👁 장 시작 — {registered}종목 실시간 감시 시작"]
+        lines = [f"👁 장 시작 - {registered}종목 실시간 감시 시작"]
         for code, w in self._entry_watch.items():
             lines.append(
                 f"  📡 {w['name']}({code}) 점수:{w['score']:.0f} "
@@ -640,7 +640,7 @@ class AutoTrader:
             1 for p in self._positions.values() if p.get("source") == "momentum"
         )
         if momentum_count >= momentum_max:
-            await _send(f"모멘텀 포지션 {momentum_count}/{momentum_max} — 추가 불가")
+            await _send(f"모멘텀 포지션 {momentum_count}/{momentum_max} - 추가 불가")
             return
 
         # 가용 현금 20% 사용
@@ -690,7 +690,7 @@ class AutoTrader:
             )
 
     async def _check_entry_watch(self):
-        """진입감시 대기열 체크 — job_monitor에서 30초마다 호출
+        """진입감시 대기열 체크 - job_monitor에서 30초마다 호출
 
         각 종목의 KIS API 실시간 데이터를 확인하고:
         1. 갭업 체크 → TP(보이지않는 목표가) 대비 업사이드 판단
@@ -722,7 +722,7 @@ class AutoTrader:
                 else:
                     await self._alert(
                         f"⏰ 진입 관찰 만료: {watch['name']}({code})\n"
-                        f"   30분간 진입 조건 미충족 — 오늘 매수 안 함"
+                        f"   30분간 진입 조건 미충족 - 오늘 매수 안 함"
                     )
                 continue
 
@@ -754,7 +754,7 @@ class AutoTrader:
                 conditions_met = 0
                 conditions_detail = []
 
-                # 1) 갭업 체크 — "보이지않는 목표가" 기반 판단
+                # 1) 갭업 체크 - "보이지않는 목표가" 기반 판단
                 #    고정 5% 거부 X → TP 대비 업사이드가 충분하면 갭업도 매수
                 gap_pct = (open_price / prev_close - 1) * 100 if prev_close > 0 else 0
                 tp = watch.get("tp", 0)
@@ -768,7 +768,7 @@ class AutoTrader:
                         f"⛔ 갭업+업사이드 부족: {watch['name']}({code})\n"
                         f"   전일 {prev_close:,} → 시가 {open_price:,} ({gap_pct:+.1f}%)\n"
                         f"   현재 {cp:,} → 목표 {tp:,} (업사이드 {upside_to_tp:+.1f}%)\n"
-                        f"   R:R 불리 — 오늘 패스"
+                        f"   R:R 불리 - 오늘 패스"
                     )
                     continue
                 elif gap_pct >= 3.0 and upside_to_tp >= 5.0:
@@ -971,7 +971,7 @@ class AutoTrader:
                     await self._alert(
                         f"⚠️ 분할매수 중단: {watch['name']}({code})\n"
                         f"   {watch['split_done']}/{watch['split_count']}차까지 완료\n"
-                        f"   조건 악화 ({conditions_met}/6) — 나머지 취소"
+                        f"   조건 악화 ({conditions_met}/6) - 나머지 취소"
                     )
                     expired.append(code)
 
@@ -1057,7 +1057,7 @@ class AutoTrader:
                 expired.append(code)
                 await self._alert(
                     f"⏰ 돌파 대기 만료: {watch['name']}({code})\n"
-                    f"   {watch['resistance']:,}원 돌파 실패 — 오늘 매수 안 함"
+                    f"   {watch['resistance']:,}원 돌파 실패 - 오늘 매수 안 함"
                 )
                 continue
 
@@ -1067,7 +1067,7 @@ class AutoTrader:
                 expired.append(code)
                 await self._alert(
                     f"⏰ 돌파 대기 종료: {watch['name']}({code})\n"
-                    f"   14:30 이후 — 오늘 매수 안 함"
+                    f"   14:30 이후 - 오늘 매수 안 함"
                 )
                 continue
 
@@ -1190,7 +1190,7 @@ class AutoTrader:
                     expired.append(code)
                     await self._alert(
                         f"📉 돌파 포기: {watch['name']}({code})\n"
-                        f"   현재 {cp:,}원 — 저항대 대비 -3% 이탈"
+                        f"   현재 {cp:,}원 - 저항대 대비 -3% 이탈"
                     )
 
             except Exception as e:
@@ -1222,7 +1222,7 @@ class AutoTrader:
                 f"5D:{f.stability_grade}({f.stability.stability_score:.0f})"
             )
         if not self.is_running:
-            lines.append("\n⏸ 자동매매 OFF — 리포트만 전송")
+            lines.append("\n⏸ 자동매매 OFF - 리포트만 전송")
         await _send("\n".join(lines))
 
         if not self.is_running:
@@ -1232,7 +1232,7 @@ class AutoTrader:
         max_pos = bot_conf.get("max_auto_positions", 3)
         buy_amount = bot_conf.get("auto_buy_amount", 500000)
 
-        # BRAIN 교차 신호 — 경계/방어 모드 시 진입 캡 축소
+        # BRAIN 교차 신호 - 경계/방어 모드 시 진입 캡 축소
         brain_alloc = self._load_brain_allocation()
         cross = brain_alloc.get("cross_signal", {})
         if cross.get("max_positions_cap"):
@@ -1243,7 +1243,7 @@ class AutoTrader:
         slots = max_pos - current_positions
 
         if slots <= 0:
-            await _send(f"보유 종목 {current_positions}개 — 추가 매수 불가")
+            await _send(f"보유 종목 {current_positions}개 - 추가 매수 불가")
             return
 
         bought = 0
@@ -1275,7 +1275,7 @@ class AutoTrader:
         await _send(f"아침 스캔 완료: {bought}/{len(candidates[:slots])} 매수")
 
     async def job_monitor(self, context):
-        """포지션 감시 — AI 4팩터 실시간 분석 (JobQueue 반복 호출)"""
+        """포지션 감시 - AI 4팩터 실시간 분석 (JobQueue 반복 호출)"""
         if not self._is_market_hours():
             return
 
@@ -1569,7 +1569,7 @@ class AutoTrader:
 
                 lines.append(
                     f"  {icon} {name}({code}) {pnl:+.1f}% D{hold_days}\n"
-                    f"     {action} — {reason}\n"
+                    f"     {action} - {reason}\n"
                     f"     SL:{pos['stop_loss']:,} TP:{pos['take_profit']:,}"
                 )
 
@@ -1636,11 +1636,11 @@ class AutoTrader:
                                     )
                         else:
                             await self._alert(
-                                f"🔵 추매 판정: {name}({code}) — 현금 부족({add_cash:,}원)"
+                                f"🔵 추매 판정: {name}({code}) - 현금 부족({add_cash:,}원)"
                             )
                     else:
                         await self._alert(
-                            f"🔵 추매 판정: {name}({code}) — 리스크 차단: {risk_reason}"
+                            f"🔵 추매 판정: {name}({code}) - 리스크 차단: {risk_reason}"
                         )
 
                 elif action == ACTION_PARTIAL_SELL:
@@ -1698,7 +1698,7 @@ class AutoTrader:
     # ═══════════════════════════════════════
 
     async def job_evening_analysis(self, context):
-        """Stage 1: 저녁 분석 (16:45) — 5단계 추천 파이프라인
+        """Stage 1: 저녁 분석 (16:45) - 5단계 추천 파이프라인
 
         한국장 마감 + 데이터 수집 완료 후 실행
         릴레이 → 사전감지 → 기술필터 → 뉴스AI → 교차검증
@@ -1718,7 +1718,7 @@ class AutoTrader:
             elif chat_id:
                 await context.bot.send_message(chat_id=chat_id, text=text)
 
-        await _send("🌙 저녁 분석 시작 — 5단계 추천 파이프라인...")
+        await _send("🌙 저녁 분석 시작 - 5단계 추천 파이프라인...")
 
         try:
             from data.morning_recommendation import (
@@ -1840,7 +1840,7 @@ class AutoTrader:
                 )
 
     async def job_us_market_check(self, context):
-        """Stage 2: 미국장 체크 (06:30) — 전일 저녁 추천 조정
+        """Stage 2: 미국장 체크 (06:30) - 전일 저녁 추천 조정
 
         미국 S&P500/나스닥/VIX 체크 → 추천 조정/유지
         """
@@ -1867,7 +1867,7 @@ class AutoTrader:
 
             prev = load_recommendation()
             if not prev or not prev.stocks:
-                await _send("🇺🇸 미국장 체크: 저녁 추천 없음 — 스킵")
+                await _send("🇺🇸 미국장 체크: 저녁 추천 없음 - 스킵")
                 return
 
             report = await asyncio.to_thread(run_us_market_check, prev)
@@ -1879,7 +1879,7 @@ class AutoTrader:
             if report.warning:
                 await _send(f"⚠️ 주의: {report.warning}")
             else:
-                await _send("✅ 미국장 정상 — 저녁 추천 유지")
+                await _send("✅ 미국장 정상 - 저녁 추천 유지")
 
             # ETF 시그널 별도 전송
             if report.etf_signal and report.etf_signal.get("signal") != "HOLD":
@@ -1904,7 +1904,7 @@ class AutoTrader:
     # ═══════════════════════════════════════
 
     def _load_brain_allocation(self) -> dict:
-        """brain_allocation.json 로드 — 매수금액 캡에 사용"""
+        """brain_allocation.json 로드 - 매수금액 캡에 사용"""
         brain_path = BASE_DIR.parent / "jarvis" / "data" / "brain_allocation.json"
         if not brain_path.exists():
             return {}
@@ -1943,7 +1943,7 @@ class AutoTrader:
         )
 
     async def job_brain_allocation(self, context):
-        """16:36 — BRAIN 자본 배분 백업 스케줄 (NIGHTWATCH 실패 대비)"""
+        """16:36 - BRAIN 자본 배분 백업 스케줄 (NIGHTWATCH 실패 대비)"""
         from datetime import date as dt_date
         if dt_date.today().weekday() >= 5:
             return
@@ -1956,7 +1956,7 @@ class AutoTrader:
                     alloc = json.load(f)
                 alloc_date = alloc.get("timestamp", "")[:10]
                 if alloc_date == dt_date.today().isoformat():
-                    logger.info("[BRAIN] 오늘 이미 실행됨 — 백업 스킵")
+                    logger.info("[BRAIN] 오늘 이미 실행됨 - 백업 스킵")
                     return
             except Exception:
                 pass
@@ -1984,7 +1984,7 @@ class AutoTrader:
     # ═══════════════════════════════════════
 
     async def job_premium_levels(self, context):
-        """08:30 — 전일/전주/전월 프리미엄 레벨 계산"""
+        """08:30 - 전일/전주/전월 프리미엄 레벨 계산"""
         from datetime import date as dt_date
         if dt_date.today().weekday() >= 5:
             return
@@ -2034,7 +2034,7 @@ class AutoTrader:
             await _send(f"⚠️ 프리미엄 레벨 실패: {str(e)[:200]}")
 
     async def job_gap_support(self, context):
-        """09:05 — 갭 지지/저항 탐지 + PL 머지"""
+        """09:05 - 갭 지지/저항 탐지 + PL 머지"""
         from datetime import date as dt_date
         if dt_date.today().weekday() >= 5:
             return
@@ -2083,7 +2083,7 @@ class AutoTrader:
             await _send(f"⚠️ 갭 탐지 실패: {str(e)[:200]}")
 
     async def job_opening_range(self, context):
-        """10:05 — OR/IR 확정 + daily_bias 계산"""
+        """10:05 - OR/IR 확정 + daily_bias 계산"""
         from datetime import date as dt_date
         if dt_date.today().weekday() >= 5:
             return
@@ -2139,7 +2139,7 @@ class AutoTrader:
     # ═══════════════════════════════════════
 
     async def job_nightwatch_collect(self, context):
-        """16:00 — 유럽장 개장, NIGHTWATCH 데이터 수집 시작"""
+        """16:00 - 유럽장 개장, NIGHTWATCH 데이터 수집 시작"""
         from datetime import date as dt_date
         if dt_date.today().weekday() >= 5:
             return
@@ -2182,7 +2182,7 @@ class AutoTrader:
             await _send(f"NIGHTWATCH 수집 실패: {e}")
 
     async def job_nightwatch_decide(self, context):
-        """16:35 — NIGHTWATCH 최종 판단 + NXT 매수 결정"""
+        """16:35 - NIGHTWATCH 최종 판단 + NXT 매수 결정"""
         from datetime import date as dt_date
         if dt_date.today().weekday() >= 5:
             return
@@ -2226,7 +2226,7 @@ class AutoTrader:
                 await _send(f"NXT 진입 조건 미충족 (점수 {report.total_score:+.1f} < {min_score})")
                 return
 
-            # 진입 대상 종목 결정 — JARVIS 섹터 매핑 사용
+            # 진입 대상 종목 결정 - JARVIS 섹터 매핑 사용
             nxt_targets = getattr(report, 'nxt_targets', [])
             if not nxt_targets:
                 # 폴백: config prefer_sectors (하위 호환)
@@ -2281,7 +2281,7 @@ class AutoTrader:
                 )
                 return
 
-            # 자동매매 모드 — NXT 매수 실행
+            # 자동매매 모드 - NXT 매수 실행
             for t in buy_targets:
                 code = t["code"]
                 name = t["name"]
@@ -2303,14 +2303,14 @@ class AutoTrader:
                     self._save_nxt_positions()
                     await _send(f"NXT 매수 완료: {result['message']}")
                 else:
-                    await _send(f"NXT 매수 실패: {name}({code}) — {result['message']}")
+                    await _send(f"NXT 매수 실패: {name}({code}) - {result['message']}")
 
         except Exception as e:
             logger.error(f"NIGHTWATCH 판단 실패: {e}")
             await _send(f"NIGHTWATCH 판단 실패: {e}")
 
     async def job_nxt_morning_sell(self, context):
-        """08:00 — NXT 포지션 매도 (장전 시간외)"""
+        """08:00 - NXT 포지션 매도 (장전 시간외)"""
         from datetime import date as dt_date
         if dt_date.today().weekday() >= 5:
             return
@@ -2382,13 +2382,13 @@ class AutoTrader:
                             f"  수익: {pnl_pct:+.1f}% | {result['message']}"
                         )
                     else:
-                        await _send(f"NXT 매도 실패: {name} — {result['message']}")
+                        await _send(f"NXT 매도 실패: {name} - {result['message']}")
 
                 self._nxt_positions.pop(code, None)
 
             except Exception as e:
                 logger.error(f"NXT 매도 실패 {code}: {e}")
-                await _send(f"NXT 매도 예외: {name} — {e}")
+                await _send(f"NXT 매도 예외: {name} - {e}")
 
         self._save_nxt_positions()
 

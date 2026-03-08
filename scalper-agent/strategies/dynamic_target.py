@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-동적 목표가 엔진 + 트레일링 스탑 — 매일 재평가하여 SL/TP 조정
+동적 목표가 엔진 + 트레일링 스탑 - 매일 재평가하여 SL/TP 조정
 ================================================================
 3 GAP 통합:
   GAP 1: ATR 기반 초기 SL/TP (고정% → ATR)
@@ -125,7 +125,7 @@ class DynamicTargetEngine:
         )
         atr = float(np.mean(tr))
 
-        # 초기 SL/TP — 체제별 파라미터 적용 (진입 시점 체제 고정)
+        # 초기 SL/TP - 체제별 파라미터 적용 (진입 시점 체제 고정)
         from data.market_health import get_regime_rules
         rules = get_regime_rules()
         sl_mult = rules.get("sl_atr_mult", 0.5)
@@ -142,7 +142,7 @@ class DynamicTargetEngine:
         inst_cost = self._calc_inst_cost(code, df)
         inst_cost_sl = int(inst_cost * 0.97) if inst_cost > 0 else 0
 
-        # SL = max(매집원가 방어선, ATR SL) — 가장 타이트한 것 사용
+        # SL = max(매집원가 방어선, ATR SL) - 가장 타이트한 것 사용
         final_sl = max(inst_cost_sl, initial_sl) if inst_cost_sl > 0 else initial_sl
 
         state = TargetState(
@@ -393,7 +393,7 @@ class DynamicTargetEngine:
         pnl_pct = (cp / entry - 1) * 100 if entry > 0 else 0
         drop_pct = (1 - cp / hwm) * 100 if hwm > 0 else 0
 
-        # ═══ 1. 하드 손절 (최우선 — 트레일링 여부 무관) ═══
+        # ═══ 1. 하드 손절 (최우선 - 트레일링 여부 무관) ═══
         if cp <= sl:
             return ACTION_STOP_LOSS, f"SL 도달 ({cp:,} ≤ {sl:,})"
 
@@ -428,7 +428,7 @@ class DynamicTargetEngine:
 
             # ─── 고점 대비 하락폭 판정 ───
             if drop_pct < 2.0:
-                # 고점 근처 — 올라가는 중, 놔두기
+                # 고점 근처 - 올라가는 중, 놔두기
                 if pnl_pct >= 8.0:
                     return ACTION_ADD, f"고점추적+업사이드{pnl_pct:.1f}% → 추매검토"
                 return ACTION_HOLD, (

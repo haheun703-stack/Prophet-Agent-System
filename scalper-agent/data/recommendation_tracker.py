@@ -52,7 +52,7 @@ def save_recommendation_snapshot(report=None) -> int:
         from data.morning_recommendation import load_recommendation
         report = load_recommendation()
         if report is None:
-            logger.warning("추천 데이터 없음 — 스냅샷 저장 생략")
+            logger.warning("추천 데이터 없음 - 스냅샷 저장 생략")
             return 0
 
     today = datetime.now().strftime("%Y-%m-%d")

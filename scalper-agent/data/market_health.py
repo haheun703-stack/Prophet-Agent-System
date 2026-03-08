@@ -5,22 +5,22 @@
 시장 전체의 수급 건강 상태를 진단하여 스윙매매 리스크 게이트 역할.
 
 v1: 3단계 (NORMAL/WARNING/CRITICAL) 단순 분류
-v2: CORTEX 통합 — 6단계 체제 + 충격 분류 + 섹터 매핑
+v2: CORTEX 통합 - 6단계 체제 + 충격 분류 + 섹터 매핑
 
 체제 (Regime):
-  NORMAL             — 평시: 풀사이즈 진입
-  CAUTION            — 주의: 70% 사이즈
-  SHOCK              — 충격: 신규매수 중단
-  PANIC              — 패닉: 30% 방어만
-  RECOVERY_EARLY     — 회복 초기: 줍줍 타이밍
-  RECOVERY_CONFIRMED — 회복 확인: 80% 공격
+  NORMAL             - 평시: 풀사이즈 진입
+  CAUTION            - 주의: 70% 사이즈
+  SHOCK              - 충격: 신규매수 중단
+  PANIC              - 패닉: 30% 방어만
+  RECOVERY_EARLY     - 회복 초기: 줍줍 타이밍
+  RECOVERY_CONFIRMED - 회복 확인: 80% 공격
 
 충격 유형 (ShockType):
-  GEOPOLITICAL — 지정학 (전쟁, 제재)
-  RATE         — 금리 (Fed, 한은)
-  EARNINGS     — 실적 (어닝 시즌)
-  LIQUIDITY    — 유동성 (마진콜, 신용경색)
-  COMPOUND     — 복합 (2개 이상)
+  GEOPOLITICAL - 지정학 (전쟁, 제재)
+  RATE         - 금리 (Fed, 한은)
+  EARNINGS     - 실적 (어닝 시즌)
+  LIQUIDITY    - 유동성 (마진콜, 신용경색)
+  COMPOUND     - 복합 (2개 이상)
 
 사용법:
   python -m data.market_health              # 건전성 + 체제 진단
@@ -169,7 +169,7 @@ def _save_regime_state(state: RegimeState):
 
 
 def _collect_regime_inputs() -> dict:
-    """체제 판단용 데이터 수집 — KODEX 200 parquet + Finnhub VIX"""
+    """체제 판단용 데이터 수집 - KODEX 200 parquet + Finnhub VIX"""
     result = {
         "kospi_close": 0, "kospi_prev_close": 0,
         "kospi_5d_ago_close": 0, "kospi_20ma": 0, "kospi_5ma": 0,
@@ -212,7 +212,7 @@ def _collect_regime_inputs() -> dict:
                 break
         result["consecutive_down"] = consec
 
-    # VIX — Finnhub API
+    # VIX - Finnhub API
     try:
         api_key = os.getenv("FINNHUB_API_KEY")
         if api_key:
@@ -412,7 +412,7 @@ class ShockAnalysis:
 
 
 def _collect_shock_inputs() -> dict:
-    """충격 분류용 데이터 수집 — 우리 데이터 소스에서"""
+    """충격 분류용 데이터 수집 - 우리 데이터 소스에서"""
     result = {
         "gdelt_conflict_index": 0,
         "oil_change_pct": 0,
@@ -426,7 +426,7 @@ def _collect_shock_inputs() -> dict:
         "earnings_surprise_count": 0,
     }
 
-    # 방산 섹터 수익률 — 한화에어로(012450) 5일 수익률
+    # 방산 섹터 수익률 - 한화에어로(012450) 5일 수익률
     defense_codes = ["012450", "079550", "047810"]  # 대표 3종목
     defense_returns = []
     for code in defense_codes:
@@ -440,7 +440,7 @@ def _collect_shock_inputs() -> dict:
     if defense_returns:
         result["defense_sector_return"] = float(np.mean(defense_returns))
 
-    # 정유 섹터 수익률 — S-Oil(010950) 등
+    # 정유 섹터 수익률 - S-Oil(010950) 등
     refinery_codes = ["096770", "010950"]
     refinery_returns = []
     for code in refinery_codes:
@@ -455,7 +455,7 @@ def _collect_shock_inputs() -> dict:
         result["refinery_sector_return"] = float(np.mean(refinery_returns))
         result["oil_change_pct"] = result["refinery_sector_return"]  # 정유 수익률로 유가 대체
 
-    # VIX — Finnhub
+    # VIX - Finnhub
     try:
         api_key = os.getenv("FINNHUB_API_KEY")
         if api_key:
@@ -469,7 +469,7 @@ def _collect_shock_inputs() -> dict:
     except Exception:
         pass
 
-    # 금리 — Finnhub (US10Y)
+    # 금리 - Finnhub (US10Y)
     try:
         api_key = os.getenv("FINNHUB_API_KEY")
         if api_key:
@@ -861,12 +861,12 @@ def _check_global_risk() -> list[dict]:
                         if price >= cfg["crit"]:
                             alerts.append({
                                 "level": "critical", "type": "global",
-                                "message": f"{cfg['name']} {price:.1f} — 극단 공포"
+                                "message": f"{cfg['name']} {price:.1f} - 극단 공포"
                             })
                         elif price >= cfg["warn"]:
                             alerts.append({
                                 "level": "warning", "type": "global",
-                                "message": f"{cfg['name']} {price:.1f} — 공포 구간"
+                                "message": f"{cfg['name']} {price:.1f} - 공포 구간"
                             })
             except Exception:
                 continue
@@ -927,7 +927,7 @@ def diagnose() -> MarketHealthReport:
     if not global_alerts:
         print("  해외 리스크 정상")
 
-    # 4. CORTEX Layer 1 — 6단계 체제 판단
+    # 4. CORTEX Layer 1 - 6단계 체제 판단
     print("\n[4] CORTEX 체제 판단...")
     regime_state = detect_regime()
     report.regime = regime_state.current
@@ -941,7 +941,7 @@ def diagnose() -> MarketHealthReport:
         print(f"  전환: {regime_state.previous} -> {regime_state.current} ({regime_state.changed_at})")
     print(f"  매수: {'가능' if rules['new_buy'] else '중단'} | 사이즈: {rules['capital_use']*100:.0f}%")
 
-    # 5. CORTEX Layer 2 — 충격 분류
+    # 5. CORTEX Layer 2 - 충격 분류
     print("\n[5] CORTEX 충격 분류...")
     shock = classify_shock()
     report.shock_type = shock.shock_type
@@ -962,31 +962,31 @@ def diagnose() -> MarketHealthReport:
 
     if report.foreign_5d_net <= T["foreign_5d_critical"]:
         alerts.append({"level": "critical", "type": "foreign",
-                        "message": f"외국인 5일 순매도 {abs(report.foreign_5d_net):,.0f} — 대량 이탈"})
+                        "message": f"외국인 5일 순매도 {abs(report.foreign_5d_net):,.0f} - 대량 이탈"})
     elif report.foreign_5d_net <= T["foreign_5d_warning"]:
         alerts.append({"level": "warning", "type": "foreign",
-                        "message": f"외국인 5일 순매도 {abs(report.foreign_5d_net):,.0f} — 주의"})
+                        "message": f"외국인 5일 순매도 {abs(report.foreign_5d_net):,.0f} - 주의"})
 
     if report.inst_5d_net <= T["inst_5d_critical"]:
         alerts.append({"level": "critical", "type": "institution",
-                        "message": f"기관 5일 순매도 {abs(report.inst_5d_net):,.0f} — 기관 이탈"})
+                        "message": f"기관 5일 순매도 {abs(report.inst_5d_net):,.0f} - 기관 이탈"})
     elif report.inst_5d_net <= T["inst_5d_warning"]:
         alerts.append({"level": "warning", "type": "institution",
-                        "message": f"기관 5일 순매도 {abs(report.inst_5d_net):,.0f} — 주의"})
+                        "message": f"기관 5일 순매도 {abs(report.inst_5d_net):,.0f} - 주의"})
 
     if report.decline_ratio >= T["decline_ratio_critical"]:
         alerts.append({"level": "critical", "type": "breadth",
-                        "message": f"하락 종목 {report.decline_ratio*100:.0f}% — 전면 하락"})
+                        "message": f"하락 종목 {report.decline_ratio*100:.0f}% - 전면 하락"})
     elif report.decline_ratio >= T["decline_ratio_warning"]:
         alerts.append({"level": "warning", "type": "breadth",
-                        "message": f"하락 종목 {report.decline_ratio*100:.0f}% — 약세 구간"})
+                        "message": f"하락 종목 {report.decline_ratio*100:.0f}% - 약세 구간"})
 
     if report.kospi_5d_change <= T["kospi_drop_critical"]:
         alerts.append({"level": "critical", "type": "kospi",
-                        "message": f"시장 5일 {report.kospi_5d_change:+.1f}% — 급락"})
+                        "message": f"시장 5일 {report.kospi_5d_change:+.1f}% - 급락"})
     elif report.kospi_5d_change <= T["kospi_drop_warning"]:
         alerts.append({"level": "warning", "type": "kospi",
-                        "message": f"시장 5일 {report.kospi_5d_change:+.1f}% — 약세"})
+                        "message": f"시장 5일 {report.kospi_5d_change:+.1f}% - 약세"})
 
     # 하위호환 alert_level (체제 기반 매핑)
     regime_enum = Regime[regime_state.current]

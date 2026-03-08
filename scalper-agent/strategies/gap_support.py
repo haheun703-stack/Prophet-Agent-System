@@ -448,4 +448,4 @@ if __name__ == "__main__":
         up = sum(1 for r in results.values() if r["gap_type"] == "gap_up")
         down = sum(1 for r in results.values() if r["gap_type"] == "gap_down")
         strong = sum(1 for r in results.values() if r["strength"] == "strong")
-        print(f"결과: {len(results)}종목 — 갭업:{up} 갭다운:{down} (strong:{strong})")
+        print(f"결과: {len(results)}종목 - 갭업:{up} 갭다운:{down} (strong:{strong})")

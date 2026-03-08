@@ -1,5 +1,5 @@
 """
-Body Hunter v4 — Full Pipeline Backtest
+Body Hunter v4 - Full Pipeline Backtest
 ========================================
 추천→진입→보유→청산 전체 파이프라인 시뮬레이션.
 CORTEX 6단계 체제 + 소프트 스코어링 v2 + ATR TP/SL + 트레일링 스탑.
@@ -168,7 +168,7 @@ class PipelineBacktester:
         """KODEX200 CSV 로드 (시장 벤치마크)"""
         csv_path = DAILY_DIR / "069500.csv"
         if not csv_path.exists():
-            print("  [WARN] KODEX200 CSV not found — regime detection disabled")
+            print("  [WARN] KODEX200 CSV not found - regime detection disabled")
             return
         df = pd.read_csv(csv_path, index_col=0, parse_dates=True)
         df.index.name = "date"
@@ -591,7 +591,7 @@ class PipelineBacktester:
     def _partial_close(self, code: str, exit_price: float,
                        exit_date: pd.Timestamp, reason: str,
                        sell_shares: int):
-        """부분 청산 — 지정 수량만 매도, 포지션 유지"""
+        """부분 청산 - 지정 수량만 매도, 포지션 유지"""
         pos = self.positions[code]
         if sell_shares >= pos.shares:
             # 전량이면 일반 청산
@@ -694,7 +694,7 @@ class PipelineBacktester:
                 codes_to_exit.append((code, pos.sl, "SL_HIT"))
                 continue
 
-            # 2) Take Profit — v2: 반분할 익절
+            # 2) Take Profit - v2: 반분할 익절
             if high >= pos.tp:
                 if self.params["partial_tp"] and not pos.partial_sold:
                     # 절반만 청산, 나머지 트레일링
@@ -762,7 +762,7 @@ class PipelineBacktester:
     def run(self):
         """백테스트 메인 루프"""
         if not self.trading_days:
-            print("[ERROR] No trading days — check data")
+            print("[ERROR] No trading days - check data")
             return
 
         print(f"Backtesting [{self.version.upper()}]: "
@@ -1015,7 +1015,7 @@ if __name__ == "__main__":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
     parser = argparse.ArgumentParser(
-        description="Body Hunter v4 — Full Pipeline Backtest"
+        description="Body Hunter v4 - Full Pipeline Backtest"
     )
     parser.add_argument("--start", default="2025-11-01",
                         help="시작일 (YYYY-MM-DD)")

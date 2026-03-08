@@ -1,5 +1,5 @@
 """
-뉴스/공시 피드 — 3순위 데이터
+뉴스/공시 피드 - 3순위 데이터
 
 촉매(catalyst) 감지용:
   - 실적 발표, 대규모 수주, 지분 변동 등
@@ -8,7 +8,7 @@
 
 현재: 구조만 준비 (향후 데이터 소스 연결)
 후보 소스:
-  - OpenDartReader (DART 공시) — 이미 설치됨
+  - OpenDartReader (DART 공시) - 이미 설치됨
   - 네이버 금융 크롤링
   - 한경/매경 RSS
 """
@@ -50,7 +50,7 @@ def fetch_dart_disclosures(code: str, days: int = 30) -> List[NewsItem]:
       disclosures = dart.list(code, kind='A')  # 정기공시
     """
     # TODO: DART API 키 설정 후 활성화
-    logger.info(f"[NewsFeed] DART 공시 조회 — 미구현 ({code})")
+    logger.info(f"[NewsFeed] DART 공시 조회 - 미구현 ({code})")
     return []
 
 
@@ -61,5 +61,5 @@ def fetch_naver_news(code: str, count: int = 10) -> List[NewsItem]:
       url = f"https://finance.naver.com/item/news.nhn?code={code}"
       BeautifulSoup으로 파싱
     """
-    logger.info(f"[NewsFeed] 네이버 뉴스 — 미구현 ({code})")
+    logger.info(f"[NewsFeed] 네이버 뉴스 - 미구현 ({code})")
     return []

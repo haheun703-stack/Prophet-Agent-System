@@ -1,15 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-이상거래 감지기 — Volume Spike Scanner
+이상거래 감지기 - Volume Spike Scanner
 ========================================
 +30% 폭등 1~3일 전 나타나는 이상 거래량 패턴 5종을 감지한다.
 
 패턴:
-  1. VOLUME_SPIKE      — 거래량 2.5배 이상 급증
-  2. QUIET_ACCUMULATION — 거래량 3배+ 인데 가격변동 3% 미만 (조용한 매집)
-  3. OBV_BREAKOUT      — OBV 신고가 but 주가는 아님 (돈이 먼저 들어옴)
-  4. MULTI_DAY_ACCUM   — 3일 연속 거래량 증가 + 주가 상승
-  5. BIG_MONEY_INFLOW  — 거래대금 5배 이상 급증 (큰손 진입)
+  1. VOLUME_SPIKE      - 거래량 2.5배 이상 급증
+  2. QUIET_ACCUMULATION - 거래량 3배+ 인데 가격변동 3% 미만 (조용한 매집)
+  3. OBV_BREAKOUT      - OBV 신고가 but 주가는 아님 (돈이 먼저 들어옴)
+  4. MULTI_DAY_ACCUM   - 3일 연속 거래량 증가 + 주가 상승
+  5. BIG_MONEY_INFLOW  - 거래대금 5배 이상 급증 (큰손 진입)
 
 사용법:
   python -m data.volume_scanner              # 전체 유니버스 스캔
@@ -111,7 +111,7 @@ def detect_patterns(df: pd.DataFrame, code: str, name: str) -> dict:
         pts = min(40, int((vol_ratio - 3.0) * 8) + 25)
         patterns.append({
             "type": "QUIET_ACCUMULATION",
-            "description": f"조용한 매집 — 거래량 {vol_ratio:.1f}배, 가격변동 {price_change:.1f}%",
+            "description": f"조용한 매집 - 거래량 {vol_ratio:.1f}배, 가격변동 {price_change:.1f}%",
             "score": pts,
         })
         score += pts
@@ -128,7 +128,7 @@ def detect_patterns(df: pd.DataFrame, code: str, name: str) -> dict:
         pts = 20
         patterns.append({
             "type": "OBV_BREAKOUT",
-            "description": f"OBV 신고가 (주가 미돌파) — 자금 선행 유입",
+            "description": f"OBV 신고가 (주가 미돌파) - 자금 선행 유입",
             "score": pts,
         })
         score += pts
@@ -154,7 +154,7 @@ def detect_patterns(df: pd.DataFrame, code: str, name: str) -> dict:
         pts = min(35, int((val_ratio - 5.0) * 5) + 20)
         patterns.append({
             "type": "BIG_MONEY_INFLOW",
-            "description": f"거래대금 {val_ratio:.1f}배 급증 — 큰손 진입",
+            "description": f"거래대금 {val_ratio:.1f}배 급증 - 큰손 진입",
             "score": pts,
         })
         score += pts
@@ -189,10 +189,10 @@ def scan_universe(top_n: int = 30) -> list:
 
     universe = load_universe()
     if not universe:
-        logger.error("유니버스 없음 — python -m data.universe_builder --build-only 실행 필요")
+        logger.error("유니버스 없음 - python -m data.universe_builder --build-only 실행 필요")
         return []
 
-    print(f"\n🔍 이상거래 감지기 — {len(universe)}종목 스캔")
+    print(f"\n🔍 이상거래 감지기 - {len(universe)}종목 스캔")
     print("=" * 60)
 
     results = []
@@ -243,7 +243,7 @@ def save_results(results: list) -> Path:
     with open(full_path, "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
 
-    # extra_universe.json — QUIET_ACCUMULATION 종목만 (파이프라인 연동용)
+    # extra_universe.json - QUIET_ACCUMULATION 종목만 (파이프라인 연동용)
     quiet_stocks = [
         r for r in results
         if any(p["type"] == "QUIET_ACCUMULATION" for p in r["patterns"])

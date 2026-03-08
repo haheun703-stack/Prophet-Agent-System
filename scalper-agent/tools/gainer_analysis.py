@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""금일 5%이상 상승 종목 — 전일 시그널 역추적 분석"""
+"""금일 5%이상 상승 종목 - 전일 시그널 역추적 분석"""
 import sys, io, json, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
@@ -292,7 +292,7 @@ with open('data_store/today_gainers_analyzed.json', 'w', encoding='utf-8') as f:
 
 # ═══ REPORT ═══
 print("=" * 100)
-print("  금일(2026-02-19) 5%이상 상승종목 — 전일 시그널 역추적 분석")
+print("  금일(2026-02-19) 5%이상 상승종목 - 전일 시그널 역추적 분석")
 print("=" * 100)
 print(f"  분석: {len(results)}종목 (데이터없음: {no_data})")
 
@@ -323,7 +323,7 @@ for sec, cnt in sector_counts.most_common(30):
 
 # 상승률 상위 종목 상세
 print(f"\n{'=' * 100}")
-print("  ■ 상승률 TOP 50 — 전일 시그널 상세")
+print("  ■ 상승률 TOP 50 - 전일 시그널 상세")
 print("=" * 100)
 results_sorted = sorted(results, key=lambda x: -x['change'])
 
@@ -343,7 +343,7 @@ for i, r in enumerate(results_sorted[:50], 1):
 
 # 핵심 패턴 분석
 print(f"\n{'=' * 100}")
-print("  ■ 핵심 패턴 분석 — 어떤 시그널 조합이 급등을 예고했나?")
+print("  ■ 핵심 패턴 분석 - 어떤 시그널 조합이 급등을 예고했나?")
 print("=" * 100)
 
 # 시그널 조합 빈도

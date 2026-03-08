@@ -246,7 +246,7 @@ class GroupRotationStrategy:
         """전체 그룹 스캔 → 매매 신호 생성
 
         Args:
-            daily_data: {종목코드: 일봉 DataFrame} — ETF 포함
+            daily_data: {종목코드: 일봉 DataFrame} - ETF 포함
 
         Returns:
             그룹별 RotationSignal 리스트

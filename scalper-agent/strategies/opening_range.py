@@ -358,4 +358,4 @@ if __name__ == "__main__":
         bullish = sum(1 for r in results.values() if r["daily_bias"] == "bullish")
         bearish = sum(1 for r in results.values() if r["daily_bias"] == "bearish")
         neutral = sum(1 for r in results.values() if r["daily_bias"] == "neutral")
-        print(f"결과: {len(results)}종목 — bullish:{bullish} bearish:{bearish} neutral:{neutral}")
+        print(f"결과: {len(results)}종목 - bullish:{bullish} bearish:{bearish} neutral:{neutral}")

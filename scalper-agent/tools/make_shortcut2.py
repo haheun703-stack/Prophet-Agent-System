@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""바탕화면 바로가기 생성 — VBS 방식"""
+"""바탕화면 바로가기 생성 - VBS 방식"""
 import subprocess, os, tempfile
 
 # 바탕화면 경로 (cp949)

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-일일 5분봉 수집기 — 장 마감 후 실행
+일일 5분봉 수집기 - 장 마감 후 실행
 =====================================
 KIS API로 현대차+NAVER 당일 1분봉 → 5분봉 변환 후 저장
 
@@ -9,8 +9,8 @@ KIS API로 현대차+NAVER 당일 1분봉 → 5분봉 변환 후 저장
   python collect_daily.py --all        # UNIVERSE 전종목 수집
 
 저장 위치:
-  data_store/minute5/{code}.csv   (백테스트용 — real_5min_backtest.py)
-  data_store/5min/{code}.csv      (수급분석용 — kis_collector.py)
+  data_store/minute5/{code}.csv   (백테스트용 - real_5min_backtest.py)
+  data_store/5min/{code}.csv      (수급분석용 - kis_collector.py)
 
 Windows 작업 스케줄러 등록:
   schtasks /create /tn "BH_DailyCollect" /tr "python D:/Prophet_Agent_System/scalper-agent/collect_daily.py" /sc daily /st 15:40

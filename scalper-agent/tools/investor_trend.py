@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""투자자동향 리포트 — 시장/섹터/종목별 기관·외인·개인 순매매"""
+"""투자자동향 리포트 - 시장/섹터/종목별 기관·외인·개인 순매매"""
 import sys, io, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
@@ -25,7 +25,7 @@ print("  투자자동향 리포트")
 print(f"  {today_disp} 기준")
 print("=" * 100)
 
-# ═══ 1. 종목별 순매수 TOP — 각 투자자 유형별 ═══
+# ═══ 1. 종목별 순매수 TOP - 각 투자자 유형별 ═══
 investors = {
     "외국인합계": "외국인",
     "기관합계": "기관",

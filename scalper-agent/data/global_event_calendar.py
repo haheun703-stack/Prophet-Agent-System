@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-해외 이벤트 캘린더 — 실적발표/FOMC/CPI 사전 감지 + 한국 수혜주 매핑
+해외 이벤트 캘린더 - 실적발표/FOMC/CPI 사전 감지 + 한국 수혜주 매핑
 =====================================================================
 D-3 사전 알림 → 한국 관련 섹터 종목 가중치 부여
 
 데이터 소스:
-  1. yfinance — 미국 빅테크 실적발표 일정
-  2. Perplexity API — 실시간 웹검색 (향후 1주 이벤트 + 한국 수혜 분석)
-  3. 하드코딩 경제 캘린더 — FOMC/CPI/고용 등 정기 일정
+  1. yfinance - 미국 빅테크 실적발표 일정
+  2. Perplexity API - 실시간 웹검색 (향후 1주 이벤트 + 한국 수혜 분석)
+  3. 하드코딩 경제 캘린더 - FOMC/CPI/고용 등 정기 일정
 
 사용법:
   python -m data.global_event_calendar              # 전체 스캔
@@ -143,7 +143,7 @@ def fetch_earnings_calendar(symbols: List[str] = None, days_ahead: int = 7) -> L
     try:
         import yfinance as yf
     except ImportError:
-        logger.warning("yfinance 미설치 — pip install yfinance")
+        logger.warning("yfinance 미설치 - pip install yfinance")
         return []
 
     if symbols is None:
@@ -210,7 +210,7 @@ def fetch_earnings_calendar(symbols: List[str] = None, days_ahead: int = 7) -> L
 
 
 # ═══════════════════════════════════════════════════
-#  2. Perplexity API — 실시간 이벤트 + 한국 수혜 분석
+#  2. Perplexity API - 실시간 이벤트 + 한국 수혜 분석
 # ═══════════════════════════════════════════════════
 
 def query_perplexity(prompt: str, model: str = "sonar") -> Optional[str]:

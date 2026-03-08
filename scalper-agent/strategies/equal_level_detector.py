@@ -89,7 +89,7 @@ def _cluster_prices(prices: list[tuple[float, str]], tol_pct: float) -> list[dic
     """근접 가격을 클러스터링하여 Equal Level 후보 추출
 
     Args:
-        prices: [(price, date_str), ...] — 정렬 불필요
+        prices: [(price, date_str), ...] - 정렬 불필요
         tol_pct: 허용 오차 비율 (0.3 → 0.3%)
 
     Returns:
@@ -697,4 +697,4 @@ if __name__ == "__main__":
             for eq in r["equal_highs"] + r["equal_lows"]
             if eq["strength"] == "strong"
         )
-        print(f"결과: {len(results)}종목 — EQ High:{total_highs} EQ Low:{total_lows} (strong:{strong_count})")
+        print(f"결과: {len(results)}종목 - EQ High:{total_highs} EQ Low:{total_lows} (strong:{strong_count})")

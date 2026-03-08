@@ -149,7 +149,7 @@ def fetch_stock_news(code: str, name: str) -> List[NewsItem]:
 
 
 def fetch_dart_disclosures(code: str, name: str) -> List[NewsItem]:
-    """DART 공시 — 전체 공시에서 해당 종목 필터링"""
+    """DART 공시 - 전체 공시에서 해당 종목 필터링"""
     items = []
     try:
         from data.event_detector import fetch_dart_disclosures as dart_fetch
@@ -466,7 +466,7 @@ if __name__ == "__main__":
         ]
 
     if not candidates:
-        print("후보 없음 — 테스트 종목 사용")
+        print("후보 없음 - 테스트 종목 사용")
         candidates = [
             {"code": "005930", "name": "삼성전자"},
             {"code": "000660", "name": "SK하이닉스"},

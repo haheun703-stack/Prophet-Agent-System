@@ -4,7 +4,7 @@
 3-Gate 필터 + 10개 사전감지 신호 조합
 "오르기 직전" 종목만 최대 5개 추출
 
-기존 14개 함수를 오케스트레이션 — 새 감지 로직 없음
+기존 14개 함수를 오케스트레이션 - 새 감지 로직 없음
 """
 import sys, os, logging, json, warnings
 warnings.filterwarnings("ignore")
@@ -86,7 +86,7 @@ class PreMoveCandidate:
 def detect_premove_signals(code: str, name: str,
                            supply_full: SupplyFull,
                            day_df: pd.DataFrame) -> List[dict]:
-    """10개 사전감지 신호 체크 — 기존 함수 재사용
+    """10개 사전감지 신호 체크 - 기존 함수 재사용
 
     Returns: [{type, description, points}]
     """
@@ -200,7 +200,7 @@ def calc_premove_score(signals: list, supply_full: SupplyFull) -> float:
 
 
 def scan_premove(top_n: int = 5, as_of: str = None) -> List[PreMoveCandidate]:
-    """사전감지 스캔 — 3-Gate 파이프라인
+    """사전감지 스캔 - 3-Gate 파이프라인
 
     Gate 1: 수급 퀄리티 (A+/A)
     Gate 2: 에너지 + 모멘텀 (EXPLOSIVE/HUNTABLE + ACC)

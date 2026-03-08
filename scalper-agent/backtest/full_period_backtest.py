@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-전기간 백테스트 (2025-03 ~ 현재) — STO 인사이트 적용 스캐너 v3
+전기간 백테스트 (2025-03 ~ 현재) - STO 인사이트 적용 스캐너 v3
 매일 장마감 시그널 스캔 → 다음날 시가 매수 → 1일/3일/5일 수익 측정
 """
 import sys, io, json, os
@@ -28,7 +28,7 @@ def compute_stochastic(close, high, low, k_period=14, slow_k=3, slow_d=3):
 
 def score_stock(close, high, low, volume, opn):
     """
-    스캐너 v3 스코어링 — STO 인사이트 적용
+    스캐너 v3 스코어링 - STO 인사이트 적용
     Returns: (score, signals_list, details_dict) or None
     """
     if len(close) < 65:
@@ -88,7 +88,7 @@ def score_stock(close, high, low, volume, opn):
             score += 10
             signals.append('STO골든_고구간')
 
-    # STO 스프레드 (K-D) — 최강 시그널
+    # STO 스프레드 (K-D) - 최강 시그널
     if spread > 20:
         score += 15
         signals.append(f'STO스프레드>20({spread:.0f})')
@@ -389,7 +389,7 @@ def run_full_backtest():
 
     # ═══════════════════════ REPORT ═══════════════════════
     print("\n" + "=" * 120)
-    print("  전기간 백테스트 — STO 인사이트 적용 스캐너 v3")
+    print("  전기간 백테스트 - STO 인사이트 적용 스캐너 v3")
     print(f"  기간: {all_dates[start_idx]} ~ {all_dates[-2]}")
     print("=" * 120)
     print(f"  총 매매: {len(all_trades):,}건, 일평균 {len(all_trades)/max(len(daily_results),1):.0f}종목 선정")

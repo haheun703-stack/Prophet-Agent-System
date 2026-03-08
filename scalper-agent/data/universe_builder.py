@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-유니버스 자동 빌더 — pykrx 기반
+유니버스 자동 빌더 - pykrx 기반
 ================================
 시총 기준으로 전종목 유니버스를 자동 생성하고
 수급 데이터(투자자/외인소진율/공매도)를 수집한다.
@@ -106,7 +106,7 @@ def build_universe(min_cap_억: int = 1000) -> dict:
     """
     from pykrx import stock
 
-    print(f"\n🔍 유니버스 빌드 — 시총 {min_cap_억:,}억원 이상")
+    print(f"\n🔍 유니버스 빌드 - 시총 {min_cap_억:,}억원 이상")
     print("=" * 60)
 
     date = _find_latest_trading_day()
@@ -137,7 +137,7 @@ def build_universe(min_cap_억: int = 1000) -> dict:
     # 섹터 매핑 (KRX 업종지수 기반)
     sector_map = _build_sector_mapping(date)
 
-    # 스팩/리츠 제거 (우선주는 포함 — 미래에셋증권우 같은 유동성 높은 우선주 포착용)
+    # 스팩/리츠 제거 (우선주는 포함 - 미래에셋증권우 같은 유동성 높은 우선주 포착용)
     exclude_keywords = ["스팩", "SPAC", "리츠"]
     universe = {}
 
@@ -221,7 +221,7 @@ SMALLCAP_FILE = DATA_DIR / "universe_smallcap.json"
 
 
 def build_smallcap_universe(min_cap_억: int = 30, max_cap_억: int = 500) -> dict:
-    """소형주 유니버스 빌드 (시총 300억~5000억) — 네이버 금융 기반
+    """소형주 유니버스 빌드 (시총 300억~5000억) - 네이버 금융 기반
 
     대형주 유니버스와 완전 분리. 급등주 모멘텀 스캐너 전용.
     pykrx 인코딩 이슈 우회를 위해 네이버 금융에서 시총/거래량 수집.
@@ -233,7 +233,7 @@ def build_smallcap_universe(min_cap_억: int = 30, max_cap_억: int = 500) -> di
     import requests
     from bs4 import BeautifulSoup
 
-    print(f"\n  소형주 유니버스 빌드 — 시총 {min_cap_억:,}~{max_cap_억:,}억원")
+    print(f"\n  소형주 유니버스 빌드 - 시총 {min_cap_억:,}~{max_cap_억:,}억원")
     print("=" * 60)
 
     hdrs = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
@@ -276,7 +276,7 @@ def build_smallcap_universe(min_cap_억: int = 30, max_cap_억: int = 500) -> di
                         continue
                     code = href.split("code=")[1][:6]
 
-                    # 시총(억) — 7번째 컬럼 (인덱스 6)
+                    # 시총(억) - 7번째 컬럼 (인덱스 6)
                     cap_text = tds[6].text.strip().replace(",", "")
                     if not cap_text or not cap_text.isdigit():
                         continue
@@ -289,7 +289,7 @@ def build_smallcap_universe(min_cap_억: int = 30, max_cap_억: int = 500) -> di
                         reached_min = True
                         break  # 이후 전부 작음 → 다음 시장으로
 
-                    # 거래량 — 10번째 컬럼 (인덱스 9)
+                    # 거래량 - 10번째 컬럼 (인덱스 9)
                     vol_text = tds[9].text.strip().replace(",", "")
                     vol = int(vol_text) if vol_text.isdigit() else 0
 
@@ -349,7 +349,7 @@ def collect_smallcap_daily(months: int = 6, force: bool = False):
     """소형주 일봉 수집 (6개월, 경량화)"""
     universe = load_smallcap_universe()
     if not universe:
-        print("소형주 유니버스 없음 — 먼저 build_smallcap_universe() 실행")
+        print("소형주 유니버스 없음 - 먼저 build_smallcap_universe() 실행")
         return 0
     codes = list(universe.keys())
     print(f"\n  소형주 일봉 수집: {len(codes)}종목 ({months}개월)")

@@ -6,11 +6,11 @@ VIX / S&P500 선물 / 유가 등을 2~3일 추세로 감시해서
 인버스/레버리지 ETF 진입 시그널을 생성.
 
 시그널 종류:
-  INVERSE_ENTRY  — 하락장 대비 인버스 진입 추천
-  LEVERAGE_ENTRY — 바닥 후 반등 레버리지 진입 추천
-  HOLD           — 관망
-  EXIT_INVERSE   — 인버스 청산 (반등 시작)
-  EXIT_LEVERAGE  — 레버리지 청산 (추가 하락)
+  INVERSE_ENTRY  - 하락장 대비 인버스 진입 추천
+  LEVERAGE_ENTRY - 바닥 후 반등 레버리지 진입 추천
+  HOLD           - 관망
+  EXIT_INVERSE   - 인버스 청산 (반등 시작)
+  EXIT_LEVERAGE  - 레버리지 청산 (추가 하락)
 
 사용법:
   python -m strategies.crisis_etf_signal
@@ -173,17 +173,17 @@ def generate_signal() -> CrisisSignal:
 
     판정 기준 (2~3일 전 감지 목표):
 
-    [INVERSE_ENTRY 조건] — 3개 중 2개 이상 충족
+    [INVERSE_ENTRY 조건] - 3개 중 2개 이상 충족
       1. VIX 3일 변화율 +30%+ (공포 급등 추세)
       2. S&P500 3일 -3%+ (글로벌 하락 추세)
       3. VIX 절대값 30+ (공포 구간 진입)
 
-    [LEVERAGE_ENTRY 조건] — 서킷브레이커 D+2~5 & 3개 중 2개 충족
+    [LEVERAGE_ENTRY 조건] - 서킷브레이커 D+2~5 & 3개 중 2개 충족
       1. VIX 전일 대비 하락 (-5%+)
       2. S&P500 전일 반등 (+0.5%+)
       3. KOSPI 전일 반등 (+1%+)
 
-    [EXIT_INVERSE] — 인버스 청산
+    [EXIT_INVERSE] - 인버스 청산
       1. VIX 전일 대비 -10%+ 급락
       2. S&P500 +1%+ 반등
     """

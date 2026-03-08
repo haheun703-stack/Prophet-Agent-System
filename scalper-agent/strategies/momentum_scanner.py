@@ -299,7 +299,7 @@ def _check_technicals(df: pd.DataFrame) -> tuple:
 # ═══════════════════════════════════════════════════
 
 def scan_momentum(top_n: int = 5) -> List[MomentumCandidate]:
-    """소형주 급등 포착 스캔 — 3-Phase 파이프라인
+    """소형주 급등 포착 스캔 - 3-Phase 파이프라인
 
     Phase 1: 거래량 폭발 (volume_scanner 패턴 재사용)
     Phase 2: 테마 매칭 (THEME_SUPPLY_CHAIN + 뉴스)
@@ -313,7 +313,7 @@ def scan_momentum(top_n: int = 5) -> List[MomentumCandidate]:
 
     universe = load_smallcap_universe()
     if not universe:
-        print("  소형주 유니버스 없음 — build_smallcap_universe() 먼저 실행")
+        print("  소형주 유니버스 없음 - build_smallcap_universe() 먼저 실행")
         return []
 
     # ETF/ETN/인버스/레버리지 제외

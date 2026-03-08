@@ -1,5 +1,5 @@
 """
-DrawdownShield v1.0 — 연패 기반 리스크 자동 축소
+DrawdownShield v1.0 - 연패 기반 리스크 자동 축소
 
 Prop Firm 철학:
   - 연패가 올 때 리스크를 줄여서 계좌를 보호

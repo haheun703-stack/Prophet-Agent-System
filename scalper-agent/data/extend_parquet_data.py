@@ -1,12 +1,12 @@
 """
-Parquet 통합 데이터 관리 — OHLCV + 수급 합본
+Parquet 통합 데이터 관리 - OHLCV + 수급 합본
 
 기존 CSV 분산 저장 → 종목별 parquet 1개로 통합
 pykrx 수급 빈값 → KIS API fallback 자동 교체
 
 구조:
-  data_store/raw/{code}.parquet      — 원본 (OHLCV + 수급)
-  data_store/processed/{code}.parquet — 가공 (기술지표 추가)
+  data_store/raw/{code}.parquet      - 원본 (OHLCV + 수급)
+  data_store/processed/{code}.parquet - 가공 (기술지표 추가)
 
 컬럼:
   시가, 고가, 저가, 종가, 거래량, 등락률           ← OHLCV (pykrx)
@@ -50,7 +50,7 @@ def _ensure_dirs():
 
 
 # ============================================================
-#  KIS API 세션 (싱글톤 — 전 종목 재사용)
+#  KIS API 세션 (싱글톤 - 전 종목 재사용)
 # ============================================================
 
 def _get_kis_session() -> Tuple[str, dict]:
@@ -85,7 +85,7 @@ def _get_kis_session() -> Tuple[str, dict]:
 # ============================================================
 
 def _fetch_investor_kis(base_url: str, headers: dict, code: str) -> Optional[pd.DataFrame]:
-    """KIS API FHKST01010900 — 30일치 투자자별 매매동향"""
+    """KIS API FHKST01010900 - 30일치 투자자별 매매동향"""
     try:
         h = headers.copy()
         h["tr_id"] = "FHKST01010900"
@@ -141,7 +141,7 @@ def _fetch_investor_kis(base_url: str, headers: dict, code: str) -> Optional[pd.
 # ============================================================
 
 def _fetch_foreign_rate_kis(base_url: str, headers: dict, code: str) -> Optional[dict]:
-    """KIS 현재가 API — 외국인 보유비율"""
+    """KIS 현재가 API - 외국인 보유비율"""
     try:
         h = headers.copy()
         h["tr_id"] = "FHKST01010100"
@@ -188,7 +188,7 @@ def migrate_csv_to_parquet(code: str) -> Optional[pd.DataFrame]:
     if len(df.columns) == 6:
         df.columns = expected
 
-    # 2) 투자자 수급 (flow CSV) — 있으면 merge
+    # 2) 투자자 수급 (flow CSV) - 있으면 merge
     inv_csv = FLOW_DIR / f"{code}_investor.csv"
     if inv_csv.exists():
         inv = pd.read_csv(inv_csv, index_col=0, parse_dates=True)
@@ -257,7 +257,7 @@ def fill_supply_from_kis(
                         if pd.isna(current) or current == 0:
                             df.at[date_idx, col] = row[col]
 
-    # 외국인 소진율 — 오늘 날짜 행에만 최신값 기록
+    # 외국인 소진율 - 오늘 날짜 행에만 최신값 기록
     frgn = _fetch_foreign_rate_kis(base_url, headers, code)
     if frgn:
         today = pd.Timestamp(datetime.now().strftime("%Y-%m-%d"))
@@ -348,7 +348,7 @@ def extend_parquet_all(
         codes = list(UNIVERSE.keys())
 
     print("=" * 60)
-    print(f"  Parquet 통합 빌드 — {len(codes)}종목")
+    print(f"  Parquet 통합 빌드 - {len(codes)}종목")
     print("=" * 60)
 
     # 캐시 확인: 이미 최신 parquet이면 skip
@@ -430,7 +430,7 @@ def extend_parquet_all(
 # ============================================================
 
 def load_daily(code: str) -> Optional[pd.DataFrame]:
-    """일봉 로드 — parquet 우선, CSV 폴백
+    """일봉 로드 - parquet 우선, CSV 폴백
 
     전체 시스템에서 일봉 데이터 읽을 때 이 함수 사용.
     processed parquet → raw parquet → daily CSV 순으로 시도.

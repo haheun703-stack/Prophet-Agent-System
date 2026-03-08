@@ -129,7 +129,7 @@ def _run_bot_once():
 
     # KIS API 연결 테스트
     if not verify_kis():
-        print("  KIS API 연결 실패 — 조회 기능만 사용 가능")
+        print("  KIS API 연결 실패 - 조회 기능만 사용 가능")
 
     # config 로드
     config = load_config()
@@ -139,7 +139,7 @@ def _run_bot_once():
 
     bot = BodyHunterBot(config)
     logger.info("텔레그램 봇 시작")
-    print("  텔레그램 봇 시작됨 — Ctrl+C로 종료")
+    print("  텔레그램 봇 시작됨 - Ctrl+C로 종료")
     print("  텔레그램에서 '도움말' 입력으로 명령어 확인\n")
 
     bot.run()  # 예외는 상위로 전파
@@ -193,7 +193,7 @@ def main():
             print(f"  재시작 중...\n")
 
     if restart_count >= MAX_RESTARTS:
-        print(f"\n  최대 재시작 횟수({MAX_RESTARTS}) 초과 — 봇 완전 종료")
+        print(f"\n  최대 재시작 횟수({MAX_RESTARTS}) 초과 - 봇 완전 종료")
         sys.exit(1)
 
 

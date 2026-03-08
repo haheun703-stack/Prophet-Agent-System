@@ -1,8 +1,8 @@
 """
-통합 수급 분석기 — 3D 수급 점수 + 4D 모멘텀 (디스크법)
+통합 수급 분석기 - 3D 수급 점수 + 4D 모멘텀 (디스크법)
 
 3D: 정적 수급 점수 (0~100) + 몸통/꼬리 판정
-4D: 동적 수급 모멘텀 — 디스크 부피의 팽창/수축 속도
+4D: 동적 수급 모멘텀 - 디스크 부피의 팽창/수축 속도
 
 핵심 원리 (디스크법 비유):
   3D = 수급 등급 (디스크의 반지름 = 현재 두께)
@@ -67,15 +67,15 @@ class SupplyScore:
     def grade(self) -> str:
         s = self.total_score
         if s >= 80:
-            return "A+"   # 몸통 진행 중 — 매수 적극
+            return "A+"   # 몸통 진행 중 - 매수 적극
         elif s >= 65:
             return "A"    # 몸통 가능성 높음
         elif s >= 50:
             return "B"    # 중립~약 상승
         elif s >= 35:
-            return "C"    # 주의 — 꼬리 가능
+            return "C"    # 주의 - 꼬리 가능
         else:
-            return "D"    # 꼬리/하락 — 회피
+            return "D"    # 꼬리/하락 - 회피
 
     @property
     def is_body(self) -> bool:
@@ -99,7 +99,7 @@ class SupplyScore:
 
 @dataclass
 class SupplyMomentum:
-    """4D 수급 모멘텀 — 디스크 부피의 변화율"""
+    """4D 수급 모멘텀 - 디스크 부피의 변화율"""
     code: str
     date: str
 
@@ -128,11 +128,11 @@ class SupplyMomentum:
     def signal(self) -> str:
         """4D 모멘텀 신호"""
         if self.momentum_score >= 70:
-            return "ACC"     # ACCELERATING — 디스크 팽창 중
+            return "ACC"     # ACCELERATING - 디스크 팽창 중
         elif self.momentum_score >= 40:
-            return "STEADY"  # STEADY — 유지
+            return "STEADY"  # STEADY - 유지
         else:
-            return "DEC"     # DECELERATING — 디스크 수축 중
+            return "DEC"     # DECELERATING - 디스크 수축 중
 
     def __str__(self):
         return (
@@ -146,7 +146,7 @@ class SupplyMomentum:
 
 @dataclass
 class SupplyStability:
-    """5D 사냥 에너지 — 디스크의 운동에너지 (5% 몸통 사냥 적합도)
+    """5D 사냥 에너지 - 디스크의 운동에너지 (5% 몸통 사냥 적합도)
 
     3D = 반지름 (등급), 4D = 팽창속도 (모멘텀), 5D = 에너지 (사냥 적합도)
 
@@ -170,21 +170,21 @@ class SupplyStability:
 
     @property
     def stability_score(self) -> float:
-        """총 에너지 점수 (0~100) — 호환성을 위해 이름 유지"""
+        """총 에너지 점수 (0~100) - 호환성을 위해 이름 유지"""
         return self.volatility_score + self.liquidity_score + self.intensity_score + self.alignment_score
 
     @property
     def stability_grade(self) -> str:
-        """에너지 등급 — 호환성을 위해 이름 유지"""
+        """에너지 등급 - 호환성을 위해 이름 유지"""
         s = self.stability_score
         if s >= 80:
-            return "EXPLOSIVE"   # 폭발적 — 5% 사냥 최적
+            return "EXPLOSIVE"   # 폭발적 - 5% 사냥 최적
         elif s >= 60:
-            return "HUNTABLE"    # 사냥감 — 추적 가치
+            return "HUNTABLE"    # 사냥감 - 추적 가치
         elif s >= 40:
             return "MODERATE"    # 보통
         else:
-            return "SLUGGISH"    # 둔감 — 움직임 부족
+            return "SLUGGISH"    # 둔감 - 움직임 부족
 
     def __str__(self):
         return (
@@ -198,7 +198,7 @@ class SupplyStability:
 
 @dataclass
 class TechHealth:
-    """6D 기술건강도 — 일봉 기술적 상태 (가격 기반 지표)
+    """6D 기술건강도 - 일봉 기술적 상태 (가격 기반 지표)
 
     3D~5D = 수급 기반, 6D = 가격/기술 기반
     MA정배열 + RSI구간 + MACD방향 + 볼린저위치 + 거래량추세 + MA교차
@@ -253,7 +253,7 @@ class TechHealth:
 
 @dataclass
 class BaselineLevels:
-    """기준선 — 6D 스캔의 가격 맥락 (WHERE to enter)"""
+    """기준선 - 6D 스캔의 가격 맥락 (WHERE to enter)"""
     close: float              # 현재 종가
     atr_14: float             # ATR(14) 원화
     atr_pct: float            # ATR% (close 대비)
@@ -402,7 +402,7 @@ class SupplyFull:
 
     @property
     def composite_score(self) -> float:
-        """6D 종합점수 — 전 차원 가중합산 (0~100)
+        """6D 종합점수 - 전 차원 가중합산 (0~100)
 
         3D 수급     30%  (기관/외인/공매도 정적 등급)
         4D 모멘텀   25%  (가속도/변곡/연속성)
@@ -421,7 +421,7 @@ class SupplyFull:
 
     @property
     def disk_thickness(self) -> str:
-        """디스크 부피 비유 — 두께 판정"""
+        """디스크 부피 비유 - 두께 판정"""
         a = self.action
         if a == "STRONG_BUY":
             return "THICK_EXPANDING"     # 두껍고 팽창 중
@@ -453,7 +453,7 @@ class SupplyFull:
 
 
 class SupplyAnalyzer:
-    """통합 수급 분석기 — 3D 정적 + 4D 동적"""
+    """통합 수급 분석기 - 3D 정적 + 4D 동적"""
 
     def __init__(self):
         self._cache_investor: Dict[str, pd.DataFrame] = {}
@@ -613,7 +613,7 @@ class SupplyAnalyzer:
         elif net_5d > 0:
             score += 3
 
-        # 소진율 변화 (0~8) — 증가 추세면 가산
+        # 소진율 변화 (0~8) - 증가 추세면 가산
         if for_df is not None and len(for_df) >= 5 and "소진율" in for_df.columns:
             exh_now = float(for_df["소진율"].iloc[-1])
             exh_5d_ago = float(for_df["소진율"].iloc[-5])
@@ -653,9 +653,9 @@ class SupplyAnalyzer:
         elif short_pct < 5.0:
             score += 2
 
-        # 공매도 감소 추세 (0~10) — 숏커버 = 상승 연료
+        # 공매도 감소 추세 (0~10) - 숏커버 = 상승 연료
         if short_chg < -0.5:
-            score += 10      # 급감 — 숏커버 진행
+            score += 10      # 급감 - 숏커버 진행
         elif short_chg < -0.1:
             score += 7
         elif short_chg < 0:
@@ -709,7 +709,7 @@ class SupplyAnalyzer:
     # ── 4D 모멘텀 분석 ─────────────────────────────────
 
     def analyze_4d(self, code: str, as_of: str = None) -> Optional[SupplyMomentum]:
-        """4D 수급 모멘텀 분석 — 디스크 부피의 변화율"""
+        """4D 수급 모멘텀 분석 - 디스크 부피의 변화율"""
         self._load(code)
 
         inv_df = self._cache_investor.get(code)
@@ -760,7 +760,7 @@ class SupplyAnalyzer:
             # 2차 미분 음수 = 상승→하락 전환 (SK텔레콤 패턴)
             inflection_score = max(-15, -(abs(exh_accel) * 50 + 5))
         else:
-            # 변곡 없음 — 방향에 따라 소폭 가감
+            # 변곡 없음 - 방향에 따라 소폭 가감
             if exh_delta > 0:
                 inflection_score = min(10, exh_delta * 20)
             else:
@@ -816,12 +816,12 @@ class SupplyAnalyzer:
         )
 
     # ============================================================
-    #  5D 안정성 분석 — 디스크 밀도
+    #  5D 안정성 분석 - 디스크 밀도
     # ============================================================
 
     def analyze_5d(self, code: str, as_of: str = None,
                    momentum: 'SupplyMomentum' = None) -> Optional[SupplyStability]:
-        """5D 사냥 에너지 분석 — 같은 BUY라도 사냥 적합도 차이를 구분
+        """5D 사냥 에너지 분석 - 같은 BUY라도 사냥 적합도 차이를 구분
 
         Args:
             momentum: 4D 모멘텀 결과 (신호 일치도 계산에 필요)
@@ -871,7 +871,7 @@ class SupplyAnalyzer:
         )
 
     def _score_volatility(self, day_df: pd.DataFrame) -> Tuple[float, float]:
-        """스윙 잠재력 — 20일 ATR% (높을수록 5% 사냥 가능 = 높은 점수!)"""
+        """스윙 잠재력 - 20일 ATR% (높을수록 5% 사냥 가능 = 높은 점수!)"""
         recent = day_df.iloc[-20:]
         high = recent["high"]
         low = recent["low"]
@@ -893,7 +893,7 @@ class SupplyAnalyzer:
 
         # 높을수록 좋음! (기존과 반대)
         if atr_pct > 6.0:
-            score = 25.0     # 에코프로급 — 하루 5%+ 가능
+            score = 25.0     # 에코프로급 - 하루 5%+ 가능
         elif atr_pct > 4.5:
             score = 20.0     # 중형주 변동성
         elif atr_pct > 3.5:
@@ -901,12 +901,12 @@ class SupplyAnalyzer:
         elif atr_pct > 2.0:
             score = 10.0     # 방어주 수준
         else:
-            score = 5.0      # 삼전/은행주 — 5%는 안 나옴
+            score = 5.0      # 삼전/은행주 - 5%는 안 나옴
 
         return score, atr_pct
 
     def _score_liquidity(self, day_df: pd.DataFrame) -> Tuple[float, float]:
-        """유동성 — 20일 평균 거래대금 (억원, 진입/퇴출 가능해야 함)"""
+        """유동성 - 20일 평균 거래대금 (억원, 진입/퇴출 가능해야 함)"""
         recent = day_df.iloc[-20:]
         trading_value = recent["close"] * recent["volume"]
         avg_value = float(trading_value.mean()) / 1e8  # 억원
@@ -926,7 +926,7 @@ class SupplyAnalyzer:
 
     def _score_intensity(self, inv_df: Optional[pd.DataFrame],
                          avg_trading_value: float) -> Tuple[float, float]:
-        """스마트머니 강도 — 기관5일순매수 / 거래대금 비율
+        """스마트머니 강도 - 기관5일순매수 / 거래대금 비율
 
         기관이 거래의 몇 %를 차지하는가 → 비율 높을수록 강한 의지
         """
@@ -959,7 +959,7 @@ class SupplyAnalyzer:
         return score, ratio if inst_5d > 0 else -ratio
 
     def _score_alignment(self, momentum: 'SupplyMomentum') -> Tuple[float, int]:
-        """신호 일치도 — 4D 구성요소가 몇 개나 같은 방향인가
+        """신호 일치도 - 4D 구성요소가 몇 개나 같은 방향인가
 
         기관매수 + 외인유입 + 개인매도(역지표) + 가속 = 4개 모두 일치 → 명확한 신호
         """
@@ -978,11 +978,11 @@ class SupplyAnalyzer:
         return score, count
 
     # ============================================================
-    #  6D 기술건강도 — 일봉 기술 지표 기반
+    #  6D 기술건강도 - 일봉 기술 지표 기반
     # ============================================================
 
     def analyze_6d(self, code: str, day_df: pd.DataFrame = None) -> Optional[TechHealth]:
-        """6D 기술건강도 — 일봉 OHLCV에서 기술 지표 계산
+        """6D 기술건강도 - 일봉 OHLCV에서 기술 지표 계산
 
         MA정배열(25) + RSI(20) + MACD(20) + 볼린저(15) + 거래량(10) + MA교차(10) = 100점
         """
@@ -1102,7 +1102,7 @@ class SupplyAnalyzer:
         )
 
     # ============================================================
-    #  기준선 (BaselineLevels) — 진입/무효화/목표가
+    #  기준선 (BaselineLevels) - 진입/무효화/목표가
     # ============================================================
 
     def _calc_inst_cost(self, code: str) -> float:
@@ -1147,7 +1147,7 @@ class SupplyAnalyzer:
             return 0.0
 
     def calc_baseline(self, code: str, as_of: str = None) -> Optional[BaselineLevels]:
-        """기준선 계산 — ATR + 지지/저항 + 매집원가"""
+        """기준선 계산 - ATR + 지지/저항 + 매집원가"""
         self._load(code)
         day_df = self._cache_daily.get(code)
         if day_df is None or len(day_df) < 20:
@@ -1202,7 +1202,7 @@ class SupplyAnalyzer:
         # 3. 기관 매집원가
         inst_cost = self._calc_inst_cost(code)
 
-        # 4. 무효화선 결정 — 승률 기반 우선순위 (백테스트 검증)
+        # 4. 무효화선 결정 - 승률 기반 우선순위 (백테스트 검증)
         #    SUPPORT(67%) > INST_COST(40%) > ATR(29%)
         #    단, 지지선이 -10% 이상 멀면 건너뛰고 INST_COST 사용
         atr_sl = close - atr_val * 1.5  # ATR 승수 확대 (0.8→1.5)
@@ -1292,7 +1292,7 @@ class SupplyAnalyzer:
         except Exception:
             pass
 
-        # 뉴스 가산점 (개별 분석 시만 — 배치 스캔에서는 느려서 생략)
+        # 뉴스 가산점 (개별 분석 시만 - 배치 스캔에서는 느려서 생략)
         news_score = 0.0
         news_summary = ""
         if with_news:

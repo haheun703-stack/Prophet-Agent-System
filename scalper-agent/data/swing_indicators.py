@@ -57,21 +57,21 @@ def check_rsi_zone(rsi_value: float, trend: str) -> dict:
     """추세 내 RSI 레벨 시프트 → zone, size_pct, msg"""
     if trend == "BULLISH":
         if 40 <= rsi_value <= 65:
-            return {"zone": "OPTIMAL", "size_pct": 1.0, "msg": f"RSI {rsi_value:.0f} — 추세 내 적정"}
+            return {"zone": "OPTIMAL", "size_pct": 1.0, "msg": f"RSI {rsi_value:.0f} - 추세 내 적정"}
         elif 65 < rsi_value <= 75:
-            return {"zone": "CAUTION", "size_pct": 0.5, "msg": f"RSI {rsi_value:.0f} — 과열 주의, 절반만"}
+            return {"zone": "CAUTION", "size_pct": 0.5, "msg": f"RSI {rsi_value:.0f} - 과열 주의, 절반만"}
         elif rsi_value > 75:
-            return {"zone": "OVERHEAT", "size_pct": 0.0, "msg": f"RSI {rsi_value:.0f} — 과열! 진입 금지"}
+            return {"zone": "OVERHEAT", "size_pct": 0.0, "msg": f"RSI {rsi_value:.0f} - 과열! 진입 금지"}
         else:
-            return {"zone": "DEEP_DIP", "size_pct": 0.8, "msg": f"RSI {rsi_value:.0f} — 깊은 눌림"}
+            return {"zone": "DEEP_DIP", "size_pct": 0.8, "msg": f"RSI {rsi_value:.0f} - 깊은 눌림"}
     elif trend == "BEARISH":
         if 35 <= rsi_value <= 60:
-            return {"zone": "OPTIMAL", "size_pct": 1.0, "msg": f"RSI {rsi_value:.0f} — 매도 적정"}
+            return {"zone": "OPTIMAL", "size_pct": 1.0, "msg": f"RSI {rsi_value:.0f} - 매도 적정"}
         elif rsi_value < 30:
-            return {"zone": "OVERSOLD", "size_pct": 0.0, "msg": f"RSI {rsi_value:.0f} — 과매도"}
+            return {"zone": "OVERSOLD", "size_pct": 0.0, "msg": f"RSI {rsi_value:.0f} - 과매도"}
         else:
-            return {"zone": "CAUTION", "size_pct": 0.5, "msg": f"RSI {rsi_value:.0f} — 주의"}
-    return {"zone": "SIDEWAYS", "size_pct": 0.0, "msg": f"RSI {rsi_value:.0f} — 횡보, 대기"}
+            return {"zone": "CAUTION", "size_pct": 0.5, "msg": f"RSI {rsi_value:.0f} - 주의"}
+    return {"zone": "SIDEWAYS", "size_pct": 0.0, "msg": f"RSI {rsi_value:.0f} - 횡보, 대기"}
 
 
 # ═══════════════════════════════════════════════════
@@ -94,10 +94,10 @@ def check_obv_trend(obv: pd.Series, lookback: int = 10) -> dict:
     obv_range = recent.max() - recent.min()
     norm_slope = (slope / obv_range * lookback) if obv_range > 0 else 0
     if norm_slope > 0.15:
-        return {"trend": "UP", "veto": False, "msg": "OBV 상승 — 돈 유입 확인"}
+        return {"trend": "UP", "veto": False, "msg": "OBV 상승 - 돈 유입 확인"}
     elif norm_slope < -0.15:
-        return {"trend": "DOWN", "veto": True, "msg": "OBV 하락 — 돈 빠지는 중 → 진입 금지"}
-    return {"trend": "FLAT", "veto": False, "msg": "OBV 횡보 — 관망"}
+        return {"trend": "DOWN", "veto": True, "msg": "OBV 하락 - 돈 빠지는 중 → 진입 금지"}
+    return {"trend": "FLAT", "veto": False, "msg": "OBV 횡보 - 관망"}
 
 
 def check_obv_divergence(close: pd.Series, obv: pd.Series, lookback: int = 20) -> Optional[str]:
@@ -157,7 +157,7 @@ def check_histogram_trigger(hist_df: pd.DataFrame, lookback: int = 5) -> dict:
 
     if color_change_idx is None:
         return {"triggered": False, "direction": None, "strength": None,
-                "msg": f"색상 전환 없음 — {current['hist_color']} 유지"}
+                "msg": f"색상 전환 없음 - {current['hist_color']} 유지"}
 
     # 전환 후 큰 막대 확인
     post_change = recent.iloc[color_change_idx:]
@@ -202,7 +202,7 @@ def calc_composite_signal(
     if obv_result["veto"]:
         return {
             "signal": "NO_ENTRY", "score": 0, "position_size": 0.0,
-            "reasons": [obv_result["msg"], "OBV 거부 — 진입 불가"],
+            "reasons": [obv_result["msg"], "OBV 거부 - 진입 불가"],
         }
 
     score += 30 if obv_result["trend"] == "UP" else 15
@@ -210,7 +210,7 @@ def calc_composite_signal(
 
     if obv_divergence == "BEARISH_DIV":
         score -= 15
-        reasons.append("OBV 약세 다이버전스 — 이탈 경고")
+        reasons.append("OBV 약세 다이버전스 - 이탈 경고")
 
     # STEP 2: EMA + RSI
     if ema_trend == "BULLISH" and rsi_result["zone"] in ("OPTIMAL", "DEEP_DIP"):
@@ -393,7 +393,7 @@ def check_entry_filter(code: str, name: str = "") -> dict:
         df = pykrx_stock.get_market_ohlcv(start, end, code)
 
         if df is None or len(df) < 30:
-            result["reason"] = "데이터 부족 — 필터 통과 (데이터 없음)"
+            result["reason"] = "데이터 부족 - 필터 통과 (데이터 없음)"
             result["checks"].append("DATA_INSUFFICIENT")
             return result
 
@@ -478,10 +478,10 @@ def check_entry_filter(code: str, name: str = "") -> dict:
         label = name or code
         icon = "PASS" if result["pass"] else "REJECT"
         mult = f"{result['size_mult']:.0%}"
-        print(f"  진입필터 {label}: [{icon}] {mult} — {result['reason']}")
+        print(f"  진입필터 {label}: [{icon}] {mult} - {result['reason']}")
 
     except Exception as e:
-        result["reason"] = f"필터 오류: {e} — 기본 통과"
+        result["reason"] = f"필터 오류: {e} - 기본 통과"
         result["checks"] = [f"ERROR: {e}"]
 
     return result
