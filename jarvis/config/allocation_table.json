@@ -5,7 +5,7 @@
 
   "PANIC": {
     "severity": 5,
-    "v10_swing": 0,
+    "bh_swing": 0,
     "group_etf": 0,
     "gold_etf": 25,
     "inverse_etf": 15,
@@ -15,7 +15,7 @@
   },
   "FEAR_EXTREME": {
     "severity": 4,
-    "v10_swing": 15,
+    "bh_swing": 15,
     "group_etf": 10,
     "gold_etf": 20,
     "inverse_etf": 10,
@@ -25,7 +25,7 @@
   },
   "RISK_OFF": {
     "severity": 3,
-    "v10_swing": 30,
+    "bh_swing": 30,
     "group_etf": 20,
     "gold_etf": 15,
     "inverse_etf": 5,
@@ -35,7 +35,7 @@
   },
   "CAUTIOUS": {
     "severity": 2,
-    "v10_swing": 45,
+    "bh_swing": 45,
     "group_etf": 30,
     "gold_etf": 5,
     "inverse_etf": 0,
@@ -45,7 +45,7 @@
   },
   "NEUTRAL": {
     "severity": 1,
-    "v10_swing": 55,
+    "bh_swing": 55,
     "group_etf": 30,
     "gold_etf": 5,
     "inverse_etf": 0,
@@ -55,7 +55,7 @@
   },
   "RISK_ON": {
     "severity": 0,
-    "v10_swing": 45,
+    "bh_swing": 45,
     "group_etf": 25,
     "gold_etf": 0,
     "inverse_etf": 0,
@@ -65,7 +65,7 @@
   },
   "EUPHORIA": {
     "severity": 2,
-    "v10_swing": 30,
+    "bh_swing": 30,
     "group_etf": 15,
     "gold_etf": 10,
     "inverse_etf": 10,

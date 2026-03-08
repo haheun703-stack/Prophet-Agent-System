@@ -4,7 +4,7 @@ JARVIS BRAIN — 자본 배분 엔진 (Phase 1: 지시서만)
 ═══════════════════════════════════════════════════
 NIGHTWATCH 매크로 레짐 판정 → 전략별 자본 배분 비율 계산 → JSON 저장
 
-실매매 실행 안 함. 각 전략봇(v10.3, 그룹ETF, 단타봇)이
+실매매 실행 안 함. 각 전략봇(Body Hunter 스윙, 그룹ETF, 소형주)이
 brain_allocation.json을 읽어서 자기 배분 한도를 조절하는 구조.
 
 사용:
@@ -39,7 +39,7 @@ NIGHTWATCH_REPORT_PATH = PROJECT_ROOT / "scalper-agent" / "data_store" / "nightw
 
 # ── 전략 키 (배분 대상) ──────────────────────────
 STRATEGY_KEYS = [
-    "v10_swing",     # v10.3 84종목 스윙
+    "bh_swing",     # Body Hunter 스윙
     "group_etf",     # 그룹ETF 순환매 (현대차3+삼성4)
     "gold_etf",      # 132030 KODEX 골드선물
     "inverse_etf",   # 252670 KODEX 200선물인버스2X
@@ -48,7 +48,7 @@ STRATEGY_KEYS = [
 ]
 
 STRATEGY_LABELS = {
-    "v10_swing":    "v10.3 스윙",
+    "bh_swing":    "BH 스윙",
     "group_etf":    "그룹ETF",
     "gold_etf":     "금 ETF",
     "inverse_etf":  "인버스",
@@ -571,7 +571,7 @@ def _apply_sensor_adjustments(
     if is_2d_imminent:
         # ── 교차 신호 활성 → 2D/3D 개별 조정을 교차 룰로 대체 ──
         if stress_rank >= 3:  # CRITICAL
-            adjusted["v10_swing"] = max(0, adjusted.get("v10_swing", 0) - 25)
+            adjusted["bh_swing"] = max(0, adjusted.get("bh_swing", 0) - 25)
             adjusted["inverse_etf"] = adjusted.get("inverse_etf", 0) + 10
             adjusted["cash"] = adjusted.get("cash", 0) + 20
             cross_signal = {
@@ -582,7 +582,7 @@ def _apply_sensor_adjustments(
             }
             notes.append("🚨 교차신호 최대방어: 2D+3D CRITICAL → 스윙 -25%p")
         elif stress_rank >= 1:  # ELEVATED or HIGH
-            adjusted["v10_swing"] = max(0, adjusted.get("v10_swing", 0) - 15)
+            adjusted["bh_swing"] = max(0, adjusted.get("bh_swing", 0) - 15)
             adjusted["inverse_etf"] = adjusted.get("inverse_etf", 0) + 5
             adjusted["cash"] = adjusted.get("cash", 0) + 12
             cross_signal = {
@@ -611,7 +611,7 @@ def _apply_sensor_adjustments(
         swing_reduce = stress_adj.get("swing_reduce_pct", 0)
 
         if swing_reduce > 0:
-            adjusted["v10_swing"] = max(0, adjusted.get("v10_swing", 0) - swing_reduce)
+            adjusted["bh_swing"] = max(0, adjusted.get("bh_swing", 0) - swing_reduce)
             adjusted["inverse_etf"] = adjusted.get("inverse_etf", 0) + inverse_add
             adjusted["cash"] = adjusted.get("cash", 0) + cash_add + (swing_reduce - inverse_add)
             notes.append(f"3D 스트레스({stress_info.get('stress_level', '')}): "
@@ -623,7 +623,7 @@ def _apply_sensor_adjustments(
         inv_shift = leading_adj.get("inverse_shift_pct", 0)
 
         if cash_shift != 0:
-            adjusted["v10_swing"] = max(0, adjusted.get("v10_swing", 0) - cash_shift)
+            adjusted["bh_swing"] = max(0, adjusted.get("bh_swing", 0) - cash_shift)
             adjusted["cash"] = adjusted.get("cash", 0) + cash_shift
             if inv_shift != 0:
                 adjusted["inverse_etf"] = max(0, adjusted.get("inverse_etf", 0) + inv_shift)
@@ -638,7 +638,7 @@ def _apply_sensor_adjustments(
     cot_swing = cot_adj.get("swing_reduce_pct", 0)
 
     if cot_swing != 0:
-        adjusted["v10_swing"] = max(0, adjusted.get("v10_swing", 0) + cot_swing)
+        adjusted["bh_swing"] = max(0, adjusted.get("bh_swing", 0) + cot_swing)
         if cot_cash != 0:
             adjusted["cash"] = adjusted.get("cash", 0) + cot_cash
         if cot_inv != 0:
@@ -653,7 +653,7 @@ def _apply_sensor_adjustments(
     liq_inv = liq_adj.get("inverse_shift_pct", 0)
 
     if liq_swing != 0 or liq_cash != 0:
-        adjusted["v10_swing"] = max(0, adjusted.get("v10_swing", 0) + liq_swing)
+        adjusted["bh_swing"] = max(0, adjusted.get("bh_swing", 0) + liq_swing)
         if liq_cash != 0:
             adjusted["cash"] = adjusted.get("cash", 0) + liq_cash
         if liq_inv != 0:
@@ -833,7 +833,7 @@ def run_brain(
 
     logger.info(
         f"[BRAIN] 완료: {result['effective_regime']} | "
-        f"스윙 {result['allocation_pct']['v10_swing']}% "
+        f"스윙 {result['allocation_pct']['bh_swing']}% "
         f"금 {result['allocation_pct']['gold_etf']}% "
         f"인버스 {result['allocation_pct']['inverse_etf']}% "
         f"현금 {result['allocation_pct']['cash']}%"

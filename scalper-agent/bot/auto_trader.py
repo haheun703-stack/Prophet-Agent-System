@@ -522,7 +522,7 @@ class AutoTrader:
         brain_alloc = self._load_brain_allocation()
         brain_cap = 0
         if brain_alloc:
-            brain_cap = brain_alloc.get("allocation_krw", {}).get("v10_swing", 0)
+            brain_cap = brain_alloc.get("allocation_krw", {}).get("bh_swing", 0)
             if brain_cap > 0 and usable_cash > brain_cap:
                 old_usable = usable_cash
                 usable_cash = brain_cap

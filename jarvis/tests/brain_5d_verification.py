@@ -565,7 +565,7 @@ def test_3_3_all_worst_final_allocation():
     )
 
     total = sum(adjusted.values())
-    swing = adjusted.get("v10_swing", 0)
+    swing = adjusted.get("bh_swing", 0)
     cash = adjusted.get("cash", 0)
 
     record("검증3_통합", "전차원 최악 → 합계 100%",
