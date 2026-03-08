@@ -169,8 +169,10 @@ class VWAPMonitor:
         self.poll_sec = poll_sec
         self.trackers: dict[str, StockTracker] = {}
         self.trader = None
+        self.advisor = None
         self.current_phase = "PREPARE"
         self.phase_alerted = set()  # 페이즈 전환 알림 중복 방지
+        self.last_advisor_run = None  # 마지막 어드바이저 실행 시간
 
     # ── 종목 로드 ──
     def load_stocks(self):
@@ -224,6 +226,13 @@ class VWAPMonitor:
         self.trader = KISTrader()
         logger.info("KIS API 연결 완료")
 
+    # ── 어드바이저 초기화 ──
+    def init_advisor(self):
+        """포지션 어드바이저 초기화"""
+        from strategies.position_advisor import PositionAdvisor
+        self.advisor = PositionAdvisor()
+        logger.info("포지션 어드바이저 연결 완료")
+
     # ── 페이즈 판단 ──
     def get_phase(self) -> str:
         now = datetime.now().strftime("%H:%M")
@@ -256,12 +265,19 @@ class VWAPMonitor:
 
     # ── 알림 체크 ──
     def check_alerts(self):
-        """진입 조건 알림"""
+        """진입 조건 알림 + 어드바이저 크로스체크"""
         phase = self.current_phase
         if phase in ("PREPARE", "OBSERVE", "DONE", "WAIT"):
             return  # 관찰 모드에선 알림 X
 
         alerts = []
+
+        # 어드바이저 캐시 (진입 알림 시 크로스체크용 — 5분 이내 결과 재사용)
+        adv_cache = {}
+        if self.advisor and self.last_advisor_run:
+            elapsed = (datetime.now() - self.last_advisor_run).total_seconds()
+            if elapsed < 300:  # 5분 이내면 새로 돌리지 않음
+                adv_cache = {}  # 캐시 없으면 필요 시 개별 조회
 
         for code, tk in self.trackers.items():
             cp = tk.prev_price
@@ -270,22 +286,46 @@ class VWAPMonitor:
 
             # ── 1) 이상적 진입가 도달 (±1.5%) ──
             if abs(tk.entry_gap_pct) <= 1.5 and tk.can_alert("ENTRY_IDEAL", 30):
+                # 어드바이저 크로스체크
+                adv_note = ""
+                if self.advisor:
+                    try:
+                        ar = self.advisor.analyze(code, tk.name, tk.vwap, cp)
+                        adv_note = f"\n방향: {ar.action} (스코어{ar.score:+.0f})"
+                        if ar.action in ("SELL", "STRONG_SELL"):
+                            adv_note += " !! 방향 역행 - 진입 보류 권장"
+                    except Exception:
+                        pass
+
                 alerts.append(
                     f"** 이상적진입 도달 **\n"
                     f"{tk.name}({code}) [{tk.tier}]\n"
                     f"현재 {cp:,} | 진입 {tk.entry:,} ({tk.entry_gap_pct:+.1f}%)\n"
                     f"SL {tk.sl:,} | TP {tk.tp1:,}\n"
                     f"VWAP {tk.vwap:,.0f} (vs VWAP {tk.vwap_gap_pct:+.1f}%)"
+                    f"{adv_note}"
                 )
 
             # ── 2) 공격적 진입가 도달 (±1.5%) ──
             elif abs(tk.entry_agg_gap_pct) <= 1.5 and tk.can_alert("ENTRY_AGG", 30):
+                # 어드바이저 크로스체크
+                adv_note = ""
+                if self.advisor:
+                    try:
+                        ar = self.advisor.analyze(code, tk.name, tk.vwap, cp)
+                        adv_note = f"\n방향: {ar.action} (스코어{ar.score:+.0f})"
+                        if ar.action in ("SELL", "STRONG_SELL"):
+                            adv_note += " !! 방향 역행 - 진입 보류 권장"
+                    except Exception:
+                        pass
+
                 alerts.append(
                     f"* 공격적진입 근접 *\n"
                     f"{tk.name}({code}) [{tk.tier}]\n"
                     f"현재 {cp:,} | 공격적 {tk.entry_agg:,} ({tk.entry_agg_gap_pct:+.1f}%)\n"
                     f"SL {tk.sl:,} | TP {tk.tp1:,}\n"
                     f"VWAP {tk.vwap:,.0f}"
+                    f"{adv_note}"
                 )
 
             # ── 3) VWAP 하향돌파 (풀백 시그널) ──
@@ -334,7 +374,7 @@ class VWAPMonitor:
 
     # ── 페이즈 전환 알림 ──
     def notify_phase_change(self, new_phase):
-        """페이즈 전환 시 현황 요약"""
+        """페이즈 전환 시 현황 요약 + 어드바이저 방향"""
         if new_phase in self.phase_alerted:
             return
         self.phase_alerted.add(new_phase)
@@ -356,22 +396,81 @@ class VWAPMonitor:
             lines.append(f"모니터링: {len(self.trackers)}종목")
             lines.append("VWAP 형성 중... 알림은 9:30부터")
         else:
+            # 어드바이저 분석 (CALM 이후 페이즈에서)
+            advisor_results = self.run_advisor_analysis()
+
             lines.append("-- 진입가 근접 순위 --")
             for code, tk, gap in near_entry[:8]:
                 src = "릴" if tk.source == "war_relay" else "파"
                 vwap_str = f"V{tk.vwap_gap_pct:+.1f}%" if tk.vwap > 0 else ""
+                # 어드바이저 태그
+                adv_tag = ""
+                ar = advisor_results.get(code)
+                if ar:
+                    action_short = {"STRONG_BUY": "++", "BUY": "+", "HOLD": "=", "SELL": "-", "STRONG_SELL": "--"}
+                    adv_tag = f" [{action_short.get(ar.action, '?')}{ar.score:+.0f}]"
                 lines.append(
                     f"[{src}] {tk.name} {tk.prev_price:,}"
                     f" | 진입까지 {tk.entry_gap_pct:+.1f}%"
-                    f" | 등락 {tk.change_pct:+.1f}% {vwap_str}"
+                    f" | 등락 {tk.change_pct:+.1f}% {vwap_str}{adv_tag}"
                 )
+
+            # 페이즈별 어드바이저 전략 가이드
+            if new_phase == "CALM" and advisor_results:
+                lines.append("")
+                lines.append("-- 소강구간 전략 --")
+                for code, r in advisor_results.items():
+                    if r.action in ("STRONG_BUY", "BUY"):
+                        tk = self.trackers.get(code)
+                        if tk and abs(tk.entry_gap_pct) < 5:
+                            lines.append(f"  주목: {r.name} 진입{tk.entry_gap_pct:+.1f}% + 방향{r.score:+.0f}")
+
+            elif new_phase == "LUNCH" and advisor_results:
+                lines.append("")
+                lines.append("-- 점심장 최적진입 후보 --")
+                buy_ready = [
+                    (code, advisor_results[code])
+                    for code in advisor_results
+                    if advisor_results[code].score > 0 and code in self.trackers
+                ]
+                buy_ready.sort(key=lambda x: x[1].score, reverse=True)
+                for code, r in buy_ready[:5]:
+                    tk = self.trackers[code]
+                    lines.append(f"  {r.name} 스코어{r.score:+.0f} 진입{tk.entry_gap_pct:+.1f}% ({r.confidence})")
 
         tg_send("\n".join(lines))
 
+    # ── 어드바이저 분석 실행 ──
+    def run_advisor_analysis(self) -> dict:
+        """전 종목 어드바이저 분석 → {code: AdvisorResult}"""
+        if not self.advisor:
+            return {}
+
+        results = {}
+        for code, tk in self.trackers.items():
+            if tk.prev_price <= 0:
+                continue
+            try:
+                r = self.advisor.analyze(
+                    code=code,
+                    name=tk.name,
+                    intraday_vwap=tk.vwap,
+                    intraday_price=tk.prev_price,
+                )
+                results[code] = r
+            except Exception as e:
+                logger.error(f"어드바이저 분석 실패 {code}: {e}")
+
+        self.last_advisor_run = datetime.now()
+        return results
+
     # ── 정기 요약 (30분마다) ──
     def send_summary(self):
-        """전 종목 현황 요약"""
+        """전 종목 현황 요약 + 어드바이저 방향 판단"""
         lines = [f"=== 현황 요약 {datetime.now().strftime('%H:%M')} ===", ""]
+
+        # 어드바이저 분석 실행
+        advisor_results = self.run_advisor_analysis()
 
         # 그룹별 정리
         war_relay = []
@@ -385,31 +484,53 @@ class VWAPMonitor:
             else:
                 pipeline.append(item)
 
+        def _format_stock(code, tk, advisor_results):
+            arrow = "v" if tk.change_pct < 0 else "^"
+            vw = f"V{tk.vwap_gap_pct:+.1f}%" if tk.vwap > 0 else ""
+            line = (
+                f" {tk.name} {tk.prev_price:,}"
+                f" ({tk.change_pct:+.1f}%{arrow})"
+                f" 진입 {tk.entry_gap_pct:+.1f}% {vw}"
+            )
+            # 어드바이저 방향 태그 추가
+            ar = advisor_results.get(code)
+            if ar:
+                action_tag = {"STRONG_BUY": "++", "BUY": "+", "HOLD": "=", "SELL": "-", "STRONG_SELL": "--"}
+                tag = action_tag.get(ar.action, "?")
+                line += f" [{tag}{ar.score:+.0f}]"
+            return line
+
         if war_relay:
             lines.append("-- 전쟁릴레이 --")
-            # 진입가 근접순 정렬
             war_relay.sort(key=lambda x: abs(x[1].entry_gap_pct))
             for code, tk in war_relay:
-                arrow = "v" if tk.change_pct < 0 else "^"
-                vw = f"V{tk.vwap_gap_pct:+.1f}%" if tk.vwap > 0 else ""
-                lines.append(
-                    f" {tk.name} {tk.prev_price:,}"
-                    f" ({tk.change_pct:+.1f}%{arrow})"
-                    f" 진입 {tk.entry_gap_pct:+.1f}% {vw}"
-                )
+                lines.append(_format_stock(code, tk, advisor_results))
 
         if pipeline:
             lines.append("")
             lines.append("-- 파이프라인 --")
             pipeline.sort(key=lambda x: abs(x[1].entry_gap_pct))
             for code, tk in pipeline:
-                arrow = "v" if tk.change_pct < 0 else "^"
-                vw = f"V{tk.vwap_gap_pct:+.1f}%" if tk.vwap > 0 else ""
-                lines.append(
-                    f" {tk.name} {tk.prev_price:,}"
-                    f" ({tk.change_pct:+.1f}%{arrow})"
-                    f" 진입 {tk.entry_gap_pct:+.1f}% {vw}"
-                )
+                lines.append(_format_stock(code, tk, advisor_results))
+
+        # 어드바이저 TOP 매수/매도 하이라이트
+        if advisor_results:
+            buy_candidates = [
+                (code, r) for code, r in advisor_results.items()
+                if r.action in ("STRONG_BUY", "BUY")
+            ]
+            sell_candidates = [
+                (code, r) for code, r in advisor_results.items()
+                if r.action in ("STRONG_SELL", "SELL")
+            ]
+
+            if buy_candidates or sell_candidates:
+                lines.append("")
+                lines.append("-- 어드바이저 시그널 --")
+                for code, r in sorted(buy_candidates, key=lambda x: x[1].score, reverse=True):
+                    lines.append(f" [매수] {r.name} 스코어{r.score:+.0f} ({r.confidence}) {r.reasons[0] if r.reasons else ''}")
+                for code, r in sorted(sell_candidates, key=lambda x: x[1].score):
+                    lines.append(f" [매도] {r.name} 스코어{r.score:+.0f} ({r.confidence}) {r.reasons[0] if r.reasons else ''}")
 
         tg_send("\n".join(lines))
 
@@ -447,10 +568,30 @@ class VWAPMonitor:
                 lines.append(f"  VWAP {tk.vwap:,.0f} | 최종 vs VWAP {tk.vwap_gap_pct:+.1f}%")
             lines.append("")
 
+        # 어드바이저 종합 판단
+        advisor_results = self.run_advisor_analysis()
+        if advisor_results:
+            lines.append("-- 어드바이저 종합 (내일 방향) --")
+            sorted_ar = sorted(advisor_results.values(), key=lambda r: r.score, reverse=True)
+            for r in sorted_ar:
+                action_kr = {"STRONG_BUY": "적극매수", "BUY": "매수검토", "HOLD": "관망", "SELL": "매도검토", "STRONG_SELL": "매도"}
+                a = action_kr.get(r.action, r.action)
+                lines.append(f"  {r.name} -> {a} ({r.score:+.0f}, {r.confidence})")
+            lines.append("")
+
         lines.append("-- 내일 전략 --")
         lines.append("* 오늘 미도달 종목은 진입가 유지")
         lines.append("* 터치 후 반등 종목은 내일 추격 검토")
         lines.append("* VWAP 하회 마감 종목은 추가 하락 주의")
+
+        # 어드바이저 기반 추가 전략
+        if advisor_results:
+            strong_buys = [r for r in advisor_results.values() if r.action == "STRONG_BUY"]
+            strong_sells = [r for r in advisor_results.values() if r.action in ("STRONG_SELL", "SELL")]
+            if strong_buys:
+                lines.append(f"* 매수 우선: {', '.join(r.name for r in strong_buys)}")
+            if strong_sells:
+                lines.append(f"* 진입 보류: {', '.join(r.name for r in strong_sells)}")
 
         tg_send("\n".join(lines))
 
@@ -469,6 +610,12 @@ class VWAPMonitor:
 
         # 2. KIS 연결
         self.init_kis()
+
+        # 2.5. 어드바이저 연결
+        try:
+            self.init_advisor()
+        except Exception as e:
+            logger.warning(f"어드바이저 초기화 실패 (VWAP 전용 모드): {e}")
 
         # 3. 시작 알림
         tg_send(
