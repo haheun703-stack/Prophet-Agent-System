@@ -1043,7 +1043,7 @@ class KISTrader:
         name = CODE_TO_NAME.get(code, code)
         est_cost = qty * current_price
 
-        logger.info(f"안전 매수: {name}({code}) {qty}주 @ {current_price:,}원 ≈ {est_cost:,}원")
+        logger.info(f"안전 매수: {name}({code}) {qty}주 @ {current_price:,}원 ~{est_cost:,}원")
 
         # 7. 스마트 지정가 매수 (시장가 대비 0.2~0.5% 절약)
         return self.smart_buy(code, qty)
