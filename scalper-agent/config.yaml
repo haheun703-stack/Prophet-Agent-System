@@ -219,7 +219,7 @@ output:
 
 # --- Telegram Bot (Body Hunter v4 봇 — 동적 목표가) ---
 bot:
-  auto_trade: true              # 자동매매 ON (2026-03-03)
+  auto_trade: false             # 자동매매 OFF (2026-03-09) — 관찰 모드
   trade_mode: "swing"           # "swing" = 동적 목표가 스윙 | "day" = 당일 청산
   scan_interval_sec: 30         # 포지션 감시 주기 (초)
   morning_scan_time: "08:55"    # 장전 5분 → 추천종목 로드 + 진입감시 등록 (09:00 전 완료)
