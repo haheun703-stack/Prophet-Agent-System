@@ -1757,24 +1757,11 @@ class BodyHunterBot:
                 await app.bot.send_message(chat_id=chat_id, text=text)
 
             self.auto_trader.start(_send_alert)
-            bot_conf = self.config.get("bot", {})
-            startup_msg = (
-                "🔮 Body Hunter v4 봇 시작\n"
-                "━" * 20 + "\n"
-                "🟢 자동매매 자동 시작됨\n"
-                f"아침 스캔: {bot_conf.get('morning_scan_time', '09:00')}\n"
-                f"감시 주기: {bot_conf.get('scan_interval_sec', 30)}초\n"
-                f"최대 보유: {bot_conf.get('max_auto_positions', 2)}종목\n"
-                f"분할매수: {self.config.get('risk', {}).get('split_count', 3)}회\n"
-                f"확인 모드: {'ON' if bot_conf.get('confirm_real_order') else 'OFF'}\n"
-                "━" * 20 + "\n"
-                "정지: '정지' | 수동 재시작: '시작'"
-            )
+            now_str = datetime.now().strftime("%H:%M")
+            startup_msg = f"🔮 Body Hunter v4 시작 ({now_str}) | 자동매매 ON"
         else:
-            startup_msg = (
-                "🔮 Body Hunter v4 봇 시작됨\n"
-                "자동매매 OFF - '시작' 입력으로 켜기"
-            )
+            now_str = datetime.now().strftime("%H:%M")
+            startup_msg = f"🔮 Body Hunter v4 시작 ({now_str}) | 자동매매 OFF"
 
         try:
             await app.bot.send_message(

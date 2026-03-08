@@ -34,6 +34,28 @@ import yaml
 MAX_RESTARTS = 50          # 최대 재시작 횟수 (하루)
 RESTART_DELAY_SEC = 30     # 재시작 대기 시간 (초)
 CRASH_LOG = Path(__file__).parent / "logs" / "crash.log"
+PID_FILE = Path(__file__).parent / "logs" / "bot.pid"
+
+
+def _check_already_running() -> bool:
+    """PID 락 파일로 중복 실행 방지. 이미 실행 중이면 True."""
+    import subprocess
+    PID_FILE.parent.mkdir(exist_ok=True)
+    if PID_FILE.exists():
+        try:
+            old_pid = int(PID_FILE.read_text().strip())
+            # tasklist로 해당 PID가 python 프로세스인지 확인
+            result = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {old_pid}", "/FO", "CSV", "/NH"],
+                capture_output=True, text=True, timeout=5
+            )
+            if "python" in result.stdout.lower():
+                return True  # 이미 실행 중
+        except Exception:
+            pass
+    # 현재 PID 기록
+    PID_FILE.write_text(str(os.getpid()))
+    return False
 
 
 def setup_logging():
@@ -147,6 +169,11 @@ def _run_bot_once():
 
 def main():
     """자동 재시작 래퍼"""
+    # 중복 실행 방지
+    if _check_already_running():
+        print("  봇이 이미 실행 중입니다. 중복 시작 차단.")
+        sys.exit(0)
+
     once_mode = "--once" in sys.argv
 
     if once_mode:
