@@ -646,6 +646,10 @@ def _step5_cross_validate(
             shock_pen = -15.0  # 충격 수혜 섹터 (이미 올랐으니 매수 제외)
         if sector and opportunity_sectors and sector in opportunity_sectors:
             opp_bonus = 5.0    # 기회 섹터 (충격 무관 과도 하락)
+        if shock_pen != 0:
+            sources.append(f"shock:{sector}({shock_pen:+.0f})")
+        if opp_bonus != 0:
+            sources.append(f"opp:{sector}({opp_bonus:+.0f})")
 
         # ── 로테이션: 다음 섹터 보너스 / 반전 페널티 ──
         rotation_bonus = 0.0
@@ -1303,6 +1307,31 @@ def format_recommendation(report: RecommendationReport, max_budget: int = 0) -> 
             score_parts.append(f"교차+{s.cross_count * 10}")
         if s.nationality_score != 0:
             score_parts.append(f"국적{s.nationality_score:+.0f}")
+        # sources에서 추가 가산/감산 파싱 (rotation, opp, shock, or_bias, eq, gap)
+        for src in s.sources:
+            if src.startswith("rotation:"):
+                # rotation:hot_early(방산/국방) → +15
+                rot_map = {"hot_early": 15, "staging": 8, "hot_mid": 5, "reversal_exit": -20}
+                for key, val in rot_map.items():
+                    if f"rotation:{key}" in src:
+                        score_parts.append(f"로테{val:+d}")
+                        break
+            elif src.startswith("opp:"):
+                val = src.split("(")[1].rstrip(")")
+                score_parts.append(f"기회{val}")
+            elif src.startswith("shock:"):
+                val = src.split("(")[1].rstrip(")")
+                score_parts.append(f"충격{val}")
+            elif src.startswith("or_bias:"):
+                val = src.split("(")[1].rstrip(")")
+                score_parts.append(f"OR{val}")
+            elif src.startswith("eq_level:"):
+                val = src.split("(")[1].rstrip(")")
+                score_parts.append(f"EQ{val}")
+            elif src.startswith("gap:"):
+                val = src.split("(")[1].rstrip(")")
+                score_parts.append(f"갭{val}")
+
         # 페널티 표시
         penalties = []
         if s.news_penalty < 0:
@@ -1325,6 +1354,30 @@ def format_recommendation(report: RecommendationReport, max_budget: int = 0) -> 
         if s.sources:
             lines.append(f"   출처: {' + '.join(s.sources[:4])}")
         lines.append("")
+
+    # ── 모멘텀 종목 섹션 ──
+    if report.momentum_stocks:
+        lines.append("=" * 32)
+        lines.append(f"🚀 소형주 모멘텀 ({len(report.momentum_stocks)}종목)")
+        lines.append("")
+        for i, m in enumerate(report.momentum_stocks[:5], 1):
+            theme = m.get("theme") or m.get("theme_detail") or "미분류"
+            score = m.get("momentum_score", 0)
+            vol = m.get("volume_spike", 0)
+            chg5d = m.get("price_change_5d", 0)
+            entry = m.get("entry", 0)
+            sl = m.get("sl", 0)
+            tp = m.get("tp", 0)
+            cap = m.get("cap_억", 0)
+            lines.append(
+                f"⚡ {i}. {m.get('name','')}({m.get('code','')}) "
+                f"[{theme}] {score:.0f}점"
+            )
+            lines.append(
+                f"   거래량 {vol:.1f}배 | 5일 {chg5d:+.1f}% | 시총 {cap}억"
+            )
+            lines.append(f"   SL: {sl:,} → TP: {tp:,}")
+            lines.append("")
 
     return "\n".join(lines)
 
