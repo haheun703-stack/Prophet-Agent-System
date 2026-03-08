@@ -385,6 +385,29 @@ class AutoTrader:
         except Exception as e:
             logger.warning(f"추천 로드 실패: {e}")
 
+        # 1.2) 전쟁→재건 릴레이 종목 추가
+        war_relay_count = 0
+        try:
+            if rec and rec.war_relay_stocks:
+                existing_codes = {c["code"] for c in candidates}
+                for s in rec.war_relay_stocks:
+                    if s["code"] in existing_codes:
+                        continue  # 메인 파이프라인에 이미 있으면 스킵
+                    candidates.append({
+                        "code": s["code"], "name": s["name"],
+                        "total_score": 50 - s.get("priority", 99),  # 우선순위 역변환
+                        "entry": s["entry"], "sl": s["sl"],
+                        "tp": s["tp1"], "tp1_quick": s["tp1"],
+                        "source": "war_relay",
+                        "confidence": "WAR_RELAY",
+                        "tier": s.get("tier", ""),
+                    })
+                    war_relay_count += 1
+                if war_relay_count:
+                    await _send(f"전쟁릴레이 {war_relay_count}종목 추가 로드")
+        except Exception as e:
+            logger.warning(f"전쟁릴레이 로드 실패: {e}")
+
         # 1.5) NIGHTWATCH 채권 자경단 신호등 게이트
         if cross_regime == "DIVERGENCE":
             await _send(
@@ -571,6 +594,10 @@ class AutoTrader:
             # 분할매수 설정 (config split_count, 기본 3)
             split_count = self.config.get("risk", {}).get("split_count", 3)
 
+            # war_relay: 긴 감시 시간 + 눌림목 진입 대기
+            is_war_relay = c.get("source") == "war_relay"
+            watch_max_checks = 420 if is_war_relay else 60  # 3.5시간 vs 30분
+
             # 진입감시 대기열에 등록
             self._entry_watch[code] = {
                 "name": c["name"],
@@ -588,7 +615,7 @@ class AutoTrader:
                 "min_price": 999999999,    # 장중 저가
                 "max_price": 0,            # 장중 고가
                 "checks": 0,              # 관찰 횟수 (30초마다 +1)
-                "max_checks": 60,         # 최대 30분 (30초 * 60)
+                "max_checks": watch_max_checks,
                 "ai_scores": [],          # 최근 AI 점수 기록
                 "registered_at": datetime.now().strftime("%H:%M"),
                 "entry_triggered": False,  # 진입 조건 충족 여부
@@ -774,6 +801,20 @@ class AutoTrader:
                 elif gap_pct >= 3.0 and upside_to_tp >= 5.0:
                     # 갭업이지만 목표가 여유 있음 → 매수 계속 진행
                     conditions_detail.append(f"갭업{gap_pct:+.1f}%→목표{upside_to_tp:.0f}%남음")
+
+                # 1.5) 전쟁릴레이 가격 게이트: 진입가 대비 3% 이상 위면 대기
+                if watch.get("source") == "war_relay":
+                    entry_target = watch.get("prev_close", 0)
+                    price_vs_entry = (cp / entry_target - 1) * 100 if entry_target > 0 else 0
+                    if price_vs_entry > 3.0:
+                        # 진입가보다 3%+ 위 → 아직 안 빠짐, 조건 체크 스킵
+                        if watch["checks"] % 20 == 0:  # 10분마다 1번 로그
+                            logger.info(
+                                f"[전쟁릴레이 대기] {watch['name']}({code}) "
+                                f"현재 {cp:,} vs 진입 {entry_target:,} "
+                                f"({price_vs_entry:+.1f}%) - 눌림 대기중"
+                            )
+                        continue
 
                 # 2) 가격 안정화: 시가 대비 -2% 이상 하락 안 함
                 from_open = (cp / open_price - 1) * 100 if open_price > 0 else 0

@@ -78,6 +78,8 @@ class RecommendationReport:
     cross_regime_detail: str = ""  # "S&P -1.3% + TNX +0.12% → 자경단"
     # 소형주 급등 후보 (Momentum Hunter)
     momentum_stocks: list = field(default_factory=list)
+    # 전쟁→재건 섹터릴레이 종목 (War Relay)
+    war_relay_stocks: list = field(default_factory=list)
     # 섹터 로테이션 시그널
     rotation_signal: str = ""      # "HOT: 방산(MID 3D) | NEXT: 반도체(스테이징)"
     rotation_detail: list = field(default_factory=list)  # 섹터별 상세
@@ -227,6 +229,58 @@ def _step_bargain_scan() -> dict:
     except Exception as e:
         logger.warning(f"줍줍 스캔 실패: {e}")
         return {}
+
+
+# ═══════════════════════════════════════
+#  Step 2.9: 전쟁→재건 섹터릴레이 워치리스트
+# ═══════════════════════════════════════
+
+def _step_war_relay_inject() -> list[dict]:
+    """전쟁→재건 섹터릴레이 워치리스트 로드
+
+    data_store/war_relay_watchlist.json에서 사전 분석된 종목을 로드.
+    각 종목의 entry/sl/tp는 기술적 분석(Fib/EMA/BB)으로 사전 계산됨.
+
+    Returns: list of war_relay stock dicts (watchlist 원본 + 실시간 가격 업데이트)
+    """
+    import json
+    from pathlib import Path
+
+    watchlist_path = (
+        Path(__file__).resolve().parent.parent
+        / "data_store" / "war_relay_watchlist.json"
+    )
+    if not watchlist_path.exists():
+        logger.info("전쟁릴레이 워치리스트 없음 - 스킵")
+        return []
+
+    try:
+        with open(watchlist_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        stocks = data.get("stocks", [])
+        if not stocks:
+            return []
+
+        # 실시간 종가 업데이트 (CSV 일봉 기준)
+        for s in stocks:
+            code = s["code"]
+            csv_path = (
+                Path(__file__).resolve().parent.parent
+                / "data_store" / "daily" / f"{code}.csv"
+            )
+            if csv_path.exists():
+                import pandas as pd
+                df = pd.read_csv(csv_path)
+                if len(df) > 0:
+                    s["close"] = int(df.iloc[-1, 4])  # 종가 column
+                    s["last_date"] = str(df.iloc[-1, 0])  # 날짜 column
+
+        logger.info(f"전쟁릴레이 워치리스트: {len(stocks)}종목 로드")
+        return stocks
+    except Exception as e:
+        logger.warning(f"전쟁릴레이 워치리스트 로드 실패: {e}")
+        return []
 
 
 # ═══════════════════════════════════════
@@ -980,6 +1034,18 @@ def run_evening_recommendation() -> RecommendationReport:
     except Exception as e:
         logger.warning(f"모멘텀 스캔 실패: {e}")
 
+    # Step 2.9: 전쟁→재건 섹터릴레이 워치리스트
+    t0 = time.time()
+    logger.info("[Step 2.9] 전쟁→재건 릴레이 워치리스트...")
+    war_relay_list = _step_war_relay_inject()
+    if war_relay_list:
+        # 기술분석 대상에 추가 (메인 파이프라인과 동일하게 스코어링)
+        for s in war_relay_list:
+            all_codes_set.add((s["code"], s["name"]))
+        # report에 저장 (auto_trader가 별도로 읽음)
+        report.war_relay_stocks = war_relay_list
+        logger.info(f"  → {len(war_relay_list)}종목 ({time.time()-t0:.0f}s)")
+
     if not all_codes_set:
         report.warning = "릴레이+사전감지+MACD+줍줍 결과 0건 - 추천 불가"
         try:
@@ -1273,7 +1339,6 @@ def format_recommendation(report: RecommendationReport, max_budget: int = 0) -> 
 
     if not report.stocks:
         lines.append("추천 종목 없음")
-        return "\n".join(lines)
 
     conf_emoji = {"HIGH": "🔴", "MED": "🟡", "LOW": "⚪"}
 
@@ -1379,6 +1444,33 @@ def format_recommendation(report: RecommendationReport, max_budget: int = 0) -> 
             lines.append(f"   SL: {sl:,} → TP: {tp:,}")
             lines.append("")
 
+    # ── 전쟁→재건 릴레이 종목 섹션 ──
+    if report.war_relay_stocks:
+        lines.append("=" * 32)
+        lines.append(f"🎯 전쟁→재건 릴레이 ({len(report.war_relay_stocks)}종목)")
+        lines.append("")
+        for i, s in enumerate(report.war_relay_stocks[:8], 1):
+            tier = s.get("tier", "")
+            entry = s.get("entry", 0)
+            entry_agg = s.get("entry_aggressive", 0)
+            sl = s.get("sl", 0)
+            tp1 = s.get("tp1", 0)
+            close = s.get("close", 0)
+            rr = s.get("rr", 0)
+            gap_pct = ((entry - close) / close * 100) if close > 0 else 0
+            lines.append(
+                f"🎯 {i}. {s.get('name','')}({s.get('code','')}) [{tier}]"
+            )
+            lines.append(
+                f"   현재: {close:,} | 진입: {entry:,} ({gap_pct:+.1f}%)"
+            )
+            lines.append(
+                f"   SL: {sl:,} → TP: {tp1:,} | R:R 1:{rr}"
+            )
+            if s.get("reason"):
+                lines.append(f"   {s['reason']}")
+            lines.append("")
+
     return "\n".join(lines)
 
 
@@ -1433,12 +1525,17 @@ def save_recommendation(report: RecommendationReport):
             for s in report.stocks
         ],
         "momentum_stocks": report.momentum_stocks,  # 소형주 급등 후보 (dict list)
+        "war_relay_stocks": report.war_relay_stocks,  # 전쟁→재건 릴레이 종목
         "rotation_signal": report.rotation_signal,  # 섹터 로테이션 시그널
         "rotation_detail": report.rotation_detail,  # 섹터별 로테이션 상세
     }
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-    logger.info(f"추천 저장: {path} ({report.stage}, {len(report.stocks)}종목, 모멘텀 {len(report.momentum_stocks)}종목)")
+    logger.info(
+        f"추천 저장: {path} ({report.stage}, {len(report.stocks)}종목, "
+        f"모멘텀 {len(report.momentum_stocks)}종목, "
+        f"전쟁릴레이 {len(report.war_relay_stocks)}종목)"
+    )
 
 
 def load_recommendation() -> Optional[RecommendationReport]:
@@ -1488,6 +1585,8 @@ def load_recommendation() -> Optional[RecommendationReport]:
             ))
         # 소형주 모멘텀 후보 로드
         report.momentum_stocks = data.get("momentum_stocks", [])
+        # 전쟁→재건 릴레이 종목 로드
+        report.war_relay_stocks = data.get("war_relay_stocks", [])
         return report
     except Exception as e:
         logger.error(f"추천 로드 실패: {e}")
