@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Body Hunter v3 텔레그램 봇
+Body Hunter v5 텔레그램 봇
 ===========================
 한글 버튼 명령어로 5D 분석 + KIS 실매매 제어
 
@@ -58,125 +58,73 @@ def _split_message(text: str, limit: int = TG_MAX) -> list:
 # 한글 키보드 레이아웃
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
-        ["사전감지", "스윙스캔", "스캔"],
-        ["이상거래", "건전성", "이벤트"],
-        ["종목선정", "MACD스캔", "워치리스트"],
-        ["섹터릴레이", "그룹릴레이", "ETF릴레이"],
-        ["릴레이종합", "내일추천", "뉴스AI"],
-        ["AI모니터", "해외이벤트", "국적수급"],
-        ["시나리오", "현재잔고", "체결내역"],
-        ["포트폴리오", "시작", "정지"],
-        ["상태", "유니버스", "일지"],
-        ["배분현황", "로테이션", "도움"],
-        ["청산"],
+        ["상태", "포트폴리오", "현재잔고"],
+        ["내일추천", "배분현황", "로테이션"],
+        ["시작", "정지", "도움"],
     ],
     resize_keyboard=True,
 )
 # 참고: "분석 종목명", "뉴스 종목명", "스윙 종목명"은 키보드 없이 텍스트 입력
 
 HELP_TEXT = """
-🔮 Body Hunter v3 명령어
+Body Hunter v5 명령어
 
-[사전감지 + AI모니터]
-  사전감지 - 폭발 직전 종목 포착 (3Gate+10신호)
-  AI모니터 - 보유종목 실시간 4팩터 분석
-  뉴스AI - Claude AI 뉴스 분석 (전자신문+네이버+DART)
-
-[스윙매매]
-  스윙스캔 - 4층 파이프라인 (수급+기술+이상거래→TOP10)
-  이상거래 - 이상거래 감지기 (조용한 매집/큰손 포착)
-  건전성 - 시장 수급 건전성 진단
-  이벤트 - DART+뉴스 이벤트 감지
-  해외이벤트 - 해외 실적발표/경제지표 D-3 알림
-  종목선정 - 7팩터 스윙 종목 선정 (TOP 10)
-  MACD스캔 - MACD 제로선 크로스 + 수급폭발 스캔
-  스윙 삼성전자 - 개별 종목 스윙 분석
-  워치리스트 - 최근 스윙 워치리스트
-
-[릴레이 에이전트]
-  섹터릴레이 - 12섹터 순환 감지 (HOT/RELAY)
-  그룹릴레이 - 7대 그룹 순환 감지
-  ETF릴레이 - ETF→종목 후행 감지
-  릴레이종합 - 3개 에이전트 교차 검증 통합
-
-[내일 추천]
-  내일추천 - 5단계 파이프라인 추천 조회/실행
-  (자동 16:45 저녁분석 → 06:30 미국장체크 → 08:50 최종확인)
-
-[국적별 수급]
-  국적수급 - 추천/보유 종목 외국인 국적별 매매
-  국적수급 SK하이닉스 - 특정 종목 국적별 조회
-
-[분석]
-  스캔 - 5D 전종목 수급 스캔
-  분석 삼성전자 - 개별 종목 6D 분석
-  뉴스 삼성전자 - 뉴스 + Grok 감성분석
+[버튼 메뉴]
+  상태 - 봇 상태 + 리스크
+  포트폴리오 - 보유 + 손익
+  현재잔고 - 계좌 잔고
+  내일추천 - 추천 파이프라인 조회/실행
+  배분현황 - BRAIN 자본 배분
+  로테이션 - 섹터 HOT/STAGING
+  시작/정지 - 자동매매 ON/OFF
 
 [매매]
   매수 삼성전자 10 - 시장가 매수
   매도 삼성전자 - 전량 매도
   청산 - 전종목 청산
-  현재잔고 - 계좌 잔고
-  체결내역 - 당일 체결
-  포트폴리오 - 보유 + 손익
-
-[자동매매]
-  시작 - 자동매매 ON
-  정지 - 자동매매 OFF
   자동확인 - 대기 중 자동매수 실행
   자동취소 - 대기 중 자동매수 취소
   위기모드 [사유] - 매수 완전 차단
   위기해제 - 위기 모드 해제
 
-[JARVIS BRAIN 자본 배분]
-  배분현황 - 현재 BRAIN 자본 배분 지시 조회
-  로테이션 - 섹터 로테이션 분석 (HOT/STAGING/다음섹터)
-  선행지표 - 채권시장 선행지표 (레짐 전환 감지)
-  스트레스 - 크로스에셋 상관관계 붕괴 감지
-  COT - CFTC 스마트머니 포지션 (주간)
-  유동성 - FRED 유동성 사이클 (RRP/TGA/M2)
-  (자동: NIGHTWATCH 완료 후 배분 갱신)
+[분석 (텍스트 입력)]
+  스캔 - 5D 전종목 수급 스캔
+  스윙스캔 - 4층 파이프라인 TOP10
+  사전감지 - 폭발 직전 종목 포착
+  MACD스캔 - MACD 0선 + 수급 스캔
+  이상거래 - 이상거래 감지
+  건전성 - 시장 수급 건전성
+  이벤트 - DART+뉴스 이벤트
+  해외이벤트 - 해외 경제지표 D-3
+  종목선정 - 7팩터 스윙 TOP10
+  뉴스AI - Claude AI 뉴스 분석
+  AI모니터 - 보유종목 4팩터 분석
 
-[NIGHTWATCH NXT 야간매매]
-  NXT - NIGHTWATCH 상태 + NXT 포지션
-  NXT실행 - NIGHTWATCH 즉시 실행 (테스트)
-  NXT켜기 - NXT 자동매매 ON
-  NXT끄기 - NXT 알림만 모드
-  (자동 16:00 수집 → 16:35 판단 → 08:00 매도)
+[개별 종목]
+  분석 삼성전자 - 6D 분석
+  스윙 삼성전자 - 스윙 분석
+  뉴스 삼성전자 - 뉴스 감성분석
+  국적수급 SK하이닉스 - 국적별 매매
 
-[복기]
-  일지 - 오늘 매매 일지
-  일지 2026-02-18 - 특정일 일지
+[릴레이]
+  섹터릴레이 / 그룹릴레이 / ETF릴레이
+  릴레이종합 - 교차 검증 통합
 
-[시그널]
-  시그널 - 일간 1D~4D 시그널 요약
-  (자동 16:30 - 전종목 시그널 기록)
+[JARVIS 5D]
+  선행지표 / 스트레스 / COT / 유동성
 
-[시나리오]
-  시나리오 - 매크로 테마 시나리오 목록
-  시나리오활성 ID - 테마 ACTIVE 전환
-  시나리오대기 ID - 테마 WATCH 전환
-  시나리오삭제 ID - 테마 삭제
+[NXT 야간매매]
+  NXT / NXT켜기 / NXT끄기 / NXT실행
 
-[보유종목 모니터]
-  상태판 - 보유종목 1줄 요약 대시보드
-  (자동 10:00, 13:00, 14:30 발송)
-  (이상 감지 시 자동 알림 푸시)
-
-[데이터]
-  분봉수집 - 당일 5분/15분봉 수집 (자동 15:40)
-  유니버스 - 유니버스 종목 현황
-  유니버스갱신 - 시총 1000억+ 리빌드
-
-[시스템]
-  상태 - 봇 상태
-  로그 - 최근 로그
-  도움 - 이 메시지
+[기타]
+  체결내역 / 일지 / 시그널
+  워치리스트 / 시나리오
+  유니버스 / 로그
 """.strip()
 
 
 class BodyHunterBot:
-    """Body Hunter v3 텔레그램 봇"""
+    """Body Hunter v5 텔레그램 봇"""
 
     def __init__(self, config: dict):
         self.config = config
@@ -202,7 +150,7 @@ class BodyHunterBot:
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"[수신] /start from chat_id={update.effective_chat.id}")
         await update.message.reply_text(
-            "🔮 Body Hunter v3\n"
+            "🔮 Body Hunter v5\n"
             "아래 버튼으로 명령하세요",
             reply_markup=MAIN_KEYBOARD,
         )
@@ -1758,10 +1706,10 @@ class BodyHunterBot:
 
             self.auto_trader.start(_send_alert)
             now_str = datetime.now().strftime("%H:%M")
-            startup_msg = f"🔮 Body Hunter v4 시작 ({now_str}) | 자동매매 ON"
+            startup_msg = f"🔮 Body Hunter v5 시작 ({now_str}) | 자동매매 ON"
         else:
             now_str = datetime.now().strftime("%H:%M")
-            startup_msg = f"🔮 Body Hunter v4 시작 ({now_str}) | 자동매매 OFF"
+            startup_msg = f"🔮 Body Hunter v5 시작 ({now_str}) | 자동매매 OFF"
 
         try:
             await app.bot.send_message(
@@ -2057,27 +2005,17 @@ class BodyHunterBot:
             ).get("interval_sec", 60)
 
             tc = TickCollector()
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=f"📡 체결 폴링 시작: {len(codes)}종목 / {interval}초 간격",
-            )
+            logger.info(f"체결 폴링 시작: {len(codes)}종목 / {interval}초 간격")
 
             # 블로킹 루프를 별도 스레드에서 실행
             cycles = await asyncio.to_thread(
                 tc.run_market_hours, codes, interval
             )
 
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=f"📡 체결 폴링 종료: {cycles}사이클 완료",
-            )
+            logger.info(f"체결 폴링 종료: {cycles}사이클 완료")
 
         except Exception as e:
             logger.error(f"체결 폴링 에러: {e}")
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=f"⚠️ 체결 폴링 에러: {str(e)[:200]}",
-            )
 
     async def _job_collect_minutes(self, context):
         """장마감 후 자동 분봉(5분/15분) 수집 + 수급 분석"""
@@ -2091,12 +2029,7 @@ class BodyHunterBot:
             from data.kis_collector import collect_today_minutes, UNIVERSE
             results = await asyncio.to_thread(collect_today_minutes)
 
-            msg = (
-                f"📊 분봉 수집 완료\n"
-                f"  {len(results)}/{len(UNIVERSE)}종목 성공\n"
-            )
-            await context.bot.send_message(chat_id=chat_id, text=msg)
-            logger.info(f"분봉 수집 완료: {len(results)}종목")
+            logger.info(f"분봉 수집 완료: {len(results)}/{len(UNIVERSE)}종목 성공")
 
             # ── 수급 분석 ──
             try:

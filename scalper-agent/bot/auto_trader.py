@@ -2025,13 +2025,9 @@ class AutoTrader:
             except Exception as e:
                 logger.warning(f"Equal Level 실패: {e}")
 
-            await _send(
-                f"📐 프리미엄 레벨 {len(results)}종목 계산 완료\n"
-                f"  EQ Level: {eq_count}종목 머지"
-            )
+            logger.info(f"프리미엄 레벨 {len(results)}종목 완료 (EQ {eq_count}종목 머지)")
         except Exception as e:
             logger.error(f"프리미엄 레벨 실패: {e}")
-            await _send(f"⚠️ 프리미엄 레벨 실패: {str(e)[:200]}")
 
     async def job_gap_support(self, context):
         """09:05 - 갭 지지/저항 탐지 + PL 머지"""
@@ -2074,13 +2070,9 @@ class AutoTrader:
 
             up = sum(1 for r in gap_results.values() if r["gap_type"] == "gap_up")
             down = len(gap_results) - up
-            await _send(
-                f"📊 갭 레벨 {len(gap_results)}종목 탐지\n"
-                f"  갭업:{up} 갭다운:{down} (PL 머지:{merged})"
-            )
+            logger.info(f"갭 레벨 {len(gap_results)}종목 (갭업:{up} 갭다운:{down} PL머지:{merged})")
         except Exception as e:
             logger.error(f"갭 탐지 실패: {e}")
-            await _send(f"⚠️ 갭 탐지 실패: {str(e)[:200]}")
 
     async def job_opening_range(self, context):
         """10:05 - OR/IR 확정 + daily_bias 계산"""
@@ -2126,13 +2118,9 @@ class AutoTrader:
             except Exception as e:
                 logger.warning(f"OR→PL 병합 실패: {e}")
 
-            await _send(
-                f"📊 OR/IR 확정 ({len(results)}종목)\n"
-                f"  bullish:{bullish} bearish:{bearish} neutral:{neutral}"
-            )
+            logger.info(f"OR/IR 확정 {len(results)}종목 (bull:{bullish} bear:{bearish} neutral:{neutral})")
         except Exception as e:
             logger.error(f"Opening Range 실패: {e}")
-            await _send(f"⚠️ Opening Range 실패: {str(e)[:200]}")
 
     # ═══════════════════════════════════════
     #  NIGHTWATCH NXT 야간매매
@@ -2160,26 +2148,14 @@ class AutoTrader:
                 await context.bot.send_message(chat_id=chat_id, text=text)
 
         try:
-            await _send("NIGHTWATCH 수집 시작 (유럽장 개장)")
+            logger.info("NIGHTWATCH 수집 시작 (유럽장 개장)")
 
             from data.nightwatch import collect_asian_risk
             asian_score, asian_detail = await asyncio.to_thread(collect_asian_risk)
-
-            # 아시안 리스크 중간 알림
-            signals = []
-            for k, v in asian_detail.items():
-                sig = v.get("signal", "⬜") if isinstance(v, dict) else "⬜"
-                signals.append(f"  {sig} {k}")
-
-            await _send(
-                f"[1단] 아시안 리스크: {asian_score:+.1f}\n"
-                + "\n".join(signals)
-                + "\n\n16:30 유럽 오픈 스코어 대기 중..."
-            )
+            logger.info(f"NIGHTWATCH 1단 아시안 리스크: {asian_score:+.1f}")
 
         except Exception as e:
             logger.error(f"NIGHTWATCH 수집 실패: {e}")
-            await _send(f"NIGHTWATCH 수집 실패: {e}")
 
     async def job_nightwatch_decide(self, context):
         """16:35 - NIGHTWATCH 최종 판단 + NXT 매수 결정"""
