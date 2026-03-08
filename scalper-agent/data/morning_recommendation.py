@@ -662,27 +662,41 @@ def _step5_cross_validate(
 
         # ── OR bias 보정 (ICT Opening Range) ──
         or_bias_adj = 0.0
+        _or_bias_label = ""
         try:
             from strategies.opening_range import get_bias_adjustment
             or_bias_adj = get_bias_adjustment(code)
+            if or_bias_adj > 0:
+                _or_bias_label = "bullish"
+            elif or_bias_adj < 0:
+                _or_bias_label = "bearish"
         except Exception:
             pass
+        if or_bias_adj != 0:
+            sources.append(f"or_bias:{_or_bias_label}({or_bias_adj:+.0f})")
 
         # ── Equal Level 보정 (ICT EQ High/Low) ──
         eq_adj = 0.0
+        _eq_reason = ""
         try:
             from strategies.equal_level_detector import get_eq_score_adjustment
             eq_adj, _eq_reason = get_eq_score_adjustment(code, close)
         except Exception:
             pass
+        if eq_adj != 0:
+            sources.append(f"eq_level:{_eq_reason}({eq_adj:+.0f})")
 
         # ── 갭 지지/저항 보정 ──
         gap_adj = 0.0
+        _gap_reason = ""
         try:
             from strategies.gap_support import get_gap_score_adjustment
             gap_adj, _gap_reason = get_gap_score_adjustment(code, close)
         except Exception:
             pass
+        if gap_adj != 0:
+            sources.append(f"gap:{_gap_reason}({gap_adj:+.0f})")
+
 
         # ── 합산 ──────────────────────────────
         raw_total = (relay_sc + premove_sc + tech_sc + bargain_sc + cross_bonus
