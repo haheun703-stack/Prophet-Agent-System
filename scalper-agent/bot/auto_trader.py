@@ -480,7 +480,7 @@ class AutoTrader:
 
         # ── 진입감시 대기열에 등록 (즉시 매수 X) ──
         bot_conf = self.config.get("bot", {})
-        max_pos = bot_conf.get("max_auto_positions", 5)
+        max_pos = bot_conf.get("max_auto_positions", 2)
 
         # BRAIN 교차 신호 - 경계/방어 모드 시 진입 캡 축소
         brain_alloc = self._load_brain_allocation()
@@ -1229,7 +1229,7 @@ class AutoTrader:
             return
 
         bot_conf = self.config.get("bot", {})
-        max_pos = bot_conf.get("max_auto_positions", 3)
+        max_pos = bot_conf.get("max_auto_positions", 2)
         buy_amount = bot_conf.get("auto_buy_amount", 500000)
 
         # BRAIN 교차 신호 - 경계/방어 모드 시 진입 캡 축소
