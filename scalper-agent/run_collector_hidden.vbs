@@ -1,3 +1,3 @@
 Set WshShell = CreateObject("WScript.Shell")
-WshShell.CurrentDirectory = "D:\Prophet_Agent_System_ì˜ˆì–¸ì\scalper-agent"
-WshShell.Run """C:\Program Files\Python31312\pythonw.exe"" ""D:\Prophet_Agent_System_ì˜ˆì–¸ì\scalper-agent\data\daily_collector.py""", 0, True
+WshShell.CurrentDirectory = "D:\Prophet_Agent_System_¿¹¾ğÀÚ\scalper-agent"
+WshShell.Run """C:\Program Files\Python31312\pythonw.exe"" ""D:\Prophet_Agent_System_¿¹¾ğÀÚ\scalper-agent\data\daily_collector.py""", 0, True
