@@ -21,6 +21,9 @@ venv/
 # 대용량 데이터 - GitHub에 올리지 않음
 stock_data_daily/
 
+# 옛 KIS API 프로젝트 (915파일, 모델+크롤링데이터)
+KISOpenAPI_260208/
+
 # 원본 ZIP 파일 (이미 통합 완료)
 *.zip
 
@@ -60,10 +63,18 @@ scalper-agent/backtest/fetch_today.py
 scalper-agent/backtest/collect_0227_flow.py
 scalper-agent/backtest/dynamic_target_backtest.py
 
+# 백테스트 결과 CSV (코드만 추적, 결과 데이터는 제외)
+scalper-agent/backtest/*.csv
+
+# 1회성 테스트 스크립트 (scalper-agent/_*.py)
+scalper-agent/_*.py
+
 # 1회성 스크립트 & 데이터 (루트)
 paper_trader.py
 paper_trades.csv
 news-early-detection-guide.html
+CORTEX.py
+ICT_IMPLEMENTATION_SPEC_v2.md
 
 # OS
 Thumbs.db
@@ -73,5 +84,10 @@ desktop.ini
 # NIGHTWATCH 참고 문서
 NIGHTWATCH_*.md
 
-# JARVIS runtime data
+# JARVIS runtime data & test cache
 jarvis/data/
+jarvis/tests/yf_cache/
+jarvis/tests/cot_2024_cache.json
+
+# Windows 빈 파일 (nul 리다이렉트 잔재)
+nul
