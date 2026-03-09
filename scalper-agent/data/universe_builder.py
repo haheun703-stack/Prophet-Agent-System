@@ -38,15 +38,20 @@ def _ensure_dirs():
 
 
 def _find_latest_trading_day():
-    """최근 거래일 찾기"""
+    """최근 거래일 찾기 (주말/공휴일 안전 처리)"""
     from pykrx import stock
     today = datetime.now()
     for i in range(10):
         d = (today - timedelta(days=i)).strftime("%Y%m%d")
-        cap = stock.get_market_cap_by_ticker(d, market="ALL")
-        nonzero = cap[cap["시가총액"] > 0]
-        if len(nonzero) > 100:
-            return d
+        try:
+            cap = stock.get_market_cap_by_ticker(d, market="ALL")
+            if cap is None or cap.empty or "시가총액" not in cap.columns:
+                continue
+            nonzero = cap[cap["시가총액"] > 0]
+            if len(nonzero) > 100:
+                return d
+        except Exception:
+            continue
     return today.strftime("%Y%m%d")
 
 

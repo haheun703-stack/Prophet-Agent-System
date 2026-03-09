@@ -249,6 +249,9 @@ def check_alerts(
 ) -> tuple[list[str], dict]:
     """ICT/수급 이벤트 감지 → 알림 목록 반환
 
+    쿨다운 10분: 같은 종목+같은 유형 알림은 10분간 억제
+    오프닝 5분(09:00~09:05): 급변 알림 억제 (변동성 과다)
+
     Args:
         kis_trader: KISTrader 인스턴스
         portfolio: 포트폴리오 데이터
@@ -269,6 +272,23 @@ def check_alerts(
     new_states = {}
     time_frac = _market_time_fraction()
     today = date.today()
+    now = datetime.now()
+    now_min = now.hour * 60 + now.minute
+    is_opening = 540 <= now_min <= 545  # 09:00~09:05 오프닝 변동성 구간
+
+    # 쿨다운 맵: prev_states에 "_cooldowns" 키로 저장
+    cooldowns = prev_states.get("_cooldowns", {})
+    COOLDOWN_SEC = 600  # 10분
+
+    def _can_alert(code: str, alert_type: str) -> bool:
+        """쿨다운 체크 — 같은 종목+유형은 10분간 억제"""
+        key = f"{code}:{alert_type}"
+        last = cooldowns.get(key, 0)
+        elapsed = (now - datetime.fromtimestamp(last)).total_seconds() if last > 0 else 9999
+        if elapsed < COOLDOWN_SEC:
+            return False
+        cooldowns[key] = now.timestamp()
+        return True
 
     for pos in portfolio:
         code = pos["code"]
@@ -290,7 +310,7 @@ def check_alerts(
 
         state = {"price": current, "pnl": pnl, "vol": current_vol}
 
-        # ── 1. Vol 폭발 ──
+        # ── 1. Vol 폭발 (쿨다운 적용) ──
         avg_vol = _get_avg_volume(code)
         if avg_vol > 0 and current_vol > 0:
             projected = current_vol / time_frac
@@ -298,73 +318,78 @@ def check_alerts(
             state["vol_ratio"] = vr
 
             prev_vr = prev.get("vol_ratio", 0)
-            if vr >= 3.0 and prev_vr < 3.0:
+            if vr >= 3.0 and prev_vr < 3.0 and _can_alert(code, "vol_burst"):
                 alerts.append(f"\U0001f534 {name} Vol {vr:.1f}x \ud3ed\ubc1c!")
-            elif vr >= 2.0 and prev_vr < 2.0:
+            elif vr >= 2.0 and prev_vr < 2.0 and _can_alert(code, "vol_strong"):
                 alerts.append(f"\U0001f7e1 {name} Vol {vr:.1f}x \uac15\ud568")
 
-        # ── 2. ICT EQ 레벨 접근/이탈 ──
+        # ── 2. ICT EQ 레벨 (부호 변화만 감지 + 쿨다운) ──
         try:
             eq_adj, eq_reason = get_eq_score_adjustment(
                 code, current, target_date=today
             )
+            prev_eq_sign = 1 if prev.get("eq_adj", 0) > 0 else (-1 if prev.get("eq_adj", 0) < 0 else 0)
+            curr_eq_sign = 1 if eq_adj > 0 else (-1 if eq_adj < 0 else 0)
             state["eq_adj"] = eq_adj
-            prev_eq = prev.get("eq_adj", 0)
 
-            if eq_adj != prev_eq and eq_adj != 0:
-                if eq_adj < 0:
+            if curr_eq_sign != prev_eq_sign and curr_eq_sign != 0:
+                if curr_eq_sign < 0 and _can_alert(code, "eq_high"):
                     alerts.append(f"\u26a0\ufe0f {name} EQ High \uadfc\uc811! ({eq_reason})")
-                else:
+                elif curr_eq_sign > 0 and _can_alert(code, "eq_low"):
                     alerts.append(f"\U0001f4aa {name} EQ Low \uc9c0\uc9c0 ({eq_reason})")
         except Exception:
             pass
 
-        # ── 3. ICT Gap 진입 ──
+        # ── 3. ICT Gap 진입 (부호 변화만 감지 + 쿨다운) ──
         try:
             gap_adj, gap_reason = get_gap_score_adjustment(
                 code, current, target_date=today
             )
+            prev_gap_sign = 1 if prev.get("gap_adj", 0) > 0 else (-1 if prev.get("gap_adj", 0) < 0 else 0)
+            curr_gap_sign = 1 if gap_adj > 0 else (-1 if gap_adj < 0 else 0)
             state["gap_adj"] = gap_adj
-            prev_gap = prev.get("gap_adj", 0)
 
-            if gap_adj != prev_gap and gap_adj != 0:
-                if gap_adj > 0:
+            if curr_gap_sign != prev_gap_sign and curr_gap_sign != 0:
+                if curr_gap_sign > 0 and _can_alert(code, "gap"):
                     alerts.append(f"\U0001f4ca {name} \uac2d \uc9c0\uc9c0 \uc9c4\uc785 ({gap_reason})")
-                else:
+                elif curr_gap_sign < 0 and _can_alert(code, "gap"):
                     alerts.append(f"\U0001f4ca {name} \uac2d \uc800\ud56d \uc9c4\uc785 ({gap_reason})")
         except Exception:
             pass
 
-        # ── 4. VWAP 크로스오버 ──
+        # ── 4. VWAP 크로스오버 (쿨다운 적용) ──
         vwap_val = _get_vwap(code)
         if vwap_val > 0:
             above_vwap = current >= vwap_val
             state["above_vwap"] = above_vwap
             prev_above = prev.get("above_vwap")
 
-            if prev_above is not None and above_vwap != prev_above:
+            if prev_above is not None and above_vwap != prev_above and _can_alert(code, "vwap"):
                 diff_pct = (current - vwap_val) / vwap_val * 100
                 if above_vwap:
                     alerts.append(
                         f"\U0001f4c8 {name} VWAP 상향돌파! "
-                        f"({vwap_val:,.0f} → {current:,} V\u25b2{diff_pct:+.1f}%)"
+                        f"({vwap_val:,.0f} \u2192 {current:,} V\u25b2{diff_pct:+.1f}%)"
                     )
                 else:
                     alerts.append(
                         f"\U0001f4c9 {name} VWAP 하향이탈! "
-                        f"({vwap_val:,.0f} → {current:,} V\u25bc{diff_pct:+.1f}%)"
+                        f"({vwap_val:,.0f} \u2192 {current:,} V\u25bc{diff_pct:+.1f}%)"
                     )
 
-        # ── 5. 급변 (3%p+ 스윙) ──
+        # ── 5. 급변 (5%p+ 스윙, 오프닝 억제 + 쿨다운) ──
         prev_pnl = prev.get("pnl", pnl)
         delta = pnl - prev_pnl
-        if abs(delta) >= 3.0:
+        if not is_opening and abs(delta) >= 5.0 and _can_alert(code, "swing"):
             emoji = "\U0001f4c8" if delta > 0 else "\U0001f4c9"
             alerts.append(
                 f"{emoji} {name} {prev_pnl:+.1f}% \u2192 {pnl:+.1f}% ({delta:+.1f}%p)"
             )
 
         new_states[code] = state
+
+    # 쿨다운 맵 저장
+    new_states["_cooldowns"] = cooldowns
 
     return alerts, new_states
 
