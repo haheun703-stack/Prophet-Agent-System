@@ -93,6 +93,8 @@ class NightwatchReport:
     nxt_targets: List[Dict] = field(default_factory=list)
     macro_conditions: Dict = field(default_factory=dict)
     selection_reason: str = ""
+    # 진입 재개 시그널 (전쟁 장기화 감시)
+    reentry_signals: Dict = field(default_factory=dict)
     # 원본 데이터
     raw_indicators: Dict = field(default_factory=dict)
 
@@ -626,6 +628,111 @@ def collect_macro_conditions(
 
 
 # ═══════════════════════════════════════════════════
+#  [5단] 진입 재개 시그널 감시 (WAR GATE)
+#  "전쟁 장기화 국면 — 3가지 조건 중 하나라도 충족 시 알림"
+#  1. WTI $95 이하 복귀
+#  2. VIX 30 이하 안정화
+#  3. KOSPI 4,800~5,000 패닉 바닥 터치
+# ═══════════════════════════════════════════════════
+REENTRY_THRESHOLDS = {
+    "wti_safe": 95.0,       # WTI 이 이하로 내려오면 매수 재개 가능
+    "vix_calm": 30.0,       # VIX 이 이하면 공포 완화
+    "kospi_bottom_low": 4800,   # 패닉 바닥 하단
+    "kospi_bottom_high": 5000,  # 패닉 바닥 상단
+}
+
+
+def check_reentry_signals(raw_indicators: Dict, macro_conditions: Dict) -> Dict:
+    """
+    전쟁 장기화 국면 진입 재개 시그널 체크
+    Returns: {
+        "war_gate_active": True,   # 전쟁 게이트 발동 중
+        "wti": {"value": 100.2, "safe": False, "status": "..."},
+        "vix": {"value": 32.1, "safe": False, "status": "..."},
+        "kospi": {"value": 5180, "bottom": False, "status": "..."},
+        "reentry_ok": False,       # 하나라도 충족 시 True
+        "summary": "..."
+    }
+    """
+    result = {
+        "war_gate_active": True,
+        "wti": {"value": None, "safe": False, "status": "데이터 없음"},
+        "vix": {"value": None, "safe": False, "status": "데이터 없음"},
+        "kospi": {"value": None, "bottom": False, "status": "데이터 없음"},
+        "reentry_ok": False,
+        "signals_met": [],
+        "summary": "",
+    }
+
+    # --- WTI 원유 ---
+    cl_data = raw_indicators.get("CL", {})
+    wti_price = cl_data.get("value")
+    if wti_price is not None:
+        safe = wti_price <= REENTRY_THRESHOLDS["wti_safe"]
+        result["wti"] = {
+            "value": wti_price,
+            "safe": safe,
+            "threshold": REENTRY_THRESHOLDS["wti_safe"],
+            "status": f"${wti_price:.1f} {'<= $95 안전' if safe else '> $95 위험'}",
+        }
+        if safe:
+            result["signals_met"].append(f"WTI ${wti_price:.1f} <= $95")
+
+    # --- VIX ---
+    vix_data = raw_indicators.get("VIX", {})
+    vix_val = vix_data.get("value")
+    if vix_val is not None:
+        calm = vix_val <= REENTRY_THRESHOLDS["vix_calm"]
+        result["vix"] = {
+            "value": vix_val,
+            "safe": calm,
+            "threshold": REENTRY_THRESHOLDS["vix_calm"],
+            "status": f"VIX {vix_val:.1f} {'<= 30 안정' if calm else '> 30 공포'}",
+        }
+        if calm:
+            result["signals_met"].append(f"VIX {vix_val:.1f} <= 30")
+
+    # --- KOSPI (^KS11) ---
+    try:
+        kospi = _fetch_ticker("^KS11")
+        if kospi and kospi.value is not None:
+            kv = kospi.value
+            lo = REENTRY_THRESHOLDS["kospi_bottom_low"]
+            hi = REENTRY_THRESHOLDS["kospi_bottom_high"]
+            is_bottom = lo <= kv <= hi
+            result["kospi"] = {
+                "value": kv,
+                "bottom": is_bottom,
+                "threshold": f"{lo}~{hi}",
+                "status": f"KOSPI {kv:.0f} {'패닉바닥 도달!' if is_bottom else ('아직 높음' if kv > hi else '이미 하회')}",
+            }
+            if is_bottom:
+                result["signals_met"].append(f"KOSPI {kv:.0f} 패닉바닥({lo}~{hi})")
+            elif kv < lo:
+                # 바닥 이하 = 이미 더 빠짐 → 역발상 기회일 수도
+                result["signals_met"].append(f"KOSPI {kv:.0f} < {lo} 극단 패닉")
+    except Exception as e:
+        logger.warning(f"[NIGHTWATCH] KOSPI 수집 실패: {e}")
+
+    # --- 종합 ---
+    result["reentry_ok"] = len(result["signals_met"]) > 0
+
+    if result["reentry_ok"]:
+        result["summary"] = "진입 재개 시그널: " + " / ".join(result["signals_met"])
+    else:
+        statuses = []
+        if result["wti"]["value"] is not None:
+            statuses.append(result["wti"]["status"])
+        if result["vix"]["value"] is not None:
+            statuses.append(result["vix"]["status"])
+        if result["kospi"]["value"] is not None:
+            statuses.append(result["kospi"]["status"])
+        result["summary"] = "진입 대기 중: " + " | ".join(statuses)
+
+    return result
+
+
+# ═══════════════════════════════════════════════════
 #  JARVIS 섹터 선정 + NXT 대상 종목 매칭
 # ═══════════════════════════════════════════════════
 def select_sectors_and_targets(
@@ -813,6 +920,11 @@ def run_nightwatch() -> NightwatchReport:
     active = macro_conditions.get("active_text", [])
     logger.info(f"[NIGHTWATCH] 매크로: {', '.join(active) if active else '특이사항 없음'}")
 
+    # 5단: 진입 재개 시그널 감시 (WAR GATE)
+    logger.info("[NIGHTWATCH] [5단] 진입 재개 시그널 감시 (WTI/VIX/KOSPI)...")
+    reentry = check_reentry_signals(raw, macro_conditions)
+    logger.info(f"[NIGHTWATCH] 재개시그널: {reentry['summary']}")
+
     # 종합 (JARVIS 섹터 매핑 포함)
     report = calculate_nightwatch_score(
         asian_score, asian_detail,
@@ -820,6 +932,7 @@ def run_nightwatch() -> NightwatchReport:
         div_score, divergences, raw,
         macro_conditions=macro_conditions,
     )
+    report.reentry_signals = reentry
 
     # 저장
     save_nightwatch_report(report)
@@ -932,6 +1045,31 @@ def format_nightwatch_report(report: NightwatchReport) -> str:
         lines.append(f"판단: {report.selection_reason}")
 
     lines.append("")
+
+    # [5단] 진입 재개 시그널 (WAR GATE)
+    re = report.reentry_signals
+    if re:
+        lines.append("[5단] 진입 재개 감시 (WAR GATE)")
+        wti = re.get("wti", {})
+        vix = re.get("vix", {})
+        kospi = re.get("kospi", {})
+        if wti.get("value") is not None:
+            icon = "O" if wti["safe"] else "X"
+            lines.append(f"  [{icon}] WTI: {wti['status']}")
+        if vix.get("value") is not None:
+            icon = "O" if vix["safe"] else "X"
+            lines.append(f"  [{icon}] VIX: {vix['status']}")
+        if kospi.get("value") is not None:
+            icon = "O" if kospi["bottom"] else "X"
+            lines.append(f"  [{icon}] KOSPI: {kospi['status']}")
+        if re.get("reentry_ok"):
+            lines.append("")
+            lines.append(">> 진입 재개 시그널 발동! <<")
+            for s in re.get("signals_met", []):
+                lines.append(f"  >> {s}")
+        else:
+            lines.append("  -> 아직 진입 대기 (현금 유지)")
+        lines.append("")
 
     if report.recommended_sectors:
         lines.append("JARVIS 섹터:")
