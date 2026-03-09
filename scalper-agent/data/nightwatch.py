@@ -639,6 +639,7 @@ REENTRY_THRESHOLDS = {
     "vix_calm": 30.0,       # VIX 이 이하면 공포 완화
     "kospi_bottom_low": 4800,   # 패닉 바닥 하단
     "kospi_bottom_high": 5000,  # 패닉 바닥 상단
+    "min_signals": 2,       # 최소 2개 이상 충족 시에만 재개 (1개론 부족)
 }
 
 
@@ -650,7 +651,7 @@ def check_reentry_signals(raw_indicators: Dict, macro_conditions: Dict) -> Dict:
         "wti": {"value": 100.2, "safe": False, "status": "..."},
         "vix": {"value": 32.1, "safe": False, "status": "..."},
         "kospi": {"value": 5180, "bottom": False, "status": "..."},
-        "reentry_ok": False,       # 하나라도 충족 시 True
+        "reentry_ok": False,       # min_signals개 이상 충족 시 True
         "summary": "..."
     }
     """
@@ -715,19 +716,28 @@ def check_reentry_signals(raw_indicators: Dict, macro_conditions: Dict) -> Dict:
         logger.warning(f"[NIGHTWATCH] KOSPI 수집 실패: {e}")
 
     # --- 종합 ---
-    result["reentry_ok"] = len(result["signals_met"]) > 0
+    min_req = REENTRY_THRESHOLDS["min_signals"]
+    met_count = len(result["signals_met"])
+    result["reentry_ok"] = met_count >= min_req
+
+    statuses = []
+    if result["wti"]["value"] is not None:
+        statuses.append(result["wti"]["status"])
+    if result["vix"]["value"] is not None:
+        statuses.append(result["vix"]["status"])
+    if result["kospi"]["value"] is not None:
+        statuses.append(result["kospi"]["status"])
 
     if result["reentry_ok"]:
-        result["summary"] = "진입 재개 시그널: " + " / ".join(result["signals_met"])
+        result["summary"] = f"진입 재개 ({met_count}/{min_req} 충족): " + " / ".join(result["signals_met"])
+    elif met_count > 0:
+        result["summary"] = (
+            f"부분 충족 ({met_count}/{min_req}): "
+            + " / ".join(result["signals_met"])
+            + " | 나머지: " + " | ".join(statuses)
+        )
     else:
-        statuses = []
-        if result["wti"]["value"] is not None:
-            statuses.append(result["wti"]["status"])
-        if result["vix"]["value"] is not None:
-            statuses.append(result["vix"]["status"])
-        if result["kospi"]["value"] is not None:
-            statuses.append(result["kospi"]["status"])
-        result["summary"] = "진입 대기 중: " + " | ".join(statuses)
+        result["summary"] = f"진입 대기 (0/{min_req}): " + " | ".join(statuses)
 
     return result
 
@@ -1062,13 +1072,18 @@ def format_nightwatch_report(report: NightwatchReport) -> str:
         if kospi.get("value") is not None:
             icon = "O" if kospi["bottom"] else "X"
             lines.append(f"  [{icon}] KOSPI: {kospi['status']}")
+        met = re.get("signals_met", [])
+        min_req = REENTRY_THRESHOLDS["min_signals"]
         if re.get("reentry_ok"):
             lines.append("")
-            lines.append(">> 진입 재개 시그널 발동! <<")
-            for s in re.get("signals_met", []):
+            lines.append(f">> 진입 재개! ({len(met)}/{min_req} 충족) <<")
+            for s in met:
                 lines.append(f"  >> {s}")
-        else:
+        elif met:
+            lines.append(f"  ! 부분충족 {len(met)}/{min_req}: {', '.join(met)}")
             lines.append("  -> 아직 진입 대기 (현금 유지)")
+        else:
+            lines.append(f"  -> 진입 대기 (0/{min_req} 충족, 현금 유지)")
         lines.append("")
 
     if report.recommended_sectors:
