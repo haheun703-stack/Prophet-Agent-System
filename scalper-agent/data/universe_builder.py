@@ -37,6 +37,14 @@ def _ensure_dirs():
         d.mkdir(parents=True, exist_ok=True)
 
 
+def _load_existing_universe() -> dict:
+    """기존 universe.json 로드 (pykrx 실패 시 폴백)"""
+    if UNIVERSE_FILE.exists():
+        with open(UNIVERSE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
 def _find_latest_trading_day():
     """최근 거래일 찾기 (주말/공휴일 안전 처리)"""
     from pykrx import stock
@@ -117,7 +125,25 @@ def build_universe(min_cap_억: int = 1000) -> dict:
     date = _find_latest_trading_day()
     print(f"  기준일: {date}")
 
-    cap_df = stock.get_market_cap_by_ticker(date, market="ALL")
+    cap_df = None
+    for _attempt_offset in range(10):
+        _try_date = (datetime.strptime(date, "%Y%m%d") - timedelta(days=_attempt_offset)).strftime("%Y%m%d")
+        try:
+            cap_df = stock.get_market_cap_by_ticker(_try_date, market="ALL")
+            if cap_df is not None and not cap_df.empty and "시가총액" in cap_df.columns:
+                if (cap_df["시가총액"] > 0).sum() > 100:
+                    print(f"  시가총액 기준일: {_try_date}")
+                    break
+            cap_df = None
+        except Exception as _e:
+            print(f"  시가총액 조회 실패 ({_try_date}): {_e}")
+            cap_df = None
+            continue
+
+    if cap_df is None or cap_df.empty:
+        print("  [ERROR] pykrx 시가총액 조회 전체 실패 — 기존 universe.json 유지")
+        return _load_existing_universe()
+
     nonzero = cap_df[cap_df["시가총액"] > 0].copy()
 
     min_cap_won = min_cap_억 * 1_0000_0000  # 억 → 원
