@@ -54,6 +54,7 @@ scalper-agent/token.dat
 # Logs & Results
 scalper-agent/logs/
 scalper-agent/results/
+scalper-agent/**/*.log
 prophet-agent/results/
 scalper-agent/_evening_log.txt
 scalper-agent/tools/scan_result*.txt
