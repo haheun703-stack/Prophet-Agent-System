@@ -1,6 +1,20 @@
 # -*- coding: utf-8 -*-
-"""실시간 진입 감시 모니터 (6종목 — 기초분석 TOP4 + 수급검증 2종목)"""
-import sys, os, time, json
+"""
+장중 추적 모니터 + 텔레그램 알림
+================================
+전쟁 모드: recommendation.json에서 추천 종목 자동 로드
+평시 모드: 기존 하드코딩 종목 사용
+
+기능:
+  - 30초 간격 실시간 가격 추적
+  - 텔레그램 알림: 진입시그널 / 급등급락 / 30분 요약
+  - 09:00~15:30 장중 자동 실행 (장전/장후 대기)
+
+Usage:
+  python tools/entry_monitor.py           # recommendation.json 기반
+  python tools/entry_monitor.py --legacy  # 기존 하드코딩 종목
+"""
+import sys, os, time, json, requests
 from datetime import datetime
 from pathlib import Path
 
@@ -8,169 +22,262 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
+
 from bot.kis_trader import KISTrader
 
-# --- 감시 대상 ---
-# 기초분석 TOP4 (PBR/PER 저평가 + 흑자 + 배당)
-FUNDAMENTAL_PICKS = [
-    {
-        "code": "241560", "name": "두산밥캣", "tier": "T7_건설장비",
-        "entry": 58800, "entry_agg": 60000, "sl": 52900, "tp": 72000,
-        "memo": "PBR0.81 PER12.9 배당2.9% 기초분석1위"
-    },
-    {
-        "code": "375500", "name": "DL이앤씨", "tier": "T2_건설",
-        "entry": 44230, "entry_agg": 46230, "sl": 39770, "tp": 54700,
-        "memo": "PBR0.38극저평가 PER7.0 BPS12만vs현4.6만"
-    },
-    {
-        "code": "005490", "name": "POSCO홀딩스", "tier": "T4_철강",
-        "entry": 343840, "entry_agg": 359830, "sl": 308460, "tp": 427500,
-        "memo": "PBR0.46 배당3.0% BPS73만vs현34만"
-    },
-    {
-        "code": "028050", "name": "삼성E&A", "tier": "T2_건설",
-        "entry": 32050, "entry_agg": 34180, "sl": 29780, "tp": 39800,
-        "memo": "PER11.1 배당2.5% 중동수주95조"
-    },
+# ─── 텔레그램 동기 알림 ──────────────────────────────
+
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+
+
+def send_telegram(text: str):
+    """텔레그램 메시지 전송 (동기, requests 기반)"""
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        print(f"[TG] 토큰/챗ID 없음 — 콘솔만 출력")
+        return
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        resp = requests.post(url, json={
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": text,
+            "parse_mode": "HTML",
+        }, timeout=10)
+        if resp.status_code != 200:
+            print(f"[TG] 전송 실패: {resp.status_code}")
+    except Exception as e:
+        print(f"[TG] 오류: {e}")
+
+
+# ─── 추천 종목 로드 ──────────────────────────────────
+
+def load_war_mode_targets() -> list[dict]:
+    """recommendation.json에서 전쟁 모드 종목 로드"""
+    rec_path = Path(__file__).resolve().parent.parent / "data_store" / "recommendation.json"
+    if not rec_path.exists():
+        print("[WARN] recommendation.json 없음")
+        return []
+
+    with open(rec_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    targets = []
+    for s in data.get("stocks", []):
+        targets.append({
+            "code": s["code"],
+            "name": s["name"],
+            "close": s.get("close", 0),
+            "sl": s.get("sl", 0),
+            "tp": s.get("tp", 0),
+            "score": s.get("total_score", 0),
+            "sources": s.get("sources", []),
+            "tech_detail": s.get("tech_detail", ""),
+            "memo": " + ".join(s.get("sources", [])[:2]),
+        })
+    return targets
+
+
+# ─── 기존 하드코딩 종목 (legacy) ──────────────────────
+
+LEGACY_PICKS = [
+    {"code": "241560", "name": "두산밥캣", "sl": 52900, "tp": 72000,
+     "memo": "PBR0.81 PER12.9", "close": 59200},
+    {"code": "375500", "name": "DL이앤씨", "sl": 39770, "tp": 54700,
+     "memo": "PBR0.38 극저평가", "close": 46600},
+    {"code": "005490", "name": "POSCO홀딩스", "sl": 308460, "tp": 427500,
+     "memo": "PBR0.46 배당3.0%", "close": 342000},
+    {"code": "028050", "name": "삼성E&A", "sl": 29780, "tp": 39800,
+     "memo": "PER11.1 배당2.5%", "close": 31200},
 ]
 
-# 수급검증 통과 종목 (외국인/기관 매집)
-SUPPLY_PICKS = [
-    {
-        "code": "028670", "name": "팬오션", "tier": "T5_해운",
-        "entry": 5090, "entry_agg": 5490, "sl": 4670, "tp": 5920,
-        "memo": "기관+482만 매집, R:R 2.0"
-    },
-    {
-        "code": "047040", "name": "대우건설", "tier": "T2_건설",
-        "entry": 8810, "entry_agg": 9200, "sl": 7900, "tp": 10500,
-        "memo": "외국인+540만 폭매수, 거래량 압도"
-    },
-]
 
-TARGETS = FUNDAMENTAL_PICKS + SUPPLY_PICKS
+# ─── 모니터 로직 ─────────────────────────────────────
 
+def run_monitor(targets: list[dict], interval: int = 30):
+    """장중 추적 모니터 메인 루프
 
-def check_entry_conditions(t, price_info):
-    """진입 조건 체크 — 5개 중 3개 이상이면 ENTRY"""
-    cp = price_info["current_price"]
-    vol = price_info.get("volume", 0)
-    high = price_info.get("high", cp)
-    low = price_info.get("low", cp)
-    open_p = price_info.get("open", cp)
-
-    conditions = []
-    score = 0
-
-    # 1) 가격 안정: 시가 대비 -2% 이상 안 빠짐
-    if open_p > 0:
-        drop = (cp / open_p - 1) * 100
-        stable = drop >= -2.0
-        conditions.append(f"가격안정({'O' if stable else 'X'} {drop:+.1f}%)")
-        if stable:
-            score += 1
-
-    # 2) 양봉: 현재가 > 시가
-    bullish = cp > open_p if open_p > 0 else False
-    conditions.append(f"양봉({'O' if bullish else 'X'})")
-    if bullish:
-        score += 1
-
-    # 3) 거래량 활발: 종목별 차등 (대형주는 10만, 소형주는 50만)
-    vol_threshold = 100000 if cp > 100000 else 500000
-    vol_ok = vol > vol_threshold
-    conditions.append(f"거래량({'O' if vol_ok else 'X'} {vol:,})")
-    if vol_ok:
-        score += 1
-
-    # 4) 목표가 업사이드 5%+
-    tp = t["tp"]
-    upside = (tp / cp - 1) * 100 if cp > 0 else 0
-    up_ok = upside >= 5.0
-    conditions.append(f"업사이드({'O' if up_ok else 'X'} {upside:.1f}%)")
-    if up_ok:
-        score += 1
-
-    # 5) 진입가 근접: 현재가가 적극진입가 이내
-    entry_agg = t["entry_agg"]
-    near_entry = cp <= entry_agg
-    conditions.append(f"진입가근접({'O' if near_entry else 'X'} vs {entry_agg:,})")
-    if near_entry:
-        score += 1
-
-    signal = "ENTRY" if score >= 3 else "WAIT"
-    return signal, score, conditions
-
-
-def run_monitor(interval=30, max_minutes=180):
+    - 30초 간격 가격 체크
+    - 30분마다 텔레그램 요약 전송
+    - 급등(+3%) / 급락(-3%) / SL 근접 알림
+    - 09:00~15:30 장중만 활성
+    """
     trader = KISTrader()
-    print(f"[{datetime.now():%H:%M:%S}] 진입 감시 시작 -- {len(TARGETS)}종목, {interval}초 간격")
-    print(f"  기초분석 TOP4: {', '.join(t['name'] for t in FUNDAMENTAL_PICKS)}")
-    print(f"  수급검증 2종목: {', '.join(t['name'] for t in SUPPLY_PICKS)}")
-    print(f"  감시 종료: {max_minutes}분 후 또는 12:00")
-    print("=" * 70)
 
-    start = time.time()
+    # 상태 저장 (알림 중복 방지)
+    alert_sent = {}    # {code: set(alert_type)}
+    last_prices = {}   # {code: last_price}
+    open_prices = {}   # {code: 시가}
+    last_summary = 0   # 마지막 요약 시간
+
+    # 시작 알림
+    names = ", ".join(t["name"] for t in targets[:8])
+    start_msg = (
+        f"📡 장중 추적 모니터 시작\n"
+        f"종목: {names}\n"
+        f"간격: {interval}초 | SL/급등락 알림\n"
+        f"30분마다 요약 리포트"
+    )
+    print(start_msg)
+    send_telegram(start_msg)
+
     check_count = 0
 
     while True:
         now = datetime.now()
-        # 12시 이후 종료
-        if now.hour >= 12:
-            print(f"\n[{now:%H:%M:%S}] 12시 -- 감시 종료")
-            break
-        # 최대 시간 초과
-        if (time.time() - start) > max_minutes * 60:
-            print(f"\n[{now:%H:%M:%S}] {max_minutes}분 경과 -- 감시 종료")
+
+        # 장전 대기 (08:50 전)
+        if now.hour < 8 or (now.hour == 8 and now.minute < 50):
+            if check_count == 0:
+                print(f"[{now:%H:%M}] 장전 대기 중... (08:50에 시작)")
+            time.sleep(60)
+            continue
+
+        # 장후 종료 (15:35 이후)
+        if now.hour > 15 or (now.hour == 15 and now.minute > 35):
+            close_msg = f"🔔 장 마감 — 모니터 종료 ({now:%H:%M})"
+            print(close_msg)
+            send_telegram(close_msg)
+            # 최종 요약
+            _send_summary(targets, last_prices, open_prices)
             break
 
         check_count += 1
-        print(f"\n--- [{now:%H:%M:%S}] 체크 #{check_count} ---")
+        has_alert = False
 
-        for t in TARGETS:
+        for t in targets:
             try:
                 p = trader.fetch_price(t["code"])
                 if not p or not p.get("success"):
-                    print(f"  {t['name']}: 조회실패")
                     continue
 
                 cp = p["current_price"]
                 chg = p.get("change_rate", 0)
                 vol = p.get("volume", 0)
-                high = p.get("high", cp)
-                low = p.get("low", cp)
 
-                signal, score, conds = check_entry_conditions(t, p)
+                # 시가 기록 (최초 1회)
+                if t["code"] not in open_prices:
+                    open_prices[t["code"]] = p.get("open", cp)
 
-                arrow = "+" if chg > 0 else ""
-                icon = ">> ENTRY!" if signal == "ENTRY" else "   WAIT  "
+                prev = last_prices.get(t["code"], cp)
+                last_prices[t["code"]] = cp
 
-                vs_sl = (cp / t["sl"] - 1) * 100
-                vs_tp = (t["tp"] / cp - 1) * 100
+                sl = t.get("sl", 0)
+                tp = t.get("tp", 0)
 
+                # ── 알림 조건 체크 ──
+                code_alerts = alert_sent.setdefault(t["code"], set())
+
+                # 1) SL 근접 (-2% 이내)
+                if sl > 0 and cp > 0:
+                    vs_sl = (cp / sl - 1) * 100
+                    if vs_sl <= 2.0 and "SL_NEAR" not in code_alerts:
+                        msg = f"⚠️ {t['name']} SL근접!\n현재 {cp:,} → SL {sl:,} ({vs_sl:+.1f}%)"
+                        send_telegram(msg)
+                        code_alerts.add("SL_NEAR")
+                        has_alert = True
+
+                # 2) SL 이탈
+                if sl > 0 and cp <= sl and "SL_BREAK" not in code_alerts:
+                    msg = f"🚨 {t['name']} SL 이탈!\n현재 {cp:,} ≤ SL {sl:,}"
+                    send_telegram(msg)
+                    code_alerts.add("SL_BREAK")
+                    has_alert = True
+
+                # 3) 급등 (+3% 이상 from 시가)
+                open_p = open_prices.get(t["code"], cp)
+                if open_p > 0:
+                    day_chg = (cp / open_p - 1) * 100
+                    if day_chg >= 3.0 and "SURGE" not in code_alerts:
+                        msg = f"🚀 {t['name']} 급등!\n현재 {cp:,} ({day_chg:+.1f}% from 시가)"
+                        send_telegram(msg)
+                        code_alerts.add("SURGE")
+                        has_alert = True
+
+                    # 4) 급락 (-3% 이상 from 시가)
+                    if day_chg <= -3.0 and "DROP" not in code_alerts:
+                        msg = f"📉 {t['name']} 급락!\n현재 {cp:,} ({day_chg:+.1f}% from 시가)"
+                        send_telegram(msg)
+                        code_alerts.add("DROP")
+                        has_alert = True
+
+                # 5) TP 도달
+                if tp > 0 and cp >= tp and "TP_HIT" not in code_alerts:
+                    msg = f"🎯 {t['name']} TP 도달!\n현재 {cp:,} ≥ TP {tp:,}"
+                    send_telegram(msg)
+                    code_alerts.add("TP_HIT")
+                    has_alert = True
+
+                # 콘솔 출력
+                vs_tp = (tp / cp - 1) * 100 if tp > 0 and cp > 0 else 0
                 print(
-                    f"  {icon} {t['name']}({t['code']}) "
-                    f"{cp:,}원({arrow}{chg:.1f}%) "
-                    f"vol={vol:,} H:{high:,} L:{low:,}"
+                    f"  {t['name']:>8} {cp:>10,}원 ({chg:+5.1f}%) "
+                    f"vol={vol:>12,} → TP({vs_tp:+.1f}%)"
                 )
-                print(
-                    f"           조건 {score}/5: {' | '.join(conds)}"
-                )
-                print(
-                    f"           SL:{t['sl']:,}({vs_sl:+.1f}%) -> TP:{t['tp']:,}(+{vs_tp:.1f}%)"
-                )
-
-                if signal == "ENTRY":
-                    print(f"  *** {t['name']} 진입 시그널! [{t['memo']}] ***")
 
             except Exception as e:
                 print(f"  {t['name']}: ERR {e}")
 
             time.sleep(0.2)
 
+        # ── 30분 요약 ──
+        if time.time() - last_summary >= 1800:
+            _send_summary(targets, last_prices, open_prices)
+            last_summary = time.time()
+
+        if not has_alert and check_count % 10 == 0:
+            print(f"  [{now:%H:%M:%S}] 체크 #{check_count} 완료 — 이상 없음")
+
         time.sleep(interval)
 
 
+def _send_summary(targets, last_prices, open_prices):
+    """30분 요약 텔레그램 전송"""
+    now = datetime.now()
+    lines = [f"📊 추적 요약 [{now:%H:%M}]", ""]
+
+    for t in targets:
+        cp = last_prices.get(t["code"], 0)
+        if cp == 0:
+            continue
+
+        open_p = open_prices.get(t["code"], cp)
+        day_chg = (cp / open_p - 1) * 100 if open_p > 0 else 0
+        tp = t.get("tp", 0)
+        sl = t.get("sl", 0)
+        vs_tp = (tp / cp - 1) * 100 if tp > 0 and cp > 0 else 0
+
+        icon = "🟢" if day_chg > 0 else ("🔴" if day_chg < -1 else "⚪")
+        lines.append(
+            f"{icon} {t['name']} {cp:,}원 ({day_chg:+.1f}%) "
+            f"→TP({vs_tp:+.1f}%)"
+        )
+
+    if len(lines) > 2:
+        msg = "\n".join(lines)
+        print(msg)
+        send_telegram(msg)
+
+
+# ─── CLI ──────────────────────────────────────────────
+
 if __name__ == "__main__":
-    run_monitor(interval=30, max_minutes=180)
+    legacy = "--legacy" in sys.argv
+
+    if legacy:
+        print("레거시 모드 (기존 하드코딩 종목)")
+        targets = LEGACY_PICKS
+    else:
+        print("전쟁 모드 (recommendation.json 기반)")
+        targets = load_war_mode_targets()
+        if not targets:
+            print("추천 종목 없음! --legacy로 기존 종목 사용")
+            targets = LEGACY_PICKS
+
+    print(f"감시 종목 {len(targets)}개:")
+    for t in targets:
+        print(f"  {t['name']}({t['code']}) SL:{t.get('sl',0):,} TP:{t.get('tp',0):,}")
+    print()
+
+    run_monitor(targets, interval=30)
