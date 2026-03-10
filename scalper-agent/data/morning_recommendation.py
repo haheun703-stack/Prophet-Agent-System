@@ -1594,11 +1594,342 @@ def load_recommendation() -> Optional[RecommendationReport]:
 
 
 # ═══════════════════════════════════════
+#  전쟁 모드: 낙폭 대형주 랭킹
+# ═══════════════════════════════════════
+
+def _get_pre_war_prices(codes: list[str], pre_war_date: str = "2026-02-26") -> dict:
+    """전쟁 전 종가 조회 (CSV 일봉 기반)
+
+    Returns: {code: {"pre_war": int, "war_low": int, "current": int}}
+    """
+    import pandas as pd
+    from pathlib import Path
+
+    base = Path(__file__).resolve().parent.parent / "data_store" / "daily"
+    results = {}
+
+    for code in codes:
+        csv_path = base / f"{code}.csv"
+        if not csv_path.exists():
+            continue
+        try:
+            df = pd.read_csv(csv_path, encoding="utf-8")
+            df.columns = ["date", "open", "high", "low", "close", "volume", "change"]
+            df["date"] = pd.to_datetime(df["date"])
+            df = df.sort_values("date")
+
+            # 전쟁 전 종가 (2/24~2/26 중 마지막)
+            feb = df[(df["date"] >= "2026-02-24") & (df["date"] <= pre_war_date)]
+            pre_war = int(feb.iloc[-1]["close"]) if len(feb) > 0 else 0
+
+            # 전쟁 저점 (3/3~3/5)
+            war = df[(df["date"] >= "2026-03-03") & (df["date"] <= "2026-03-05")]
+            war_low = int(war["low"].min()) if len(war) > 0 else 0
+
+            # 현재가 (마지막 행)
+            current = int(df.iloc[-1]["close"])
+
+            if pre_war > 0 and current > 0:
+                results[code] = {
+                    "pre_war": pre_war,
+                    "war_low": war_low,
+                    "current": current,
+                }
+        except Exception as e:
+            logger.debug(f"전쟁전 가격 조회 실패 {code}: {e}")
+
+    return results
+
+
+def run_war_mode_recommendation() -> RecommendationReport:
+    """전쟁 모드: 낙폭 대형주 + 컨센서스 랭킹
+
+    평시 기술분석 대신 단순하고 확실한 전략:
+    1. 시총 TOP 50 로드
+    2. 전쟁 전 가격 vs 현재가 → 회복 업사이드
+    3. 컨센서스 목표가 → 컨센 업사이드
+    4. 수급 점수 (외국인/기관 순매수)
+    5. 종합 스코어 → TOP 8 추천
+    """
+    import json
+    import time
+    from datetime import datetime
+    from pathlib import Path
+
+    logger.info("=" * 50)
+    logger.info("전쟁 모드 추천 파이프라인 시작 (낙폭 대형주)")
+    logger.info("=" * 50)
+    t_start = time.time()
+
+    report = RecommendationReport(
+        stage="evening",
+        timestamp=datetime.now().strftime("%Y-%m-%d %H:%M"),
+    )
+
+    # ── 0) 시장 건전성 ──
+    try:
+        from data.market_health import diagnose
+        health = diagnose()
+        report.market_health = health.alert_level.upper()
+        if hasattr(health, "regime"):
+            regime = health.regime
+        else:
+            regime = "SHOCK"
+    except Exception as e:
+        report.market_health = "UNKNOWN"
+        regime = "SHOCK"
+        logger.warning(f"시장건전성 체크 실패: {e}")
+
+    report.warning = f"전쟁 모드 활성 (regime={regime})"
+
+    # ── 1) 시총 TOP 50 로드 ──
+    t0 = time.time()
+    uni_path = Path(__file__).resolve().parent.parent / "data_store" / "universe.json"
+    with open(uni_path, "r", encoding="utf-8") as f:
+        universe = json.load(f)
+
+    # 우선주 제외, 시총 정렬
+    stocks_by_cap = sorted(
+        [(code, info) for code, info in universe.items()
+         if not info.get("name", "").endswith("우")],
+        key=lambda x: x[1].get("cap_억", 0),
+        reverse=True,
+    )[:50]
+
+    top_codes = [code for code, _ in stocks_by_cap]
+    code_to_info = {code: info for code, info in stocks_by_cap}
+    logger.info(f"[Step 1] 시총 TOP 50 로드 ({time.time()-t0:.0f}s)")
+
+    # ── 2) 전쟁 전 가격 조회 ──
+    t0 = time.time()
+    price_data = _get_pre_war_prices(top_codes)
+    logger.info(f"[Step 2] 전쟁전 가격: {len(price_data)}/{len(top_codes)}종목 ({time.time()-t0:.0f}s)")
+
+    # ── 3) 컨센서스 크롤링 ──
+    t0 = time.time()
+    try:
+        from data.consensus_scraper import fetch_consensus_batch
+        consensus_data = fetch_consensus_batch(top_codes, delay=0.3, cache_hours=12)
+    except Exception as e:
+        logger.warning(f"컨센서스 크롤링 실패: {e}")
+        consensus_data = {}
+    logger.info(f"[Step 3] 컨센서스: {len(consensus_data)}/{len(top_codes)}종목 ({time.time()-t0:.0f}s)")
+
+    # ── 4) 수급 점수 ──
+    t0 = time.time()
+    supply_scores = {}
+    try:
+        from data.supply_naver import score_supply_batch
+        close_prices = {}
+        for code in top_codes:
+            pd = price_data.get(code)
+            if pd:
+                close_prices[code] = pd["current"]
+        supply_scores = score_supply_batch(top_codes, close_prices=close_prices)
+    except Exception as e:
+        logger.warning(f"수급 점수 실패: {e}")
+    scored = sum(1 for v in supply_scores.values() if isinstance(v, tuple) and v[0] != 0)
+    logger.info(f"[Step 4] 수급: {scored}/{len(top_codes)}종목 ({time.time()-t0:.0f}s)")
+
+    # ── 5) 종합 스코어링 ──
+    t0 = time.time()
+    candidates = []
+
+    for code in top_codes:
+        info = code_to_info.get(code, {})
+        name = info.get("name", code)
+        pd_info = price_data.get(code)
+        cs_info = consensus_data.get(code)
+
+        if not pd_info:
+            continue
+
+        current = pd_info["current"]
+        pre_war = pd_info["pre_war"]
+        war_low = pd_info["war_low"]
+
+        # 이미 전쟁 전 가격을 초과한 종목은 제외 (방산 등)
+        if current >= pre_war:
+            logger.debug(f"{name}: 이미 회복 완료 ({current:,} >= {pre_war:,})")
+            continue
+
+        # 회복 업사이드 (%)
+        recovery_upside = (pre_war / current - 1) * 100
+
+        # 컨센서스 업사이드 (%)
+        consensus_upside = 0.0
+        consensus_target = 0
+        if cs_info:
+            consensus_target = cs_info["target_price"]
+            if consensus_target > current:
+                consensus_upside = (consensus_target / current - 1) * 100
+
+        # 전쟁 낙폭 (%) — 낙폭이 클수록 기회
+        war_drop = abs((war_low / pre_war - 1) * 100) if war_low > 0 else 0
+
+        # 현재 회복률 (0~100%) — 낮을수록 아직 기회
+        if pre_war > war_low > 0:
+            recovery_rate = (current - war_low) / (pre_war - war_low) * 100
+        else:
+            recovery_rate = 0
+
+        # 수급 점수 (-30 ~ +50)
+        sup_info = supply_scores.get(code, (0, ""))
+        supply_sc = sup_info[0] if isinstance(sup_info, tuple) else 0
+        supply_detail = sup_info[1] if isinstance(sup_info, tuple) else ""
+
+        # 유동성 (거래량 기반, 0~10)
+        volume = info.get("volume", 0)
+        liquidity_sc = min(volume / 1_000_000, 10)  # 100만주 = 1점, 최대 10점
+
+        # ── 종합 스코어 ──
+        # 회복 업사이드 40% + 컨센서스 업사이드 30% + 수급 15% + 유동성 5% + 낙폭크기 10%
+        war_score = (
+            recovery_upside * 0.40
+            + consensus_upside * 0.30
+            + (supply_sc + 30) * 0.15  # supply_sc는 -30~+50 → 0~80으로 변환
+            + liquidity_sc * 0.50
+            + war_drop * 0.10
+        )
+
+        # SL/TP 계산
+        sl = int(war_low * 0.97) if war_low > 0 else int(current * 0.90)
+        tp = consensus_target if consensus_target > current else pre_war
+
+        # 신뢰도
+        if consensus_upside > 20 and recovery_upside > 15 and supply_sc > 10:
+            confidence = "HIGH"
+        elif consensus_upside > 10 or recovery_upside > 20:
+            confidence = "MED"
+        else:
+            confidence = "LOW"
+
+        # 소스 구성
+        sources = [f"war_dip({war_drop:.0f}%↓)"]
+        if recovery_upside > 0:
+            sources.append(f"recovery(+{recovery_upside:.0f}%)")
+        if consensus_upside > 0:
+            sources.append(f"consensus({consensus_target:,}→+{consensus_upside:.0f}%)")
+        if supply_sc > 0:
+            sources.append(f"supply(+{supply_sc:.0f})")
+
+        # 기술 상세
+        tech_detail = (
+            f"낙폭{war_drop:.0f}%|회복률{recovery_rate:.0f}%|"
+            f"회복+{recovery_upside:.0f}%|컨센+{consensus_upside:.0f}%"
+        )
+
+        rec = RecommendedStock(
+            code=code,
+            name=name,
+            close=current,
+            total_score=round(war_score, 1),
+            confidence=confidence,
+            entry=current,
+            sl=sl,
+            tp=tp,
+            sl_source="war_low" if war_low > 0 else "10%",
+            sources=sources,
+            tech_detail=tech_detail,
+            news_detail=f"recovery_rate={recovery_rate:.0f}%",
+            nationality_score=supply_sc,
+            nationality_detail=supply_detail,
+            cross_count=len(sources),
+        )
+        candidates.append(rec)
+
+    # 정렬: 종합 스코어 내림차순
+    candidates.sort(key=lambda x: x.total_score, reverse=True)
+    report.stocks = candidates[:8]
+
+    elapsed = time.time() - t_start
+    logger.info(f"[전쟁모드] 최종 추천: {len(report.stocks)}종목 ({elapsed:.0f}s)")
+
+    # ── 전쟁릴레이 워치리스트도 포함 ──
+    try:
+        war_relay_list = _step_war_relay_inject()
+        report.war_relay_stocks = war_relay_list
+    except Exception:
+        pass
+
+    # 자동 저장
+    try:
+        save_recommendation(report)
+    except Exception as e:
+        logger.warning(f"추천 자동저장 실패: {e}")
+
+    return report
+
+
+def format_war_recommendation(report: RecommendationReport) -> str:
+    """전쟁 모드 전용 텔레그램 포맷"""
+    lines = [
+        "🔴 전쟁 모드 추천 (낙폭 대형주 랭킹)",
+        f"   {report.timestamp}",
+        "=" * 36,
+    ]
+
+    if report.market_health:
+        health_emoji = {"NORMAL": "🟢", "WARNING": "🟡", "CRITICAL": "🔴"}.get(
+            report.market_health, "⚪"
+        )
+        lines.append(f"{health_emoji} 시장건전성: {report.market_health}")
+
+    if report.warning:
+        lines.append(f"⚠️ {report.warning}")
+
+    lines.append("")
+
+    conf_emoji = {"HIGH": "🔴", "MED": "🟡", "LOW": "⚪"}
+
+    for i, s in enumerate(report.stocks[:8], 1):
+        ce = conf_emoji.get(s.confidence, "⚪")
+        lines.append(
+            f"{ce} {i}. {s.name}({s.code}) [{s.confidence}] "
+            f"WAR점수:{s.total_score:.0f}"
+        )
+        lines.append(f"   현재: {s.close:,}원")
+        lines.append(f"   {s.tech_detail}")
+        lines.append(f"   SL: {s.sl:,} → TP: {s.tp:,}")
+        if s.nationality_detail:
+            lines.append(f"   🌍 {s.nationality_detail}")
+        if s.sources:
+            lines.append(f"   출처: {' + '.join(s.sources[:4])}")
+        lines.append("")
+
+    # 전쟁릴레이 포함
+    if report.war_relay_stocks:
+        lines.append("=" * 36)
+        lines.append(f"🎯 전쟁→재건 릴레이 ({len(report.war_relay_stocks)}종목)")
+        for i, s in enumerate(report.war_relay_stocks[:5], 1):
+            close = s.get("close", 0)
+            entry = s.get("entry", 0)
+            lines.append(
+                f"  {i}. {s.get('name','')}({s.get('code','')}) "
+                f"[{s.get('tier','')}] {close:,}원"
+            )
+
+    return "\n".join(lines)
+
+
+# ═══════════════════════════════════════
 #  CLI 테스트
 # ═══════════════════════════════════════
 
 if __name__ == "__main__":
+    import sys
+    # CLI 실행 시 scalper-agent/ 를 모듈 경로에 추가
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
-    print("저녁 추천 파이프라인 실행...")
-    report = run_evening_recommendation()
-    print(format_recommendation(report))
+
+    mode = sys.argv[1] if len(sys.argv) > 1 else "normal"
+
+    if mode == "war":
+        print("전쟁 모드 추천 파이프라인 실행...")
+        report = run_war_mode_recommendation()
+        print(format_war_recommendation(report))
+    else:
+        print("저녁 추천 파이프라인 실행...")
+        report = run_evening_recommendation()
+        print(format_recommendation(report))
