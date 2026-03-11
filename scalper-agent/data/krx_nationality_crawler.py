@@ -129,21 +129,28 @@ def _build_session(cookies: list = None) -> requests.Session:
 
 
 def _test_session(session: requests.Session) -> bool:
-    """세션 유효성 테스트 (OTP 발급 시도)"""
+    """세션 유효성 테스트 (JSON API로 삼성전자 1일 조회)"""
     try:
+        # JSON API로 직접 테스트 (HARD053 국적별 데이터)
+        json_url = "https://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
         params = {
+            "bld": "dbms/MDC/HARD/MDCHARD05302",
             "locale": "ko_KR",
             "mktId": "STK",
-            "trdDd": datetime.now().strftime("%Y%m%d"),
             "isuCd": "KR7005930003",
             "isuCd2": "005930",
-            "csvxls_isNo": "false",
-            "name": "fileDown",
-            "url": "dbms/MDC/STAT/standard/MDCSTAT03502",
+            "strtDd": datetime.now().strftime("%Y%m%d"),
+            "endDd": datetime.now().strftime("%Y%m%d"),
         }
-        resp = session.post(GEN_URL, data=params, timeout=10)
-        otp = resp.text.strip()
-        return otp != "LOGOUT" and len(otp) > 10 and len(otp) < 500
+        resp = session.post(json_url, data=params, timeout=10)
+        if resp.status_code != 200:
+            return False
+        text = resp.text.strip()
+        # LOGOUT이면 실패, JSON 형태면 성공 (데이터 없어도 {} 반환)
+        if "LOGOUT" in text[:20]:
+            return False
+        data = resp.json()
+        return isinstance(data, dict)
     except Exception:
         return False
 
@@ -431,11 +438,68 @@ def _fetch_nationality_http(
 
 
 # ═══════════════════════════════════════════
+# KRX 직접 로그인 (smile.krx.co.kr)
+# ═══════════════════════════════════════════
+
+SMILE_LOGIN_URL = "https://smile.krx.co.kr/oauth/userLogin"
+
+
+def _direct_login() -> requests.Session:
+    """KRX 자체 계정으로 직접 로그인 (Playwright 불필요)
+
+    smile.krx.co.kr → POST userId/userPw → 세션 쿠키 발급
+    네이버 OAuth보다 안정적 (봇탐지/2FA 없음)
+    """
+    if not KRX_ID or not KRX_PW:
+        logger.warning("KRX_ID / KRX_PW 미설정 → 직접 로그인 불가")
+        return None
+
+    session = requests.Session()
+    session.headers.update(HEADERS)
+
+    try:
+        resp = session.post(
+            SMILE_LOGIN_URL,
+            data={"userId": KRX_ID, "userPw": KRX_PW},
+            timeout=10,
+            allow_redirects=True,
+        )
+        # 302 → 200 (redirect followed) = 성공
+        if resp.status_code == 200 and session.cookies:
+            if _test_session(session):
+                logger.info(f"KRX 직접 로그인 성공 (쿠키 {len(session.cookies)}개)")
+                # 쿠키를 Playwright 포맷으로 저장 (호환)
+                pw_cookies = [
+                    {"name": c.name, "value": c.value, "domain": c.domain or ".krx.co.kr"}
+                    for c in session.cookies
+                ]
+                _save_cookies(pw_cookies)
+                return session
+            else:
+                logger.warning("KRX 직접 로그인: 세션은 생성됐으나 데이터 접근 불가")
+                return None
+
+        logger.warning(f"KRX 직접 로그인 실패: status={resp.status_code}")
+        return None
+
+    except Exception as e:
+        logger.error(f"KRX 직접 로그인 오류: {e}")
+        return None
+
+
+# ═══════════════════════════════════════════
 # 세션 관리 + 자동 재로그인
 # ═══════════════════════════════════════════
 
 def _get_valid_session() -> requests.Session:
-    """유효한 KRX 세션 반환 (쿠키 로드 → 테스트 → 필요시 재로그인)"""
+    """유효한 KRX 세션 반환
+
+    우선순위:
+      1. 기존 쿠키 재사용
+      2. KRX 직접 로그인 (smile.krx.co.kr) ← 가장 안정적
+      3. Playwright 네이버 OAuth (백업)
+    """
+    # 1) 기존 쿠키
     cookies = _load_cookies()
     if cookies:
         session = _build_session(cookies)
@@ -444,23 +508,33 @@ def _get_valid_session() -> requests.Session:
             return session
         logger.warning("쿠키 만료 → 재로그인")
 
-    # 재로그인
-    new_cookies = asyncio.run(_playwright_login(headless=True))
-    if not new_cookies:
-        logger.error("자동 로그인 실패")
-        return None
-
-    session = _build_session(new_cookies)
-    if _test_session(session):
-        logger.info("새 세션 유효!")
+    # 2) KRX 직접 로그인 (1순위)
+    session = _direct_login()
+    if session:
         return session
 
-    logger.error("로그인 성공했지만 세션 무효")
+    # 3) Playwright 네이버 OAuth (백업)
+    logger.info("직접 로그인 실패 → Playwright 네이버 OAuth 시도")
+    try:
+        new_cookies = asyncio.run(_playwright_login(headless=True))
+        if new_cookies:
+            session = _build_session(new_cookies)
+            if _test_session(session):
+                logger.info("Playwright 로그인 성공!")
+                return session
+    except Exception as e:
+        logger.warning(f"Playwright 백업 실패: {e}")
+
+    logger.error("모든 로그인 방법 실패")
     return None
 
 
 async def _get_valid_session_async() -> requests.Session:
-    """async 버전: 유효한 KRX 세션 반환"""
+    """async 버전: 유효한 KRX 세션 반환
+
+    우선순위: 쿠키 → 직접 로그인 → Playwright
+    """
+    # 1) 기존 쿠키
     cookies = _load_cookies()
     if cookies:
         session = _build_session(cookies)
@@ -470,18 +544,25 @@ async def _get_valid_session_async() -> requests.Session:
             return session
         logger.warning("쿠키 만료 → 재로그인")
 
-    new_cookies = await _playwright_login(headless=True)
-    if not new_cookies:
-        logger.error("자동 로그인 실패")
-        return None
-
-    session = _build_session(new_cookies)
-    valid = await asyncio.to_thread(_test_session, session)
-    if valid:
-        logger.info("새 세션 유효!")
+    # 2) KRX 직접 로그인
+    session = await asyncio.to_thread(_direct_login)
+    if session:
         return session
 
-    logger.error("로그인 성공했지만 세션 무효")
+    # 3) Playwright 백업
+    logger.info("직접 로그인 실패 → Playwright 네이버 OAuth 시도")
+    try:
+        new_cookies = await _playwright_login(headless=True)
+        if new_cookies:
+            session = _build_session(new_cookies)
+            valid = await asyncio.to_thread(_test_session, session)
+            if valid:
+                logger.info("Playwright 로그인 성공!")
+                return session
+    except Exception as e:
+        logger.warning(f"Playwright 백업 실패: {e}")
+
+    logger.error("모든 로그인 방법 실패")
     return None
 
 
