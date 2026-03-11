@@ -37,6 +37,7 @@ import logging
 import statistics
 import time
 from pathlib import Path
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
@@ -77,6 +78,42 @@ FOCUS_COUNTRIES = [
     "영국", "미국", "케이맨 제도", "싱가포르", "중국", "홍콩",
     "노르웨이", "일본", "스위스", "오스트레일리아", "프랑스",
 ]
+
+# ── 7 SECRET: 백테스트 검증 국가 가중치 (2/1~3/11, 1달치) ──
+SURGE_COUNTRY_WEIGHT = {
+    "영국": +3.54, "케이맨 제도": +2.24, "중국": +1.41,
+    "싱가포르": +1.01, "프랑스": +0.85, "미국": +0.62,
+    "노르웨이": +0.50,
+}
+REVERSE_COUNTRIES = {"스위스": -1.93, "일본": -1.63, "오스트레일리아": -1.20}
+
+COMBO_BONUS = {
+    ("영국", "싱가포르"): +5.07,
+    ("영국", "케이맨 제도"): +4.41,
+    ("영국", "중국"): +3.90,
+    ("케이맨 제도", "싱가포르"): +3.50,
+}
+
+SIGNAL_DECAY_DAYS = {
+    "영국": 3, "노르웨이": 4, "케이맨 제도": 1, "영국령 버진아일랜드": 1,
+    "중국": 5, "홍콩": 4, "싱가포르": 3, "일본": 2,
+    "미국": 3, "프랑스": 3, "스위스": 2, "오스트레일리아": 2,
+}
+
+
+@dataclass
+class NationalityPower:
+    """7 SECRET 국적 파워 분석 결과"""
+    score: float = 0.0           # 총합 점수 (-30 ~ +50)
+    grade: str = "NEUTRAL"       # POWER_BUY / BUY / NEUTRAL / CAUTION / DANGER
+    cascade_detected: bool = False  # SECRET 1: 헤지→기관 체인
+    vpd_detected: bool = False      # SECRET 2: Volume-Price Divergence
+    ghost_countries: list = field(default_factory=list)  # SECRET 3: 실종 국가
+    breadth_signal: str = ""        # SECRET 4: "BROAD_SURGE" / ""
+    decay_factor: float = 1.0       # SECRET 5: 시그널 수명 감쇠
+    reverse_penalty: float = 0.0    # SECRET 6: 역지표 감점
+    combo_bonus: float = 0.0        # SECRET 7: 조합 증폭
+    detail: str = ""                # 요약 문자열
 
 # ── 행동 패턴 정의 ──
 PATTERN_ACCUMULATING = "매집중"     # 3일+ 연속 증가
@@ -214,12 +251,14 @@ def analyze_nationality_behavior(
     codes: List[str],
     n_days: int = 5,
     code_names: Dict[str, str] = None,
+    daily_data: Dict[str, Dict[str, Dict[str, int]]] = None,
 ) -> Dict[str, List[dict]]:
     """종목별 국가 행동 프로파일 분석
 
     Returns: {code: [{"국가", "아키타입", "패턴", "일별거래량", "평균", "추세", "예측점수"}]}
     """
-    daily_data = collect_daily_series(codes, n_days)
+    if daily_data is None:
+        daily_data = collect_daily_series(codes, n_days)
 
     profiles = {}
     for code in codes:
@@ -348,6 +387,262 @@ def _calc_prediction_score(
 
 
 # ═══════════════════════════════════════════
+# 7 SECRET 국적 파워 시스템
+# ═══════════════════════════════════════════
+
+def _get_country_averages(
+    daily_data: Dict[str, Dict[str, int]],
+    countries: List[str],
+) -> Dict[str, float]:
+    """종목의 일별 데이터에서 국가별 평균 거래량 계산"""
+    avgs = {}
+    days = sorted(daily_data.keys())
+    for country in countries:
+        vols = [daily_data.get(d, {}).get(country, 0) for d in days]
+        nonzero = [v for v in vols if v > 0]
+        avgs[country] = statistics.mean(nonzero) if nonzero else 0
+    return avgs
+
+
+def _count_consecutive_surge(
+    daily_data: Dict[str, Dict[str, int]],
+    country: str,
+    avg: float,
+    threshold: float = 2.0,
+) -> int:
+    """최근부터 역순으로 연속 급증 일수 카운트"""
+    days = sorted(daily_data.keys(), reverse=True)
+    count = 0
+    for d in days:
+        vol = daily_data.get(d, {}).get(country, 0)
+        if avg > 0 and vol >= avg * threshold:
+            count += 1
+        else:
+            break
+    return count
+
+
+def calc_nationality_power(
+    codes: List[str],
+    daily_data: Dict[str, Dict[str, Dict[str, int]]] = None,
+    price_data: Dict[str, dict] = None,
+    all_codes_data: Dict[str, Dict[str, Dict[str, int]]] = None,
+    n_days: int = 5,
+) -> Dict[str, NationalityPower]:
+    """7 SECRET 국적 파워 분석
+
+    Args:
+        codes: 분석 대상 종목 코드
+        daily_data: {code: {YYYYMMDD: {국가명: 거래량}}} — 미리 수집된 시계열
+        price_data: {code: {"chg_5d": float}} — 5일 수익률
+        all_codes_data: 전체 종목 데이터 (breadth 계산용)
+        n_days: 수집 일수
+
+    Returns:
+        {code: NationalityPower}
+    """
+    if daily_data is None:
+        daily_data = collect_daily_series(codes, n_days)
+    if all_codes_data is None:
+        all_codes_data = daily_data
+
+    results = {}
+    for code in codes:
+        code_daily = daily_data.get(code, {})
+        if len(code_daily) < 2:
+            results[code] = NationalityPower()
+            continue
+
+        days = sorted(code_daily.keys())
+        latest_day = days[-1]
+        latest_data = code_daily.get(latest_day, {})
+
+        # 국가별 평균 계산
+        all_countries = set()
+        for d_data in code_daily.values():
+            all_countries.update(d_data.keys())
+        avgs = _get_country_averages(code_daily, list(all_countries))
+
+        # 급증 국가 판별 (최신일 기준, 평균 2x+)
+        surging = []
+        for country in FOCUS_COUNTRIES:
+            vol = latest_data.get(country, 0)
+            avg = avgs.get(country, 0)
+            if avg > 0 and vol >= avg * 2.0:
+                surging.append(country)
+
+        # ── SECRET 1: Cascade Detection (+8) ──
+        cascade_detected = False
+        hedge_countries = ["케이맨 제도", "영국령 버진아일랜드"]
+        inst_countries = ["영국", "노르웨이"]
+        avg_hedge = sum(avgs.get(c, 0) for c in hedge_countries)
+        avg_inst = sum(avgs.get(c, 0) for c in inst_countries)
+
+        hedge_surge_day_idx = None
+        for i, day in enumerate(days[:-1]):  # 마지막 날 제외
+            d_data = code_daily.get(day, {})
+            hedge_vol = sum(d_data.get(c, 0) for c in hedge_countries)
+            if avg_hedge > 0 and hedge_vol >= avg_hedge * 2.0:
+                hedge_surge_day_idx = i
+
+        if hedge_surge_day_idx is not None:
+            for j in range(hedge_surge_day_idx + 1, len(days)):
+                d_data = code_daily.get(days[j], {})
+                inst_vol = sum(d_data.get(c, 0) for c in inst_countries)
+                if avg_inst > 0 and inst_vol >= avg_inst * 1.5:
+                    cascade_detected = True
+                    break
+
+        cascade_bonus = 8.0 if cascade_detected else 0.0
+
+        # ── SECRET 2: VPD — Volume-Price Divergence (+10) ──
+        vpd_detected = False
+        chg_5d = 0.0
+        if price_data and code in price_data:
+            chg_5d = price_data[code].get("chg_5d", 0.0)
+
+        if chg_5d < -3.0:  # 주가 5일간 -3%+
+            for c in ["영국", "케이맨 제도", "미국"]:
+                vol = latest_data.get(c, 0)
+                avg = avgs.get(c, 0)
+                if avg > 0 and vol >= avg * 2.0:
+                    vpd_detected = True
+                    break
+
+        vpd_bonus = 10.0 if vpd_detected else 0.0
+
+        # ── SECRET 3: Ghost Detection (−감점) ──
+        ghost_countries = []
+        ghost_penalty = 0.0
+        if len(days) >= 3:
+            early_countries = set()
+            for d in days[:len(days) // 2]:
+                early_countries.update(code_daily.get(d, {}).keys())
+            late_countries = set()
+            for d in days[len(days) // 2:]:
+                late_countries.update(code_daily.get(d, {}).keys())
+
+            for country in FOCUS_COUNTRIES:
+                if country in early_countries and country not in late_countries:
+                    ghost_countries.append(country)
+                    weight = SURGE_COUNTRY_WEIGHT.get(country, 0.5)
+                    ghost_penalty -= min(weight, 3.0)
+
+        # ── SECRET 4: Breadth Signal (+5) ──
+        breadth_signal = ""
+        if all_codes_data and len(all_codes_data) > 1:
+            uk_surge_count = 0
+            for other_code, other_daily in all_codes_data.items():
+                other_latest = other_daily.get(latest_day, {})
+                uk_vol = other_latest.get("영국", 0)
+                other_avg = _get_country_averages(other_daily, ["영국"]).get("영국", 0)
+                if other_avg > 0 and uk_vol >= other_avg * 2.0:
+                    uk_surge_count += 1
+            if uk_surge_count >= 3:
+                breadth_signal = "BROAD_SURGE"
+
+        breadth_bonus = 5.0 if breadth_signal else 0.0
+
+        # ── SECRET 5: Signal Decay (×0.3~1.0) ──
+        decay_factors = []
+        for country in surging:
+            max_days = SIGNAL_DECAY_DAYS.get(country, 2)
+            consecutive = _count_consecutive_surge(code_daily, country, avgs.get(country, 0))
+            if consecutive >= max_days:
+                df = max(0.3, 1.0 - (consecutive - max_days) * 0.25)
+            else:
+                df = 1.0
+            decay_factors.append(df)
+        avg_decay = statistics.mean(decay_factors) if decay_factors else 1.0
+
+        # ── SECRET 6: Reverse Indicator (−감점) ──
+        reverse_penalty = 0.0
+        for country, penalty_weight in REVERSE_COUNTRIES.items():
+            vol = latest_data.get(country, 0)
+            avg = avgs.get(country, 0)
+            if avg > 0 and vol >= avg * 2.0:
+                reverse_penalty += penalty_weight
+
+        # ── SECRET 7: Non-linear Scoring ──
+        # 혼합 신호 감쇠
+        positive_surging = [c for c in surging if c in SURGE_COUNTRY_WEIGHT]
+        negative_surging = [c for c in surging if c in REVERSE_COUNTRIES]
+        mixed_dampen = 0.6 if (positive_surging and negative_surging) else 1.0
+
+        # 조합 증폭
+        combo_bonus = 0.0
+        surging_set = set(surging)
+        for (c1, c2), bonus in COMBO_BONUS.items():
+            if c1 in surging_set and c2 in surging_set:
+                combo_bonus += bonus * 0.3
+
+        # ── 기본 국가 점수 (가중 합산) ──
+        base_score = 0.0
+        for country in surging:
+            weight = SURGE_COUNTRY_WEIGHT.get(country, 0.3)
+            base_score += weight
+
+        # ── 최종 종합 ──
+        final_score = (
+            base_score * avg_decay * mixed_dampen
+            + cascade_bonus + vpd_bonus + ghost_penalty
+            + breadth_bonus + reverse_penalty + combo_bonus
+        )
+        final_score = max(-30, min(50, final_score))
+
+        # Grade 결정
+        if final_score >= 20:
+            grade = "POWER_BUY"
+        elif final_score >= 8:
+            grade = "BUY"
+        elif final_score >= -5:
+            grade = "NEUTRAL"
+        elif final_score >= -15:
+            grade = "CAUTION"
+        else:
+            grade = "DANGER"
+
+        # Detail 문자열
+        detail_parts = []
+        if cascade_detected:
+            detail_parts.append("CASCADE")
+        if vpd_detected:
+            detail_parts.append("VPD")
+        if ghost_countries:
+            detail_parts.append(f"GHOST:{','.join(ghost_countries[:2])}")
+        if breadth_signal:
+            detail_parts.append("BREADTH")
+        if combo_bonus > 0:
+            detail_parts.append(f"COMBO+{combo_bonus:.1f}")
+        if reverse_penalty < -0.5:
+            detail_parts.append(f"REV{reverse_penalty:.1f}")
+        if positive_surging:
+            detail_parts.append(f"급증:{'+'.join(positive_surging[:3])}")
+        if avg_decay < 0.9:
+            detail_parts.append(f"감쇠{avg_decay:.1f}")
+
+        results[code] = NationalityPower(
+            score=round(final_score, 2),
+            grade=grade,
+            cascade_detected=cascade_detected,
+            vpd_detected=vpd_detected,
+            ghost_countries=ghost_countries,
+            breadth_signal=breadth_signal,
+            decay_factor=round(avg_decay, 2),
+            reverse_penalty=round(reverse_penalty, 2),
+            combo_bonus=round(combo_bonus, 2),
+            detail="|".join(detail_parts) if detail_parts else "",
+        )
+
+        logger.debug(
+            f"{code}: NatPower={final_score:+.1f} [{grade}] "
+            f"surge={surging} cascade={cascade_detected} vpd={vpd_detected}"
+        )
+
+    return results
+
+
+# ═══════════════════════════════════════════
 # 내일 수급 예측 시그널
 # ═══════════════════════════════════════════
 
@@ -355,8 +650,9 @@ def predict_tomorrow_flow(
     codes: List[str],
     n_days: int = 5,
     code_names: Dict[str, str] = None,
+    price_data: Dict[str, dict] = None,
 ) -> List[dict]:
-    """종목별 내일 외국인 수급 예측
+    """종목별 내일 외국인 수급 예측 + 7 SECRET 파워 분석
 
     Returns: [{
         "code", "name",
@@ -365,9 +661,18 @@ def predict_tomorrow_flow(
         "reason": "기관매집+아시아진입",
         "key_countries": [{국가, 패턴, 예측점수}],
         "risk": "헤지펀드 차익실현 임박" | None,
+        "nat_power": NationalityPower | None,
     }]
     """
-    profiles = analyze_nationality_behavior(codes, n_days, code_names)
+    # daily_data를 먼저 수집하여 프로파일링 + 파워 양쪽에서 재사용 (API 중복 방지)
+    daily_data = collect_daily_series(codes, n_days)
+    profiles = analyze_nationality_behavior(codes, n_days, code_names, daily_data=daily_data)
+
+    # 7 SECRET 파워 계산 (daily_data 재사용, API 중복 호출 방지)
+    power_map = calc_nationality_power(
+        codes, daily_data=daily_data, price_data=price_data,
+        all_codes_data=daily_data, n_days=n_days,
+    )
 
     predictions = []
     for code in codes:
@@ -462,6 +767,7 @@ def predict_tomorrow_flow(
             "risk": " / ".join(risks) if risks else None,
             "key_countries": key_countries,
             "arch_scores": arch_scores,
+            "nat_power": power_map.get(code),  # 7 SECRET NationalityPower
         })
 
     # 점수 기준 정렬

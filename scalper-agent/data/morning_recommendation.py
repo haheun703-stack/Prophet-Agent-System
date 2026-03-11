@@ -63,6 +63,10 @@ class RecommendedStock:
     tech_detail: str = ""
     news_detail: str = ""
     confidence: str = ""  # HIGH / MED / LOW
+    # 7 SECRET 국적 파워
+    nat_power: float = 0.0           # calc_nationality_power 점수
+    nat_power_grade: str = ""        # POWER_BUY / BUY / NEUTRAL / CAUTION / DANGER
+    nat_power_detail: str = ""       # 요약 ("CASCADE+VPD|영국급증|콤보+1.5")
 
 
 @dataclass
@@ -615,6 +619,41 @@ def _step5_cross_validate(
             all_codes.add(code)
     all_codes.update(bargain_result.keys())
 
+    # ── 7 SECRET 국적 파워 (NORMAL 모드) ──
+    normal_nat_powers = {}
+    norm_price_data = {}
+    try:
+        from data.nationality_profiler import calc_nationality_power, collect_daily_series
+        from pathlib import Path as _Path2
+        _data_store2 = _Path2(__file__).resolve().parent.parent / "data_store"
+        norm_codes = list(all_codes)
+        if norm_codes:
+            # 5일 수익률 계산
+            for c in norm_codes:
+                csv_p = _data_store2 / "daily" / f"{c}.csv"
+                chg_5d = 0.0
+                if csv_p.exists():
+                    try:
+                        import pandas as _pd2
+                        df2 = _pd2.read_csv(csv_p, encoding="utf-8")
+                        if len(df2) >= 5:
+                            c5 = df2["종가"].iloc[-5]
+                            c0 = df2["종가"].iloc[-1]
+                            if c5 > 0:
+                                chg_5d = (c0 / c5 - 1) * 100
+                    except Exception:
+                        pass
+                norm_price_data[c] = {"chg_5d": chg_5d}
+            norm_daily = collect_daily_series(norm_codes, n_days=5)
+            normal_nat_powers = calc_nationality_power(
+                norm_codes, daily_data=norm_daily, price_data=norm_price_data,
+                all_codes_data=norm_daily, n_days=5,
+            )
+            np_cnt = sum(1 for v in normal_nat_powers.values() if v.score != 0)
+            logger.info(f"NORMAL 7SECRET 파워: {np_cnt}/{len(norm_codes)}종목")
+    except Exception as e:
+        logger.warning(f"NORMAL 7SECRET 파워 실패 (무시): {e}")
+
     candidates = []
     for code in all_codes:
         r_info = relay.get("stocks", {}).get(code, {})
@@ -759,11 +798,18 @@ def _step5_cross_validate(
             sources.append(f"gap:{_gap_reason}({gap_adj:+.0f})")
 
 
+        # 7 SECRET 국적 파워
+        norm_np = normal_nat_powers.get(code)
+        nat_power_sc = norm_np.score if norm_np else 0.0
+        if nat_power_sc != 0:
+            sources.append(f"7SECRET({norm_np.grade}:{nat_power_sc:+.1f})")
+
         # ── 합산 ──────────────────────────────
         raw_total = (relay_sc + premove_sc + tech_sc + bargain_sc + cross_bonus
                      + nat_sc + news_pen + obv_pen + rel_pen
                      + shock_pen + opp_bonus + rotation_bonus + or_bias_adj
-                     + eq_adj + gap_adj)
+                     + eq_adj + gap_adj
+                     + nat_power_sc)  # 7 SECRET 파워
         # CORTEX 체제 배수 적용
         total = raw_total * regime_mult
 
@@ -808,6 +854,9 @@ def _step5_cross_validate(
             tech_detail=t_info.get("detail", ""),
             news_detail=sentiment,
             confidence=confidence,
+            nat_power=nat_power_sc,
+            nat_power_grade=norm_np.grade if norm_np else "",
+            nat_power_detail=norm_np.detail if norm_np else "",
         )
         candidates.append(rec)
 
@@ -1124,12 +1173,20 @@ def run_evening_recommendation() -> RecommendationReport:
     elapsed = time.time() - t_start
     logger.info(f"최종 추천: {len(final_stocks)}종목, 모멘텀 {len(report.momentum_stocks)}종목 (전체 {elapsed:.0f}s)")
 
-    # ── 2단계: 국적별 행동 프로파일러 (수급 거부권) ──
+    # ── 2단계: 국적별 행동 프로파일러 + 7 SECRET 파워 ──
     try:
         from data.nationality_profiler import predict_tomorrow_flow
         top_codes = [s.code for s in report.stocks]
         top_names = {s.code: s.name for s in report.stocks}
-        flow_preds = predict_tomorrow_flow(top_codes, n_days=5, code_names=top_names)
+        # price_data 전달 (VPD 계산용)
+        top_price_data = {}
+        for c in top_codes:
+            if c in norm_price_data:
+                top_price_data[c] = norm_price_data[c]
+        flow_preds = predict_tomorrow_flow(
+            top_codes, n_days=5, code_names=top_names,
+            price_data=top_price_data,
+        )
         flow_map = {p["code"]: p for p in flow_preds}
 
         for s in report.stocks:
@@ -1143,8 +1200,14 @@ def run_evening_recommendation() -> RecommendationReport:
                 if pred.get("risk"):
                     parts.append(f"⚠️{pred['risk']}")
                 s.flow_detail = " | ".join(parts) if parts else "중립"
+                # 7 SECRET 파워
+                np_obj = pred.get("nat_power")
+                if np_obj and hasattr(np_obj, "score"):
+                    s.nat_power = np_obj.score
+                    s.nat_power_grade = np_obj.grade
+                    s.nat_power_detail = np_obj.detail
 
-        logger.info(f"2단계 수급 프로파일링 완료: {len(flow_preds)}종목")
+        logger.info(f"2단계 수급 프로파일링 + 7SECRET 완료: {len(flow_preds)}종목")
     except Exception as e:
         logger.warning(f"수급 프로파일링 실패 (무시): {e}")
 
@@ -1457,6 +1520,15 @@ def format_recommendation(report: RecommendationReport, max_budget: int = 0) -> 
             lines.append(f"   {flow_emoji} 수급예측: {flow_kr}({flow_sc:+.0f})")
             if flow_det:
                 lines.append(f"   └ {flow_det}")
+        # 7 SECRET 파워 표시
+        np_grade = getattr(s, "nat_power_grade", "")
+        np_score = getattr(s, "nat_power", 0)
+        np_detail = getattr(s, "nat_power_detail", "")
+        if np_grade and np_grade != "NEUTRAL":
+            grade_emoji = {"POWER_BUY": "💥", "BUY": "🟢", "CAUTION": "🟡", "DANGER": "🔴"}.get(np_grade, "⚪")
+            lines.append(f"   {grade_emoji} 7SECRET: {np_grade}({np_score:+.1f})")
+            if np_detail:
+                lines.append(f"   └ {np_detail}")
         if shares > 0:
             lines.append(f"   매수: {shares}주 = {buy_total:,}원")
         if s.sources:
@@ -1562,6 +1634,9 @@ def save_recommendation(report: RecommendationReport):
                 "flow_signal": getattr(s, "flow_signal", ""),
                 "flow_score": getattr(s, "flow_score", 0.0),
                 "flow_detail": getattr(s, "flow_detail", ""),
+                "nat_power": getattr(s, "nat_power", 0.0),
+                "nat_power_grade": getattr(s, "nat_power_grade", ""),
+                "nat_power_detail": getattr(s, "nat_power_detail", ""),
                 "news_penalty": s.news_penalty,
                 "obv_penalty": s.obv_penalty,
                 "relative_penalty": s.relative_penalty,
@@ -1626,6 +1701,9 @@ def load_recommendation() -> Optional[RecommendationReport]:
                 flow_signal=sd.get("flow_signal", ""),
                 flow_score=sd.get("flow_score", 0),
                 flow_detail=sd.get("flow_detail", ""),
+                nat_power=sd.get("nat_power", 0),
+                nat_power_grade=sd.get("nat_power_grade", ""),
+                nat_power_detail=sd.get("nat_power_detail", ""),
                 news_penalty=sd.get("news_penalty", 0),
                 obv_penalty=sd.get("obv_penalty", 0),
                 relative_penalty=sd.get("relative_penalty", 0),
@@ -1919,7 +1997,44 @@ def run_war_mode_recommendation() -> RecommendationReport:
         except Exception as e:
             logger.warning(f"실시간 가격 실패 (CSV 종가 유지): {e}")
 
-    # ── 5) 종합 스코어링 (v2: 기술회복 포함) ──
+    # ── 4.8) 7 SECRET 국적 파워 분석 ──
+    t0 = time.time()
+    nat_power_scores = {}
+    nat_price_data = {}
+    try:
+        from data.nationality_profiler import calc_nationality_power, collect_daily_series
+        from pathlib import Path as _Path
+        _data_store = _Path(__file__).resolve().parent.parent / "data_store"
+        # price_data를 chg_5d 형태로 변환
+        for code in top_codes:
+            pd_info = price_data.get(code)
+            if pd_info:
+                # 5일 수익률: CSV daily에서 계산
+                csv_path = _data_store / "daily" / f"{code}.csv"
+                chg_5d = 0.0
+                if csv_path.exists():
+                    try:
+                        import pandas as _pd
+                        df = _pd.read_csv(csv_path, encoding="utf-8")
+                        if len(df) >= 5:
+                            c5 = df["종가"].iloc[-5]
+                            c0 = df["종가"].iloc[-1]
+                            if c5 > 0:
+                                chg_5d = (c0 / c5 - 1) * 100
+                    except Exception:
+                        pass
+                nat_price_data[code] = {"chg_5d": chg_5d}
+        nat_daily = collect_daily_series(top_codes, n_days=5)
+        nat_power_scores = calc_nationality_power(
+            top_codes, daily_data=nat_daily, price_data=nat_price_data,
+            all_codes_data=nat_daily, n_days=5,
+        )
+        np_active = sum(1 for v in nat_power_scores.values() if v.score != 0)
+        logger.info(f"[Step 4.8] 7SECRET 파워: {np_active}/{len(top_codes)}종목 시그널 ({time.time()-t0:.0f}s)")
+    except Exception as e:
+        logger.warning(f"[Step 4.8] 7SECRET 파워 실패 (무시): {e}")
+
+    # ── 5) 종합 스코어링 (v3: 기술회복 + 7SECRET 포함) ──
     t0 = time.time()
     candidates = []
 
@@ -1979,15 +2094,20 @@ def run_war_mode_recommendation() -> RecommendationReport:
         volume = info.get("volume", 0)
         liquidity_sc = min(volume / 1_000_000, 10)  # 100만주 = 1점, 최대 10점
 
-        # ── 종합 스코어 v2 (기술회복 포함) ──
-        # 회복30% + 컨센20% + 수급20% + 기술회복20% + 낙폭5% + 유동성5%
+        # 7 SECRET 국적 파워 점수
+        np_result = nat_power_scores.get(code)
+        nat_power_sc = np_result.score if np_result else 0.0
+
+        # ── 종합 스코어 v3 (기술회복 + 7SECRET 포함) ──
+        # 회복25% + 컨센15% + 수급15% + 기술16% + 7SECRET24% + 낙폭5%
         war_score = (
-            recovery_upside * 0.30       # 회복 업사이드 (30%)
-            + consensus_upside * 0.20    # 컨센서스 업사이드 (20%)
-            + supply_norm * 0.20         # 수급 정규화 (20%)
-            + tech_score * 1.0           # 기술회복 0~20 그대로 (20%)
+            recovery_upside * 0.25       # 회복 업사이드 (25%)
+            + consensus_upside * 0.15    # 컨센서스 업사이드 (15%)
+            + supply_norm * 0.15         # 수급 정규화 (15%)
+            + tech_score * 0.80          # 기술회복 (16%)
+            + nat_power_sc * 0.30        # 7SECRET 파워 (24%)
             + war_drop * 0.05            # 낙폭크기 (5%)
-            + liquidity_sc * 0.50        # 유동성 (5%)
+            + liquidity_sc * 0.40        # 유동성
         )
 
         # 졸업 임박 감점: 70%+ 회복한 종목은 순위 하락
@@ -2028,6 +2148,12 @@ def run_war_mode_recommendation() -> RecommendationReport:
             f"{graduation_tag}"
         )
 
+        # nat_power 상세
+        np_grade = np_result.grade if np_result else ""
+        np_detail = np_result.detail if np_result else ""
+        if np_result and nat_power_sc != 0:
+            sources.append(f"7SECRET({np_grade}:{nat_power_sc:+.1f})")
+
         rec = RecommendedStock(
             code=code,
             name=name,
@@ -2044,6 +2170,9 @@ def run_war_mode_recommendation() -> RecommendationReport:
             nationality_score=supply_sc,
             nationality_detail=supply_detail,
             cross_count=len(sources),
+            nat_power=nat_power_sc,
+            nat_power_grade=np_grade,
+            nat_power_detail=np_detail,
         )
         candidates.append(rec)
 
@@ -2054,12 +2183,20 @@ def run_war_mode_recommendation() -> RecommendationReport:
     elapsed = time.time() - t_start
     logger.info(f"[전쟁모드] 최종 추천: {len(report.stocks)}종목 ({elapsed:.0f}s)")
 
-    # ── 2단계: 국적별 행동 프로파일러 (수급 거부권) ──
+    # ── 2단계: 국적별 행동 프로파일러 + 7 SECRET 파워 ──
     try:
         from data.nationality_profiler import predict_tomorrow_flow
         top_codes = [s.code for s in report.stocks]
         top_names = {s.code: s.name for s in report.stocks}
-        flow_preds = predict_tomorrow_flow(top_codes, n_days=5, code_names=top_names)
+        # price_data 전달 (VPD 계산용)
+        top_price_data = {}
+        for c in top_codes:
+            if c in nat_price_data:
+                top_price_data[c] = nat_price_data[c]
+        flow_preds = predict_tomorrow_flow(
+            top_codes, n_days=5, code_names=top_names,
+            price_data=top_price_data,
+        )
         flow_map = {p["code"]: p for p in flow_preds}
 
         for s in report.stocks:
@@ -2074,8 +2211,14 @@ def run_war_mode_recommendation() -> RecommendationReport:
                 if pred.get("risk"):
                     parts.append(f"⚠️{pred['risk']}")
                 s.flow_detail = " | ".join(parts) if parts else "중립"
+                # 7 SECRET 파워 (2단계에서 세부 업데이트)
+                np_obj = pred.get("nat_power")
+                if np_obj and hasattr(np_obj, "score"):
+                    s.nat_power = np_obj.score
+                    s.nat_power_grade = np_obj.grade
+                    s.nat_power_detail = np_obj.detail
 
-        logger.info(f"[전쟁모드] 2단계 수급 프로파일링 완료: {len(flow_preds)}종목")
+        logger.info(f"[전쟁모드] 2단계 수급 프로파일링 + 7SECRET 완료: {len(flow_preds)}종목")
     except Exception as e:
         logger.warning(f"[전쟁모드] 수급 프로파일링 실패 (무시): {e}")
 
@@ -2143,6 +2286,15 @@ def format_war_recommendation(report: RecommendationReport) -> str:
             lines.append(f"   {flow_emoji} 수급예측: {flow_kr}({flow_sc:+.0f})")
             if flow_det:
                 lines.append(f"   └ {flow_det}")
+        # 7 SECRET 파워 표시
+        np_grade = getattr(s, "nat_power_grade", "")
+        np_score = getattr(s, "nat_power", 0)
+        np_detail = getattr(s, "nat_power_detail", "")
+        if np_grade and np_grade != "NEUTRAL":
+            grade_emoji = {"POWER_BUY": "💥", "BUY": "🟢", "CAUTION": "🟡", "DANGER": "🔴"}.get(np_grade, "⚪")
+            lines.append(f"   {grade_emoji} 7SECRET: {np_grade}({np_score:+.1f})")
+            if np_detail:
+                lines.append(f"   └ {np_detail}")
         if s.sources:
             lines.append(f"   출처: {' + '.join(s.sources[:4])}")
         lines.append("")
