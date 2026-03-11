@@ -513,6 +513,159 @@ class BodyHunterBot:
         except Exception as e:
             logger.error(f"보유종목 알림 체크 실패: {e}")
 
+    # ── 전쟁모드 장중 추적 ──────────────────────────────
+
+    def _load_war_targets(self):
+        """recommendation.json에서 전쟁모드 추천 종목 로드"""
+        import json
+        rec_path = Path(__file__).resolve().parent.parent / "data_store" / "recommendation.json"
+        if not rec_path.exists():
+            return []
+        try:
+            with open(rec_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data.get("stocks", [])
+        except Exception:
+            return []
+
+    async def _job_war_tracker(self, context):
+        """전쟁모드 추적 — 60초 간격, 급등/급락/SL 알림"""
+        from datetime import date as _date
+        now = datetime.now()
+        if _date.today().weekday() >= 5:
+            return
+        now_min = now.hour * 60 + now.minute
+        if now_min < 540 or now_min >= 935:  # 09:00~15:35
+            return
+
+        targets = self._load_war_targets()
+        if not targets:
+            return
+
+        chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        war_state = context.bot_data.setdefault("war_tracker", {})
+        # alert_sent: {code: set(alert_types)}, open_prices: {code: int}
+        alert_sent = war_state.setdefault("alerts", {})
+        open_prices = war_state.setdefault("opens", {})
+        last_prices = war_state.setdefault("prices", {})
+
+        for s in targets[:8]:
+            code = s.get("code", "")
+            name = s.get("name", code)
+            sl = s.get("sl", 0)
+            tp = s.get("tp", 0)
+
+            try:
+                p = await asyncio.to_thread(self.trader.fetch_price, code)
+                if not p or not p.get("success"):
+                    continue
+
+                cp = p["current_price"]
+                last_prices[code] = cp
+
+                if code not in open_prices:
+                    open_prices[code] = p.get("open", cp)
+
+                code_alerts = alert_sent.setdefault(code, set())
+                open_p = open_prices.get(code, cp)
+
+                # 1) SL 근접
+                if sl > 0 and cp > 0:
+                    vs_sl = (cp / sl - 1) * 100
+                    if vs_sl <= 2.0 and "SL_NEAR" not in code_alerts:
+                        await context.bot.send_message(
+                            chat_id=chat_id,
+                            text=f"⚠️ {name} SL근접!\n현재 {cp:,} → SL {sl:,} ({vs_sl:+.1f}%)"
+                        )
+                        code_alerts.add("SL_NEAR")
+
+                # 2) SL 이탈
+                if sl > 0 and cp <= sl and "SL_BREAK" not in code_alerts:
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=f"🚨 {name} SL 이탈!\n현재 {cp:,} ≤ SL {sl:,}"
+                    )
+                    code_alerts.add("SL_BREAK")
+
+                # 3) 급등 (+3%)
+                if open_p > 0:
+                    day_chg = (cp / open_p - 1) * 100
+                    if day_chg >= 3.0 and "SURGE" not in code_alerts:
+                        await context.bot.send_message(
+                            chat_id=chat_id,
+                            text=f"🚀 {name} 급등!\n{cp:,}원 ({day_chg:+.1f}% from 시가)"
+                        )
+                        code_alerts.add("SURGE")
+                    if day_chg <= -3.0 and "DROP" not in code_alerts:
+                        await context.bot.send_message(
+                            chat_id=chat_id,
+                            text=f"📉 {name} 급락!\n{cp:,}원 ({day_chg:+.1f}% from 시가)"
+                        )
+                        code_alerts.add("DROP")
+
+                # 4) TP 도달
+                if tp > 0 and cp >= tp and "TP_HIT" not in code_alerts:
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=f"🎯 {name} TP 도달!\n{cp:,} ≥ TP {tp:,}"
+                    )
+                    code_alerts.add("TP_HIT")
+
+            except Exception as e:
+                logger.debug(f"전쟁추적 {name}: {e}")
+
+    async def _job_war_summary(self, context):
+        """전쟁모드 30분 요약 텔레그램 전송"""
+        from datetime import date as _date
+        if _date.today().weekday() >= 5:
+            return
+
+        targets = self._load_war_targets()
+        if not targets:
+            return
+
+        chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        war_state = context.bot_data.get("war_tracker", {})
+        last_prices = war_state.get("prices", {})
+        open_prices = war_state.get("opens", {})
+
+        now = datetime.now()
+        lines = [f"📊 전쟁모드 추적 [{now:%H:%M}]", ""]
+
+        for s in targets[:8]:
+            code = s.get("code", "")
+            name = s.get("name", code)
+            tp = s.get("tp", 0)
+            cp = last_prices.get(code, 0)
+
+            if cp == 0:
+                # 아직 가격 데이터 없으면 조회
+                try:
+                    p = await asyncio.to_thread(self.trader.fetch_price, code)
+                    if p and p.get("success"):
+                        cp = p["current_price"]
+                        last_prices[code] = cp
+                        if code not in open_prices:
+                            open_prices[code] = p.get("open", cp)
+                except Exception:
+                    continue
+
+            if cp == 0:
+                continue
+
+            open_p = open_prices.get(code, cp)
+            day_chg = (cp / open_p - 1) * 100 if open_p > 0 else 0
+            vs_tp = (tp / cp - 1) * 100 if tp > 0 and cp > 0 else 0
+
+            icon = "🟢" if day_chg > 0 else ("🔴" if day_chg < -1 else "⚪")
+            lines.append(f"{icon} {name} {cp:,}원 ({day_chg:+.1f}%) →TP({vs_tp:+.1f}%)")
+
+        if len(lines) > 2:
+            try:
+                await context.bot.send_message(chat_id=chat_id, text="\n".join(lines))
+            except Exception as e:
+                logger.error(f"전쟁추적 요약 전송 실패: {e}")
+
     async def cmd_buy(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update):
             return
@@ -1963,6 +2116,16 @@ class BodyHunterBot:
         jq.run_daily(self._job_portfolio_dashboard, time=kst_time(14, 30))
         jq.run_repeating(self._job_portfolio_alert, interval=60, first=90)
         logger.info("보유종목 대시보드 등록: 10:00/13:00/14:30 KST + 알림 60초")
+
+        # ── 전쟁모드 장중 추적 (30분 요약 + 급등/급락 알림) ──
+        jq.run_repeating(self._job_war_tracker, interval=60, first=30)
+        jq.run_daily(self._job_war_summary, time=kst_time(9, 30))
+        jq.run_daily(self._job_war_summary, time=kst_time(10, 30))
+        jq.run_daily(self._job_war_summary, time=kst_time(11, 30))
+        jq.run_daily(self._job_war_summary, time=kst_time(13, 30))
+        jq.run_daily(self._job_war_summary, time=kst_time(14, 30))
+        jq.run_daily(self._job_war_summary, time=kst_time(15, 15))
+        logger.info("전쟁모드 추적 등록: 60초 감시 + 30분 요약")
 
         # ── JARVIS BRAIN 자본 배분 (백업용 - NIGHTWATCH 미실행 대비) ──
         jq.run_daily(self.auto_trader.job_brain_allocation, time=kst_time(16, 36))
