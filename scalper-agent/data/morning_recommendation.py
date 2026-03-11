@@ -1641,6 +1641,119 @@ def _get_pre_war_prices(codes: list[str], pre_war_date: str = "2026-02-26") -> d
     return results
 
 
+def _calc_tech_recovery_scores(codes: list[str]) -> dict:
+    """전쟁 모드용 기술 회복 시그널 배치 계산
+
+    각 종목별 0~20점:
+      +5: RSI 과매도 탈출 (직전5봉 중 RSI<35 → 현재>40)
+      +5: MACD 히스토그램 음→양 전환 (최근 3봉)
+      +5: 거래량비율 2x+ (20일 평균 대비)
+      +5: 5일 수익률 (후보군 내 상대평가)
+
+    Returns: {code: {"score": float, "rsi": float, "chg_5d": float, "detail": str}}
+    """
+    import pandas as pd
+    import numpy as np
+    from pathlib import Path
+
+    base = Path(__file__).resolve().parent.parent / "data_store" / "daily"
+    raw_results = {}
+
+    for code in codes:
+        csv_path = base / f"{code}.csv"
+        if not csv_path.exists():
+            continue
+        try:
+            df = pd.read_csv(csv_path, encoding="utf-8")
+            df.columns = ["date", "open", "high", "low", "close", "volume", "change"]
+            if len(df) < 25:
+                continue
+
+            close = df["close"].astype(float)
+            volume = df["volume"].astype(float)
+
+            score = 0.0
+            details = []
+
+            # --- RSI 과매도 탈출 ---
+            try:
+                from data.swing_indicators import calc_rsi
+                rsi_series = calc_rsi(close, 14)
+                rsi_now = float(rsi_series.iloc[-1])
+                rsi_recent_min = float(rsi_series.iloc[-6:-1].min()) if len(rsi_series) >= 6 else rsi_now
+                if rsi_recent_min < 35 and rsi_now > 40:
+                    score += 5.0
+                    details.append(f"RSI탈출({rsi_recent_min:.0f}→{rsi_now:.0f})")
+                elif rsi_now < 35:
+                    score += 2.0  # 아직 과매도지만 반등 대기
+                    details.append(f"RSI과매도({rsi_now:.0f})")
+            except Exception:
+                rsi_now = 50.0
+
+            # --- MACD 히스토그램 음→양 전환 ---
+            try:
+                from data.swing_indicators import calc_histogram
+                hist_df = calc_histogram(close)
+                hist = hist_df["histogram"]
+                if len(hist) >= 3:
+                    h_prev2 = float(hist.iloc[-3])
+                    h_prev1 = float(hist.iloc[-2])
+                    h_now = float(hist.iloc[-1])
+                    if h_prev2 < 0 and h_now > 0:
+                        score += 5.0
+                        details.append("MACD전환")
+                    elif h_prev1 < 0 and h_now > 0:
+                        score += 4.0
+                        details.append("MACD전환중")
+                    elif h_now > h_prev1 > h_prev2:
+                        score += 2.0
+                        details.append("MACD개선")
+            except Exception:
+                pass
+
+            # --- 거래량 급증 (20일 평균 대비) ---
+            if len(volume) >= 21:
+                vol_avg_20 = float(volume.iloc[-21:-1].mean())
+                vol_today = float(volume.iloc[-1])
+                if vol_avg_20 > 0:
+                    vol_ratio = vol_today / vol_avg_20
+                    if vol_ratio >= 2.0:
+                        score += 5.0
+                        details.append(f"거래량{vol_ratio:.1f}x")
+                    elif vol_ratio >= 1.5:
+                        score += 2.5
+                        details.append(f"거래량{vol_ratio:.1f}x")
+
+            # --- 5일 수익률 (나중에 상대평가) ---
+            if len(close) >= 6:
+                chg_5d = (float(close.iloc[-1]) / float(close.iloc[-6]) - 1) * 100
+            else:
+                chg_5d = 0.0
+
+            raw_results[code] = {
+                "score": score,  # 0~15 (5일 수익률 5점은 상대평가)
+                "rsi": rsi_now,
+                "chg_5d": chg_5d,
+                "detail": "+".join(details) if details else "",
+            }
+        except Exception as e:
+            logger.debug(f"기술회복 계산 실패 {code}: {e}")
+
+    # --- 5일 수익률 상대평가 (상위 50% → +5점) ---
+    if raw_results:
+        chg_values = [v["chg_5d"] for v in raw_results.values()]
+        median_chg = float(np.median(chg_values)) if chg_values else 0.0
+        for code, v in raw_results.items():
+            if v["chg_5d"] > median_chg:
+                bonus = min(5.0, (v["chg_5d"] - median_chg) * 1.0)  # 최대 5점
+                v["score"] += bonus
+                if bonus >= 3:
+                    v["detail"] += ("|" if v["detail"] else "") + f"5D+{v['chg_5d']:.1f}%"
+            v["score"] = min(20.0, v["score"])  # 캡 20점
+
+    return raw_results
+
+
 def run_war_mode_recommendation() -> RecommendationReport:
     """전쟁 모드: 낙폭 대형주 + 컨센서스 랭킹
 
@@ -1731,7 +1844,33 @@ def run_war_mode_recommendation() -> RecommendationReport:
     scored = sum(1 for v in supply_scores.values() if isinstance(v, tuple) and v[0] != 0)
     logger.info(f"[Step 4] 수급: {scored}/{len(top_codes)}종목 ({time.time()-t0:.0f}s)")
 
-    # ── 5) 종합 스코어링 ──
+    # ── 4.5) 기술 회복 시그널 스캔 ──
+    t0 = time.time()
+    tech_recovery_scores = _calc_tech_recovery_scores(top_codes)
+    tech_count = sum(1 for v in tech_recovery_scores.values() if v["score"] > 0)
+    logger.info(f"[Step 4.5] 기술회복: {tech_count}/{len(top_codes)}종목 시그널 ({time.time()-t0:.0f}s)")
+
+    # ── 4.7) 장중이면 실시간 가격으로 업데이트 ──
+    now_h = datetime.now().hour
+    now_m = datetime.now().minute
+    is_market_hours = (9 <= now_h < 15) or (now_h == 15 and now_m <= 30)
+    if is_market_hours:
+        try:
+            from bot.kis_trader import KISTrader
+            trader = KISTrader()
+            live_updated = 0
+            for code in top_codes:
+                if code in price_data:
+                    p = trader.fetch_price(code)
+                    if p and p.get("success") and p.get("current_price", 0) > 0:
+                        price_data[code]["current"] = p["current_price"]
+                        live_updated += 1
+                    time.sleep(0.15)
+            logger.info(f"[Step 4.7] 실시간 가격: {live_updated}종목 업데이트")
+        except Exception as e:
+            logger.warning(f"실시간 가격 실패 (CSV 종가 유지): {e}")
+
+    # ── 5) 종합 스코어링 (v2: 기술회복 포함) ──
     t0 = time.time()
     candidates = []
 
@@ -1764,40 +1903,57 @@ def run_war_mode_recommendation() -> RecommendationReport:
             if consensus_target > current:
                 consensus_upside = (consensus_target / current - 1) * 100
 
-        # 전쟁 낙폭 (%) — 낙폭이 클수록 기회
+        # 전쟁 낙폭 (%) -- 낙폭이 클수록 기회
         war_drop = abs((war_low / pre_war - 1) * 100) if war_low > 0 else 0
 
-        # 현재 회복률 (0~100%) — 낮을수록 아직 기회
+        # 현재 회복률 (0~100%) -- 낮을수록 아직 기회
         if pre_war > war_low > 0:
             recovery_rate = (current - war_low) / (pre_war - war_low) * 100
         else:
             recovery_rate = 0
 
-        # 수급 점수 (-30 ~ +50)
+        # 수급 점수 (-25 ~ 0 실제 범위)
         sup_info = supply_scores.get(code, (0, ""))
         supply_sc = sup_info[0] if isinstance(sup_info, tuple) else 0
         supply_detail = sup_info[1] if isinstance(sup_info, tuple) else ""
+        # 정규화: -25~0 → 0~25 (0=최악, 25=이탈없음)
+        supply_norm = max(0.0, supply_sc + 25.0)
+
+        # 기술 회복 시그널 (0~20)
+        tech_info = tech_recovery_scores.get(code, {"score": 0, "rsi": 50, "chg_5d": 0, "detail": ""})
+        tech_score = tech_info["score"]
+        tech_rsi = tech_info["rsi"]
+        tech_chg_5d = tech_info["chg_5d"]
+        tech_sig_detail = tech_info["detail"]
 
         # 유동성 (거래량 기반, 0~10)
         volume = info.get("volume", 0)
         liquidity_sc = min(volume / 1_000_000, 10)  # 100만주 = 1점, 최대 10점
 
-        # ── 종합 스코어 ──
-        # 회복 업사이드 40% + 컨센서스 업사이드 30% + 수급 15% + 유동성 5% + 낙폭크기 10%
+        # ── 종합 스코어 v2 (기술회복 포함) ──
+        # 회복30% + 컨센20% + 수급20% + 기술회복20% + 낙폭5% + 유동성5%
         war_score = (
-            recovery_upside * 0.40
-            + consensus_upside * 0.30
-            + (supply_sc + 30) * 0.15  # supply_sc는 -30~+50 → 0~80으로 변환
-            + liquidity_sc * 0.50
-            + war_drop * 0.10
+            recovery_upside * 0.30       # 회복 업사이드 (30%)
+            + consensus_upside * 0.20    # 컨센서스 업사이드 (20%)
+            + supply_norm * 0.20         # 수급 정규화 (20%)
+            + tech_score * 1.0           # 기술회복 0~20 그대로 (20%)
+            + war_drop * 0.05            # 낙폭크기 (5%)
+            + liquidity_sc * 0.50        # 유동성 (5%)
         )
+
+        # 졸업 임박 감점: 70%+ 회복한 종목은 순위 하락
+        graduation_tag = ""
+        if recovery_rate >= 70:
+            war_score -= 10.0
+            graduation_tag = "[졸업임박]"
+            logger.debug(f"{name}: 회복률 {recovery_rate:.0f}% → 졸업 감점 -10")
 
         # SL/TP 계산
         sl = int(war_low * 0.97) if war_low > 0 else int(current * 0.90)
         tp = consensus_target if consensus_target > current else pre_war
 
         # 신뢰도
-        if consensus_upside > 20 and recovery_upside > 15 and supply_sc > 10:
+        if consensus_upside > 20 and recovery_upside > 15 and supply_sc >= 0:
             confidence = "HIGH"
         elif consensus_upside > 10 or recovery_upside > 20:
             confidence = "MED"
@@ -1805,18 +1961,22 @@ def run_war_mode_recommendation() -> RecommendationReport:
             confidence = "LOW"
 
         # 소스 구성
-        sources = [f"war_dip({war_drop:.0f}%↓)"]
+        sources = [f"war_dip({war_drop:.0f}%DOWN)"]
         if recovery_upside > 0:
             sources.append(f"recovery(+{recovery_upside:.0f}%)")
         if consensus_upside > 0:
-            sources.append(f"consensus({consensus_target:,}→+{consensus_upside:.0f}%)")
-        if supply_sc > 0:
-            sources.append(f"supply(+{supply_sc:.0f})")
+            sources.append(f"consensus({consensus_target:,}->+{consensus_upside:.0f}%)")
+        if supply_sc >= 0:
+            sources.append(f"supply(OK)")
+        if tech_sig_detail:
+            sources.append(f"tech({tech_sig_detail})")
 
-        # 기술 상세
+        # 기술 상세 (v2: RSI + 5일수익 포함)
         tech_detail = (
             f"낙폭{war_drop:.0f}%|회복률{recovery_rate:.0f}%|"
+            f"5D:{tech_chg_5d:+.1f}%|RSI{tech_rsi:.0f}|"
             f"회복+{recovery_upside:.0f}%|컨센+{consensus_upside:.0f}%"
+            f"{graduation_tag}"
         )
 
         rec = RecommendedStock(
