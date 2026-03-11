@@ -40,6 +40,9 @@ class RecommendedStock:
     news_score: float = 0.0        # 뉴스AI 점수
     nationality_score: float = 0.0 # 국적별 수급 점수
     nationality_detail: str = ""   # 국적별 수급 상세
+    flow_signal: str = ""          # 국적별 행동 시그널 (STRONG_BUY~SELL)
+    flow_score: float = 0.0        # 국적별 행동 예측 점수
+    flow_detail: str = ""          # 국적별 행동 상세 (근거+리스크)
     cross_count: int = 0           # 교차 등장 횟수
     # 페널티 (soft scoring)
     news_penalty: float = 0.0      # 뉴스 NEGATIVE 페널티
@@ -1121,6 +1124,30 @@ def run_evening_recommendation() -> RecommendationReport:
     elapsed = time.time() - t_start
     logger.info(f"최종 추천: {len(final_stocks)}종목, 모멘텀 {len(report.momentum_stocks)}종목 (전체 {elapsed:.0f}s)")
 
+    # ── 2단계: 국적별 행동 프로파일러 (수급 거부권) ──
+    try:
+        from data.nationality_profiler import predict_tomorrow_flow
+        top_codes = [s.code for s in report.stocks]
+        top_names = {s.code: s.name for s in report.stocks}
+        flow_preds = predict_tomorrow_flow(top_codes, n_days=5, code_names=top_names)
+        flow_map = {p["code"]: p for p in flow_preds}
+
+        for s in report.stocks:
+            pred = flow_map.get(s.code)
+            if pred:
+                s.flow_signal = pred["signal"]
+                s.flow_score = pred["score"]
+                parts = []
+                if pred["reason"] != "특이사항 없음":
+                    parts.append(pred["reason"])
+                if pred.get("risk"):
+                    parts.append(f"⚠️{pred['risk']}")
+                s.flow_detail = " | ".join(parts) if parts else "중립"
+
+        logger.info(f"2단계 수급 프로파일링 완료: {len(flow_preds)}종목")
+    except Exception as e:
+        logger.warning(f"수급 프로파일링 실패 (무시): {e}")
+
     # 자동 저장
     try:
         save_recommendation(report)
@@ -1414,6 +1441,22 @@ def format_recommendation(report: RecommendationReport, max_budget: int = 0) -> 
         lines.append(f"   기술: {s.tech_detail}")
         if s.nationality_detail:
             lines.append(f"   🌍 {s.nationality_detail}")
+        # 2단계: 국적별 행동 시그널
+        flow_sig = getattr(s, "flow_signal", "")
+        flow_sc = getattr(s, "flow_score", 0)
+        flow_det = getattr(s, "flow_detail", "")
+        if flow_sig:
+            flow_emoji = {
+                "STRONG_BUY": "🔴", "BUY": "🟠",
+                "NEUTRAL": "⚪", "CAUTION": "🟡", "SELL": "🔵",
+            }.get(flow_sig, "⚪")
+            flow_kr = {
+                "STRONG_BUY": "강력매수", "BUY": "매수",
+                "NEUTRAL": "중립", "CAUTION": "주의", "SELL": "매도",
+            }.get(flow_sig, flow_sig)
+            lines.append(f"   {flow_emoji} 수급예측: {flow_kr}({flow_sc:+.0f})")
+            if flow_det:
+                lines.append(f"   └ {flow_det}")
         if shares > 0:
             lines.append(f"   매수: {shares}주 = {buy_total:,}원")
         if s.sources:
@@ -1516,6 +1559,9 @@ def save_recommendation(report: RecommendationReport):
                 "tech_score": s.tech_score, "news_score": s.news_score,
                 "nationality_score": s.nationality_score,
                 "nationality_detail": s.nationality_detail,
+                "flow_signal": getattr(s, "flow_signal", ""),
+                "flow_score": getattr(s, "flow_score", 0.0),
+                "flow_detail": getattr(s, "flow_detail", ""),
                 "news_penalty": s.news_penalty,
                 "obv_penalty": s.obv_penalty,
                 "relative_penalty": s.relative_penalty,
@@ -1577,6 +1623,9 @@ def load_recommendation() -> Optional[RecommendationReport]:
                 news_score=sd.get("news_score", 0),
                 nationality_score=sd.get("nationality_score", 0),
                 nationality_detail=sd.get("nationality_detail", ""),
+                flow_signal=sd.get("flow_signal", ""),
+                flow_score=sd.get("flow_score", 0),
+                flow_detail=sd.get("flow_detail", ""),
                 news_penalty=sd.get("news_penalty", 0),
                 obv_penalty=sd.get("obv_penalty", 0),
                 relative_penalty=sd.get("relative_penalty", 0),
@@ -2005,6 +2054,31 @@ def run_war_mode_recommendation() -> RecommendationReport:
     elapsed = time.time() - t_start
     logger.info(f"[전쟁모드] 최종 추천: {len(report.stocks)}종목 ({elapsed:.0f}s)")
 
+    # ── 2단계: 국적별 행동 프로파일러 (수급 거부권) ──
+    try:
+        from data.nationality_profiler import predict_tomorrow_flow
+        top_codes = [s.code for s in report.stocks]
+        top_names = {s.code: s.name for s in report.stocks}
+        flow_preds = predict_tomorrow_flow(top_codes, n_days=5, code_names=top_names)
+        flow_map = {p["code"]: p for p in flow_preds}
+
+        for s in report.stocks:
+            pred = flow_map.get(s.code)
+            if pred:
+                s.flow_signal = pred["signal"]
+                s.flow_score = pred["score"]
+                # 근거 + 리스크 합산
+                parts = []
+                if pred["reason"] != "특이사항 없음":
+                    parts.append(pred["reason"])
+                if pred.get("risk"):
+                    parts.append(f"⚠️{pred['risk']}")
+                s.flow_detail = " | ".join(parts) if parts else "중립"
+
+        logger.info(f"[전쟁모드] 2단계 수급 프로파일링 완료: {len(flow_preds)}종목")
+    except Exception as e:
+        logger.warning(f"[전쟁모드] 수급 프로파일링 실패 (무시): {e}")
+
     # ── 전쟁릴레이 워치리스트도 포함 ──
     try:
         war_relay_list = _step_war_relay_inject()
@@ -2053,6 +2127,22 @@ def format_war_recommendation(report: RecommendationReport) -> str:
         lines.append(f"   SL: {s.sl:,} → TP: {s.tp:,}")
         if s.nationality_detail:
             lines.append(f"   🌍 {s.nationality_detail}")
+        # 2단계: 국적별 행동 시그널
+        flow_sig = getattr(s, "flow_signal", "")
+        flow_sc = getattr(s, "flow_score", 0)
+        flow_det = getattr(s, "flow_detail", "")
+        if flow_sig:
+            flow_emoji = {
+                "STRONG_BUY": "🔴", "BUY": "🟠",
+                "NEUTRAL": "⚪", "CAUTION": "🟡", "SELL": "🔵",
+            }.get(flow_sig, "⚪")
+            flow_kr = {
+                "STRONG_BUY": "강력매수", "BUY": "매수",
+                "NEUTRAL": "중립", "CAUTION": "주의", "SELL": "매도",
+            }.get(flow_sig, flow_sig)
+            lines.append(f"   {flow_emoji} 수급예측: {flow_kr}({flow_sc:+.0f})")
+            if flow_det:
+                lines.append(f"   └ {flow_det}")
         if s.sources:
             lines.append(f"   출처: {' + '.join(s.sources[:4])}")
         lines.append("")
