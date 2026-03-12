@@ -551,12 +551,14 @@ class BodyHunterBot:
         # 만기일 경고
         from datetime import date
         exp_date, d_day, is_quarterly = self._upcoming_expiry_info(date.today())
-        if d_day == 0:
+        if d_day is not None and d_day <= 5:
             q_label = "동시만기일" if is_quarterly else "옵션만기일"
-            lines.append(f"\n🔴 오늘 {q_label}! 신규매수 자제, 14:30~ 변동성 주의")
-        elif d_day == 1:
-            q_label = "동시만기일" if is_quarterly else "옵션만기일"
-            lines.append(f"\n🟠 내일 {q_label} — 약한 종목 정리 검토")
+            if d_day == 0:
+                lines.append(f"\n🔴 오늘 {q_label}! 신규매수 자제, 14:30~ 변동성 주의")
+            elif d_day == 1:
+                lines.append(f"\n🟠 내일 {q_label} — 약한 종목 정리 검토")
+            else:
+                lines.append(f"\n📌 {q_label} D-{d_day} — 만기주간 변동성 주의")
         for s in targets[:8]:
             np_grade = s.get("nat_power_grade", "")
             if np_grade and np_grade != "NEUTRAL":
@@ -2650,7 +2652,7 @@ class BodyHunterBot:
         return None, -1, False
 
     async def _job_options_expiry_alert(self, context):
-        """08:10 옵션 만기일 사전 알림 (D-2, D-1, D-day)"""
+        """08:10 옵션 만기일 사전 알림 (D-7 ~ D-day)"""
         from datetime import date
         today = date.today()
         if today.weekday() >= 5:
@@ -2661,48 +2663,57 @@ class BodyHunterBot:
             return
 
         exp_date, d_day, is_quarterly = self._upcoming_expiry_info(today)
-        if exp_date is None:
+        if exp_date is None or d_day > 7:
             return
 
-        expiry_type = "동시만기일(선물+옵션)" if is_quarterly else "월간 옵션만기일"
+        q_tag = "동시만기일(선물+옵션)" if is_quarterly else "월간 옵션만기일"
+        dow = ["월", "화", "수", "목", "금", "토", "일"][exp_date.weekday()]
+        date_str = f"{exp_date.strftime('%Y-%m-%d')} ({dow})"
 
         if d_day == 0:
-            # D-day
             msg = (
-                f"🔴 오늘 {expiry_type}!\n"
-                f"📅 {exp_date.strftime('%Y-%m-%d')} (목)\n\n"
-                f"⚠️ 방어 모드 권고:\n"
+                f"🔴 오늘 {q_tag}!\n"
+                f"📅 {date_str}\n\n"
+                f"⚠️ 방어 모드:\n"
                 f"• 신규 매수 자제 (프로그램 매도 폭탄)\n"
-                f"• 보유종목 SL 타이트하게 조정\n"
+                f"• 보유종목 SL 타이트하게\n"
                 f"• 14:30~15:00 변동성 극대화 주의\n"
                 f"• 만기 후 반등 노리려면 내일 매수"
             )
-            logger.info(f"옵션 만기일 D-day 알림: {expiry_type}")
         elif d_day == 1:
-            # D-1
             msg = (
-                f"🟠 내일 {expiry_type}!\n"
-                f"📅 {exp_date.strftime('%Y-%m-%d')} (목)\n\n"
+                f"🟠 내일 {q_tag}! [D-1]\n"
+                f"📅 {date_str}\n\n"
                 f"⚠️ 사전 준비:\n"
                 f"• 약한 종목 오늘 정리 검토\n"
-                f"• 내일 신규 매수 자제 계획\n"
-                f"• 만기일 변동성 대비 현금 확보"
+                f"• 내일 신규 매수 자제\n"
+                f"• 현금 비중 확보"
             )
-            logger.info(f"옵션 만기일 D-1 알림: {expiry_type}")
         elif d_day == 2:
-            # D-2
             msg = (
-                f"🟡 모레 {expiry_type}!\n"
-                f"📅 {exp_date.strftime('%Y-%m-%d')} (목)\n\n"
-                f"📋 체크리스트:\n"
+                f"🟡 만기일 D-2 ({q_tag})\n"
+                f"📅 {date_str}\n\n"
+                f"📋 준비:\n"
                 f"• 포트폴리오 점검 (약한 종목 선별)\n"
-                f"• 만기일 당일 매수 금지 준비\n"
-                f"• 프로그램 매도 영향 큰 대형주 주의"
+                f"• 대형주 프로그램 매도 주의"
             )
-            logger.info(f"옵션 만기일 D-2 알림: {expiry_type}")
+        elif d_day <= 5:
+            # D-3 ~ D-5: 간단 알림
+            msg = (
+                f"📌 {q_tag} D-{d_day}\n"
+                f"📅 {date_str}\n"
+                f"• 만기주간 진입 — 변동성 확대 예상\n"
+                f"• 신규 포지션 규모 축소 권고"
+            )
         else:
-            return  # D-3 이상은 알림 안 함
+            # D-6 ~ D-7: 예고
+            msg = (
+                f"📅 {q_tag} D-{d_day}\n"
+                f"다음주 {dow}요일 {exp_date.month}/{exp_date.day} 만기\n"
+                f"• 만기주간 대비 포트폴리오 점검 시작"
+            )
 
+        logger.info(f"옵션 만기일 D-{d_day} 알림: {q_tag}")
         try:
             await context.bot.send_message(chat_id=chat_id, text=msg)
         except Exception as e:
