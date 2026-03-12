@@ -47,7 +47,7 @@ def send_telegram(text: str):
         resp = requests.post(url, json={
             "chat_id": TELEGRAM_CHAT_ID,
             "text": text,
-            "parse_mode": "HTML",
+            "parse_mode": "Markdown",
         }, timeout=10)
         if resp.status_code != 200:
             print(f"[TG] 전송 실패: {resp.status_code}")
@@ -153,7 +153,7 @@ def run_monitor(targets: list[dict], interval: int = 30):
     alert_sent = {}    # {code: set(alert_type)}
     last_prices = {}   # {code: last_price}
     open_prices = {}   # {code: 시가}
-    last_summary = 0   # 마지막 요약 시간
+    last_summary = time.time()   # 마지막 요약 시간
 
     # 시작 알림
     names = ", ".join(t["name"] for t in targets[:8])
@@ -206,7 +206,6 @@ def run_monitor(targets: list[dict], interval: int = 30):
                 if t["code"] not in open_prices:
                     open_prices[t["code"]] = p.get("open", cp)
 
-                prev = last_prices.get(t["code"], cp)
                 last_prices[t["code"]] = cp
 
                 sl = t.get("sl", 0)
@@ -216,7 +215,7 @@ def run_monitor(targets: list[dict], interval: int = 30):
                 code_alerts = alert_sent.setdefault(t["code"], set())
 
                 # 1) SL 근접 (-2% 이내)
-                if sl > 0 and cp > 0:
+                if sl > 0 and cp > 0 and cp > sl:
                     vs_sl = (cp / sl - 1) * 100
                     if vs_sl <= 2.0 and "SL_NEAR" not in code_alerts:
                         msg = f"⚠️ {t['name']} SL근접!\n현재 {cp:,} → SL {sl:,} ({vs_sl:+.1f}%)"
@@ -317,7 +316,11 @@ if __name__ == "__main__":
     if "--top" in sys.argv:
         idx = sys.argv.index("--top")
         if idx + 1 < len(sys.argv):
-            top_n = int(sys.argv[idx + 1])
+            try:
+                top_n = int(sys.argv[idx + 1])
+            except ValueError:
+                print(f"[WARN] --top 값이 숫자가 아닙니다: {sys.argv[idx + 1]}")
+                top_n = 0
 
     if bounce:
         label = f"바운스 모드 (bounce_candidates.json, TOP {top_n})" if top_n else "바운스 모드 (bounce_candidates.json)"

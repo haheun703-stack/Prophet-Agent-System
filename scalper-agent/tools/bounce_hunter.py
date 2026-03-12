@@ -91,7 +91,6 @@ def analyze_bounce_potential(code: str, info: dict) -> dict | None:
     # ── 1. 낙폭 계산 ──
     high_20 = close[-20:].max()        # 20일 고점
     high_60 = close[-60:].max()        # 60일 고점
-    low_20 = close[-20:].min()         # 20일 저점
     low_5 = close[-5:].min()           # 5일 저점
 
     drop_from_20h = (current / high_20 - 1) * 100   # 20일 고점 대비 하락률
