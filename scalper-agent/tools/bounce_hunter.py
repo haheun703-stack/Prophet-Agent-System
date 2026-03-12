@@ -7,11 +7,11 @@ RFHIC +12%, 미래에셋증권 +10% 패턴 재현 목표
 패턴: 최근 고점 대비 크게 하락 + 펀더멘탈 건재 → 5일 내 10~20% 반등
 
 스크리닝 기준:
-  1) 20일 고점 대비 -10% 이상 하락 (눌림 확인)
-  2) 60일 저점 대비 아직 바닥권 (반등 여력)
-  3) 거래량 급증 (세력 유입 신호)
-  4) 컨센서스 업사이드 15%+ (펀더멘탈 OK)
-  5) 외국인 or 기관 최근 순매수 전환 (수급 전환)
+  1) 20일 고점 대비 -8% 이상 하락 (눌림 확인)
+  2) 5일 저점 대비 반등 8% 미만 (아직 타이밍 유효)
+  3) 거래량 변화 (급증 시 가산점)
+  4) 기관 패턴 등급 S/A/B/C/D (핵심 — 40점/100)
+  5) 컨센서스 업사이드 (최종 스코어 가중)
   6) 시총 1,000억+ (유동성)
 """
 
@@ -170,10 +170,13 @@ def analyze_bounce_potential(code: str, info: dict) -> dict | None:
                     break
 
             # 기관 대량매수 여부 (최근 3일 중 상위 5% 해당)
-            if len(flow) >= 60:
-                threshold_95 = flow[inst_cols[0]].quantile(0.95)
+            # NOTE: 2026-01-16 전후로 flow 데이터 단위 변경(원→백만원)
+            #       혼합 방지를 위해 최근 40일만 사용
+            recent_40 = flow[inst_cols[0]].tail(40)
+            if len(recent_40) >= 20:
+                threshold_95 = recent_40.quantile(0.95)
                 last3 = flow[inst_cols[0]].tail(3)
-                if (last3 >= threshold_95).any():
+                if threshold_95 > 0 and (last3 >= threshold_95).any():
                     inst_big_buy = True
 
             # 기관 가속: 최근 2일 평균 > 이전 3일 평균 & 양수
@@ -248,22 +251,28 @@ def analyze_bounce_potential(code: str, info: dict) -> dict | None:
     score += inst_grade_score
 
     # 60일선 위 (5점) — 장기 추세 건재
-    if current > ma60:
-        score += 5
+    ma60_score = 5 if current > ma60 else 0
+    score += ma60_score
 
     # 시총 보너스 (3점)
     cap = info.get("cap_억", 0)
     if cap > 10000:
-        score += 3
+        cap_score = 3
     elif cap > 5000:
-        score += 2
+        cap_score = 2
+    else:
+        cap_score = 0
+    score += cap_score
 
     # 밸류 보너스 (2점)
     pbr = info.get("pbr", 99)
     if 0 < pbr < 1.0:
-        score += 2
+        value_score = 2
     elif 0 < pbr < 1.5:
-        score += 1
+        value_score = 1
+    else:
+        value_score = 0
+    score += value_score
 
     return {
         "code": code,
@@ -281,7 +290,7 @@ def analyze_bounce_potential(code: str, info: dict) -> dict | None:
         "ma5": int(ma5),
         "ma20": int(ma20),
         "ma60": int(ma60),
-        "above_ma60": current > ma60,
+        "above_ma60": bool(current > ma60),
         "frgn_5d": frgn_5d,
         "inst_5d": inst_5d,
         "indi_5d": indi_5d,
@@ -301,6 +310,9 @@ def analyze_bounce_potential(code: str, info: dict) -> dict | None:
             "rsi": round(rsi_score, 1),
             "volume": round(vol_score, 1),
             "inst_pattern": round(inst_grade_score, 1),
+            "ma60": ma60_score,
+            "cap": cap_score,
+            "value": value_score,
         },
         # 반등 목표 (20일 고점의 92% 회복)
         "target_bounce": int(high_20 * 0.92),
@@ -417,7 +429,8 @@ def main():
         print(f"  RSI: {r['rsi']:.0f} | 거래량비: {r['vol_ratio']:.1f}x | 60일선: {'위' if r['above_ma60'] else '아래'}")
         print(f"  PER: {r['per']:.1f} | PBR: {r['pbr']:.2f} | 시총: {r['cap_억']:,}억")
         print(f"  기관등급: {ge}{ig} | {supply_icon}")
-        print(f"  외인5일: {r['frgn_5d']/1e8:+.1f}억 | 기관5일: {r['inst_5d']/1e8:+.1f}억 | 개인5일: {r.get('indi_5d',0)/1e8:+.1f}억")
+        # NOTE: flow 데이터 2026-01-16부터 백만원 단위 → /100 = 억원
+        print(f"  외인5일: {r['frgn_5d']/100:+.1f}억 | 기관5일: {r['inst_5d']/100:+.1f}억 | 개인5일: {r.get('indi_5d',0)/100:+.1f}억")
 
         if r.get("target_price", 0) > 0:
             print(f"  컨센: {r['target_price']:,}원 ({r['cons_upside']:+.1f}%) | 애널: {r['analyst_count']}명")
