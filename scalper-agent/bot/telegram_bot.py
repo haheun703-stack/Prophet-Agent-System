@@ -539,6 +539,9 @@ class BodyHunterBot:
             logger.info("전쟁모드 종목 없음 — 추적 비활성")
             return
         chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        if not chat_id:
+            logger.warning("TELEGRAM_CHAT_ID 미설정 — 전쟁모드 알림 비활성")
+            return
         names = [s.get("name", s.get("code")) for s in targets[:8]]
         lines = [
             "🎯 전쟁모드 추적 시작!",
@@ -559,11 +562,11 @@ class BodyHunterBot:
     async def _job_war_tracker(self, context):
         """전쟁모드 추적 — 60초 간격, 급등/급락/SL 알림"""
         from datetime import date as _date
-        now = datetime.now()
+        now = datetime.now(KST)
         if _date.today().weekday() >= 5:
             return
         now_min = now.hour * 60 + now.minute
-        if now_min < 540 or now_min >= 935:  # 09:00~15:35
+        if now_min < 540 or now_min >= 936:  # 09:00~15:35
             return
 
         targets = self._load_war_targets()
@@ -571,6 +574,8 @@ class BodyHunterBot:
             return
 
         chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        if not chat_id:
+            return
         war_state = context.bot_data.setdefault("war_tracker", {})
         alert_sent = war_state.setdefault("alerts", {})
         open_prices = war_state.setdefault("opens", {})
@@ -596,14 +601,16 @@ class BodyHunterBot:
                 cp = p["current_price"]
                 last_prices[code] = cp
 
+                # 시가: KIS API에서 가져오되, 없으면 현재가 fallback
                 if code not in open_prices:
-                    open_prices[code] = p.get("open", cp)
+                    open_p_val = p.get("open", 0)
+                    open_prices[code] = open_p_val if open_p_val > 0 else cp
 
                 code_alerts = alert_sent.setdefault(code, set())
                 open_p = open_prices.get(code, cp)
 
-                # 1) SL 근접
-                if sl > 0 and cp > 0:
+                # 1) SL 근접 (SL보다 위에 있지만 2% 이내)
+                if sl > 0 and cp > sl:
                     vs_sl = (cp / sl - 1) * 100
                     if vs_sl <= 2.0 and "SL_NEAR" not in code_alerts:
                         await context.bot.send_message(
@@ -613,7 +620,7 @@ class BodyHunterBot:
                         code_alerts.add("SL_NEAR")
                         logger.info(f"전쟁추적 알림: {name} SL_NEAR")
 
-                # 2) SL 이탈
+                # 2) SL 이탈 (SL 이하로 하락)
                 if sl > 0 and cp <= sl and "SL_BREAK" not in code_alerts:
                     await context.bot.send_message(
                         chat_id=chat_id,
@@ -622,7 +629,7 @@ class BodyHunterBot:
                     code_alerts.add("SL_BREAK")
                     logger.info(f"전쟁추적 알림: {name} SL_BREAK")
 
-                # 3) 급등 (+3%) / 급락 (-3%)
+                # 3) 급등 (+3%) / 급락 (-3%) — 시가 대비
                 if open_p > 0:
                     day_chg = (cp / open_p - 1) * 100
                     if day_chg >= 3.0 and "SURGE" not in code_alerts:
@@ -668,11 +675,13 @@ class BodyHunterBot:
             return
 
         chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        if not chat_id:
+            return
         war_state = context.bot_data.get("war_tracker", {})
         last_prices = war_state.get("prices", {})
         open_prices = war_state.get("opens", {})
 
-        now = datetime.now()
+        now = datetime.now(KST)
         lines = [f"📊 전쟁모드 추적 [{now:%H:%M}]", ""]
 
         data_count = 0
@@ -689,7 +698,8 @@ class BodyHunterBot:
                         cp = p["current_price"]
                         last_prices[code] = cp
                         if code not in open_prices:
-                            open_prices[code] = p.get("open", cp)
+                            open_p_val = p.get("open", 0)
+                            open_prices[code] = open_p_val if open_p_val > 0 else cp
                 except Exception as e:
                     logger.warning(f"전쟁요약 {name} 가격조회 실패: {e}")
                     continue

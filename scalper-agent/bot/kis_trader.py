@@ -142,6 +142,7 @@ class KISTrader:
                 "volume": int(output.get("acml_vol", 0)),
                 "high": int(output.get("stck_hgpr", 0)),
                 "low": int(output.get("stck_lwpr", 0)),
+                "open": int(output.get("stck_oprc", 0)),
             }
 
         except Exception as e:
