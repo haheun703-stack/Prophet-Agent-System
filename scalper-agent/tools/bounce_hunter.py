@@ -128,22 +128,28 @@ def analyze_bounce_potential(code: str, info: dict) -> dict | None:
     else:
         rsi = 100
 
-    # ── 4. 수급 분석 ──
+    # ── 4. 수급 분석 (기관 패턴 등급 체계) ──
+    # 통계적 근거: 기관 대량매수 후 20일 승률 64%, 평균 +8.9%
     flow = load_flow(code)
     frgn_5d = 0
     inst_5d = 0
-    frgn_turning = False  # 순매도→순매수 전환
+    indi_5d = 0
+    frgn_turning = False   # 순매도→순매수 전환
     inst_turning = False
+    inst_streak = 0        # 기관 연속 매수일수
+    inst_big_buy = False   # 기관 대량매수 (상위 5%)
+    absorb_pattern = False # 흡수 패턴 (기관매수 + 외인매도)
+    inst_accel = False     # 기관 가속 (최근 2일 > 이전 3일)
 
     if flow is not None and len(flow) >= 5:
         recent = flow.tail(5)
         frgn_cols = [c for c in flow.columns if "외국인" in c and "금액" in c]
         inst_cols = [c for c in flow.columns if "기관" in c and "금액" in c]
+        indi_cols = [c for c in flow.columns if "개인" in c and "금액" in c]
 
         if frgn_cols:
             fvals = recent[frgn_cols[0]].values
             frgn_5d = int(fvals.sum())
-            # 전환 감지: 앞 3일 음수 → 뒤 2일 양수
             if len(fvals) >= 5:
                 if fvals[-2:].sum() > 0 and fvals[:3].sum() < 0:
                     frgn_turning = True
@@ -155,51 +161,109 @@ def analyze_bounce_potential(code: str, info: dict) -> dict | None:
                 if ivals[-2:].sum() > 0 and ivals[:3].sum() < 0:
                     inst_turning = True
 
+            # 기관 연속 매수일수 (전체 데이터에서 역순)
+            all_inst = flow[inst_cols[0]].values
+            for v in reversed(all_inst):
+                if v > 0:
+                    inst_streak += 1
+                else:
+                    break
+
+            # 기관 대량매수 여부 (최근 3일 중 상위 5% 해당)
+            if len(flow) >= 60:
+                threshold_95 = flow[inst_cols[0]].quantile(0.95)
+                last3 = flow[inst_cols[0]].tail(3)
+                if (last3 >= threshold_95).any():
+                    inst_big_buy = True
+
+            # 기관 가속: 최근 2일 평균 > 이전 3일 평균 & 양수
+            if len(flow) >= 5:
+                recent2 = flow[inst_cols[0]].tail(2).mean()
+                prev3 = flow[inst_cols[0]].tail(5).head(3).mean()
+                if recent2 > prev3 and recent2 > 0:
+                    inst_accel = True
+
+        if indi_cols:
+            indi_5d = int(recent[indi_cols[0]].sum())
+
+        # 흡수 패턴: 최근 3일 기관 순매수 + 외인 순매도
+        if inst_cols and frgn_cols:
+            last3_inst = flow[inst_cols[0]].tail(3).sum()
+            last3_frgn = flow[frgn_cols[0]].tail(3).sum()
+            if last3_inst > 0 and last3_frgn < 0:
+                absorb_pattern = True
+
+    # ── 기관 패턴 등급 (S/A/B/C/D) ──
+    # S: 기관 3일+ 연속 + 외인 흡수 (최고 시그널 — 승률 64%, +8.9%)
+    # A: 기관 대량매수 or 3일+ 연속
+    # B: 기관 순매수 + 흡수
+    # C: 기관 or 외인 순매수
+    # D: 기관+외인 쌍매도
+    inst_grade = "D"
+    inst_grade_score = 0
+
+    if inst_streak >= 3 and absorb_pattern:
+        inst_grade = "S"
+        inst_grade_score = 35
+    elif inst_big_buy and absorb_pattern:
+        inst_grade = "A"
+        inst_grade_score = 28
+    elif inst_streak >= 3:
+        inst_grade = "A"
+        inst_grade_score = 25
+    elif inst_big_buy:
+        inst_grade = "B"
+        inst_grade_score = 18
+    elif inst_5d > 0 and absorb_pattern:
+        inst_grade = "B"
+        inst_grade_score = 15
+    elif inst_5d > 0:
+        inst_grade = "C"
+        inst_grade_score = 8
+    elif frgn_5d > 0:
+        inst_grade = "C"
+        inst_grade_score = 5
+    # else: D, 0점
+
+    # 가속 보너스
+    if inst_accel and inst_grade_score > 0:
+        inst_grade_score += 5
+
     # ── 5. 종합 스코어링 ──
     score = 0
 
-    # 낙폭 점수 (30점): -8%=0, -25%=30
-    drop_score = min(max((-drop_from_20h - 8) / 17 * 30, 0), 30)
+    # 낙폭 점수 (25점): -8%=0, -25%=25
+    drop_score = min(max((-drop_from_20h - 8) / 17 * 25, 0), 25)
     score += drop_score
 
-    # RSI 과매도 (20점): RSI 30이하=20, 50이상=0
-    rsi_score = min(max((50 - rsi) / 20 * 20, 0), 20)
+    # RSI 과매도 (15점): RSI 30이하=15, 50이상=0
+    rsi_score = min(max((50 - rsi) / 20 * 15, 0), 15)
     score += rsi_score
 
-    # 거래량 급증 (15점): 1.5배+=15
-    vol_score = min(max((vol_ratio - 1.0) / 1.5 * 15, 0), 15)
+    # 거래량 급증 (10점): 1.5배+=10
+    vol_score = min(max((vol_ratio - 1.0) / 1.5 * 10, 0), 10)
     score += vol_score
 
-    # 수급 전환 (20점)
-    supply_score = 0
-    if frgn_turning:
-        supply_score += 10
-    if inst_turning:
-        supply_score += 10
-    if frgn_5d > 0:
-        supply_score += 5
-    if inst_5d > 0:
-        supply_score += 5
-    supply_score = min(supply_score, 20)
-    score += supply_score
+    # 기관 패턴 등급 점수 (40점) — 핵심 팩터
+    score += inst_grade_score
 
     # 60일선 위 (5점) — 장기 추세 건재
     if current > ma60:
         score += 5
 
-    # 시총 보너스 (5점)
+    # 시총 보너스 (3점)
     cap = info.get("cap_억", 0)
     if cap > 10000:
-        score += 5
-    elif cap > 5000:
         score += 3
+    elif cap > 5000:
+        score += 2
 
-    # 밸류 보너스 (5점)
+    # 밸류 보너스 (2점)
     pbr = info.get("pbr", 99)
     if 0 < pbr < 1.0:
-        score += 5
-    elif 0 < pbr < 1.5:
         score += 2
+    elif 0 < pbr < 1.5:
+        score += 1
 
     return {
         "code": code,
@@ -220,8 +284,14 @@ def analyze_bounce_potential(code: str, info: dict) -> dict | None:
         "above_ma60": current > ma60,
         "frgn_5d": frgn_5d,
         "inst_5d": inst_5d,
+        "indi_5d": indi_5d,
         "frgn_turning": frgn_turning,
         "inst_turning": inst_turning,
+        "inst_streak": inst_streak,
+        "inst_big_buy": inst_big_buy,
+        "absorb_pattern": absorb_pattern,
+        "inst_accel": inst_accel,
+        "inst_grade": inst_grade,
         "per": info.get("per", 0),
         "pbr": info.get("pbr", 0),
         "cap_억": cap,
@@ -230,9 +300,9 @@ def analyze_bounce_potential(code: str, info: dict) -> dict | None:
             "drop": round(drop_score, 1),
             "rsi": round(rsi_score, 1),
             "volume": round(vol_score, 1),
-            "supply": round(supply_score, 1),
+            "inst_pattern": round(inst_grade_score, 1),
         },
-        # 반등 목표 (20일 고점의 90% 회복)
+        # 반등 목표 (20일 고점의 92% 회복)
         "target_bounce": int(high_20 * 0.92),
         "bounce_upside": round((high_20 * 0.92 / current - 1) * 100, 1),
     }
@@ -308,41 +378,55 @@ def main():
     INVEST = 10000000  # 1000만원
     best_picks = top[:15]
 
-    for i, r in enumerate(best_picks, 1):
-        # 수급 아이콘
-        supply_icon = ""
-        if r["frgn_turning"]:
-            supply_icon += "F전환"
-        if r["inst_turning"]:
-            supply_icon += " I전환"
-        if r["frgn_5d"] > 0 and r["inst_5d"] > 0:
-            supply_icon += " 쌍순매수"
-        elif r["frgn_5d"] > 0:
-            supply_icon += " F순매수"
-        elif r["inst_5d"] > 0:
-            supply_icon += " I순매수"
+    grade_emoji = {"S": "★", "A": "◆", "B": "●", "C": "○", "D": "✕"}
 
-        if not supply_icon:
-            supply_icon = "순매도중"
+    for i, r in enumerate(best_picks, 1):
+        # 기관 등급
+        ig = r.get("inst_grade", "D")
+        ge = grade_emoji.get(ig, "?")
+
+        # 수급 상세 텍스트
+        supply_parts = []
+        streak = r.get("inst_streak", 0)
+        if streak >= 2:
+            supply_parts.append(f"기관{streak}연속")
+        if r.get("absorb_pattern"):
+            supply_parts.append("흡수패턴")
+        if r.get("inst_big_buy"):
+            supply_parts.append("대량매수")
+        if r.get("inst_accel"):
+            supply_parts.append("가속")
+        if r.get("frgn_turning"):
+            supply_parts.append("외인전환")
+        if not supply_parts:
+            if r.get("frgn_5d", 0) > 0:
+                supply_parts.append("외인순매수")
+            elif r.get("inst_5d", 0) > 0:
+                supply_parts.append("기관순매수")
+            else:
+                supply_parts.append("쌍매도")
+        supply_icon = " + ".join(supply_parts)
 
         # 투자 시뮬
         shares = int((INVEST / 3) / r["current_price"])
         profit_bounce = int(shares * (r["target_bounce"] - r["current_price"]))
 
-        print(f"\n  #{i} {r['name']} ({r['code']}) | {r['sector']} | {r['market']}")
-        print(f"  {'─' * 55}")
+        print(f"\n  #{i} {ge}{ig} {r['name']} ({r['code']}) | {r['sector']} | {r['market']}")
+        print(f"  {'─' * 60}")
         print(f"  종가: {r['current_price']:,}원 | 20일고점: {r['high_20']:,}원 | 낙폭: {r['drop_from_20h']:+.1f}%")
         print(f"  RSI: {r['rsi']:.0f} | 거래량비: {r['vol_ratio']:.1f}x | 60일선: {'위' if r['above_ma60'] else '아래'}")
         print(f"  PER: {r['per']:.1f} | PBR: {r['pbr']:.2f} | 시총: {r['cap_억']:,}억")
-        print(f"  수급: {supply_icon} | 외인5일: {r['frgn_5d']/1e8:+.1f}억 | 기관5일: {r['inst_5d']/1e8:+.1f}억")
+        print(f"  기관등급: {ge}{ig} | {supply_icon}")
+        print(f"  외인5일: {r['frgn_5d']/1e8:+.1f}억 | 기관5일: {r['inst_5d']/1e8:+.1f}억 | 개인5일: {r.get('indi_5d',0)/1e8:+.1f}억")
 
         if r.get("target_price", 0) > 0:
             print(f"  컨센: {r['target_price']:,}원 ({r['cons_upside']:+.1f}%) | 애널: {r['analyst_count']}명")
 
-        print(f"  반등 목표(고점90%): {r['target_bounce']:,}원 ({r['bounce_upside']:+.1f}%)")
+        print(f"  반등 목표(고점92%): {r['target_bounce']:,}원 ({r['bounce_upside']:+.1f}%)")
         print(f"  333만원 투자시: {shares}주 -> 반등 수익 {profit_bounce:+,}원 ({r['bounce_upside']:+.1f}%)")
-        print(f"  SCORE: {r['final_score']:.1f} (낙폭:{r['score_detail']['drop']:.0f} RSI:{r['score_detail']['rsi']:.0f} "
-              f"거래량:{r['score_detail']['volume']:.0f} 수급:{r['score_detail']['supply']:.0f})")
+        sd = r['score_detail']
+        print(f"  SCORE: {r['final_score']:.1f} (낙폭:{sd['drop']:.0f} RSI:{sd['rsi']:.0f} "
+              f"거래량:{sd['volume']:.0f} 기관패턴:{sd['inst_pattern']:.0f})")
 
     # ── 전투 계획 ──
     top3 = best_picks[:3]
