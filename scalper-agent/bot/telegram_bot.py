@@ -548,6 +548,15 @@ class BodyHunterBot:
             f"감시 종목 {len(targets[:8])}개: {', '.join(names)}",
             "60초 간격 급등/급락/SL 감시 중",
         ]
+        # 만기일 경고
+        from datetime import date
+        exp_date, d_day, is_quarterly = self._upcoming_expiry_info(date.today())
+        if d_day == 0:
+            q_label = "동시만기일" if is_quarterly else "옵션만기일"
+            lines.append(f"\n🔴 오늘 {q_label}! 신규매수 자제, 14:30~ 변동성 주의")
+        elif d_day == 1:
+            q_label = "동시만기일" if is_quarterly else "옵션만기일"
+            lines.append(f"\n🟠 내일 {q_label} — 약한 종목 정리 검토")
         for s in targets[:8]:
             np_grade = s.get("nat_power_grade", "")
             if np_grade and np_grade != "NEUTRAL":
@@ -2138,6 +2147,10 @@ class BodyHunterBot:
         jq.run_daily(self._job_record_signals, time=kst_time(16, 30))
         logger.info("일간 시그널 기록 등록: 16:30 KST")
 
+        # 옵션 만기일 알림 (08:10 - D-2/D-1/D-day)
+        jq.run_daily(self._job_options_expiry_alert, time=kst_time(8, 10))
+        logger.info("옵션 만기일 알림 등록: 08:10 KST")
+
         # 해외 이벤트 캘린더 스캔 (08:00 - 장 전 D-3 알림)
         jq.run_daily(self._job_global_event_scan, time=kst_time(8, 0))
         logger.info("해외 이벤트 스캔 등록: 08:00 KST")
@@ -2597,6 +2610,103 @@ class BodyHunterBot:
             await context.bot.send_message(
                 chat_id=chat_id, text=f"⚠️ 시그널 기록 실패: {str(e)[:200]}"
             )
+
+    # ── 옵션 만기일 알림 ──────────────────────────────
+
+    @staticmethod
+    def _get_options_expiry(year: int, month: int):
+        """해당 월의 둘째 주 목요일 (옵션/선물 만기일) 계산"""
+        import calendar
+        # 목요일 = 3 (0=월, 1=화, ..., 3=목)
+        cal = calendar.monthcalendar(year, month)
+        thursdays = [week[3] for week in cal if week[3] != 0]
+        return thursdays[1] if len(thursdays) >= 2 else thursdays[-1]
+
+    @staticmethod
+    def _upcoming_expiry_info(today):
+        """오늘 기준 가장 가까운 만기일 정보 반환
+        Returns: (expiry_date, d_day, is_quarterly)
+        """
+        from datetime import date, timedelta
+        # 분기 만기 (동시만기): 3,6,9,12월
+        quarterly_months = {3, 6, 9, 12}
+        # 월별 만기: 매월
+        y, m = today.year, today.month
+
+        # 이번달~다음달까지 확인
+        for offset in range(3):
+            cm = m + offset
+            cy = y
+            if cm > 12:
+                cm -= 12
+                cy += 1
+            exp_day = BodyHunterBot._get_options_expiry(cy, cm)
+            exp_date = date(cy, cm, exp_day)
+            d_day = (exp_date - today).days
+            if d_day >= 0:
+                is_quarterly = cm in quarterly_months
+                return exp_date, d_day, is_quarterly
+
+        return None, -1, False
+
+    async def _job_options_expiry_alert(self, context):
+        """08:10 옵션 만기일 사전 알림 (D-2, D-1, D-day)"""
+        from datetime import date
+        today = date.today()
+        if today.weekday() >= 5:
+            return
+
+        chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        if not chat_id:
+            return
+
+        exp_date, d_day, is_quarterly = self._upcoming_expiry_info(today)
+        if exp_date is None:
+            return
+
+        expiry_type = "동시만기일(선물+옵션)" if is_quarterly else "월간 옵션만기일"
+
+        if d_day == 0:
+            # D-day
+            msg = (
+                f"🔴 오늘 {expiry_type}!\n"
+                f"📅 {exp_date.strftime('%Y-%m-%d')} (목)\n\n"
+                f"⚠️ 방어 모드 권고:\n"
+                f"• 신규 매수 자제 (프로그램 매도 폭탄)\n"
+                f"• 보유종목 SL 타이트하게 조정\n"
+                f"• 14:30~15:00 변동성 극대화 주의\n"
+                f"• 만기 후 반등 노리려면 내일 매수"
+            )
+            logger.info(f"옵션 만기일 D-day 알림: {expiry_type}")
+        elif d_day == 1:
+            # D-1
+            msg = (
+                f"🟠 내일 {expiry_type}!\n"
+                f"📅 {exp_date.strftime('%Y-%m-%d')} (목)\n\n"
+                f"⚠️ 사전 준비:\n"
+                f"• 약한 종목 오늘 정리 검토\n"
+                f"• 내일 신규 매수 자제 계획\n"
+                f"• 만기일 변동성 대비 현금 확보"
+            )
+            logger.info(f"옵션 만기일 D-1 알림: {expiry_type}")
+        elif d_day == 2:
+            # D-2
+            msg = (
+                f"🟡 모레 {expiry_type}!\n"
+                f"📅 {exp_date.strftime('%Y-%m-%d')} (목)\n\n"
+                f"📋 체크리스트:\n"
+                f"• 포트폴리오 점검 (약한 종목 선별)\n"
+                f"• 만기일 당일 매수 금지 준비\n"
+                f"• 프로그램 매도 영향 큰 대형주 주의"
+            )
+            logger.info(f"옵션 만기일 D-2 알림: {expiry_type}")
+        else:
+            return  # D-3 이상은 알림 안 함
+
+        try:
+            await context.bot.send_message(chat_id=chat_id, text=msg)
+        except Exception as e:
+            logger.error(f"만기일 알림 전송 실패: {e}")
 
     async def _job_global_event_scan(self, context):
         """해외 이벤트 캘린더 스캔 (08:00 - D-3 알림)"""
