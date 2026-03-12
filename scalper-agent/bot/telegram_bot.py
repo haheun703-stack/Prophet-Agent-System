@@ -525,8 +525,36 @@ class BodyHunterBot:
             with open(rec_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             return data.get("stocks", [])
-        except Exception:
+        except Exception as e:
+            logger.warning(f"recommendation.json 로드 실패: {e}")
             return []
+
+    async def _job_war_startup(self, context):
+        """09:00 전쟁모드 시작 알림 — 감시 종목 + 7SECRET 정보"""
+        from datetime import date as _date
+        if _date.today().weekday() >= 5:
+            return
+        targets = self._load_war_targets()
+        if not targets:
+            logger.info("전쟁모드 종목 없음 — 추적 비활성")
+            return
+        chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        names = [s.get("name", s.get("code")) for s in targets[:8]]
+        lines = [
+            "🎯 전쟁모드 추적 시작!",
+            f"감시 종목 {len(targets[:8])}개: {', '.join(names)}",
+            "60초 간격 급등/급락/SL 감시 중",
+        ]
+        for s in targets[:8]:
+            np_grade = s.get("nat_power_grade", "")
+            if np_grade and np_grade != "NEUTRAL":
+                emoji = {"POWER_BUY": "💥", "BUY": "🟢", "CAUTION": "🟡", "DANGER": "🔴"}.get(np_grade, "⚪")
+                lines.append(f"  {emoji} {s.get('name')}: {np_grade}({s.get('nat_power', 0):+.1f})")
+        try:
+            await context.bot.send_message(chat_id=chat_id, text="\n".join(lines))
+            logger.info(f"전쟁모드 시작 알림 전송: {len(targets[:8])}종목")
+        except Exception as e:
+            logger.error(f"전쟁모드 시작 알림 실패: {e}")
 
     async def _job_war_tracker(self, context):
         """전쟁모드 추적 — 60초 간격, 급등/급락/SL 알림"""
@@ -544,10 +572,12 @@ class BodyHunterBot:
 
         chat_id = os.getenv("TELEGRAM_CHAT_ID")
         war_state = context.bot_data.setdefault("war_tracker", {})
-        # alert_sent: {code: set(alert_types)}, open_prices: {code: int}
         alert_sent = war_state.setdefault("alerts", {})
         open_prices = war_state.setdefault("opens", {})
         last_prices = war_state.setdefault("prices", {})
+
+        ok_count = 0
+        fail_count = 0
 
         for s in targets[:8]:
             code = s.get("code", "")
@@ -558,8 +588,11 @@ class BodyHunterBot:
             try:
                 p = await asyncio.to_thread(self.trader.fetch_price, code)
                 if not p or not p.get("success"):
+                    fail_count += 1
+                    logger.warning(f"전쟁추적 {name}({code}) 가격조회 실패: {p}")
                     continue
 
+                ok_count += 1
                 cp = p["current_price"]
                 last_prices[code] = cp
 
@@ -578,6 +611,7 @@ class BodyHunterBot:
                             text=f"⚠️ {name} SL근접!\n현재 {cp:,} → SL {sl:,} ({vs_sl:+.1f}%)"
                         )
                         code_alerts.add("SL_NEAR")
+                        logger.info(f"전쟁추적 알림: {name} SL_NEAR")
 
                 # 2) SL 이탈
                 if sl > 0 and cp <= sl and "SL_BREAK" not in code_alerts:
@@ -586,8 +620,9 @@ class BodyHunterBot:
                         text=f"🚨 {name} SL 이탈!\n현재 {cp:,} ≤ SL {sl:,}"
                     )
                     code_alerts.add("SL_BREAK")
+                    logger.info(f"전쟁추적 알림: {name} SL_BREAK")
 
-                # 3) 급등 (+3%)
+                # 3) 급등 (+3%) / 급락 (-3%)
                 if open_p > 0:
                     day_chg = (cp / open_p - 1) * 100
                     if day_chg >= 3.0 and "SURGE" not in code_alerts:
@@ -596,12 +631,14 @@ class BodyHunterBot:
                             text=f"🚀 {name} 급등!\n{cp:,}원 ({day_chg:+.1f}% from 시가)"
                         )
                         code_alerts.add("SURGE")
+                        logger.info(f"전쟁추적 알림: {name} SURGE {day_chg:+.1f}%")
                     if day_chg <= -3.0 and "DROP" not in code_alerts:
                         await context.bot.send_message(
                             chat_id=chat_id,
                             text=f"📉 {name} 급락!\n{cp:,}원 ({day_chg:+.1f}% from 시가)"
                         )
                         code_alerts.add("DROP")
+                        logger.info(f"전쟁추적 알림: {name} DROP {day_chg:+.1f}%")
 
                 # 4) TP 도달
                 if tp > 0 and cp >= tp and "TP_HIT" not in code_alerts:
@@ -610,9 +647,15 @@ class BodyHunterBot:
                         text=f"🎯 {name} TP 도달!\n{cp:,} ≥ TP {tp:,}"
                     )
                     code_alerts.add("TP_HIT")
+                    logger.info(f"전쟁추적 알림: {name} TP_HIT")
 
             except Exception as e:
-                logger.debug(f"전쟁추적 {name}: {e}")
+                fail_count += 1
+                logger.warning(f"전쟁추적 {name} 예외: {e}")
+
+        # 5분마다 로그 (매 60초는 과다)
+        if now.minute % 5 == 0:
+            logger.info(f"전쟁추적: {ok_count}/{ok_count+fail_count} 조회성공")
 
     async def _job_war_summary(self, context):
         """전쟁모드 30분 요약 텔레그램 전송"""
@@ -632,6 +675,7 @@ class BodyHunterBot:
         now = datetime.now()
         lines = [f"📊 전쟁모드 추적 [{now:%H:%M}]", ""]
 
+        data_count = 0
         for s in targets[:8]:
             code = s.get("code", "")
             name = s.get("name", code)
@@ -639,7 +683,6 @@ class BodyHunterBot:
             cp = last_prices.get(code, 0)
 
             if cp == 0:
-                # 아직 가격 데이터 없으면 조회
                 try:
                     p = await asyncio.to_thread(self.trader.fetch_price, code)
                     if p and p.get("success"):
@@ -647,24 +690,32 @@ class BodyHunterBot:
                         last_prices[code] = cp
                         if code not in open_prices:
                             open_prices[code] = p.get("open", cp)
-                except Exception:
+                except Exception as e:
+                    logger.warning(f"전쟁요약 {name} 가격조회 실패: {e}")
                     continue
 
             if cp == 0:
                 continue
 
+            data_count += 1
             open_p = open_prices.get(code, cp)
             day_chg = (cp / open_p - 1) * 100 if open_p > 0 else 0
             vs_tp = (tp / cp - 1) * 100 if tp > 0 and cp > 0 else 0
 
             icon = "🟢" if day_chg > 0 else ("🔴" if day_chg < -1 else "⚪")
-            lines.append(f"{icon} {name} {cp:,}원 ({day_chg:+.1f}%) →TP({vs_tp:+.1f}%)")
+            # 7SECRET nat_power 아이콘
+            np_grade = s.get("nat_power_grade", "")
+            np_icon = {"POWER_BUY": "💥", "BUY": "🟢", "CAUTION": "🟡", "DANGER": "🔴"}.get(np_grade, "")
+            lines.append(f"{icon} {name} {cp:,}원 ({day_chg:+.1f}%) →TP({vs_tp:+.1f}%) {np_icon}")
 
-        if len(lines) > 2:
-            try:
-                await context.bot.send_message(chat_id=chat_id, text="\n".join(lines))
-            except Exception as e:
-                logger.error(f"전쟁추적 요약 전송 실패: {e}")
+        if data_count == 0:
+            lines.append("⚠️ 가격 데이터 조회 실패 — KIS API 확인 필요")
+
+        try:
+            await context.bot.send_message(chat_id=chat_id, text="\n".join(lines))
+            logger.info(f"전쟁추적 요약 전송: {data_count}종목")
+        except Exception as e:
+            logger.error(f"전쟁추적 요약 전송 실패: {e}")
 
     async def cmd_buy(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update):
@@ -2117,7 +2168,8 @@ class BodyHunterBot:
         jq.run_repeating(self._job_portfolio_alert, interval=60, first=90)
         logger.info("보유종목 대시보드 등록: 10:00/13:00/14:30 KST + 알림 60초")
 
-        # ── 전쟁모드 장중 추적 (30분 요약 + 급등/급락 알림) ──
+        # ── 전쟁모드 장중 추적 (시작알림 + 30분 요약 + 급등/급락 알림) ──
+        jq.run_daily(self._job_war_startup, time=kst_time(9, 0))
         jq.run_repeating(self._job_war_tracker, interval=60, first=30)
         jq.run_daily(self._job_war_summary, time=kst_time(9, 30))
         jq.run_daily(self._job_war_summary, time=kst_time(10, 30))
@@ -2125,7 +2177,7 @@ class BodyHunterBot:
         jq.run_daily(self._job_war_summary, time=kst_time(13, 30))
         jq.run_daily(self._job_war_summary, time=kst_time(14, 30))
         jq.run_daily(self._job_war_summary, time=kst_time(15, 15))
-        logger.info("전쟁모드 추적 등록: 60초 감시 + 30분 요약")
+        logger.info("전쟁모드 추적 등록: 09:00 시작알림 + 60초 감시 + 30분 요약")
 
         # ── JARVIS BRAIN 자본 배분 (백업용 - NIGHTWATCH 미실행 대비) ──
         jq.run_daily(self.auto_trader.job_brain_allocation, time=kst_time(16, 36))
