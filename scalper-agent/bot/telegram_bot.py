@@ -2459,6 +2459,25 @@ class BodyHunterBot:
         except Exception:
             pass
 
+        # 7. 최종 완료 요약 텔레그램 전송
+        total_elapsed = int(time.time() - t0)
+        mins, secs = divmod(total_elapsed, 60)
+        summary = (
+            f"✅ 장마감 데이터 수집 완료! ({mins}분 {secs}초)\n"
+            f"\n"
+            f"📈 일봉(종가): {pykrx_cnt}종목\n"
+            f"📊 수급(투자자/외인/공매도): {len(r1) if r1 else 0}종목\n"
+            f"📦 Parquet 빌드: 성공 {ok} / 실패 {fail}\n"
+            f"🔄 stock_data_daily 동기화: {sync_cnt}종목\n"
+            f"\n"
+            f"→ 16:45 저녁 추천 분석 대기중"
+        )
+        try:
+            await context.bot.send_message(chat_id=chat_id, text=summary)
+            logger.info(f"데이터 수집 완료 요약 전송 ({total_elapsed}초)")
+        except Exception as e:
+            logger.error(f"수집 완료 요약 전송 실패: {e}")
+
     def _get_nationality_targets(self) -> list:
         """국적별 수급 수집 대상 종목 = 추천 + 보유 (중복 제거)"""
         codes = set()
