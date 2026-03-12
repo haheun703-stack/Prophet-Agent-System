@@ -2,8 +2,10 @@
 """
 장중 추적 모니터 + 텔레그램 알림
 ================================
-전쟁 모드: recommendation.json에서 추천 종목 자동 로드
-평시 모드: 기존 하드코딩 종목 사용
+3가지 모드:
+  1. 전쟁 모드(기본): recommendation.json에서 추천 종목 자동 로드
+  2. 바운스 모드: bounce_candidates.json에서 낙폭반등 종목 로드
+  3. 레거시 모드: 기존 하드코딩 종목 사용
 
 기능:
   - 30초 간격 실시간 가격 추적
@@ -12,6 +14,8 @@
 
 Usage:
   python tools/entry_monitor.py           # recommendation.json 기반
+  python tools/entry_monitor.py --bounce  # bounce_candidates.json 기반 (낙폭반등)
+  python tools/entry_monitor.py --bounce --top 3  # 바운스 TOP 3만
   python tools/entry_monitor.py --legacy  # 기존 하드코딩 종목
 """
 import sys, os, time, json, requests
@@ -79,6 +83,46 @@ def load_war_mode_targets() -> list[dict]:
     return targets
 
 
+# ─── 바운스 헌터 종목 로드 ────────────────────────────
+
+def load_bounce_targets(top_n: int = 0) -> list[dict]:
+    """bounce_candidates.json에서 낙폭반등 종목 로드
+
+    Args:
+        top_n: 상위 N개만 로드 (0=전체)
+    """
+    bc_path = Path(__file__).resolve().parent.parent / "data_store" / "bounce_candidates.json"
+    if not bc_path.exists():
+        print("[WARN] bounce_candidates.json 없음")
+        return []
+
+    with open(bc_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    targets = []
+    candidates = data.get("candidates", [])
+    if top_n > 0:
+        candidates = candidates[:top_n]
+
+    for c in candidates:
+        cp = c.get("current_price", 0)
+        tp = c.get("target_bounce", 0)  # 바운스 목표가
+        sl = int(cp * 0.95) if cp > 0 else 0  # -5% 손절
+        grade = c.get("inst_grade", "?")
+        score = c.get("score", 0)
+
+        targets.append({
+            "code": c["code"],
+            "name": c["name"],
+            "close": cp,
+            "sl": sl,
+            "tp": tp,
+            "score": score,
+            "memo": f"★{grade} 점수{score} RSI{c.get('rsi', 0):.0f}",
+        })
+    return targets
+
+
 # ─── 기존 하드코딩 종목 (legacy) ──────────────────────
 
 LEGACY_PICKS = [
@@ -113,9 +157,11 @@ def run_monitor(targets: list[dict], interval: int = 30):
 
     # 시작 알림
     names = ", ".join(t["name"] for t in targets[:8])
+    memos = "\n".join(f"  {t['name']}: {t.get('memo','')}" for t in targets[:8])
     start_msg = (
         f"📡 장중 추적 모니터 시작\n"
         f"종목: {names}\n"
+        f"{memos}\n"
         f"간격: {interval}초 | SL/급등락 알림\n"
         f"30분마다 요약 리포트"
     )
@@ -264,8 +310,23 @@ def _send_summary(targets, last_prices, open_prices):
 
 if __name__ == "__main__":
     legacy = "--legacy" in sys.argv
+    bounce = "--bounce" in sys.argv
 
-    if legacy:
+    # --top N 파싱
+    top_n = 0
+    if "--top" in sys.argv:
+        idx = sys.argv.index("--top")
+        if idx + 1 < len(sys.argv):
+            top_n = int(sys.argv[idx + 1])
+
+    if bounce:
+        label = f"바운스 모드 (bounce_candidates.json, TOP {top_n})" if top_n else "바운스 모드 (bounce_candidates.json)"
+        print(label)
+        targets = load_bounce_targets(top_n)
+        if not targets:
+            print("바운스 종목 없음! --legacy로 기존 종목 사용")
+            targets = LEGACY_PICKS
+    elif legacy:
         print("레거시 모드 (기존 하드코딩 종목)")
         targets = LEGACY_PICKS
     else:
@@ -275,9 +336,9 @@ if __name__ == "__main__":
             print("추천 종목 없음! --legacy로 기존 종목 사용")
             targets = LEGACY_PICKS
 
-    print(f"감시 종목 {len(targets)}개:")
+    print(f"\n감시 종목 {len(targets)}개:")
     for t in targets:
-        print(f"  {t['name']}({t['code']}) SL:{t.get('sl',0):,} TP:{t.get('tp',0):,}")
+        print(f"  {t['name']}({t['code']}) SL:{t.get('sl',0):,} TP:{t.get('tp',0):,} | {t.get('memo','')}")
     print()
 
     run_monitor(targets, interval=30)
