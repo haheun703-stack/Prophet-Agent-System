@@ -160,6 +160,7 @@ def step3_nationality(force: bool = False):
     try:
         import asyncio
         from data.krx_nationality_crawler import afetch_nationality_batch
+        from data.nationality_signal import collect_daily_snapshots, _get_latest_data_date
         from datetime import timedelta
 
         date_from = (datetime.now() - timedelta(days=5)).strftime("%Y%m%d")
@@ -168,6 +169,15 @@ def step3_nationality(force: bool = False):
         results = asyncio.run(afetch_nationality_batch(nat_codes, date_from, date_to))
         ok = sum(1 for df in results.values() if not df.empty)
         logger.info(f"[3/5] 국적별 완료: {ok}/{len(nat_codes)} ({int(time.time()-t0)}초)")
+
+        # 일별 스냅샷 저장 (날짜별 {code}_{date}.csv)
+        try:
+            snap_date = _get_latest_data_date()
+            snaps = collect_daily_snapshots(nat_codes, snap_date)
+            logger.info(f"[3/5] 국적별 스냅샷: {len(snaps)}/{len(nat_codes)} ({snap_date})")
+        except Exception as e:
+            logger.warning(f"[3/5] 국적별 스냅샷 실패: {e}")
+
         return ok
     except Exception as e:
         logger.error(f"[3/5] 국적별 실패: {e}")
