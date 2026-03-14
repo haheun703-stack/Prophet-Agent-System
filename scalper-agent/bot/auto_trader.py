@@ -363,6 +363,7 @@ class AutoTrader:
 
         # 1) 저녁 추천 파이프라인 결과 우선 (Stage 1~3)
         cross_regime = ""
+        rec = None
         try:
             from data.morning_recommendation import load_recommendation
             rec = load_recommendation()
@@ -647,80 +648,7 @@ class AutoTrader:
         lines.append(f"진입 조건 충족 시 자동 매수 (최대 30분 관찰)")
         await _send("\n".join(lines))
 
-    async def _morning_momentum(self, context, _send):
-        """소형주 모멘텀: 급등 후보 로드 -> 진입감시 등록 (스윙과 별도)
-
-        - 최대 1종목 (스윙 포지션과 별도 카운트)
-        - 매수금액 = 가용현금 20% (소형주 소액)
-        - 2분할 매수, 최대 20분 관찰, 최대 5일 보유
-        """
-        if not self.is_running:
-            return
-
-        try:
-            from data.morning_recommendation import load_recommendation
-            rec = load_recommendation()
-            if not rec or not rec.momentum_stocks:
-                return
-        except Exception as e:
-            logger.warning(f"모멘텀 추천 로드 실패: {e}")
-            return
-
-        # 모멘텀 포지션 제한: 최대 1종목
-        bot_conf = self.config.get("bot", {})
-        momentum_max = bot_conf.get("max_momentum_positions", 1)
-        momentum_count = sum(
-            1 for p in self._positions.values() if p.get("source") == "momentum"
-        )
-        if momentum_count >= momentum_max:
-            await _send(f"모멘텀 포지션 {momentum_count}/{momentum_max} - 추가 불가")
-            return
-
-        # 가용 현금 20% 사용
-        bal = self.trader.fetch_balance()
-        cash = bal.get("cash", 0) if bal.get("success") else 0
-        buy_amount = int(cash * 0.20)
-        if buy_amount < 50000:
-            return
-
-        registered = 0
-        for s in rec.momentum_stocks[:1]:  # 최대 1종목
-            code = s["code"]
-            if code in self._positions or code in self._entry_watch:
-                continue
-
-            self._entry_watch[code] = {
-                "name": s["name"],
-                "buy_amount": buy_amount,
-                "sl": s["sl"],
-                "tp": s["tp"],
-                "tp1_quick": s["tp"],
-                "score": s.get("momentum_score", 0),
-                "source": "momentum",           # 소스 표시 (vs swing/pipeline)
-                "confidence": "MOMENTUM",
-                "size_mult": 1.0,
-                "prev_close": s.get("entry", 0),
-                "open_price": 0,
-                "min_price": 999999999,
-                "max_price": 0,
-                "checks": 0,
-                "max_checks": 40,               # 최대 20분 (스윙 30분보다 짧게)
-                "ai_scores": [],
-                "registered_at": datetime.now().strftime("%H:%M"),
-                "entry_triggered": False,
-                "split_count": 2,               # 2분할 (스윙은 3분할)
-                "split_done": 0,
-                "split_amount": buy_amount // 2,
-                "last_split_check": 0,
-                "split_interval": 10,           # 5분 간격
-            }
-            registered += 1
-
-        if registered:
-            await _send(
-                f"급등주 감시 등록: {registered}종목\n"
-                f"  금액: {buy_amount:,}원 (2분할), 최대 20분 관찰"
-            )
+    # _morning_momentum 삭제됨 (PF 0.70 비활성화 → 데드코드 정리 2026-03-14)
 
     async def _check_entry_watch(self):
         """진입감시 대기열 체크 - job_monitor에서 30초마다 호출
@@ -1126,7 +1054,7 @@ class AutoTrader:
 
             # 14:30 이후면 더 이상 안 삼 (장마감 가까움)
             now = datetime.now()
-            if now.hour >= 14 and now.minute >= 30:
+            if now.hour * 100 + now.minute >= 1430:
                 expired.append(code)
                 await self._alert(
                     f"⏰ 돌파 대기 종료: {watch['name']}({code})\n"
@@ -1413,16 +1341,17 @@ class AutoTrader:
 
                 if snap.decision == "FULL_SELL":
                     logger.info(f"AI 전량매도: {code} @ {snap.price:,} ({snap.decision_reason})")
-                    # 실현 손익 기록
-                    pnl_amount = snap.price - pos["entry_price"]
+                    # 매도 먼저 실행, 성공 후 손익 기록 (이중기록 방지)
+                    result = self.trader.liquidate_one(code)
+                    # 실현 손익 기록 (주당→총액 보정)
+                    qty = pos.get("qty", 1)
+                    pnl_amount = (snap.price - pos["entry_price"]) * qty
                     bal_info = self.trader.fetch_balance()
                     for p in bal_info.get("positions", []):
                         if p["code"] == code:
                             pnl_amount = p.get("pnl_amount", pnl_amount)
                             break
                     self.record_realized_loss(pnl_amount)
-
-                    result = self.trader.liquidate_one(code)
                     self._positions.pop(code, None)
                     rtm.unregister_position(code)
                     await self._alert(rtm.format_decision_alert(snap))
@@ -1480,9 +1409,11 @@ class AutoTrader:
                 effective_sl = max(pos["stop_loss"], pos.get("trailing_sl", 0))
 
                 if cp <= effective_sl:
-                    pnl = cp - entry
-                    self.record_realized_loss(pnl)
+                    # 매도 먼저 실행, 성공 후 손익 기록
                     result = self.trader.liquidate_one(code)
+                    qty = pos.get("qty", 1)
+                    pnl = (cp - entry) * qty
+                    self.record_realized_loss(pnl)
                     self._positions.pop(code, None)
 
                     if pos.get("trailing_activated"):
@@ -1783,7 +1714,7 @@ class AutoTrader:
         if bal.get("success"):
             pos_lines = []
             for p in bal.get("positions", []):
-                pos_lines.append(f"  {p.get('name', p['code'])} {p['qty']}주 {p.get('pnl_pct', 0):+.1f}%")
+                pos_lines.append(f"  {p.get('name', p['code'])} {p['qty']}주 {p.get('pnl_rate', 0):+.1f}%")
 
             await self._alert(
                 f"📊 일일 마감 ({self.mode} 모드)\n"
@@ -1881,7 +1812,7 @@ class AutoTrader:
         # 보유 종목
         if self.trader:
             try:
-                bal = self.trader.get_balance()
+                bal = self.trader.fetch_balance()
                 for pos in bal.get("positions", []):
                     code = pos.get("code", "")
                     if code:

@@ -25,7 +25,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-import numpy as np
 import pandas as pd
 
 BASE_DIR = Path(__file__).resolve().parent.parent

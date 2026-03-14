@@ -160,7 +160,7 @@ class KISTrader:
                     })
 
                 s = summary[0] if summary else {}
-                cash = int(s.get("dnca_tot_amt", 0))
+                cash = int(s.get("psbl_ord_amt", 0) or s.get("dnca_tot_amt", 0))
                 total_eval = int(s.get("tot_evlu_amt", 0))
 
                 self._consecutive_failures = 0
@@ -795,11 +795,14 @@ class KISTrader:
         """
         try:
             broker = self._get_broker()
+            token = broker.access_token
+            if not token.startswith("Bearer "):
+                token = f"Bearer {token}"
             headers = {
                 "content-type": "application/json; charset=utf-8",
-                "authorization": broker.access_token,
-                "appKey": broker.api_key,
-                "appSecret": broker.api_secret,
+                "authorization": token,
+                "appkey": broker.api_key,
+                "appsecret": broker.api_secret,
                 "tr_id": "FHKST01010200",
             }
             params = {"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code}
@@ -954,17 +957,21 @@ class KISTrader:
             broker = self._get_broker()
             # mojito에 시간외 메서드가 없으므로 REST API 직접 호출
             path = "/uapi/domestic-stock/v1/trading/order-cash"
+            acc_clean = broker.acc_no.replace("-", "")
             body = {
-                "CANO": broker.acc_no[:8],
-                "ACNT_PRDT_CD": broker.acc_no[8:],
+                "CANO": acc_clean[:8],
+                "ACNT_PRDT_CD": acc_clean[8:],
                 "PDNO": code,
                 "ORD_DVSN": "00",      # 지정가
                 "ORD_QTY": str(qty),
                 "ORD_UNPR": str(price),
             }
+            _token = broker.access_token
+            if not _token.startswith("Bearer "):
+                _token = f"Bearer {_token}"
             headers = {
                 "Content-Type": "application/json; charset=utf-8",
-                "authorization": f"Bearer {broker.access_token}",
+                "authorization": _token,
                 "appkey": broker.api_key,
                 "appsecret": broker.api_secret,
                 "tr_id": "TTTC0803U",  # 시간외 단일가 매수
@@ -1006,17 +1013,21 @@ class KISTrader:
 
             broker = self._get_broker()
             path = "/uapi/domestic-stock/v1/trading/order-cash"
+            acc_clean = broker.acc_no.replace("-", "")
             body = {
-                "CANO": broker.acc_no[:8],
-                "ACNT_PRDT_CD": broker.acc_no[8:],
+                "CANO": acc_clean[:8],
+                "ACNT_PRDT_CD": acc_clean[8:],
                 "PDNO": code,
                 "ORD_DVSN": "00",
                 "ORD_QTY": str(qty),
                 "ORD_UNPR": str(price),
             }
+            _token = broker.access_token
+            if not _token.startswith("Bearer "):
+                _token = f"Bearer {_token}"
             headers = {
                 "Content-Type": "application/json; charset=utf-8",
-                "authorization": f"Bearer {broker.access_token}",
+                "authorization": _token,
                 "appkey": broker.api_key,
                 "appsecret": broker.api_secret,
                 "tr_id": "TTTC0801U",  # 시간외 단일가 매도

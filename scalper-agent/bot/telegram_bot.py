@@ -1309,11 +1309,11 @@ class BodyHunterBot:
             if args:
                 # 특정 종목
                 from bot.kis_trader import resolve_stock
-                stock = resolve_stock(args[0])
-                if not stock:
+                _code, _name = resolve_stock(args[0])
+                if not _code:
                     await update.message.reply_text(f"종목 '{args[0]}' 찾을 수 없음")
                     return
-                targets = [{"code": stock["code"], "name": stock["name"]}]
+                targets = [{"code": _code, "name": _name}]
             else:
                 # 사전감지 후보에서 가져오기
                 candidates_path = Path(__file__).parent.parent / "data_store" / "premove_candidates.json"
@@ -1937,6 +1937,9 @@ class BodyHunterBot:
         """봇 시작 시 자동매매 자동 시작 + 키보드 전송"""
         logger.info("봇 초기화 완료 - 자동매매 자동 시작")
 
+        if not self.chat_id:
+            logger.error("TELEGRAM_CHAT_ID 미설정 - 시작 메시지/자동매매 비활성")
+            return
         chat_id = int(self.chat_id)
 
         # 자동매매 자동 시작 (auto_trade: true일 때)
@@ -2522,6 +2525,8 @@ class BodyHunterBot:
 
     async def cmd_nationality(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """국적수급 - 추천/보유 종목 외국인 국적별 수급 변화 보고"""
+        if not self._is_authorized(update):
+            return
         text = update.message.text.strip()
 
         # "국적수급 삼성전자" or "국적수급 005930" → 특정 종목

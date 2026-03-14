@@ -1155,11 +1155,12 @@ def run_evening_recommendation() -> RecommendationReport:
     # Step 5b: MOMENTUM 레짐 감지 (수급 기반 초기 진입 시그널)
     regime_signals = {}
     try:
+        import json as _json5b
         t_regime = time.time()
         from data.regime_detector import detect_regime_batch
-        uni_path = BASE_DIR / "data_store" / "universe.json"
+        uni_path = Path(__file__).resolve().parent.parent / "data_store" / "universe.json"
         with open(uni_path, "r", encoding="utf-8") as _uf:
-            _universe = json.load(_uf)
+            _universe = _json5b.load(_uf)
         # rotation_detail에서 sector breadth 재활용
         sector_breadths = {}
         for rd in report.rotation_detail:
@@ -1223,11 +1224,23 @@ def run_evening_recommendation() -> RecommendationReport:
         from data.nationality_profiler import predict_tomorrow_flow
         top_codes = [s.code for s in report.stocks]
         top_names = {s.code: s.name for s in report.stocks}
-        # price_data 전달 (VPD 계산용)
+        # price_data 전달 (VPD 계산용) — 일봉 CSV에서 직접 로드
         top_price_data = {}
+        _daily_dir = Path(__file__).resolve().parent.parent / "data_store" / "daily"
         for c in top_codes:
-            if c in norm_price_data:
-                top_price_data[c] = norm_price_data[c]
+            _dp = _daily_dir / f"{c}.csv"
+            if _dp.exists():
+                try:
+                    import pandas as _pd_vpd
+                    _df = _pd_vpd.read_csv(_dp, index_col=0, parse_dates=True)
+                    if len(_df) >= 2:
+                        top_price_data[c] = {
+                            "current": int(_df["종가"].iloc[-1]),
+                            "prev": int(_df["종가"].iloc[-2]),
+                            "volume": int(_df["거래량"].iloc[-1]),
+                        }
+                except Exception:
+                    pass
         flow_preds = predict_tomorrow_flow(
             top_codes, n_days=5, code_names=top_names,
             price_data=top_price_data,
@@ -2013,9 +2026,9 @@ def run_war_mode_recommendation() -> RecommendationReport:
         from data.supply_naver import score_supply_batch
         close_prices = {}
         for code in top_codes:
-            pd = price_data.get(code)
-            if pd:
-                close_prices[code] = pd["current"]
+            _pdi = price_data.get(code)
+            if _pdi:
+                close_prices[code] = _pdi["current"]
         supply_scores = score_supply_batch(top_codes, close_prices=close_prices)
     except Exception as e:
         logger.warning(f"수급 점수 실패: {e}")
@@ -2233,10 +2246,11 @@ def run_war_mode_recommendation() -> RecommendationReport:
 
     # 전쟁모드 종목에도 MOMENTUM 레짐 감지
     try:
+        import json as _json_war
         from data.regime_detector import detect_regime_batch
-        uni_path = BASE_DIR / "data_store" / "universe.json"
+        uni_path = Path(__file__).resolve().parent.parent / "data_store" / "universe.json"
         with open(uni_path, "r", encoding="utf-8") as _uf:
-            _universe = json.load(_uf)
+            _universe = _json_war.load(_uf)
         war_codes = [s.code for s in report.stocks]
         war_regime = detect_regime_batch(war_codes, _universe)
         war_mtm_boost = 0

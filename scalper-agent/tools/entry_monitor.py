@@ -69,9 +69,11 @@ def load_war_mode_targets() -> list[dict]:
 
     targets = []
     for s in data.get("stocks", []):
+        if not s.get("code") or not s.get("name"):
+            continue
         targets.append({
-            "code": s["code"],
-            "name": s["name"],
+            "code": s.get("code", ""),
+            "name": s.get("name", ""),
             "close": s.get("close", 0),
             "sl": s.get("sl", 0),
             "tp": s.get("tp", 0),
@@ -111,14 +113,18 @@ def load_bounce_targets(top_n: int = 0) -> list[dict]:
         grade = c.get("inst_grade", "?")
         score = c.get("score", 0)
 
+        _code = c.get("code", "")
+        _name = c.get("name", "")
+        if not _code or not _name:
+            continue
         targets.append({
-            "code": c["code"],
-            "name": c["name"],
+            "code": _code,
+            "name": _name,
             "close": cp,
             "sl": sl,
             "tp": tp,
             "score": score,
-            "memo": f"★{grade} 점수{score} RSI{c.get('rsi', 0):.0f}",
+            "memo": f"★{grade} 점수{score} RSI{float(c.get('rsi', 0)):.0f}",
         })
     return targets
 
@@ -268,7 +274,10 @@ def run_monitor(targets: list[dict], interval: int = 30):
 
         # ── 30분 요약 ──
         if time.time() - last_summary >= 1800:
-            _send_summary(targets, last_prices, open_prices)
+            try:
+                _send_summary(targets, last_prices, open_prices)
+            except Exception as e:
+                print(f"  [ERR] 요약 전송 실패: {e}")
             last_summary = time.time()
 
         if not has_alert and check_count % 10 == 0:
