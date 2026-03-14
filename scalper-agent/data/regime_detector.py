@@ -94,23 +94,6 @@ def _load_flow(code: str) -> Optional[pd.DataFrame]:
         return None
 
 
-def _calc_rsi(close_series: pd.Series, period: int = 14) -> float:
-    """RSI-14 계산"""
-    if len(close_series) < period + 1:
-        return 50.0
-    delta = close_series.diff()
-    gain = delta.clip(lower=0)
-    loss = (-delta).clip(lower=0)
-    avg_gain = gain.rolling(period).mean()
-    avg_loss = loss.rolling(period).mean()
-    last_gain = avg_gain.iloc[-1]
-    last_loss = avg_loss.iloc[-1]
-    if last_loss == 0:
-        return 100.0
-    rs = last_gain / last_loss
-    return 100 - (100 / (1 + rs))
-
-
 # =============================================================================
 # 5가지 팩터 스코어링
 # =============================================================================

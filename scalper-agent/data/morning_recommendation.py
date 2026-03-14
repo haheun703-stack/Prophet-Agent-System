@@ -16,7 +16,6 @@ Stage 3: 08:50 최종 확인
 """
 
 import logging
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -1389,7 +1388,7 @@ def run_us_market_check(prev_report: RecommendationReport) -> RecommendationRepo
 
     # 위기 ETF 시그널 생성 (인버스/레버리지 추천)
     try:
-        from strategies.crisis_etf_signal import generate_signal, format_signal_telegram
+        from strategies.crisis_etf_signal import generate_signal
         etf_sig = generate_signal()
         report.etf_signal = etf_sig.to_dict()
         if etf_sig.signal != "HOLD":
@@ -1710,6 +1709,7 @@ def save_recommendation(report: RecommendationReport):
         "war_relay_stocks": report.war_relay_stocks,  # 전쟁→재건 릴레이 종목
         "rotation_signal": report.rotation_signal,  # 섹터 로테이션 시그널
         "rotation_detail": report.rotation_detail,  # 섹터별 로테이션 상세
+        "etf_signal": report.etf_signal,  # 위기 ETF 시그널
     }
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
@@ -1778,6 +1778,10 @@ def load_recommendation() -> Optional[RecommendationReport]:
         report.momentum_stocks = data.get("momentum_stocks", [])
         # 전쟁→재건 릴레이 종목 로드
         report.war_relay_stocks = data.get("war_relay_stocks", [])
+        # 섹터 로테이션 + ETF 시그널 복원
+        report.rotation_signal = data.get("rotation_signal", "")
+        report.rotation_detail = data.get("rotation_detail", [])
+        report.etf_signal = data.get("etf_signal", {})
         return report
     except Exception as e:
         logger.error(f"추천 로드 실패: {e}")
@@ -2186,7 +2190,7 @@ def run_war_mode_recommendation() -> RecommendationReport:
         tp = consensus_target if consensus_target > current else pre_war
 
         # 신뢰도
-        if consensus_upside > 20 and recovery_upside > 15 and supply_sc >= 0:
+        if consensus_upside > 20 and recovery_upside > 15 and supply_sc >= -10:
             confidence = "HIGH"
         elif consensus_upside > 10 or recovery_upside > 20:
             confidence = "MED"
@@ -2199,7 +2203,7 @@ def run_war_mode_recommendation() -> RecommendationReport:
             sources.append(f"recovery(+{recovery_upside:.0f}%)")
         if consensus_upside > 0:
             sources.append(f"consensus({consensus_target:,}->+{consensus_upside:.0f}%)")
-        if supply_sc >= 0:
+        if supply_sc >= -10:
             sources.append(f"supply(OK)")
         if tech_sig_detail:
             sources.append(f"tech({tech_sig_detail})")

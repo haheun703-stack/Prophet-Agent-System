@@ -48,9 +48,6 @@ class AutoTrader:
         self._send_alert: Optional[Callable] = None
         self._positions = {}  # {code: {entry_price, stop_loss, take_profit, target_state, ...}}
 
-        # 돌파 대기 워치리스트: {code: {name, resistance, avg_vol, sl, tp, ...}}
-        self._breakout_watch = {}
-
         # 진입 감시 대기열: 장 시작 후 실시간으로 관찰 → 조건 충족 시 매수
         # {code: {name, buy_amount, sl, tp, score, prev_close, checks, ...}}
         self._entry_watch = {}
@@ -313,7 +310,6 @@ class AutoTrader:
         스윙 모드: swing_candidates.json에서 ATR SL/TP + 매집원가 SL 적용
         데이 모드: 기존 5D 스캔 + 고정 SL/TP
         """
-        from datetime import date
         if date.today().weekday() >= 5:
             return
 
@@ -544,8 +540,7 @@ class AutoTrader:
         usable_cash = int(available_cash * (1 - cash_reserve_ratio) * capital_use)
         buy_amount = usable_cash // num_targets if num_targets > 0 else 0
 
-        # ── BRAIN 자본 배분 캡 적용 ──
-        brain_alloc = self._load_brain_allocation()
+        # ── BRAIN 자본 배분 캡 적용 (위에서 로드한 brain_alloc 재사용) ──
         brain_cap = 0
         if brain_alloc:
             brain_cap = brain_alloc.get("allocation_krw", {}).get("bh_swing", 0)
@@ -694,9 +689,6 @@ class AutoTrader:
                     continue
 
                 cp = price_info["current_price"]
-                today_vol = price_info.get("volume", 0)
-                today_high = price_info.get("high", cp)
-                today_low = price_info.get("low", cp)
 
                 # 시가 기록 (첫 체크)
                 if watch["open_price"] == 0:
@@ -973,223 +965,6 @@ class AutoTrader:
         for code in expired:
             self._entry_watch.pop(code, None)
 
-    # ═══════════════════════════════════════
-    #  저항대 감지 + 돌파 대기 매수
-    # ═══════════════════════════════════════
-
-    def _detect_resistance(self, code: str) -> dict | None:
-        """최근 N일 고점 기반 저항대 감지
-
-        Returns: {resistance, distance_pct, avg_volume} or None (저항 없음)
-        """
-        from pykrx import stock as pykrx_stock
-        from datetime import timedelta
-
-        try:
-            end = datetime.now().strftime("%Y%m%d")
-            start = (datetime.now() - timedelta(days=60)).strftime("%Y%m%d")
-            df = pykrx_stock.get_market_ohlcv(start, end, code)
-
-            if df is None or len(df) < 10:
-                return None
-
-            close = df["종가"].astype(float)
-            high = df["고가"].astype(float)
-            volume = df["거래량"].astype(float)
-            current = float(close.iloc[-1])
-
-            # 최근 20일 고점 (오늘 제외)
-            recent_high = float(high.iloc[-21:-1].max()) if len(high) > 21 else float(high.iloc[:-1].max())
-
-            # 평균 거래량 (20일)
-            avg_vol = float(volume.iloc[-20:].mean())
-
-            # 저항대까지 거리 (%)
-            dist_pct = (recent_high / current - 1) * 100
-
-            # 고점이 현재가 위에 있고, 5% 이내면 저항대
-            if 0 < dist_pct <= 5.0:
-                return {
-                    "resistance": int(recent_high),
-                    "distance_pct": round(dist_pct, 1),
-                    "avg_volume": int(avg_vol),
-                }
-
-            # 현재가가 고점 부근(위아래 3% 이내)이면 돌파 시도 중
-            if abs(dist_pct) <= 3.0:
-                return {
-                    "resistance": int(recent_high),
-                    "distance_pct": round(dist_pct, 1),
-                    "avg_volume": int(avg_vol),
-                }
-
-            return None  # 저항대 없음 (멀리 떨어짐)
-
-        except Exception as e:
-            logger.warning(f"저항대 감지 실패 {code}: {e}")
-            return None
-
-    async def _check_breakout_watch(self):
-        """돌파 대기 워치리스트 모니터링 (30초마다 job_monitor에서 호출)
-
-        돌파 조건:
-          1. 현재가 > 저항대 (종가 기준 돌파)
-          2. 당일 거래량 > 평균 거래량 * 1.3 (거래량 동반)
-        """
-        if not self._breakout_watch:
-            return
-
-        expired = []
-        for code, watch in list(self._breakout_watch.items()):
-            watch["checks"] += 1
-
-            # 최대 감시 시간 초과 → 만료
-            if watch["checks"] > watch["max_checks"]:
-                expired.append(code)
-                await self._alert(
-                    f"⏰ 돌파 대기 만료: {watch['name']}({code})\n"
-                    f"   {watch['resistance']:,}원 돌파 실패 - 오늘 매수 안 함"
-                )
-                continue
-
-            # 14:30 이후면 더 이상 안 삼 (장마감 가까움)
-            now = datetime.now()
-            if now.hour * 100 + now.minute >= 1430:
-                expired.append(code)
-                await self._alert(
-                    f"⏰ 돌파 대기 종료: {watch['name']}({code})\n"
-                    f"   14:30 이후 - 오늘 매수 안 함"
-                )
-                continue
-
-            # KIS API로 현재가 조회
-            try:
-                price_info = self.trader.fetch_price(code)
-                if not price_info.get("success"):
-                    continue
-
-                cp = price_info["current_price"]
-                today_vol = price_info["volume"]
-                today_high = price_info["high"]
-                resistance = watch["resistance"]
-                avg_vol = watch["avg_volume"]
-
-                # 돌파 조건 체크
-                vol_ratio = today_vol / avg_vol if avg_vol > 0 else 0
-                broke_resistance = cp > resistance
-                volume_confirm = vol_ratio >= 1.3
-
-                # 10분마다 상태 로그 (매 20회차 = 30초 * 20 = 10분)
-                if watch["checks"] % 20 == 0:
-                    logger.info(
-                        f"돌파감시 {watch['name']}: "
-                        f"현재{cp:,} vs 저항{resistance:,} | "
-                        f"거래량 {vol_ratio:.1f}x | "
-                        f"돌파{'O' if broke_resistance else 'X'} "
-                        f"거래량{'O' if volume_confirm else 'X'}"
-                    )
-
-                # ── 돌파 확인! → AI EYE 검증 후 매수 ──
-                if broke_resistance and volume_confirm:
-
-                    # 👁 AI 눈(EYE): 4팩터 실시간 점수 확인
-                    ai_score = -1
-                    try:
-                        rtm = self._get_rt_monitor()
-                        rtm.register_position(
-                            code, watch["name"], cp, watch["sl"], watch["tp"]
-                        )
-                        snap = await asyncio.to_thread(rtm.evaluate_position, code)
-                        if snap:
-                            ai_score = snap.realtime_score
-                        rtm.unregister_position(code)
-                    except Exception as e:
-                        logger.warning(f"AI EYE 실패 {code}: {e}")
-
-                    # AI 점수 40 미만 → 허위 돌파 가능성 → 매수 보류
-                    if 0 <= ai_score < 40:
-                        await self._alert(
-                            f"👁 AI EYE 거부: {watch['name']}({code})\n"
-                            f"   가격 돌파 OK + 거래량 {vol_ratio:.1f}x OK\n"
-                            f"   BUT AI 점수 {ai_score}/100 (체결강도/호가 약함)\n"
-                            f"   → 허위 돌파 의심, 계속 감시 중"
-                        )
-                        continue  # 매수 안 하고 다음 체크에서 재시도
-
-                    buy_amount = watch["buy_amount"]
-                    ai_msg = f" | AI {ai_score}점" if ai_score >= 0 else ""
-
-                    if self._confirm_auto:
-                        # 확인 모드: 대기열에 추가
-                        self._pending_auto_buys.append({
-                            "code": code, "name": watch["name"],
-                            "amount": buy_amount, "sl": watch["sl"],
-                            "tp": watch["tp"],
-                            "tp1_quick": watch.get("tp1_quick", watch["tp"]),
-                            "score": watch.get("premove_score", 0),
-                        })
-                        await self._alert(
-                            f"⚠️ 돌파 매수 확인 대기\n"
-                            f"   {watch['name']}({code}) @ {cp:,}원\n"
-                            f"   저항 {resistance:,}원 돌파 확인\n"
-                            f"   거래량 {vol_ratio:.1f}x{ai_msg}\n"
-                            f"   금액: {buy_amount:,}원\n\n"
-                            f"   실행: '자동확인' | 취소: '자동취소'"
-                        )
-                    else:
-                        result = self.trader.safe_buy(code, buy_amount)
-                        if result.get("success"):
-                            target_state = self._init_dynamic_target(
-                                code, watch["name"], cp
-                            )
-                            sl = target_state.dynamic_sl if target_state else watch["sl"]
-                            tp = target_state.dynamic_tp if target_state else watch["tp"]
-                            self._positions[code] = {
-                                "entry_price": cp,
-                                "stop_loss": sl,
-                                "take_profit": tp,
-                                "entry_date": datetime.now().strftime("%Y-%m-%d"),
-                                "name": watch["name"],
-                                "source": watch.get("source", "swing"),
-                                "target_state": target_state,
-                                "high_watermark": cp,
-                                "trailing_activated": False,
-                                "trailing_sl": 0,
-                            }
-                            try:
-                                rtm = self._get_rt_monitor()
-                                rtm.register_position(code, watch["name"], cp, sl, tp)
-                            except Exception:
-                                pass
-                            await self._alert(
-                                f"🚀 돌파 매수 성공!\n"
-                                f"   {watch['name']}({code}) @ {cp:,}원\n"
-                                f"   저항 {resistance:,}원 돌파 확인\n"
-                                f"   거래량 {vol_ratio:.1f}x{ai_msg}\n"
-                                f"   SL:{sl:,} TP:{tp:,}"
-                            )
-                        else:
-                            await self._alert(
-                                f"❌ 돌파 매수 실패: {watch['name']}({code})\n"
-                                f"   {result.get('message')}"
-                            )
-
-                    expired.append(code)
-
-                # ── 저항대 아래로 크게 하락 (-3%) → 오늘 포기 ──
-                elif cp < resistance * 0.97:
-                    expired.append(code)
-                    await self._alert(
-                        f"📉 돌파 포기: {watch['name']}({code})\n"
-                        f"   현재 {cp:,}원 - 저항대 대비 -3% 이탈"
-                    )
-
-            except Exception as e:
-                logger.error(f"돌파 감시 오류 {code}: {e}")
-
-        # 만료/완료 항목 제거
-        for code in expired:
-            self._breakout_watch.pop(code, None)
 
     async def _morning_day(self, context, _send):
         """데이 모드 아침 스캔: 기존 5D + 고정 SL/TP"""
@@ -1217,6 +992,12 @@ class AutoTrader:
         await _send("\n".join(lines))
 
         if not self.is_running:
+            return
+
+        # ── 리스크 게이트 체크 ──
+        risk_ok, risk_reason = self.check_risk_gate()
+        if not risk_ok:
+            await _send(f"⛔ 리스크 게이트 차단\n{risk_reason}")
             return
 
         bot_conf = self.config.get("bot", {})
@@ -1273,10 +1054,6 @@ class AutoTrader:
         # ── 진입감시 대기열 체크 (장 시작 후 실시간 관찰 → 조건 충족 시 매수) ──
         if self._entry_watch:
             await self._check_entry_watch()
-
-        # ── 돌파 대기 워치리스트 체크 (자동매매 ON/OFF 무관) ──
-        if self._breakout_watch:
-            await self._check_breakout_watch()
 
         if not self.is_running:
             return
@@ -1734,7 +1511,6 @@ class AutoTrader:
         한국장 마감 + 데이터 수집 완료 후 실행
         릴레이 → 사전감지 → 기술필터 → 뉴스AI → 교차검증
         """
-        from datetime import date
         if date.today().weekday() >= 5:
             return
 
@@ -1875,7 +1651,6 @@ class AutoTrader:
 
         미국 S&P500/나스닥/VIX 체크 → 추천 조정/유지
         """
-        from datetime import date
         if date.today().weekday() >= 5:
             return
 
@@ -1975,8 +1750,7 @@ class AutoTrader:
 
     async def job_brain_allocation(self, context):
         """16:36 - BRAIN 자본 배분 백업 스케줄 (NIGHTWATCH 실패 대비)"""
-        from datetime import date as dt_date
-        if dt_date.today().weekday() >= 5:
+        if date.today().weekday() >= 5:
             return
 
         # NIGHTWATCH에서 이미 실행했으면 스킵
@@ -1986,7 +1760,7 @@ class AutoTrader:
                 with open(brain_path, "r", encoding="utf-8") as f:
                     alloc = json.load(f)
                 alloc_date = alloc.get("timestamp", "")[:10]
-                if alloc_date == dt_date.today().isoformat():
+                if alloc_date == date.today().isoformat():
                     logger.info("[BRAIN] 오늘 이미 실행됨 - 백업 스킵")
                     return
             except Exception:
@@ -2016,8 +1790,7 @@ class AutoTrader:
 
     async def job_premium_levels(self, context):
         """08:30 - 전일/전주/전월 프리미엄 레벨 계산"""
-        from datetime import date as dt_date
-        if dt_date.today().weekday() >= 5:
+        if date.today().weekday() >= 5:
             return
 
         chat_id = None
@@ -2050,7 +1823,7 @@ class AutoTrader:
                             eq_count += 1
                     if eq_count > 0:
                         import json as _json
-                        out_path = PL_DIR / f"{dt_date.today().isoformat()}.json"
+                        out_path = PL_DIR / f"{date.today().isoformat()}.json"
                         with open(out_path, "w", encoding="utf-8") as f:
                             _json.dump(pl_data, f, ensure_ascii=False, indent=2)
             except Exception as e:
@@ -2062,8 +1835,7 @@ class AutoTrader:
 
     async def job_gap_support(self, context):
         """09:05 - 갭 지지/저항 탐지 + PL 머지"""
-        from datetime import date as dt_date
-        if dt_date.today().weekday() >= 5:
+        if date.today().weekday() >= 5:
             return
 
         chat_id = None
@@ -2093,7 +1865,7 @@ class AutoTrader:
                             merge_gap_to_premium_levels(pl_data[code], gap_info)
                             merged += 1
                     if merged > 0:
-                        out_path = PL_DIR / f"{dt_date.today().isoformat()}.json"
+                        out_path = PL_DIR / f"{date.today().isoformat()}.json"
                         with open(out_path, "w", encoding="utf-8") as f:
                             _json.dump(pl_data, f, ensure_ascii=False, indent=2)
                 except Exception as e:
@@ -2107,8 +1879,7 @@ class AutoTrader:
 
     async def job_opening_range(self, context):
         """10:05 - OR/IR 확정 + daily_bias 계산"""
-        from datetime import date as dt_date
-        if dt_date.today().weekday() >= 5:
+        if date.today().weekday() >= 5:
             return
 
         chat_id = None
@@ -2143,7 +1914,7 @@ class AutoTrader:
                         merge_or_levels(pl_data[code], or_info)
                         merged += 1
                 if merged > 0:
-                    out_path = PL_DIR / f"{dt_date.today().isoformat()}.json"
+                    out_path = PL_DIR / f"{date.today().isoformat()}.json"
                     with open(out_path, "w", encoding="utf-8") as f:
                         _json.dump(pl_data, f, ensure_ascii=False, indent=2)
             except Exception as e:
@@ -2159,8 +1930,7 @@ class AutoTrader:
 
     async def job_nightwatch_collect(self, context):
         """16:00 - 유럽장 개장, NIGHTWATCH 데이터 수집 시작"""
-        from datetime import date as dt_date
-        if dt_date.today().weekday() >= 5:
+        if date.today().weekday() >= 5:
             return
 
         nw_cfg = self.config.get("nightwatch", {})
@@ -2190,8 +1960,7 @@ class AutoTrader:
 
     async def job_nightwatch_decide(self, context):
         """16:35 - NIGHTWATCH 최종 판단 + NXT 매수 결정"""
-        from datetime import date as dt_date
-        if dt_date.today().weekday() >= 5:
+        if date.today().weekday() >= 5:
             return
 
         nw_cfg = self.config.get("nightwatch", {})
@@ -2318,8 +2087,7 @@ class AutoTrader:
 
     async def job_nxt_morning_sell(self, context):
         """08:00 - NXT 포지션 매도 (장전 시간외)"""
-        from datetime import date as dt_date
-        if dt_date.today().weekday() >= 5:
+        if date.today().weekday() >= 5:
             return
 
         nw_cfg = self.config.get("nightwatch", {})
@@ -2401,8 +2169,6 @@ class AutoTrader:
 
     def _save_nxt_positions(self):
         """NXT 포지션 JSON 저장"""
-        if not hasattr(self, '_nxt_positions'):
-            self._nxt_positions = {}
         path = Path(__file__).resolve().parent.parent / "data_store" / "nxt_positions.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
@@ -2418,8 +2184,7 @@ class AutoTrader:
             except (json.JSONDecodeError, IOError):
                 self._nxt_positions = {}
         else:
-            if not hasattr(self, '_nxt_positions'):
-                self._nxt_positions = {}
+            self._nxt_positions = {}
 
     # ═══════════════════════════════════════
     #  내부 로직
@@ -2435,12 +2200,6 @@ class AutoTrader:
             return data.get("candidates", [])
         except (json.JSONDecodeError, IOError):
             return []
-
-    def _run_swing_picker(self):
-        """swing_picker 직접 실행"""
-        from data.swing_picker import run_picker
-        result = run_picker()
-        return result.get("candidates", [])
 
     def _init_dynamic_target(self, code, name, entry_price):
         """동적 목표가 초기 설정"""

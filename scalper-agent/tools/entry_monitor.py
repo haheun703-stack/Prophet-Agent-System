@@ -47,7 +47,6 @@ def send_telegram(text: str):
         resp = requests.post(url, json={
             "chat_id": TELEGRAM_CHAT_ID,
             "text": text,
-            "parse_mode": "Markdown",
         }, timeout=10)
         if resp.status_code != 200:
             print(f"[TG] 전송 실패: {resp.status_code}")
@@ -187,7 +186,7 @@ def run_monitor(targets: list[dict], interval: int = 30):
             continue
 
         # 장후 종료 (15:35 이후)
-        if now.hour > 15 or (now.hour == 15 and now.minute > 35):
+        if now.hour > 15 or (now.hour == 15 and now.minute >= 35):
             close_msg = f"🔔 장 마감 — 모니터 종료 ({now:%H:%M})"
             print(close_msg)
             send_telegram(close_msg)
@@ -301,11 +300,12 @@ def _send_summary(targets, last_prices, open_prices):
         tp = t.get("tp", 0)
         sl = t.get("sl", 0)
         vs_tp = (tp / cp - 1) * 100 if tp > 0 and cp > 0 else 0
+        vs_sl = (cp / sl - 1) * 100 if sl > 0 and cp > 0 else 0
 
         icon = "🟢" if day_chg > 0 else ("🔴" if day_chg < -1 else "⚪")
         lines.append(
             f"{icon} {t['name']} {cp:,}원 ({day_chg:+.1f}%) "
-            f"→TP({vs_tp:+.1f}%)"
+            f"SL({vs_sl:+.1f}%) TP({vs_tp:+.1f}%)"
         )
 
     if len(lines) > 2:

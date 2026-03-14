@@ -239,6 +239,7 @@ class KISTrader:
                     "high": int(output.get("stck_hgpr", 0)),
                     "low": int(output.get("stck_lwpr", 0)),
                     "open": int(output.get("stck_oprc", 0)),
+                    "strength": float(output.get("tday_rltv", 0) or 0),
                 }
 
             except Exception as e:

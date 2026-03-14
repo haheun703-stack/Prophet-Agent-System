@@ -19,7 +19,7 @@ from datetime import datetime, time as dtime, timezone, timedelta
 # 한국 표준시 (UTC+9) - 스케줄러에 반드시 전달
 KST = timezone(timedelta(hours=9))
 
-from telegram import Update, ReplyKeyboardMarkup, BotCommand
+from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
     ContextTypes, filters,
@@ -163,11 +163,11 @@ class BodyHunterBot:
     async def cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update):
             return
-        uptime = datetime.now() - self.start_time
+        now = datetime.now(KST)
+        uptime = now - self.start_time.replace(tzinfo=KST) if self.start_time.tzinfo is None else now - self.start_time
         hours = int(uptime.total_seconds() // 3600)
         minutes = int((uptime.total_seconds() % 3600) // 60)
 
-        now = datetime.now()
         market_open = now.replace(hour=9, minute=0, second=0)
         market_close = now.replace(hour=15, minute=20, second=0)
         is_market = market_open <= now <= market_close and now.weekday() < 5
@@ -207,7 +207,7 @@ class BodyHunterBot:
 
         lines = log_file.read_text(encoding="utf-8", errors="ignore").split("\n")
         last_20 = "\n".join(lines[-20:])
-        await update.message.reply_text(f"📋 최근 로그\n```\n{last_20}\n```")
+        await update.message.reply_text(f"📋 최근 로그\n{last_20}")
 
     # ═══════════════════════════════════════
     #  분석
@@ -244,12 +244,14 @@ class BodyHunterBot:
                 return "시그널 없음"
             return format_report(df, top_n=15)
 
-        report = await asyncio.to_thread(_run)
-
-        for chunk in _split_message(report):
-            await update.message.reply_text(f"```\n{chunk}\n```",
-                                            parse_mode="Markdown")
-            await asyncio.sleep(0.5)
+        try:
+            report = await asyncio.to_thread(_run)
+            for chunk in _split_message(report):
+                await update.message.reply_text(chunk)
+                await asyncio.sleep(0.5)
+        except Exception as e:
+            logger.error(f"ETF 스캔 실패: {e}", exc_info=True)
+            await update.message.reply_text(f"⚠️ ETF 스캔 실패: {str(e)[:200]}")
 
     async def cmd_report(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update):
@@ -431,7 +433,7 @@ class BodyHunterBot:
             await update.message.reply_text(f"❌ {bal.get('message')}")
             return
 
-        total = bal["total_eval"] or 1
+        total = bal["total_eval"] or max(bal.get("cash", 1), 1)
         lines = [
             "📊 포트폴리오",
             "━" * 25,
@@ -486,10 +488,9 @@ class BodyHunterBot:
 
     async def _job_portfolio_alert(self, context):
         """보유종목 이상 감지 (장중 60초 간격)"""
-        from datetime import date as _date
-        now = datetime.now()
+        now = datetime.now(KST)
         # 장중만 동작 (09:00~15:30, 주말 제외)
-        if _date.today().weekday() >= 5:
+        if now.weekday() >= 5:
             return
         now_min = now.hour * 60 + now.minute
         if now_min < 540 or now_min >= 930:  # 09:00=540, 15:30=930
@@ -622,7 +623,7 @@ class BodyHunterBot:
                     open_p_val = p.get("open", 0)
                     open_prices[code] = open_p_val if open_p_val > 0 else cp
 
-                code_alerts = alert_sent.setdefault(code, set())
+                code_alerts = alert_sent.setdefault(code, [])
                 open_p = open_prices.get(code, cp)
 
                 # 1) SL 근접 (SL보다 위에 있지만 2% 이내)
@@ -633,7 +634,7 @@ class BodyHunterBot:
                             chat_id=chat_id,
                             text=f"⚠️ {name} SL근접!\n현재 {cp:,} → SL {sl:,} ({vs_sl:+.1f}%)"
                         )
-                        code_alerts.add("SL_NEAR")
+                        code_alerts.append("SL_NEAR")
                         logger.info(f"전쟁추적 알림: {name} SL_NEAR")
 
                 # 2) SL 이탈 (SL 이하로 하락)
@@ -642,7 +643,7 @@ class BodyHunterBot:
                         chat_id=chat_id,
                         text=f"🚨 {name} SL 이탈!\n현재 {cp:,} ≤ SL {sl:,}"
                     )
-                    code_alerts.add("SL_BREAK")
+                    code_alerts.append("SL_BREAK")
                     logger.info(f"전쟁추적 알림: {name} SL_BREAK")
 
                 # 3) 급등 (+3%) / 급락 (-3%) — 시가 대비
@@ -653,14 +654,14 @@ class BodyHunterBot:
                             chat_id=chat_id,
                             text=f"🚀 {name} 급등!\n{cp:,}원 ({day_chg:+.1f}% from 시가)"
                         )
-                        code_alerts.add("SURGE")
+                        code_alerts.append("SURGE")
                         logger.info(f"전쟁추적 알림: {name} SURGE {day_chg:+.1f}%")
                     if day_chg <= -3.0 and "DROP" not in code_alerts:
                         await context.bot.send_message(
                             chat_id=chat_id,
                             text=f"📉 {name} 급락!\n{cp:,}원 ({day_chg:+.1f}% from 시가)"
                         )
-                        code_alerts.add("DROP")
+                        code_alerts.append("DROP")
                         logger.info(f"전쟁추적 알림: {name} DROP {day_chg:+.1f}%")
 
                 # 4) TP 도달
@@ -669,7 +670,7 @@ class BodyHunterBot:
                         chat_id=chat_id,
                         text=f"🎯 {name} TP 도달!\n{cp:,} ≥ TP {tp:,}"
                     )
-                    code_alerts.add("TP_HIT")
+                    code_alerts.append("TP_HIT")
                     logger.info(f"전쟁추적 알림: {name} TP_HIT")
 
             except Exception as e:
@@ -1965,8 +1966,12 @@ class BodyHunterBot:
 
     async def _fallback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """매칭 안 된 메시지 처리"""
+        if not update.message:
+            return
+        if not self._is_authorized(update):
+            return
         cid = update.effective_chat.id
-        text = update.message.text if update.message else ""
+        text = update.message.text or ""
         logger.info(f"[미매칭] chat_id={cid}, text='{text}'")
         await update.message.reply_text(
             "❓ 알 수 없는 명령입니다\n'도움' 버튼을 눌러주세요",
