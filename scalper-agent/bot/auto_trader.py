@@ -375,6 +375,8 @@ class AutoTrader:
                         "tp1_quick": s.tp,
                         "source": "pipeline",
                         "confidence": s.confidence,
+                        "regime": getattr(s, "regime", "NORMAL"),
+                        "regime_score": getattr(s, "regime_score", 0.0),
                     }
                     for s in rec.stocks
                 ]
@@ -625,13 +627,17 @@ class AutoTrader:
                 "split_amount": actual_amount // split_count,  # 1회 매수금액
                 "last_split_check": 0,         # 마지막 분할 매수 시 checks 값
                 "split_interval": 10,          # 분할 간격 (10회 = 5분)
+                # ── MOMENTUM 레짐 ──
+                "regime": c.get("regime", "NORMAL"),
+                "regime_score": c.get("regime_score", 0.0),
             }
             registered += 1
 
         lines = [f"👁 장 시작 - {registered}종목 실시간 감시 시작"]
         for code, w in self._entry_watch.items():
+            mtm_tag = " [MTM]" if w.get("regime") == "MOMENTUM" else ""
             lines.append(
-                f"  📡 {w['name']}({code}) 점수:{w['score']:.0f} "
+                f"  📡 {w['name']}({code}){mtm_tag} 점수:{w['score']:.0f} "
                 f"금액:{w['buy_amount']:,}원 "
                 f"({w['split_count']}분할×{w['split_amount']:,}원)"
             )
@@ -777,7 +783,8 @@ class AutoTrader:
                 prev_close = watch["prev_close"]
                 open_price = watch["open_price"]
 
-                # ── 진입 조건 체크 (5개 중 3개 이상 충족 시 매수) ──
+                # ── 진입 조건 체크 (NORMAL 3/6, MOMENTUM 2/6) ──
+                is_momentum = watch.get("regime") == "MOMENTUM"
                 conditions_met = 0
                 conditions_detail = []
 
@@ -849,33 +856,39 @@ class AutoTrader:
                 except Exception:
                     pass
 
-                if ai_score >= 50:
+                ai_threshold = 30 if is_momentum else 50
+                if ai_score >= ai_threshold:
                     conditions_met += 1
-                    conditions_detail.append(f"AI{ai_score}")
+                    mtm_s = "(MTM)" if is_momentum and ai_score < 50 else ""
+                    conditions_detail.append(f"AI{ai_score}{mtm_s}")
                 elif ai_score >= 0:
                     conditions_detail.append(f"AI{ai_score}(약)")
 
                 # 6) MACD 0선 크로스 상태 (일봉 기반)
-                try:
-                    from strategies.macd_zero_scanner import _calc_macd
-                    from pykrx import stock as pykrx_stock
-                    from datetime import timedelta
-                    end_d = datetime.now().strftime("%Y%m%d")
-                    start_d = (datetime.now() - timedelta(days=60)).strftime("%Y%m%d")
-                    day_df = pykrx_stock.get_market_ohlcv(start_d, end_d, code)
-                    if day_df is not None and len(day_df) >= 30:
-                        close_arr = day_df["종가"].astype(float).values
-                        macd_l, macd_s, macd_h = _calc_macd(close_arr)
-                        # MACD 히스토그램 양수 + MACD 0선 위 = 강한 상승
-                        if macd_h[-1] > 0 and macd_l[-1] > 0:
-                            conditions_met += 1
-                            conditions_detail.append("MACD0↑")
-                        elif macd_h[-1] > 0:
-                            conditions_detail.append("MACD+")
-                        else:
-                            conditions_detail.append("MACD-")
-                except Exception:
-                    pass
+                # MOMENTUM: MACD 스킵 (초기 진입이므로 0선 안 왔을 수 있음)
+                if is_momentum:
+                    conditions_met += 1
+                    conditions_detail.append("MACD스킵(MTM)")
+                else:
+                    try:
+                        from strategies.macd_zero_scanner import _calc_macd
+                        from pykrx import stock as pykrx_stock
+                        from datetime import timedelta
+                        end_d = datetime.now().strftime("%Y%m%d")
+                        start_d = (datetime.now() - timedelta(days=60)).strftime("%Y%m%d")
+                        day_df = pykrx_stock.get_market_ohlcv(start_d, end_d, code)
+                        if day_df is not None and len(day_df) >= 30:
+                            close_arr = day_df["종가"].astype(float).values
+                            macd_l, macd_s, macd_h = _calc_macd(close_arr)
+                            if macd_h[-1] > 0 and macd_l[-1] > 0:
+                                conditions_met += 1
+                                conditions_detail.append("MACD0↑")
+                            elif macd_h[-1] > 0:
+                                conditions_detail.append("MACD+")
+                            else:
+                                conditions_detail.append("MACD-")
+                    except Exception:
+                        pass
 
                 # 5분마다 관찰 로그 (매 10회 = 30초 * 10 = 5분)
                 if watch["checks"] % 10 == 0:
@@ -887,10 +900,13 @@ class AutoTrader:
                     )
 
                 # ── 진입 조건 충족! → 분할매수 ──
-                # 연말 계절성(12/15~1/5): 4개 이상 / 평시: 3개 이상
+                # MOMENTUM: 2개 / NORMAL: 3개 (연말 4개)
                 _now = datetime.now()
                 _yearend = (_now.month == 12 and _now.day >= 15) or (_now.month == 1 and _now.day <= 5)
-                entry_threshold = 4 if _yearend else 3
+                if is_momentum:
+                    entry_threshold = 2
+                else:
+                    entry_threshold = 4 if _yearend else 3
                 if conditions_met >= entry_threshold:
                     detail_str = " + ".join(conditions_detail)
                     split_done = watch.get("split_done", 0)
@@ -975,15 +991,21 @@ class AutoTrader:
                                     "high_watermark": cp,
                                     "trailing_activated": False,
                                     "trailing_sl": 0,
+                                    "regime": watch.get("regime", "NORMAL"),
                                 }
+                                # MOMENTUM: 타이트 SL (-3.5%)
+                                if watch.get("regime") == "MOMENTUM":
+                                    mtm_sl = int(cp * 0.965)
+                                    self._positions[code]["stop_loss"] = max(mtm_sl, watch["sl"])
                                 try:
                                     rtm = self._get_rt_monitor()
                                     rtm.register_position(code, watch["name"], cp, sl, tp)
                                 except Exception:
                                     pass
 
+                            _regime_tag = " [MTM]" if is_momentum else ""
                             await self._alert(
-                                f"✅ 분할매수 {split_label} 체결!\n"
+                                f"✅ 분할매수 {split_label} 체결!{_regime_tag}\n"
                                 f"   {watch['name']}({code}) @ {cp:,}원\n"
                                 f"   시가 {open_price:,} → 매수 {cp:,}\n"
                                 f"   조건: {detail_str}\n"
@@ -1368,13 +1390,26 @@ class AutoTrader:
                 entry = pos["entry_price"]
                 pos["high_watermark"] = max(pos.get("high_watermark", entry), snap.price)
                 pnl_pct = (snap.price / entry - 1) * 100 if entry > 0 else 0
-                if pnl_pct >= 3.0 or pos.get("trailing_activated"):
-                    pos["trailing_activated"] = True
-                    hwm = pos["high_watermark"]
-                    trail_sl = int(hwm * 0.97)
-                    if pnl_pct >= 3.0 or hwm > entry * 1.03:
-                        trail_sl = max(trail_sl, entry)
-                    pos["trailing_sl"] = max(pos.get("trailing_sl", 0), trail_sl)
+
+                # MOMENTUM vs NORMAL 트레일링 분기
+                if pos.get("regime") == "MOMENTUM":
+                    # MOMENTUM: +1.5%부터 트레일링, 고점 대비 -2%
+                    if pnl_pct >= 1.5 or pos.get("trailing_activated"):
+                        pos["trailing_activated"] = True
+                        hwm = pos["high_watermark"]
+                        trail_sl = int(hwm * 0.98)  # -2% (vs NORMAL -3%)
+                        if pnl_pct >= 1.5:
+                            trail_sl = max(trail_sl, entry)
+                        pos["trailing_sl"] = max(pos.get("trailing_sl", 0), trail_sl)
+                else:
+                    # NORMAL: 기존 +3%부터 트레일링, 고점 대비 -3%
+                    if pnl_pct >= 3.0 or pos.get("trailing_activated"):
+                        pos["trailing_activated"] = True
+                        hwm = pos["high_watermark"]
+                        trail_sl = int(hwm * 0.97)
+                        if pnl_pct >= 3.0 or hwm > entry * 1.03:
+                            trail_sl = max(trail_sl, entry)
+                        pos["trailing_sl"] = max(pos.get("trailing_sl", 0), trail_sl)
 
                 if snap.decision == "FULL_SELL":
                     logger.info(f"AI 전량매도: {code} @ {snap.price:,} ({snap.decision_reason})")
@@ -1506,6 +1541,18 @@ class AutoTrader:
         except Exception as e:
             logger.warning(f"로테이션 분석 실패 (REVERSAL 방어 스킵): {e}")
 
+        # ── MOMENTUM 수급 이탈 체크 (기관+외인 순매도 전환) ──
+        momentum_exit_codes = set()
+        try:
+            from data.regime_detector import check_supply_withdrawal
+            for code, pos in self._positions.items():
+                if pos.get("regime") == "MOMENTUM":
+                    if check_supply_withdrawal(code):
+                        momentum_exit_codes.add(code)
+                        logger.info(f"[MOMENTUM 수급이탈] {pos.get('name', code)}({code})")
+        except Exception as e:
+            logger.warning(f"수급 이탈 체크 실패: {e}")
+
         for code, pos in list(self._positions.items()):
             try:
                 price_info = self.trader.fetch_price(code)
@@ -1589,9 +1636,21 @@ class AutoTrader:
                             if target_state:
                                 target_state.dynamic_tp = reversal_tp
 
+                # ── MOMENTUM 수급 이탈 → 즉시 청산 ──
+                if code in momentum_exit_codes and action not in (ACTION_FULL_SELL, ACTION_STOP_LOSS):
+                    action = ACTION_FULL_SELL
+                    reason = f"MOMENTUM 수급 이탈 (기관+외인 순매도 전환)"
+                    lines.append(
+                        f"  🔴 {pos.get('name', code)} [MTM] 수급 이탈 청산\n"
+                        f"     진입:{pos['entry_price']:,} 현재:{cp:,} ({pnl:+.1f}%)"
+                    )
+
                 # 최대 보유일 초과 (모멘텀 포지션은 5일, 스윙은 config값)
                 # REVERSAL 섹터 종목은 최대 3일로 단축
+                # MOMENTUM 레짐 포지션은 5일로 제한
                 effective_max = 5 if pos.get("source") == "momentum" else max_hold
+                if pos.get("regime") == "MOMENTUM":
+                    effective_max = min(effective_max, 5)
                 if code in reversal_codes:
                     effective_max = min(effective_max, 3)
                 if hold_days >= effective_max:

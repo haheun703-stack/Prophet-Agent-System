@@ -67,6 +67,10 @@ class RecommendedStock:
     nat_power: float = 0.0           # calc_nationality_power 점수
     nat_power_grade: str = ""        # POWER_BUY / BUY / NEUTRAL / CAUTION / DANGER
     nat_power_detail: str = ""       # 요약 ("CASCADE+VPD|영국급증|콤보+1.5")
+    # MOMENTUM 레짐 감지
+    regime: str = "NORMAL"             # "MOMENTUM" or "NORMAL"
+    regime_score: float = 0.0          # 0.0 ~ 1.0
+    regime_detail: str = ""            # "VOL2.5x+기관5D"
 
 
 @dataclass
@@ -1148,6 +1152,27 @@ def run_evening_recommendation() -> RecommendationReport:
         import traceback
         logger.debug(traceback.format_exc())
 
+    # Step 5b: MOMENTUM 레짐 감지 (수급 기반 초기 진입 시그널)
+    regime_signals = {}
+    try:
+        t_regime = time.time()
+        from data.regime_detector import detect_regime_batch
+        uni_path = BASE_DIR / "data_store" / "universe.json"
+        with open(uni_path, "r", encoding="utf-8") as _uf:
+            _universe = json.load(_uf)
+        # rotation_detail에서 sector breadth 재활용
+        sector_breadths = {}
+        for rd in report.rotation_detail:
+            if isinstance(rd, dict) and "sector" in rd:
+                sector_breadths[rd["sector"]] = rd.get("breadth", 0)
+        regime_signals = detect_regime_batch(
+            [code for code, _ in codes_names], _universe, sector_breadths
+        )
+        mtm_count = sum(1 for r in regime_signals.values() if r.regime == "MOMENTUM")
+        logger.info(f"[Step 5b] 레짐: {mtm_count}/{len(regime_signals)} MOMENTUM ({time.time()-t_regime:.0f}s)")
+    except Exception as e:
+        logger.warning(f"레짐 감지 실패 (무시): {e}")
+
     # Step 5: Soft Scoring 교차검증 (로테이션 종목 포함)
     t0 = time.time()
     logger.info("[Step 5/6] Soft Scoring 교차검증...")
@@ -1162,6 +1187,14 @@ def run_evening_recommendation() -> RecommendationReport:
         rotation_stocks=rotation_stocks,
     )
     logger.info(f"  → {len(final_stocks)}종목 ({time.time()-t0:.0f}s)")
+
+    # 교차검증 후 regime 스탬핑
+    for s in final_stocks:
+        if s.code in regime_signals:
+            r = regime_signals[s.code]
+            s.regime = r.regime
+            s.regime_score = r.score
+            s.regime_detail = f"VOL{r.vol_ratio:.1f}x+기관{r.consec_inst_foreign_days}D"
 
     # Step 6: KIS API 가격 교차검증
     t0 = time.time()
@@ -1642,6 +1675,9 @@ def save_recommendation(report: RecommendationReport):
                 "relative_penalty": s.relative_penalty,
                 "today_chg": s.today_chg,
                 "relative_str": s.relative_str,
+                "regime": getattr(s, "regime", "NORMAL"),
+                "regime_score": getattr(s, "regime_score", 0.0),
+                "regime_detail": getattr(s, "regime_detail", ""),
             }
             for s in report.stocks
         ],
@@ -1709,6 +1745,9 @@ def load_recommendation() -> Optional[RecommendationReport]:
                 relative_penalty=sd.get("relative_penalty", 0),
                 today_chg=sd.get("today_chg", 0),
                 relative_str=sd.get("relative_str", 0),
+                regime=sd.get("regime", "NORMAL"),
+                regime_score=sd.get("regime_score", 0.0),
+                regime_detail=sd.get("regime_detail", ""),
             ))
         # 소형주 모멘텀 후보 로드
         report.momentum_stocks = data.get("momentum_stocks", [])
@@ -2179,6 +2218,25 @@ def run_war_mode_recommendation() -> RecommendationReport:
     # 정렬: 종합 스코어 내림차순
     candidates.sort(key=lambda x: x.total_score, reverse=True)
     report.stocks = candidates[:8]
+
+    # 전쟁모드 종목에도 MOMENTUM 레짐 감지
+    try:
+        from data.regime_detector import detect_regime_batch
+        uni_path = BASE_DIR / "data_store" / "universe.json"
+        with open(uni_path, "r", encoding="utf-8") as _uf:
+            _universe = json.load(_uf)
+        war_codes = [s.code for s in report.stocks]
+        war_regime = detect_regime_batch(war_codes, _universe)
+        for s in report.stocks:
+            if s.code in war_regime:
+                r = war_regime[s.code]
+                s.regime = r.regime
+                s.regime_score = r.score
+                s.regime_detail = f"VOL{r.vol_ratio:.1f}x+기관{r.consec_inst_foreign_days}D"
+        war_mtm = sum(1 for r in war_regime.values() if r.regime == "MOMENTUM")
+        logger.info(f"[전쟁모드] 레짐: {war_mtm}/{len(war_regime)} MOMENTUM")
+    except Exception as e:
+        logger.warning(f"[전쟁모드] 레짐 감지 실패 (무시): {e}")
 
     elapsed = time.time() - t_start
     logger.info(f"[전쟁모드] 최종 추천: {len(report.stocks)}종목 ({elapsed:.0f}s)")
