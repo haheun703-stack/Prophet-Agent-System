@@ -53,101 +53,207 @@ class KISTrader:
         self.config = config or {}
         self.risk = self.config.get("risk", {})
         self._broker = None
+        self._broker_created_at: float = 0.0  # 브로커 생성 시각 (epoch)
+        self._consecutive_failures: int = 0   # 연속 실패 카운터
 
-    def _get_broker(self):
-        """싱글턴 브로커 (kis_collector.py 패턴 재사용)"""
-        if self._broker is not None:
+    def _get_broker(self, force_refresh=False):
+        """브로커 (토큰 자동 갱신)
+
+        - 토큰 만료 감지: 생성 후 20시간 경과 시 자동 재발급
+        - 연속 실패 3회 시 강제 재발급
+        - mojito token.dat은 상대경로 → CWD를 scalper-agent로 고정
+        """
+        now = time.time()
+        need_refresh = force_refresh
+
+        # 토큰 수명 체크: 20시간(72000초) 경과 → 재발급 (KIS 토큰 24시간 만료)
+        if self._broker is not None and (now - self._broker_created_at) > 72000:
+            logger.warning(f"KIS 토큰 수명 초과 ({(now - self._broker_created_at)/3600:.1f}h) - 재발급")
+            need_refresh = True
+
+        # 연속 실패 3회 → 토큰 문제 의심, 강제 재발급
+        if self._consecutive_failures >= 3:
+            logger.warning(f"KIS API 연속 {self._consecutive_failures}회 실패 - 토큰 재발급 시도")
+            need_refresh = True
+
+        if self._broker is not None and not need_refresh:
             return self._broker
 
         from dotenv import load_dotenv
         load_dotenv()
         import mojito
 
-        self._broker = mojito.KoreaInvestment(
-            api_key=os.getenv("KIS_APP_KEY"),
-            api_secret=os.getenv("KIS_APP_SECRET"),
-            acc_no=os.getenv("KIS_ACC_NO"),
-            mock=False,
-        )
-        logger.info("KIS API 브로커 생성 완료")
+        # mojito token.dat은 CWD 기준 상대경로 → scalper-agent 디렉토리로 고정
+        import os as _os
+        original_cwd = _os.getcwd()
+        target_cwd = str(Path(__file__).resolve().parent.parent)
+        try:
+            _os.chdir(target_cwd)
+            self._broker = mojito.KoreaInvestment(
+                api_key=os.getenv("KIS_APP_KEY"),
+                api_secret=os.getenv("KIS_APP_SECRET"),
+                acc_no=os.getenv("KIS_ACC_NO"),
+                mock=False,
+            )
+        finally:
+            _os.chdir(original_cwd)
+
+        self._broker_created_at = now
+        self._consecutive_failures = 0
+        action = "재발급" if need_refresh else "생성"
+        logger.info(f"KIS API 브로커 {action} 완료 (CWD={target_cwd})")
         return self._broker
+
+    def _reset_broker(self):
+        """토큰 에러 시 브로커 강제 초기화 (다음 호출에서 재발급)"""
+        self._broker = None
+        self._broker_created_at = 0.0
+        logger.info("KIS 브로커 초기화됨 - 다음 호출에서 재발급")
 
     # ═══════════════════════════════════════
     #  조회
     # ═══════════════════════════════════════
 
     def fetch_balance(self) -> dict:
-        """계좌 잔고 조회
+        """계좌 잔고 조회 (토큰 만료 시 자동 재발급 + 1회 재시도)
 
         Returns: {success, cash, total_eval, positions: [{code, name, qty, avg_price, current_price, pnl_amount, pnl_rate}]}
         """
-        try:
-            broker = self._get_broker()
-            resp = broker.fetch_balance()
+        for attempt in range(2):
+            try:
+                broker = self._get_broker()
+                resp = broker.fetch_balance()
 
-            if resp is None:
-                return {"success": False, "message": "잔고 조회 실패 (응답 없음)"}
+                if resp is None:
+                    if attempt == 0:
+                        logger.warning("잔고 조회 None - 토큰 재발급 후 재시도")
+                        self._reset_broker()
+                        time.sleep(0.5)
+                        continue
+                    return {"success": False, "message": "잔고 조회 실패 (응답 없음)"}
 
-            output = resp.get("output1", [])
-            summary = resp.get("output2", [{}])
+                if self._is_token_error(resp):
+                    if attempt == 0:
+                        logger.warning(f"잔고 조회 토큰 에러 - 재발급 후 재시도")
+                        self._reset_broker()
+                        time.sleep(0.5)
+                        continue
+                    return {"success": False, "message": "토큰 재발급 후에도 잔고 조회 실패"}
 
-            positions = []
-            for item in output:
-                qty = int(item.get("hldg_qty", 0))
-                if qty <= 0:
+                output = resp.get("output1", [])
+                summary = resp.get("output2", [{}])
+
+                positions = []
+                for item in output:
+                    qty = int(item.get("hldg_qty", 0))
+                    if qty <= 0:
+                        continue
+                    code = item.get("pdno", "")
+                    positions.append({
+                        "code": code,
+                        "name": item.get("prdt_name", CODE_TO_NAME.get(code, code)),
+                        "qty": qty,
+                        "avg_price": int(float(item.get("pchs_avg_pric", 0))),
+                        "current_price": int(item.get("prpr", 0)),
+                        "pnl_amount": int(item.get("evlu_pfls_amt", 0)),
+                        "pnl_rate": float(item.get("evlu_pfls_rt", 0)),
+                    })
+
+                s = summary[0] if summary else {}
+                cash = int(s.get("dnca_tot_amt", 0))
+                total_eval = int(s.get("tot_evlu_amt", 0))
+
+                self._consecutive_failures = 0
+                return {
+                    "success": True,
+                    "cash": cash,
+                    "total_eval": total_eval,
+                    "positions": positions,
+                }
+
+            except Exception as e:
+                self._consecutive_failures += 1
+                err_str = str(e).lower()
+                if attempt == 0 and ("token" in err_str or "auth" in err_str or "401" in err_str):
+                    logger.warning(f"잔고 조회 예외(토큰): {e} - 재발급 후 재시도")
+                    self._reset_broker()
+                    time.sleep(0.5)
                     continue
-                code = item.get("pdno", "")
-                positions.append({
-                    "code": code,
-                    "name": item.get("prdt_name", CODE_TO_NAME.get(code, code)),
-                    "qty": qty,
-                    "avg_price": int(float(item.get("pchs_avg_pric", 0))),
-                    "current_price": int(item.get("prpr", 0)),
-                    "pnl_amount": int(item.get("evlu_pfls_amt", 0)),
-                    "pnl_rate": float(item.get("evlu_pfls_rt", 0)),
-                })
+                logger.error(f"잔고 조회 실패: {e}")
+                return {"success": False, "message": f"잔고 조회 실패: {e}"}
 
-            s = summary[0] if summary else {}
-            cash = int(s.get("dnca_tot_amt", 0))
-            total_eval = int(s.get("tot_evlu_amt", 0))
+        return {"success": False, "message": "fetch_balance 재시도 소진"}
 
-            return {
-                "success": True,
-                "cash": cash,
-                "total_eval": total_eval,
-                "positions": positions,
-            }
-
-        except Exception as e:
-            logger.error(f"잔고 조회 실패: {e}")
-            return {"success": False, "message": f"잔고 조회 실패: {e}"}
+    def _is_token_error(self, resp) -> bool:
+        """KIS API 응답에서 토큰/인증 에러 감지"""
+        if resp is None:
+            return False
+        # KIS API 에러코드: EGW00123 = 토큰 만료, EGW00121 = 유효하지 않은 토큰
+        msg_cd = resp.get("msg_cd", "") or resp.get("rt_cd", "")
+        msg1 = resp.get("msg1", "")
+        if any(ec in msg_cd for ec in ("EGW00123", "EGW00121", "EGW00105")):
+            return True
+        if "token" in msg1.lower() or "접근토큰" in msg1:
+            return True
+        return False
 
     def fetch_price(self, code: str) -> dict:
-        """현재가 조회
+        """현재가 조회 (토큰 만료 시 자동 재발급 + 1회 재시도)
 
         Returns: {success, current_price, change_rate, volume, ...}
         """
-        try:
-            broker = self._get_broker()
-            resp = broker.fetch_price(code)
+        for attempt in range(2):  # 최대 2회 (원본 + 재시도)
+            try:
+                broker = self._get_broker()
+                resp = broker.fetch_price(code)
 
-            if resp is None:
-                return {"success": False, "message": "현재가 조회 실패"}
+                if resp is None:
+                    self._consecutive_failures += 1
+                    if attempt == 0:
+                        logger.warning(f"현재가 조회 None {code} - 토큰 재발급 후 재시도")
+                        self._reset_broker()
+                        time.sleep(0.5)
+                        continue
+                    return {"success": False, "message": "현재가 조회 실패 (resp=None)"}
 
-            output = resp.get("output", {})
-            return {
-                "success": True,
-                "current_price": int(output.get("stck_prpr", 0)),
-                "change_rate": float(output.get("prdy_ctrt", 0)),
-                "volume": int(output.get("acml_vol", 0)),
-                "high": int(output.get("stck_hgpr", 0)),
-                "low": int(output.get("stck_lwpr", 0)),
-                "open": int(output.get("stck_oprc", 0)),
-            }
+                # 토큰 에러 감지 → 브로커 재발급 후 재시도
+                if self._is_token_error(resp):
+                    self._consecutive_failures += 1
+                    if attempt == 0:
+                        msg = resp.get("msg1", resp.get("msg_cd", ""))
+                        logger.warning(f"KIS 토큰 에러 {code}: {msg} - 재발급 후 재시도")
+                        self._reset_broker()
+                        time.sleep(0.5)
+                        continue
+                    return {"success": False, "message": f"토큰 재발급 후에도 실패: {resp.get('msg1', '')}"}
 
-        except Exception as e:
-            logger.error(f"현재가 조회 실패 {code}: {e}")
-            return {"success": False, "message": f"현재가 조회 실패: {e}"}
+                output = resp.get("output", {})
+                cp = int(output.get("stck_prpr", 0))
+                if cp > 0:
+                    self._consecutive_failures = 0  # 성공 시 카운터 리셋
+                return {
+                    "success": True,
+                    "current_price": cp,
+                    "change_rate": float(output.get("prdy_ctrt", 0)),
+                    "volume": int(output.get("acml_vol", 0)),
+                    "high": int(output.get("stck_hgpr", 0)),
+                    "low": int(output.get("stck_lwpr", 0)),
+                    "open": int(output.get("stck_oprc", 0)),
+                }
+
+            except Exception as e:
+                self._consecutive_failures += 1
+                err_str = str(e).lower()
+                # 토큰/인증 관련 예외 → 재시도
+                if attempt == 0 and ("token" in err_str or "auth" in err_str or "401" in err_str):
+                    logger.warning(f"현재가 조회 예외(토큰) {code}: {e} - 재발급 후 재시도")
+                    self._reset_broker()
+                    time.sleep(0.5)
+                    continue
+                logger.error(f"현재가 조회 실패 {code}: {e}")
+                return {"success": False, "message": f"현재가 조회 실패: {e}"}
+
+        return {"success": False, "message": "fetch_price 재시도 소진"}
 
     def fetch_investor_daily(self, code: str) -> dict:
         """투자자별 매매동향 (30일치, KIS API)

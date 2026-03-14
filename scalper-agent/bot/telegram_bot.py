@@ -595,17 +595,22 @@ class BodyHunterBot:
         ok_count = 0
         fail_count = 0
 
-        for s in targets[:8]:
+        for idx, s in enumerate(targets[:8]):
             code = s.get("code", "")
             name = s.get("name", code)
             sl = s.get("sl", 0)
             tp = s.get("tp", 0)
 
+            # KIS API rate limit 방지: 종목 간 0.3초 딜레이
+            if idx > 0:
+                await asyncio.sleep(0.3)
+
             try:
                 p = await asyncio.to_thread(self.trader.fetch_price, code)
                 if not p or not p.get("success"):
                     fail_count += 1
-                    logger.warning(f"전쟁추적 {name}({code}) 가격조회 실패: {p}")
+                    msg = p.get("message", "") if p else "None"
+                    logger.warning(f"전쟁추적 {name}({code}) 가격조회 실패: {msg}")
                     continue
 
                 ok_count += 1
@@ -696,13 +701,17 @@ class BodyHunterBot:
         lines = [f"📊 전쟁모드 추적 [{now:%H:%M}]", ""]
 
         data_count = 0
-        for s in targets[:8]:
+        fail_reasons = []
+        for idx, s in enumerate(targets[:8]):
             code = s.get("code", "")
             name = s.get("name", code)
             tp = s.get("tp", 0)
             cp = last_prices.get(code, 0)
 
             if cp == 0:
+                # KIS API rate limit 방지: 종목 간 0.3초 딜레이
+                if idx > 0:
+                    await asyncio.sleep(0.3)
                 try:
                     p = await asyncio.to_thread(self.trader.fetch_price, code)
                     if p and p.get("success"):
@@ -711,7 +720,11 @@ class BodyHunterBot:
                         if code not in open_prices:
                             open_p_val = p.get("open", 0)
                             open_prices[code] = open_p_val if open_p_val > 0 else cp
+                    else:
+                        msg = p.get("message", "unknown") if p else "resp=None"
+                        fail_reasons.append(f"{name}:{msg}")
                 except Exception as e:
+                    fail_reasons.append(f"{name}:{e}")
                     logger.warning(f"전쟁요약 {name} 가격조회 실패: {e}")
                     continue
 
@@ -730,7 +743,9 @@ class BodyHunterBot:
             lines.append(f"{icon} {name} {cp:,}원 ({day_chg:+.1f}%) →TP({vs_tp:+.1f}%) {np_icon}")
 
         if data_count == 0:
-            lines.append("⚠️ 가격 데이터 조회 실패 — KIS API 확인 필요")
+            reason_str = fail_reasons[0] if fail_reasons else "캐시+API 모두 데이터 없음"
+            lines.append(f"⚠️ 가격 데이터 조회 실패 — {reason_str}")
+            logger.error(f"전쟁요약 전체 실패 ({len(fail_reasons)}건): {'; '.join(fail_reasons[:3])}")
 
         try:
             await context.bot.send_message(chat_id=chat_id, text="\n".join(lines))
