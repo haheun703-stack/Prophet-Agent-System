@@ -7,13 +7,14 @@ MOMENTUM 레짐 감지기 (Regime Detector)
 기관+외국인이 연속 매수 중이면 MOMENTUM 레짐 → RSI/MACD 무시하고 빠른 진입.
 수급이 빠지면 즉시 탈출 (-3.5% SL + 수급 반전 EXIT).
 
-6가지 팩터로 레짐 판별:
+7가지 팩터로 레짐 판별:
   (A) 거래량 폭증 (vol_ratio ≥ 2x)
   (B) 기관+외인 연속 매수 (2일+)
   (C) 섹터 동반 상승 (breadth ≥ 10%)
   (D) 기관 프로그램 매수 (5일 중 3일+)
   (E) 조용한 매집 (기관 매수 + 거래량 보합)
   (F) 섹터 피어 부스트 (같은 섹터 수급 양수 비율)
+  (G) 외국인 국적 파워 (싱가포르+케이맨 비중 → 헤지펀드 적극 베팅)
 
 THRESHOLD: score ≥ 0.40 → MOMENTUM, 아니면 NORMAL
 """
@@ -58,6 +59,7 @@ class RegimeResult:
     #   "program_buy": 0.0~0.15,
     #   "quiet_accum": 0.0~0.10,
     #   "sector_peer": 0.0~0.15,
+    #   "nationality": 0.0~0.20,
     # }
 
 
@@ -296,6 +298,93 @@ def _score_sector_peer(peer_ratio: float) -> float:
 
 
 # =============================================================================
+# (G) 외국인 국적 파워 — 싱가포르+케이맨 비중이 높으면 헤지펀드 적극 베팅
+# =============================================================================
+
+# 국적 분류
+_HEDGE_COUNTRIES = {"케이맨 제도", "영국령 버진아일랜드", "버뮤다"}
+_ASIA_ACTIVE = {"싱가포르", "홍콩"}  # 패시브가 아닌 적극적 아시아 자금
+_NATIONALITY_DIR = DATA_DIR / "nationality"
+
+
+def _load_nationality(code: str) -> dict:
+    """최신 국적별 거래량 스냅샷 로드
+
+    nationality/{code}_{YYYYMMDD}.csv 중 가장 최근 파일 사용.
+    누적 프로파일(nationality_{code}.csv)도 fallback으로 사용.
+
+    Returns: {국가명: 거래량} or {}
+    """
+    if not _NATIONALITY_DIR.exists():
+        return {}
+
+    # 날짜별 스냅샷 (가장 최신)
+    snapshots = sorted(_NATIONALITY_DIR.glob(f"{code}_2*.csv"), reverse=True)
+    if snapshots:
+        try:
+            df = pd.read_csv(snapshots[0], encoding="utf-8-sig")
+            return dict(zip(df["국가명"], df["거래량"]))
+        except Exception:
+            pass
+
+    # 누적 프로파일 fallback
+    profile = _NATIONALITY_DIR / f"nationality_{code}.csv"
+    if profile.exists():
+        try:
+            df = pd.read_csv(profile, encoding="utf-8-sig")
+            return dict(zip(df["국가명"], df["거래량"]))
+        except Exception:
+            pass
+
+    return {}
+
+
+def _calc_nationality_ratio(nat_data: dict) -> tuple[float, float, float]:
+    """싱가포르+케이맨 비중 계산
+
+    Returns: (hedge_asia_pct, hedge_pct, asia_active_pct)
+      - hedge_asia_pct: (싱가포르+홍콩+케이맨+BVI+버뮤다) / 전체
+      - hedge_pct: (케이맨+BVI+버뮤다) / 전체
+      - asia_active_pct: (싱가포르+홍콩) / 전체
+    """
+    if not nat_data:
+        return 0.0, 0.0, 0.0
+
+    total = sum(v for v in nat_data.values() if v > 0)
+    if total <= 0:
+        return 0.0, 0.0, 0.0
+
+    hedge = sum(nat_data.get(c, 0) for c in _HEDGE_COUNTRIES)
+    asia_active = sum(nat_data.get(c, 0) for c in _ASIA_ACTIVE)
+
+    hedge_pct = hedge / total
+    asia_pct = asia_active / total
+    combined = (hedge + asia_active) / total
+
+    return combined, hedge_pct, asia_pct
+
+
+def _score_nationality(nat_data: dict) -> float:
+    """(G) 국적 파워 스코어
+
+    싱가포르+케이맨 합산 비중 기준:
+      35%+ → 0.20 (강한 헤지펀드 베팅)
+      25%+ → 0.12
+      15%+ → 0.05
+      <15% → 0.00 (패시브 주도, 모멘텀 약함)
+    """
+    combined, _, _ = _calc_nationality_ratio(nat_data)
+
+    if combined >= 0.35:
+        return 0.20  # 싱+케 35%+ → 강한 헤지펀드 적극 베팅
+    elif combined >= 0.25:
+        return 0.12  # 25%+ → 중간
+    elif combined >= 0.15:
+        return 0.05  # 15%+ → 약한 신호
+    return 0.0
+
+
+# =============================================================================
 # 메인 감지 함수
 # =============================================================================
 
@@ -360,9 +449,14 @@ def detect_regime_batch(
         peer_ratio = _sector_peer_cache.get(sector, 0)
         peer_score = _score_sector_peer(peer_ratio)
 
+        # (G) 외국인 국적 파워 (싱가포르+케이맨 비중)
+        nat_data = _load_nationality(code)
+        nat_score = _score_nationality(nat_data)
+
         # 종합 스코어
         total_score = (vol_score + consec_score + breadth_score
-                       + program_score + quiet_score + peer_score)
+                       + program_score + quiet_score + peer_score
+                       + nat_score)
 
         # 레짐 판정
         regime = "MOMENTUM" if total_score >= MOMENTUM_THRESHOLD else "NORMAL"
@@ -374,6 +468,7 @@ def detect_regime_batch(
             "program_buy": program_score,
             "quiet_accum": quiet_score,
             "sector_peer": peer_score,
+            "nationality": nat_score,
         }
 
         results[code] = RegimeResult(
@@ -387,10 +482,14 @@ def detect_regime_batch(
         )
 
         if regime == "MOMENTUM":
+            nat_detail = ""
+            if nat_score > 0:
+                combined, h_pct, a_pct = _calc_nationality_ratio(nat_data)
+                nat_detail = f" 국적={combined:.0%}(싱{a_pct:.0%}+케{h_pct:.0%})"
             logger.info(
                 f"[MOMENTUM] {name}({code}): score={total_score:.2f} "
                 f"vol={vol_ratio:.1f}x 기관연속={consec_days}D "
-                f"peer={peer_ratio:.0%} factors={factors}"
+                f"peer={peer_ratio:.0%}{nat_detail} factors={factors}"
             )
 
     # 섹터 피어 캐시 로그
