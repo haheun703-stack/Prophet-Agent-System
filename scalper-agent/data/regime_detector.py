@@ -7,14 +7,15 @@ MOMENTUM 레짐 감지기 (Regime Detector)
 기관+외국인이 연속 매수 중이면 MOMENTUM 레짐 → RSI/MACD 무시하고 빠른 진입.
 수급이 빠지면 즉시 탈출 (-3.5% SL + 수급 반전 EXIT).
 
-5가지 팩터로 레짐 판별:
+6가지 팩터로 레짐 판별:
   (A) 거래량 폭증 (vol_ratio ≥ 2x)
-  (B) 기관+외인 연속 매수 (3일+)
-  (C) 섹터 동반 상승 (breadth ≥ 15%)
+  (B) 기관+외인 연속 매수 (2일+)
+  (C) 섹터 동반 상승 (breadth ≥ 10%)
   (D) 기관 프로그램 매수 (5일 중 3일+)
   (E) 조용한 매집 (기관 매수 + 거래량 보합)
+  (F) 섹터 피어 부스트 (같은 섹터 수급 양수 비율)
 
-THRESHOLD: score ≥ 0.55 → MOMENTUM, 아니면 NORMAL
+THRESHOLD: score ≥ 0.40 → MOMENTUM, 아니면 NORMAL
 """
 
 import logging
@@ -33,7 +34,7 @@ FLOW_DIR = DATA_DIR / "flow"
 
 logger = logging.getLogger("BH.Regime")
 
-MOMENTUM_THRESHOLD = 0.55
+MOMENTUM_THRESHOLD = 0.40
 
 
 # =============================================================================
@@ -56,6 +57,7 @@ class RegimeResult:
     #   "sector_breadth": 0.0~0.20,
     #   "program_buy": 0.0~0.15,
     #   "quiet_accum": 0.0~0.10,
+    #   "sector_peer": 0.0~0.15,
     # }
 
 
@@ -155,13 +157,13 @@ def _count_consecutive_buy_days(flow: pd.DataFrame) -> int:
 
 
 def _score_consecutive_buy(consec_days: int) -> float:
-    """(B) 기관+외인 연속 매수 스코어"""
+    """(B) 기관+외인 연속 매수 스코어 (v2: 가중치 상향)"""
     if consec_days >= 5:
         return 0.30
     elif consec_days >= 3:
-        return 0.20
+        return 0.25  # v2: 0.20→0.25 (3일 매집도 강한 신호)
     elif consec_days >= 2:
-        return 0.10
+        return 0.15  # v2: 0.10→0.15 (2일도 의미있는 신호)
     return 0.0
 
 
@@ -170,7 +172,9 @@ def _score_sector_breadth(breadth: float) -> float:
     if breadth >= 0.30:
         return 0.20
     elif breadth >= 0.15:
-        return 0.10
+        return 0.15  # v2: 0.10→0.15
+    elif breadth >= 0.10:
+        return 0.08  # v2: 새로 추가 (10%도 감지)
     return 0.0
 
 
@@ -230,6 +234,68 @@ def _score_quiet_accumulation(daily: pd.DataFrame, flow: pd.DataFrame) -> float:
 
 
 # =============================================================================
+# (F) 섹터 피어 부스트 — 같은 섹터 수급 양수 비율로 가산
+# =============================================================================
+
+def _calc_sector_peer_flow(sector: str, universe: dict,
+                           exclude_codes: set = None,
+                           max_sample: int = 30) -> float:
+    """섹터 내 종목들의 최근 수급 양수 비율 계산
+
+    같은 섹터 종목 중 최근 1일 기관+외인 순매수 양수인 비율 반환.
+    시총 상위 max_sample개만 샘플링 (속도).
+
+    Returns: 0.0 ~ 1.0 (양수 비율)
+    """
+    if not sector:
+        return 0.0
+
+    # 같은 섹터 종목 추출 (시총 상위)
+    sector_stocks = [
+        (code, info.get("cap_억", 0))
+        for code, info in universe.items()
+        if info.get("sector") == sector
+        and (exclude_codes is None or code not in exclude_codes)
+    ]
+    sector_stocks.sort(key=lambda x: x[1], reverse=True)
+    sector_stocks = sector_stocks[:max_sample]
+
+    if len(sector_stocks) < 3:
+        return 0.0
+
+    positive = 0
+    checked = 0
+    for code, _ in sector_stocks:
+        flow = _load_flow(code)
+        if flow is None or len(flow) == 0:
+            continue
+        checked += 1
+        latest = flow.iloc[-1]
+        inst = latest.get("기관_금액", 0) or 0
+        frgn = latest.get("외국인_금액", 0) or 0
+        if (inst + frgn) > 0:
+            positive += 1
+
+    if checked < 3:
+        return 0.0
+    return positive / checked
+
+
+def _score_sector_peer(peer_ratio: float) -> float:
+    """(F) 섹터 피어 부스트 스코어
+
+    같은 섹터 내 수급 양수 종목 비율이 높으면 가산.
+    """
+    if peer_ratio >= 0.60:
+        return 0.15  # 섹터 60%+ 종목이 기관+외인 매수 → 강한 섹터 모멘텀
+    elif peer_ratio >= 0.45:
+        return 0.10  # 45%+ → 보통 섹터 모멘텀
+    elif peer_ratio >= 0.35:
+        return 0.05  # 35%+ → 약한 신호
+    return 0.0
+
+
+# =============================================================================
 # 메인 감지 함수
 # =============================================================================
 
@@ -253,6 +319,10 @@ def detect_regime_batch(
 
     results = {}
 
+    # 섹터별 피어 수급 비율 캐시 (섹터당 1번만 계산)
+    _sector_peer_cache: dict[str, float] = {}
+    code_set = set(codes)
+
     for code in codes:
         info = universe.get(code, {})
         name = info.get("name", code)
@@ -272,7 +342,7 @@ def detect_regime_batch(
         consec_days = _count_consecutive_buy_days(flow) if flow is not None else 0
         consec_score = _score_consecutive_buy(consec_days)
 
-        # (C) 섹터 breadth
+        # (C) 섹터 breadth (morning_recommendation에서 전달)
         breadth = sector_breadths.get(sector, 0)
         breadth_score = _score_sector_breadth(breadth)
 
@@ -282,8 +352,17 @@ def detect_regime_batch(
         # (E) 조용한 매집
         quiet_score = _score_quiet_accumulation(daily, flow)
 
+        # (F) 섹터 피어 부스트 (같은 섹터 내 수급 양수 비율)
+        if sector and sector not in _sector_peer_cache:
+            _sector_peer_cache[sector] = _calc_sector_peer_flow(
+                sector, universe, exclude_codes=code_set
+            )
+        peer_ratio = _sector_peer_cache.get(sector, 0)
+        peer_score = _score_sector_peer(peer_ratio)
+
         # 종합 스코어
-        total_score = vol_score + consec_score + breadth_score + program_score + quiet_score
+        total_score = (vol_score + consec_score + breadth_score
+                       + program_score + quiet_score + peer_score)
 
         # 레짐 판정
         regime = "MOMENTUM" if total_score >= MOMENTUM_THRESHOLD else "NORMAL"
@@ -294,6 +373,7 @@ def detect_regime_batch(
             "sector_breadth": breadth_score,
             "program_buy": program_score,
             "quiet_accum": quiet_score,
+            "sector_peer": peer_score,
         }
 
         results[code] = RegimeResult(
@@ -310,8 +390,13 @@ def detect_regime_batch(
             logger.info(
                 f"[MOMENTUM] {name}({code}): score={total_score:.2f} "
                 f"vol={vol_ratio:.1f}x 기관연속={consec_days}D "
-                f"factors={factors}"
+                f"peer={peer_ratio:.0%} factors={factors}"
             )
+
+    # 섹터 피어 캐시 로그
+    for sec, ratio in _sector_peer_cache.items():
+        if ratio >= 0.35:
+            logger.info(f"[섹터 피어] {sec}: 수급양수 {ratio:.0%}")
 
     return results
 

@@ -1188,13 +1188,25 @@ def run_evening_recommendation() -> RecommendationReport:
     )
     logger.info(f"  → {len(final_stocks)}종목 ({time.time()-t0:.0f}s)")
 
-    # 교차검증 후 regime 스탬핑
+    # 교차검증 후 regime 스탬핑 + MOMENTUM 스코어 부스트
+    mtm_boost_count = 0
     for s in final_stocks:
         if s.code in regime_signals:
             r = regime_signals[s.code]
             s.regime = r.regime
             s.regime_score = r.score
             s.regime_detail = f"VOL{r.vol_ratio:.1f}x+기관{r.consec_inst_foreign_days}D"
+            # MOMENTUM 종목: total_score에 가산 (TOP 8 진입 확률 증가)
+            if r.regime == "MOMENTUM":
+                boost = min(r.score * 15, 10)  # score 0.40→+6, 0.55→+8, 최대+10
+                s.total_score += boost
+                mtm_boost_count += 1
+                logger.info(f"  [MTM 부스트] {s.name}: +{boost:.1f}점 → {s.total_score:.1f}")
+
+    # MOMENTUM 부스트 후 재정렬 (TOP 8에 MOMENTUM 종목 우선 배치)
+    if mtm_boost_count > 0:
+        final_stocks.sort(key=lambda x: x.total_score, reverse=True)
+        logger.info(f"  [MTM] {mtm_boost_count}종목 부스트 → 재정렬 완료")
 
     # Step 6: KIS API 가격 교차검증
     t0 = time.time()
@@ -2227,14 +2239,21 @@ def run_war_mode_recommendation() -> RecommendationReport:
             _universe = json.load(_uf)
         war_codes = [s.code for s in report.stocks]
         war_regime = detect_regime_batch(war_codes, _universe)
+        war_mtm_boost = 0
         for s in report.stocks:
             if s.code in war_regime:
                 r = war_regime[s.code]
                 s.regime = r.regime
                 s.regime_score = r.score
                 s.regime_detail = f"VOL{r.vol_ratio:.1f}x+기관{r.consec_inst_foreign_days}D"
+                if r.regime == "MOMENTUM":
+                    boost = min(r.score * 15, 10)
+                    s.total_score += boost
+                    war_mtm_boost += 1
+        if war_mtm_boost > 0:
+            report.stocks.sort(key=lambda x: x.total_score, reverse=True)
         war_mtm = sum(1 for r in war_regime.values() if r.regime == "MOMENTUM")
-        logger.info(f"[전쟁모드] 레짐: {war_mtm}/{len(war_regime)} MOMENTUM")
+        logger.info(f"[전쟁모드] 레짐: {war_mtm}/{len(war_regime)} MOMENTUM ({war_mtm_boost} 부스트)")
     except Exception as e:
         logger.warning(f"[전쟁모드] 레짐 감지 실패 (무시): {e}")
 
