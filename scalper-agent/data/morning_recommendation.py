@@ -625,6 +625,7 @@ def _step5_cross_validate(
     # ── 7 SECRET 국적 파워 (NORMAL 모드) ──
     normal_nat_powers = {}
     norm_price_data = {}
+    norm_daily = {}  # FLOWX 업로드용 국적 원시 데이터
     try:
         from data.nationality_profiler import calc_nationality_power, collect_daily_series
         from pathlib import Path as _Path2
@@ -1273,6 +1274,17 @@ def run_evening_recommendation() -> RecommendationReport:
         save_recommendation(report)
     except Exception as e:
         logger.warning(f"추천 자동저장 실패: {e}")
+
+    # FLOWX 업로드 (Supabase short_signals)
+    try:
+        from data.upload_short import run_flowx_upload
+        import json
+        rec_path = Path(__file__).resolve().parent.parent / "data_store" / "recommendation.json"
+        rec_data = json.loads(rec_path.read_text("utf-8"))
+        run_flowx_upload(rec_data, nat_daily_all=norm_daily or None)
+        logger.info("[FLOWX] 업로드 완료")
+    except Exception as e:
+        logger.warning(f"[FLOWX] 업로드 실패 (무시): {e}")
 
     return report
 
@@ -2069,6 +2081,7 @@ def run_war_mode_recommendation() -> RecommendationReport:
     t0 = time.time()
     nat_power_scores = {}
     nat_price_data = {}
+    nat_daily = {}  # FLOWX 업로드용 국적 원시 데이터
     try:
         from data.nationality_profiler import calc_nationality_power, collect_daily_series
         from pathlib import Path as _Path
@@ -2329,6 +2342,17 @@ def run_war_mode_recommendation() -> RecommendationReport:
         save_recommendation(report)
     except Exception as e:
         logger.warning(f"추천 자동저장 실패: {e}")
+
+    # FLOWX 업로드 (Supabase short_signals)
+    try:
+        from data.upload_short import run_flowx_upload
+        import json
+        rec_path = Path(__file__).resolve().parent.parent / "data_store" / "recommendation.json"
+        rec_data = json.loads(rec_path.read_text("utf-8"))
+        run_flowx_upload(rec_data, nat_daily_all=nat_daily or None)
+        logger.info("[FLOWX] 전쟁모드 업로드 완료")
+    except Exception as e:
+        logger.warning(f"[FLOWX] 전쟁모드 업로드 실패 (무시): {e}")
 
     return report
 
