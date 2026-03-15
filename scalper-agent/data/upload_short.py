@@ -289,11 +289,45 @@ def upload_single_signal(signal: dict) -> bool:
 
 
 # ═══════════════════════════════════════
-#  통합 파이프라인: 추천 → 변환 → 업로드
+#  듀얼 출력 필터 (구독자용 품질 게이트)
+# ═══════════════════════════════════════
+
+def _apply_flowx_filter(signals: list) -> list:
+    """FLOWX 구독자용 엄격 필터 — 프리미엄 품질만 통과
+
+    기준:
+    - grade A 이상 (AAA, AA, A)
+    - total_score 65점 이상
+    - signal_type FORCE_BUY 또는 BUY만
+    - 기관 미동반(inst_support=False)이면 score 75+ 이어야 통과
+    """
+    filtered = []
+    for s in signals:
+        # 등급 필터: A 이상만
+        if s["grade"] not in ("AAA", "AA", "A"):
+            continue
+        # 점수 필터: 65점 이상
+        if s["total_score"] < 65:
+            continue
+        # 시그널 필터: BUY 계열만
+        if s["signal_type"] not in ("FORCE_BUY", "BUY"):
+            continue
+        # 기관 미동반 시 75점 이상만
+        if not s["inst_support"] and s["total_score"] < 75:
+            continue
+        filtered.append(s)
+
+    return filtered
+
+
+# ═══════════════════════════════════════
+#  통합 파이프라인: 추천 → 변환 → 필터 → 업로드
 # ═══════════════════════════════════════
 
 def run_flowx_upload(rec_data: dict = None, nat_daily_all: dict = None) -> bool:
     """FLOWX 업로드 원클릭 파이프라인
+
+    듀얼 출력: 전체 변환 → FLOWX 필터(A+/65+/BUY) → 통과분만 업로드
 
     Args:
         rec_data: recommendation.json dict (None이면 파일에서 로드)
@@ -310,13 +344,22 @@ def run_flowx_upload(rec_data: dict = None, nat_daily_all: dict = None) -> bool:
         rec_data = json.loads(rec_path.read_text("utf-8"))
         logger.info(f"recommendation.json 로드: {len(rec_data.get('stocks', []))}종목")
 
-    signals = convert_recommendation_to_flowx(rec_data, nat_daily_all)
-    if not signals:
+    all_signals = convert_recommendation_to_flowx(rec_data, nat_daily_all)
+    if not all_signals:
         logger.warning("변환된 시그널 없음")
         return False
 
-    logger.info(f"FLOWX 변환 완료: {len(signals)}개 시그널")
-    return upload_short_signals(signals)
+    # 듀얼 출력: FLOWX 필터 적용 (구독자용 품질 게이트)
+    flowx_signals = _apply_flowx_filter(all_signals)
+    logger.info(
+        f"[FLOWX 듀얼출력] 전체 {len(all_signals)}종목 → 필터 통과 {len(flowx_signals)}종목"
+    )
+
+    if not flowx_signals:
+        logger.info("[FLOWX] 필터 통과 종목 0개 — 기준 미달 시 업로드 스킵 (정상)")
+        return True  # 0종목도 정상 (기준이 맞으면 0이 맞음)
+
+    return upload_short_signals(flowx_signals)
 
 
 # ═══════════════════════════════════════
@@ -372,14 +415,29 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"국적 데이터 수집 실패 (외인 상세 없이 진행): {e}")
 
-    signals = convert_recommendation_to_flowx(rec_data, nat_daily_all)
-    _print_signals(signals)
+    all_signals = convert_recommendation_to_flowx(rec_data, nat_daily_all)
+
+    # 듀얼 출력: 전체 (개인용) + 필터 (FLOWX 구독자용)
+    print(f"\n{'='*80}")
+    print(f"  [채널1] 텔레그램 개인용 — 전체 {len(all_signals)}개 종목")
+    print(f"{'='*80}")
+    _print_signals(all_signals)
+
+    flowx_signals = _apply_flowx_filter(all_signals)
+    print(f"{'='*80}")
+    print(f"  [채널2] FLOWX 구독자용 — 필터 통과 {len(flowx_signals)}개 종목")
+    print(f"  (A등급+ / 65점+ / BUY+ / 기관미동반시 75점+)")
+    print(f"{'='*80}")
+    if flowx_signals:
+        _print_signals(flowx_signals)
+    else:
+        print("  → 필터 통과 종목 없음 (0종목도 정상 — 기준 미달 시 업로드 스킵)\n")
 
     if dry_run:
         print("[DRY-RUN] --upload 옵션으로 실행하면 Supabase에 업로드합니다.")
     else:
-        success = upload_short_signals(signals)
+        success = upload_short_signals(flowx_signals) if flowx_signals else True
         if success:
-            print("Supabase 업로드 완료!")
+            print(f"Supabase 업로드 완료! ({len(flowx_signals)}종목)")
         else:
             print("업로드 실패 — .env의 SUPABASE_URL, SUPABASE_KEY 확인하세요.")
