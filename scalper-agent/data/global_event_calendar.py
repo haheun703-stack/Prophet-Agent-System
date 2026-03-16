@@ -465,45 +465,107 @@ def scan_global_events(
 
 
 # ═══════════════════════════════════════════════════
-#  5. 텔레그램 메시지 포맷
+#  5. 텔레그램 메시지 포맷 — 지역별 그룹핑
 # ═══════════════════════════════════════════════════
 
+_REGION_KEYWORDS = {
+    "US": ["미국", "FOMC", "Fed", "CPI", "고용", "ISM", "GDP", "PCE", "연준", "파월",
+           "나스닥", "S&P", "다우", "월가"],
+    "JP": ["일본", "BOJ", "엔화", "닛케이", "도쿄"],
+    "EU": ["유럽", "ECB", "독일", "프랑스", "유로존", "영란은행", "BOE"],
+    "CN": ["중국", "PBOC", "위안", "항셍", "상하이"],
+}
+
+_REGION_FLAG = {"US": "🇺🇸 미국", "JP": "🇯🇵 일본", "EU": "🇪🇺 유럽", "CN": "🇨🇳 중국", "OTHER": "🌏 기타"}
+_REGION_ORDER = ["US", "JP", "EU", "CN", "OTHER"]
+
+
+def _classify_region(event_text: str) -> str:
+    """이벤트 텍스트에서 지역 분류"""
+    for region, keywords in _REGION_KEYWORDS.items():
+        if any(kw in event_text for kw in keywords):
+            return region
+    return "OTHER"
+
+
+def _resolve_name(ticker: str) -> str:
+    """종목코드 → 이름 매핑 (US_KR_SECTOR_MAP 기반)"""
+    for info in US_KR_SECTOR_MAP.values():
+        for t, name, *_ in info.get("kr_stocks", []):
+            if t == ticker:
+                return name
+    return ticker
+
+
 def format_telegram_message(result: Dict) -> str:
-    """스캔 결과 → 텔레그램 메시지"""
+    """스캔 결과 → 텔레그램 메시지 (지역별 그룹핑)"""
     lines = [
         "━" * 24,
         "🌍 글로벌 이벤트 캘린더",
         "━" * 24,
     ]
 
-    # 실적 캘린더
+    # ── 경제 이벤트를 지역별로 분류 ──
+    economic = result.get("economic", [])
+    econ_list = [e for e in economic if isinstance(e, dict) and "event" in e]
+    region_events: Dict[str, list] = {r: [] for r in _REGION_ORDER}
+
+    for e in econ_list:
+        ev_text = e.get("event", "")
+        region = _classify_region(ev_text)
+        region_events[region].append(e)
+
+    # ── 미국 실적발표를 US 그룹에 병합 ──
     earnings = result.get("earnings", [])
-    if earnings:
-        lines.append("")
-        lines.append("📊 미국 실적발표 일정")
-        lines.append("─" * 24)
-        for e in earnings:
-            d = e["days_until"]
-            urgency = "🔴" if d <= 1 else "🟡" if d <= 3 else "⚪"
-            lines.append(f"  {urgency} D-{d} | {e['name']}({e['symbol']}) → {e['earnings_date']}")
-            if e.get("kr_sectors"):
-                lines.append(f"      한국: {', '.join(e['kr_sectors'][:3])}")
 
-    # D-3 알림
+    # ── 지역별 섹션 출력 ──
+    for region in _REGION_ORDER:
+        evts = region_events[region]
+        us_earnings = earnings if region == "US" else []
+        total = len(evts) + len(us_earnings)
+        if total == 0:
+            continue
+
+        flag = _REGION_FLAG[region]
+        lines.append("")
+        lines.append(f"{flag} ({total}건)")
+        lines.append("─" * 24)
+
+        # 경제 이벤트
+        for e in evts:
+            imp = {"HIGH": "🔴", "MEDIUM": "🟡", "LOW": "⚪"}.get(
+                e.get("impact", ""), "⚪"
+            )
+            date_str = e.get("date", "?")
+            if len(date_str) >= 10:
+                date_str = date_str[5:]  # "2026-03-17" → "03-17"
+            lines.append(f"  {imp} {date_str} {e.get('event', '?')}")
+
+        # 미국 실적발표 (US 그룹에만)
+        if us_earnings:
+            lines.append("  📊 실적발표")
+            for e in us_earnings:
+                d = e["days_until"]
+                urgency = "🔴" if d <= 1 else "🟡" if d <= 3 else "⚪"
+                lines.append(f"    {urgency} D-{d} | {e['name']}({e['symbol']}) → {e['earnings_date']}")
+
+            # D-3 이내 수혜 종목 요약
+            alerts = [e for e in us_earnings if e["days_until"] <= 3]
+            if alerts:
+                kr_names = []
+                seen = set()
+                for a in alerts:
+                    for t, n, r, m in a.get("kr_stocks", [])[:3]:
+                        if n not in seen:
+                            kr_names.append(n)
+                            seen.add(n)
+                if kr_names:
+                    lines.append(f"  → 수혜: {', '.join(kr_names[:5])}")
+
+    # ── Perplexity AI 분석 ──
     alerts = result.get("alerts", [])
-    if alerts:
-        lines.append("")
-        lines.append("⚠️ D-3 긴급 알림")
-        lines.append("─" * 24)
-        for a in alerts:
-            lines.append(f"  🔔 {a['name']} 실적 D-{a['days_until']}")
-            for t, n, r, m in a.get("kr_stocks", [])[:5]:
-                lines.append(f"    → {n}({t}) [{m}] 관련도:{r}")
-
-    # Perplexity 분석
     if alerts and alerts[0].get("perplexity_analysis"):
         analysis = alerts[0]["perplexity_analysis"]
-        # 500자 이내로 자르기
         if len(analysis) > 500:
             analysis = analysis[:497] + "..."
         lines.append("")
@@ -511,29 +573,17 @@ def format_telegram_message(result: Dict) -> str:
         lines.append("─" * 24)
         lines.append(analysis)
 
-    # 한국 수혜주 TOP 5
+    # ── 한국 수혜주 종합 TOP 5 ──
     bene = result.get("kr_beneficiaries", [])[:5]
     if bene:
         lines.append("")
-        lines.append("🇰🇷 한국 수혜주 TOP 5")
+        lines.append("🇰🇷 한국 수혜주 종합 TOP 5")
         lines.append("─" * 24)
         for i, b in enumerate(bene, 1):
+            name = b["name"] if b["name"] != b["ticker"] else _resolve_name(b["ticker"])
             evts = " + ".join(b["events"][:2])
-            lines.append(f"  {i}. {b['name']}({b['ticker']}) 점수:{b['total_relevance']}")
+            lines.append(f"  {i}. {name}({b['ticker']}) {b['total_relevance']}점")
             lines.append(f"     {evts}")
-
-    # 경제 캘린더
-    economic = result.get("economic", [])
-    econ_list = [e for e in economic if isinstance(e, dict) and "event" in e]
-    if econ_list:
-        lines.append("")
-        lines.append("📅 주요 경제 일정")
-        lines.append("─" * 24)
-        for e in econ_list[:5]:
-            imp = {"HIGH": "🔴", "MEDIUM": "🟡", "LOW": "⚪"}.get(
-                e.get("impact", ""), "⚪"
-            )
-            lines.append(f"  {imp} {e.get('date', '?')} {e.get('event', '?')}")
 
     lines.append("")
     lines.append("━" * 24)
