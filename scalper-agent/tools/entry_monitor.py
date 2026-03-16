@@ -187,7 +187,7 @@ def _format_tv_alert(sig) -> str:
         f"[TV Alert] {sig.name} {tag}!\n"
         f"TV {sig.tv_ratio:.1f}x | 가격 {sig.change_pct:+.1f}% | score {sig.score:.0f}\n"
         f"거래대금 {sig.trading_value:,.0f}억 (평균 {sig.tv_avg20:,.0f}억)\n"
-        f"{sig.detail}"
+        f"{sig.detail or ''}"
     )
 
 

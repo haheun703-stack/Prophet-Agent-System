@@ -822,14 +822,24 @@ def _step5_cross_validate(
 
         # 거래대금 부스트 (최대 +15점)
         tv_boost = 0.0
+        _tv_ratio = 1.0
+        _tv_pattern = "NORMAL"
+        _tv_score = 0.0
         if tv_signals and code in tv_signals:
             _tv = tv_signals[code]
-            if _tv.pattern == "QUIET_ACCUMULATION":
-                tv_boost = min(_tv.score * 0.15, 15)    # 조용한 매집: 최대 +15
-            elif _tv.pattern == "EXPLOSION":
-                tv_boost = min(_tv.score * 0.12, 12)    # 폭발: 최대 +12
-            elif _tv.pattern == "GRADUAL_BUILDUP":
-                tv_boost = min(_tv.score * 0.10, 10)    # 점진적: 최대 +10
+            # TVSignal 객체 또는 dict 모두 대응
+            _tv_pat = _tv.get("pattern") if isinstance(_tv, dict) else getattr(_tv, "pattern", "NORMAL")
+            _tv_sc = _tv.get("score", 0) if isinstance(_tv, dict) else getattr(_tv, "score", 0)
+            _tv_r = _tv.get("tv_ratio", 1.0) if isinstance(_tv, dict) else getattr(_tv, "tv_ratio", 1.0)
+            _tv_ratio = _tv_r
+            _tv_pattern = _tv_pat
+            _tv_score = _tv_sc
+            if _tv_pat == "QUIET_ACCUMULATION":
+                tv_boost = min(_tv_sc * 0.15, 15)    # 조용한 매집: 최대 +15
+            elif _tv_pat == "EXPLOSION":
+                tv_boost = min(_tv_sc * 0.12, 12)    # 폭발: 최대 +12
+            elif _tv_pat == "GRADUAL_BUILDUP":
+                tv_boost = min(_tv_sc * 0.10, 10)    # 점진적: 최대 +10
 
         # ── 합산 ──────────────────────────────
         raw_total = (relay_sc + premove_sc + tech_sc + bargain_sc + cross_bonus
@@ -885,6 +895,9 @@ def _step5_cross_validate(
             nat_power=nat_power_sc,
             nat_power_grade=norm_np.grade if norm_np else "",
             nat_power_detail=norm_np.detail if norm_np else "",
+            tv_ratio=_tv_ratio,
+            tv_pattern=_tv_pattern,
+            tv_score=_tv_score,
         )
         candidates.append(rec)
 
@@ -901,9 +914,7 @@ def _step5_cross_validate(
 
     tv_only_picks = []
     for c in candidates[8:]:  # TOP 8 밖의 후보들
-        tv_sc = getattr(c, "tv_score", 0.0)
-        tv_pat = getattr(c, "tv_pattern", "NORMAL")
-        if tv_sc >= 70 and tv_pat in ("QUIET_ACCUMULATION", "EXPLOSION"):
+        if c.tv_score >= 70 and c.tv_pattern in ("QUIET_ACCUMULATION", "EXPLOSION"):
             tv_only_picks.append(c)
 
     if tv_only_picks:
@@ -2356,9 +2367,7 @@ def run_war_mode_recommendation() -> RecommendationReport:
     war_top8_codes = {s.code for s in war_normal_top}
     war_tv_only = []
     for c in candidates[8:]:
-        tv_sc = getattr(c, "tv_score", 0.0)
-        tv_pat = getattr(c, "tv_pattern", "NORMAL")
-        if tv_sc >= 70 and tv_pat in ("QUIET_ACCUMULATION", "EXPLOSION"):
+        if c.tv_score >= 70 and c.tv_pattern in ("QUIET_ACCUMULATION", "EXPLOSION"):
             war_tv_only.append(c)
     if war_tv_only:
         war_tv_only.sort(key=lambda x: x.tv_score, reverse=True)

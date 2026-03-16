@@ -132,7 +132,7 @@ class BodyHunterBot:
         self.chat_id = os.getenv("TELEGRAM_CHAT_ID")
         self.trader = KISTrader(config)
         self.auto_trader = AutoTrader(config, self.trader)
-        self.start_time = datetime.now()
+        self.start_time = datetime.now(KST)
         self._pending_orders = {}  # chat_id → {type, code, qty, name}
 
     def _is_authorized(self, update: Update) -> bool:
@@ -578,7 +578,7 @@ class BodyHunterBot:
         if _date.today().weekday() >= 5:
             return
         now_min = now.hour * 60 + now.minute
-        if now_min < 540 or now_min >= 936:  # 09:00~15:35
+        if now_min < 540 or now_min >= 935:  # 09:00~15:35 (15:35=935분)
             return
 
         targets = self._load_war_targets()
@@ -2081,18 +2081,14 @@ class BodyHunterBot:
         )
 
         # 인자 없는 "분석" / "뉴스" → 안내
-        app.add_handler(
-            MessageHandler(
-                filters.Regex(r"^분석$"),
-                lambda u, c: u.message.reply_text("사용법: 분석 삼성전자"),
-            )
-        )
-        app.add_handler(
-            MessageHandler(
-                filters.Regex(r"^뉴스$"),
-                lambda u, c: u.message.reply_text("사용법: 뉴스 삼성전자"),
-            )
-        )
+        async def _help_분석(u, c):
+            await u.message.reply_text("사용법: 분석 삼성전자")
+
+        async def _help_뉴스(u, c):
+            await u.message.reply_text("사용법: 뉴스 삼성전자")
+
+        app.add_handler(MessageHandler(filters.Regex(r"^분석$"), _help_분석))
+        app.add_handler(MessageHandler(filters.Regex(r"^뉴스$"), _help_뉴스))
 
         # catch-all: 매칭 안 된 모든 텍스트
         app.add_handler(

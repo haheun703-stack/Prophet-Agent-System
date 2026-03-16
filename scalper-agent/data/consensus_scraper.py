@@ -213,6 +213,7 @@ def fetch_consensus(code: str, use_cache: bool = True, cache_hours: int = 24) ->
                         datetime.now() - datetime.strptime(updated, "%Y-%m-%d %H:%M")
                     ).total_seconds() / 3600
                     if age_hours < cache_hours:
+                        cached["source"] = "cache"
                         return cached
                 except ValueError:
                     pass

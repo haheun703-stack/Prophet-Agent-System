@@ -102,7 +102,7 @@ def _calc_tv_metrics(code: str) -> Optional[dict]:
 
         # 최근값
         latest_tv = float(tv_series.iloc[-1])
-        avg_20d_tv = float(tv_series.iloc[-21:-1].mean())
+        avg_20d_tv = float(tv_series.iloc[-21:-1].mean())  # 오늘 제외 직전 20일 평균 (의도적)
 
         if avg_20d_tv <= 0:
             return None
@@ -146,11 +146,15 @@ def _classify_pattern(tv_ratio: float, change_pct: float, tv_5d_trend: float) ->
     """패턴 분류"""
     abs_change = abs(change_pct)
 
+    # EXPLOSION: 거래대금 급증 + 가격도 크게 변동 (먼저 체크하여 QUIET_ACC와 겹침 방지)
+    if tv_ratio >= 3.0 and abs_change > 3.0:
+        return "EXPLOSION"
+
     # QUIET_ACCUMULATION: 돈은 들어오는데 가격은 안 움직임 (가장 강한 시그널)
     if tv_ratio >= 2.0 and abs_change <= 3.0:
         return "QUIET_ACCUMULATION"
 
-    # EXPLOSION: 거래대금 급증 (방향 불문)
+    # EXPLOSION(순수): 거래대금 급증이지만 가격 미분류 (위에서 안 걸린 나머지)
     if tv_ratio >= 3.0:
         return "EXPLOSION"
 

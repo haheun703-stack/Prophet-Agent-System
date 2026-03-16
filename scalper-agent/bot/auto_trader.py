@@ -233,7 +233,10 @@ class AutoTrader:
                 # 포지션 최초 1회만 생성 (분할매수 시 덮어쓰기 방지)
                 if code not in self._positions:
                     price_info = self.trader.fetch_price(code)
-                    cp = price_info.get("current_price", item.get("sl", 0))
+                    cp = price_info.get("current_price", 0)
+                    if cp <= 0:
+                        logger.error(f"가격 조회 실패 {code} — 진입 건너뜀")
+                        continue
                     target_state = self._init_dynamic_target(code, name, cp)
                     sl = target_state.dynamic_sl if target_state else item["sl"]
                     tp = target_state.dynamic_tp if target_state else item["tp"]
@@ -248,6 +251,8 @@ class AutoTrader:
                         "high_watermark": cp,
                         "trailing_activated": False,
                         "trailing_sl": 0,
+                        "regime": item.get("regime", "NORMAL"),
+                        "source": item.get("source", ""),
                     }
                     try:
                         rtm = self._get_rt_monitor()
@@ -824,7 +829,7 @@ class AutoTrader:
                 _now = datetime.now()
                 _yearend = (_now.month == 12 and _now.day >= 15) or (_now.month == 1 and _now.day <= 5)
                 if is_momentum:
-                    entry_threshold = 2
+                    entry_threshold = 3  # MACD스킵 포함 6조건 중 3개 (실제 5개 평가 중 60%)
                 else:
                     entry_threshold = 4 if _yearend else 3
                 if conditions_met >= entry_threshold:
@@ -855,7 +860,7 @@ class AutoTrader:
                     this_amount = split_amount
                     if is_last:
                         used = split_amount * split_done
-                        this_amount = watch["buy_amount"] - used
+                        this_amount = max(50000, watch["buy_amount"] - used)  # 최소 5만원 보장
 
                     split_label = f"[{split_done+1}/{split_count}차]"
 

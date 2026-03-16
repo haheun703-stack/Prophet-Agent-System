@@ -177,7 +177,8 @@ class KISTrader:
                 }
 
             except Exception as e:
-                self._consecutive_failures += 1
+                with self._lock:
+                    self._consecutive_failures += 1
                 err_str = str(e).lower()
                 if attempt == 0 and ("token" in err_str or "auth" in err_str or "401" in err_str):
                     logger.warning(f"잔고 조회 예외(토큰): {e} - 재발급 후 재시도")
@@ -213,7 +214,8 @@ class KISTrader:
                 resp = broker.fetch_price(code)
 
                 if resp is None:
-                    self._consecutive_failures += 1
+                    with self._lock:
+                        self._consecutive_failures += 1
                     if attempt == 0:
                         logger.warning(f"현재가 조회 None {code} - 토큰 재발급 후 재시도")
                         self._reset_broker()
@@ -223,7 +225,8 @@ class KISTrader:
 
                 # 토큰 에러 감지 → 브로커 재발급 후 재시도
                 if self._is_token_error(resp):
-                    self._consecutive_failures += 1
+                    with self._lock:
+                        self._consecutive_failures += 1
                     if attempt == 0:
                         msg = resp.get("msg1", resp.get("msg_cd", ""))
                         logger.warning(f"KIS 토큰 에러 {code}: {msg} - 재발급 후 재시도")
@@ -235,7 +238,8 @@ class KISTrader:
                 output = resp.get("output", {})
                 cp = int(output.get("stck_prpr", 0))
                 if cp > 0:
-                    self._consecutive_failures = 0  # 성공 시 카운터 리셋
+                    with self._lock:
+                        self._consecutive_failures = 0  # 성공 시 카운터 리셋
                     return {
                         "success": True,
                         "current_price": cp,
@@ -254,7 +258,8 @@ class KISTrader:
                 return {"success": False, "message": f"현재가 0원 (output={list(output.keys())[:3]})"}
 
             except Exception as e:
-                self._consecutive_failures += 1
+                with self._lock:
+                    self._consecutive_failures += 1
                 err_str = str(e).lower()
                 # 토큰/인증 관련 예외 → 재시도
                 if attempt == 0 and ("token" in err_str or "auth" in err_str or "401" in err_str):
