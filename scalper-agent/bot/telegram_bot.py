@@ -744,9 +744,10 @@ class BodyHunterBot:
             lines.append(f"{icon} {name} {cp:,}원 ({day_chg:+.1f}%) →TP({vs_tp:+.1f}%) {np_icon}")
 
         if data_count == 0:
-            reason_str = fail_reasons[0] if fail_reasons else "캐시+API 모두 데이터 없음"
-            lines.append(f"⚠️ 가격 데이터 조회 실패 — {reason_str}")
-            logger.error(f"전쟁요약 전체 실패 ({len(fail_reasons)}건): {'; '.join(fail_reasons[:3])}")
+            reason_summary = "; ".join(fail_reasons[:3]) if fail_reasons else "캐시+API 모두 데이터 없음"
+            lines.append(f"⚠️ 가격 데이터 조회 실패 ({len(fail_reasons)}건)")
+            lines.append(f"원인: {reason_summary[:100]}")
+            logger.error(f"전쟁요약 전체 실패 ({len(fail_reasons)}건): {'; '.join(fail_reasons[:5])}")
 
         try:
             await context.bot.send_message(chat_id=chat_id, text="\n".join(lines))

@@ -14,6 +14,7 @@ import os
 import json
 import time
 import logging
+import threading
 from pathlib import Path
 from datetime import datetime, date
 from typing import Dict, List, Optional
@@ -55,60 +56,64 @@ class KISTrader:
         self._broker = None
         self._broker_created_at: float = 0.0  # 브로커 생성 시각 (epoch)
         self._consecutive_failures: int = 0   # 연속 실패 카운터
+        self._lock = threading.Lock()  # 스레드 안전: tracker+summary 동시 호출 방지
 
     def _get_broker(self, force_refresh=False):
-        """브로커 (토큰 자동 갱신)
+        """브로커 (토큰 자동 갱신, 스레드 안전)
 
         - 토큰 만료 감지: 생성 후 20시간 경과 시 자동 재발급
         - 연속 실패 3회 시 강제 재발급
         - mojito token.dat은 상대경로 → CWD를 scalper-agent로 고정
+        - threading.Lock으로 tracker/summary 동시 호출 시 안전
         """
-        now = time.time()
-        need_refresh = force_refresh
+        with self._lock:
+            now = time.time()
+            need_refresh = force_refresh
 
-        # 토큰 수명 체크: 20시간(72000초) 경과 → 재발급 (KIS 토큰 24시간 만료)
-        if self._broker is not None and (now - self._broker_created_at) > 72000:
-            logger.warning(f"KIS 토큰 수명 초과 ({(now - self._broker_created_at)/3600:.1f}h) - 재발급")
-            need_refresh = True
+            # 토큰 수명 체크: 20시간(72000초) 경과 → 재발급 (KIS 토큰 24시간 만료)
+            if self._broker is not None and (now - self._broker_created_at) > 72000:
+                logger.warning(f"KIS 토큰 수명 초과 ({(now - self._broker_created_at)/3600:.1f}h) - 재발급")
+                need_refresh = True
 
-        # 연속 실패 3회 → 토큰 문제 의심, 강제 재발급
-        if self._consecutive_failures >= 3:
-            logger.warning(f"KIS API 연속 {self._consecutive_failures}회 실패 - 토큰 재발급 시도")
-            need_refresh = True
+            # 연속 실패 3회 → 토큰 문제 의심, 강제 재발급
+            if self._consecutive_failures >= 3:
+                logger.warning(f"KIS API 연속 {self._consecutive_failures}회 실패 - 토큰 재발급 시도")
+                need_refresh = True
 
-        if self._broker is not None and not need_refresh:
+            if self._broker is not None and not need_refresh:
+                return self._broker
+
+            from dotenv import load_dotenv
+            load_dotenv()
+            import mojito
+
+            # mojito token.dat은 CWD 기준 상대경로 → scalper-agent 디렉토리로 고정
+            import os as _os
+            original_cwd = _os.getcwd()
+            target_cwd = str(Path(__file__).resolve().parent.parent)
+            try:
+                _os.chdir(target_cwd)
+                self._broker = mojito.KoreaInvestment(
+                    api_key=os.getenv("KIS_APP_KEY"),
+                    api_secret=os.getenv("KIS_APP_SECRET"),
+                    acc_no=os.getenv("KIS_ACC_NO"),
+                    mock=False,
+                )
+            finally:
+                _os.chdir(original_cwd)
+
+            self._broker_created_at = now
+            self._consecutive_failures = 0
+            action = "재발급" if need_refresh else "생성"
+            logger.info(f"KIS API 브로커 {action} 완료 (CWD={target_cwd})")
             return self._broker
-
-        from dotenv import load_dotenv
-        load_dotenv()
-        import mojito
-
-        # mojito token.dat은 CWD 기준 상대경로 → scalper-agent 디렉토리로 고정
-        import os as _os
-        original_cwd = _os.getcwd()
-        target_cwd = str(Path(__file__).resolve().parent.parent)
-        try:
-            _os.chdir(target_cwd)
-            self._broker = mojito.KoreaInvestment(
-                api_key=os.getenv("KIS_APP_KEY"),
-                api_secret=os.getenv("KIS_APP_SECRET"),
-                acc_no=os.getenv("KIS_ACC_NO"),
-                mock=False,
-            )
-        finally:
-            _os.chdir(original_cwd)
-
-        self._broker_created_at = now
-        self._consecutive_failures = 0
-        action = "재발급" if need_refresh else "생성"
-        logger.info(f"KIS API 브로커 {action} 완료 (CWD={target_cwd})")
-        return self._broker
 
     def _reset_broker(self):
         """토큰 에러 시 브로커 강제 초기화 (다음 호출에서 재발급)"""
-        self._broker = None
-        self._broker_created_at = 0.0
-        logger.info("KIS 브로커 초기화됨 - 다음 호출에서 재발급")
+        with self._lock:
+            self._broker = None
+            self._broker_created_at = 0.0
+            logger.info("KIS 브로커 초기화됨 - 다음 호출에서 재발급")
 
     # ═══════════════════════════════════════
     #  조회
@@ -231,16 +236,22 @@ class KISTrader:
                 cp = int(output.get("stck_prpr", 0))
                 if cp > 0:
                     self._consecutive_failures = 0  # 성공 시 카운터 리셋
-                return {
-                    "success": True,
-                    "current_price": cp,
-                    "change_rate": float(output.get("prdy_ctrt", 0)),
-                    "volume": int(output.get("acml_vol", 0)),
-                    "high": int(output.get("stck_hgpr", 0)),
-                    "low": int(output.get("stck_lwpr", 0)),
-                    "open": int(output.get("stck_oprc", 0)),
-                    "strength": float(output.get("tday_rltv", 0) or 0),
-                }
+                    return {
+                        "success": True,
+                        "current_price": cp,
+                        "change_rate": float(output.get("prdy_ctrt", 0)),
+                        "volume": int(output.get("acml_vol", 0)),
+                        "high": int(output.get("stck_hgpr", 0)),
+                        "low": int(output.get("stck_lwpr", 0)),
+                        "open": int(output.get("stck_oprc", 0)),
+                        "strength": float(output.get("tday_rltv", 0) or 0),
+                    }
+                # cp == 0: API 응답은 왔지만 가격 없음 (장외시간/정지 등)
+                if attempt == 0:
+                    logger.warning(f"현재가 0원 {code} - 재시도")
+                    time.sleep(0.3)
+                    continue
+                return {"success": False, "message": f"현재가 0원 (output={list(output.keys())[:3]})"}
 
             except Exception as e:
                 self._consecutive_failures += 1
