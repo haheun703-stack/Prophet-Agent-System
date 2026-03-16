@@ -18,7 +18,7 @@ Usage:
   python tools/entry_monitor.py --bounce --top 3  # 바운스 TOP 3만
   python tools/entry_monitor.py --legacy  # 기존 하드코딩 종목
 """
-import sys, os, time, json, requests
+import sys, os, time, json, requests, logging
 from datetime import datetime
 from pathlib import Path
 
@@ -30,6 +30,8 @@ from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
 
 from bot.kis_trader import KISTrader
+
+logger = logging.getLogger(__name__)
 
 # ─── 텔레그램 동기 알림 ──────────────────────────────
 
@@ -142,6 +144,53 @@ LEGACY_PICKS = [
 ]
 
 
+# ─── 장중 실시간 TV 스캔 ──────────────────────────────
+
+TV_SCAN_INTERVAL = 300  # 5분
+
+
+def _load_universe() -> dict:
+    """유니버스 로드 (1회)"""
+    uni_path = Path(__file__).resolve().parent.parent / "data_store" / "universe.json"
+    if not uni_path.exists():
+        return {}
+    with open(uni_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _scan_tv_realtime(universe: dict, prev_codes: set) -> list:
+    """5분 주기 TV 스캔 → 신규 강신호만 반환
+
+    Returns:
+        list of TVSignal (score >= 65, EXPLOSION or QUIET_ACCUMULATION, 미기보고)
+    """
+    try:
+        from data.trading_value_scanner import scan_trading_value
+        results = scan_trading_value(universe, min_tv_billion=10.0)
+    except Exception as e:
+        logger.warning(f"[TV Scan] 실패: {e}")
+        return []
+
+    new_signals = []
+    for sig in results:
+        if sig.code in prev_codes:
+            continue
+        if sig.score >= 65 and sig.pattern in ("EXPLOSION", "QUIET_ACCUMULATION"):
+            new_signals.append(sig)
+    return new_signals
+
+
+def _format_tv_alert(sig) -> str:
+    """TV 알림 메시지 포맷"""
+    tag = "조용한매집" if sig.pattern == "QUIET_ACCUMULATION" else "거래대금폭발"
+    return (
+        f"[TV Alert] {sig.name} {tag}!\n"
+        f"TV {sig.tv_ratio:.1f}x | 가격 {sig.change_pct:+.1f}% | score {sig.score:.0f}\n"
+        f"거래대금 {sig.trading_value:,.0f}억 (평균 {sig.tv_avg20:,.0f}억)\n"
+        f"{sig.detail}"
+    )
+
+
 # ─── 모니터 로직 ─────────────────────────────────────
 
 def run_monitor(targets: list[dict], interval: int = 30):
@@ -160,15 +209,23 @@ def run_monitor(targets: list[dict], interval: int = 30):
     open_prices = {}   # {code: 시가}
     last_summary = time.time()   # 마지막 요약 시간
 
+    # TV 실시간 스캔 상태
+    tv_universe = _load_universe()
+    tv_prev_codes = set()  # 이미 알림 보낸 종목 코드
+    last_tv_scan = 0
+    tv_enabled = len(tv_universe) > 0
+
     # 시작 알림
     names = ", ".join(t["name"] for t in targets[:8])
     memos = "\n".join(f"  {t['name']}: {t.get('memo','')}" for t in targets[:8])
+    tv_status = f"TV스캔: {len(tv_universe)}종목 5분주기" if tv_enabled else "TV스캔: OFF"
     start_msg = (
         f"📡 장중 추적 모니터 시작\n"
         f"종목: {names}\n"
         f"{memos}\n"
         f"간격: {interval}초 | SL/급등락 알림\n"
-        f"30분마다 요약 리포트"
+        f"30분마다 요약 리포트\n"
+        f"{tv_status}"
     )
     print(start_msg)
     send_telegram(start_msg)
@@ -270,6 +327,24 @@ def run_monitor(targets: list[dict], interval: int = 30):
                 print(f"  {t['name']}: ERR {e}")
 
             time.sleep(0.2)
+
+        # ── 5분 주기 TV 실시간 스캔 ──
+        if tv_enabled and time.time() - last_tv_scan >= TV_SCAN_INTERVAL:
+            try:
+                new_tv = _scan_tv_realtime(tv_universe, tv_prev_codes)
+                if new_tv:
+                    print(f"  [TV] 신규 {len(new_tv)}종목 감지!")
+                    for sig in new_tv[:5]:  # 최대 5개 알림
+                        msg = _format_tv_alert(sig)
+                        print(f"  [TV] {sig.name} {sig.pattern} TV={sig.tv_ratio:.1f}x")
+                        send_telegram(msg)
+                        tv_prev_codes.add(sig.code)
+                else:
+                    if check_count <= 2:
+                        print(f"  [TV] 스캔 완료 — 신규 시그널 없음")
+            except Exception as e:
+                print(f"  [TV] 스캔 오류: {e}")
+            last_tv_scan = time.time()
 
         # ── 30분 요약 ──
         if time.time() - last_summary >= 1800:

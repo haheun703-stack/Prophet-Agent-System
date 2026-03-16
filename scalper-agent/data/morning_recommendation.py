@@ -893,7 +893,32 @@ def _step5_cross_validate(
 
     # 정렬: total_score 내림차순
     candidates.sort(key=lambda x: x.total_score, reverse=True)
-    return candidates[:8]
+
+    # ── TV 전용 슬롯: 최대 2개 ──
+    # TV-only 강신호 종목이 다중소스 종목에 밀려 TOP 8에서 탈락하는 문제 해결
+    normal_top = candidates[:8]
+    top8_codes = {s.code for s in normal_top}
+
+    tv_only_picks = []
+    for c in candidates[8:]:  # TOP 8 밖의 후보들
+        tv_sc = getattr(c, "tv_score", 0.0)
+        tv_pat = getattr(c, "tv_pattern", "NORMAL")
+        if tv_sc >= 70 and tv_pat in ("QUIET_ACCUMULATION", "EXPLOSION"):
+            tv_only_picks.append(c)
+
+    if tv_only_picks:
+        tv_only_picks.sort(key=lambda x: x.tv_score, reverse=True)
+        tv_insert = tv_only_picks[:2]
+        # 하위 슬롯 교체
+        final = normal_top[:8 - len(tv_insert)] + tv_insert
+        final.sort(key=lambda x: x.total_score, reverse=True)
+        logger.info(
+            f"[TV Slot] {len(tv_insert)}종목 TV 전용 삽입: "
+            f"{', '.join(f'{s.name}(TV{s.tv_score:.0f})' for s in tv_insert)}"
+        )
+        return final
+
+    return normal_top
 
 
 # ═══════════════════════════════════════
@@ -2325,7 +2350,25 @@ def run_war_mode_recommendation() -> RecommendationReport:
 
     # 정렬: 종합 스코어 내림차순
     candidates.sort(key=lambda x: x.total_score, reverse=True)
-    report.stocks = candidates[:8]
+
+    # ── 전쟁모드 TV 전용 슬롯: 최대 2개 ──
+    war_normal_top = candidates[:8]
+    war_top8_codes = {s.code for s in war_normal_top}
+    war_tv_only = []
+    for c in candidates[8:]:
+        tv_sc = getattr(c, "tv_score", 0.0)
+        tv_pat = getattr(c, "tv_pattern", "NORMAL")
+        if tv_sc >= 70 and tv_pat in ("QUIET_ACCUMULATION", "EXPLOSION"):
+            war_tv_only.append(c)
+    if war_tv_only:
+        war_tv_only.sort(key=lambda x: x.tv_score, reverse=True)
+        tv_ins = war_tv_only[:2]
+        war_final = war_normal_top[:8 - len(tv_ins)] + tv_ins
+        war_final.sort(key=lambda x: x.total_score, reverse=True)
+        logger.info(f"[전쟁 TV Slot] {len(tv_ins)}종목 삽입: {', '.join(s.name for s in tv_ins)}")
+        report.stocks = war_final
+    else:
+        report.stocks = war_normal_top
 
     # 전쟁모드 종목에도 MOMENTUM 레짐 감지 + TV 스캐너 스탬핑
     try:
