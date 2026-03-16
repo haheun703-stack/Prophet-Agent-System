@@ -49,6 +49,8 @@ class RegimeResult:
     regime: str = "NORMAL"          # "MOMENTUM" or "NORMAL"
     score: float = 0.0              # 0.0 ~ 1.0
     vol_ratio: float = 1.0          # latest_vol / avg_20d
+    tv_ratio: float = 1.0           # 거래대금 비율 (close*vol / avg_20d)
+    tv_pattern: str = "NORMAL"      # EXPLOSION / QUIET_ACCUMULATION / GRADUAL_BUILDUP / NORMAL
     consec_inst_foreign_days: int = 0
     factors: dict = field(default_factory=dict)
     # factors = {
@@ -98,29 +100,63 @@ def _load_flow(code: str) -> Optional[pd.DataFrame]:
 # 5가지 팩터 스코어링
 # =============================================================================
 
-def _score_volume_surge(daily: pd.DataFrame) -> tuple[float, float]:
-    """(A) 거래량 폭증 스코어
+def _score_volume_surge(daily: pd.DataFrame) -> tuple[float, float, float, str]:
+    """(A) 거래량+거래대금 폭증 스코어
 
-    Returns: (score, vol_ratio)
+    거래량(vol_ratio)과 거래대금(tv_ratio) 중 더 강한 신호를 스코어에 반영.
+    거래대금 = 종가 x 거래량 (실제 자금 유입 규모).
+
+    Returns: (score, vol_ratio, tv_ratio, tv_pattern)
     """
     if len(daily) < 21:
-        return 0.0, 1.0
+        return 0.0, 1.0, 1.0, "NORMAL"
 
+    # 기존: 거래량 비율
     latest_vol = daily["거래량"].iloc[-1]
-    avg_20d = daily["거래량"].iloc[-21:-1].mean()
+    avg_20d_vol = daily["거래량"].iloc[-21:-1].mean()
+    vol_ratio = latest_vol / avg_20d_vol if avg_20d_vol > 0 else 1.0
 
-    if avg_20d <= 0:
-        return 0.0, 1.0
+    # 신규: 거래대금 비율 (종가 x 거래량)
+    tv_series = daily["종가"] * daily["거래량"]
+    latest_tv = float(tv_series.iloc[-1])
+    avg_20d_tv = float(tv_series.iloc[-21:-1].mean())
+    tv_ratio = latest_tv / avg_20d_tv if avg_20d_tv > 0 else 1.0
 
-    vol_ratio = latest_vol / avg_20d
+    # 거래대금 패턴 분류
+    change_pct = float(daily["등락률"].iloc[-1]) if "등락률" in daily.columns else 0.0
+    abs_change = abs(change_pct)
 
-    if vol_ratio >= 3.0:
-        return 0.25, vol_ratio
-    elif vol_ratio >= 2.0:
-        return 0.15, vol_ratio
-    elif vol_ratio >= 1.5:
-        return 0.08, vol_ratio
-    return 0.0, vol_ratio
+    if tv_ratio >= 2.0 and abs_change <= 3.0:
+        tv_pattern = "QUIET_ACCUMULATION"
+    elif tv_ratio >= 3.0:
+        tv_pattern = "EXPLOSION"
+    else:
+        # 5일 추세 체크 (간략 버전)
+        if len(daily) >= 25:
+            tv_5d = [float(tv_series.iloc[i]) for i in range(-5, 0)]
+            avg_5d = [float(tv_series.iloc[i-20:i].mean()) for i in range(-5, 0)]
+            ratios = [t/a if a > 0 else 1.0 for t, a in zip(tv_5d, avg_5d)]
+            trend = (ratios[-1] - ratios[0]) / 4 if len(ratios) == 5 else 0
+            if trend > 0.15 and tv_ratio >= 1.5:
+                tv_pattern = "GRADUAL_BUILDUP"
+            else:
+                tv_pattern = "NORMAL"
+        else:
+            tv_pattern = "NORMAL"
+
+    # 더 강한 신호를 스코어에 반영
+    effective_ratio = max(vol_ratio, tv_ratio)
+
+    if effective_ratio >= 3.0:
+        score = 0.25
+    elif effective_ratio >= 2.0:
+        score = 0.15
+    elif effective_ratio >= 1.5:
+        score = 0.08
+    else:
+        score = 0.0
+
+    return score, vol_ratio, tv_ratio, tv_pattern
 
 
 def _count_consecutive_buy_days(flow: pd.DataFrame) -> int:
@@ -181,13 +217,17 @@ def _score_program_buy(flow: pd.DataFrame) -> float:
     return 0.0
 
 
-def _score_quiet_accumulation(daily: pd.DataFrame, flow: pd.DataFrame) -> float:
+def _score_quiet_accumulation(daily: pd.DataFrame, flow: pd.DataFrame,
+                              vol_ratio: float = 1.0,
+                              tv_ratio: float = 1.0) -> float:
     """(E) 조용한 매집: 기관 매수 + 거래량 보합 + 가격 변동 작음
 
     조건:
       - 최근 5일 기관 순매수 양수
       - 거래량 최근 5일/이전 10일 비율 < 1.3 (폭증 아님)
       - 가격 변동폭 < 3% (조용함)
+
+    개선: 거래대금은 올라가는데 거래량은 보합 = "비싸게 사고 있다" = 강한 매집
     """
     if daily is None or flow is None:
         return 0.0
@@ -214,7 +254,15 @@ def _score_quiet_accumulation(daily: pd.DataFrame, flow: pd.DataFrame) -> float:
     if price_range > 3.0:
         return 0.0  # 변동 크면 조용한 매집 아님
 
-    return 0.10
+    score = 0.10
+
+    # 거래대금/거래량 다이버전스: 거래대금↑ 거래량→ = 비싸게 매집 중
+    if vol_ratio > 0:
+        tv_divergence = tv_ratio / vol_ratio
+        if tv_divergence > 1.2:
+            score = 0.15  # 부스트: 거래대금이 거래량보다 20%+ 더 큼
+
+    return score
 
 
 # =============================================================================
@@ -406,8 +454,8 @@ def detect_regime_batch(
             results[code] = RegimeResult(code=code, name=name)
             continue
 
-        # (A) 거래량 폭증
-        vol_score, vol_ratio = _score_volume_surge(daily)
+        # (A) 거래량+거래대금 폭증
+        vol_score, vol_ratio, tv_ratio, tv_pattern = _score_volume_surge(daily)
 
         # (B) 기관+외인 연속 매수
         consec_days = _count_consecutive_buy_days(flow) if flow is not None else 0
@@ -420,8 +468,8 @@ def detect_regime_batch(
         # (D) 기관 프로그램 매수
         program_score = _score_program_buy(flow)
 
-        # (E) 조용한 매집
-        quiet_score = _score_quiet_accumulation(daily, flow)
+        # (E) 조용한 매집 (tv_ratio 다이버전스 보강)
+        quiet_score = _score_quiet_accumulation(daily, flow, vol_ratio, tv_ratio)
 
         # (F) 섹터 피어 부스트 (같은 섹터 내 수급 양수 비율)
         if sector and sector not in _sector_peer_cache:
@@ -459,6 +507,8 @@ def detect_regime_batch(
             regime=regime,
             score=round(total_score, 3),
             vol_ratio=round(vol_ratio, 2),
+            tv_ratio=round(tv_ratio, 2),
+            tv_pattern=tv_pattern,
             consec_inst_foreign_days=consec_days,
             factors=factors,
         )
@@ -534,10 +584,11 @@ if __name__ == "__main__":
 
     for code, r in results.items():
         tag = "MTM" if r.regime == "MOMENTUM" else "NRM"
+        tv_tag = f" [{r.tv_pattern}]" if r.tv_pattern != "NORMAL" else ""
         print(
             f"\n  [{tag}] {r.name}({r.code}): "
             f"score={r.score:.3f} "
-            f"vol={r.vol_ratio:.1f}x "
+            f"vol={r.vol_ratio:.1f}x tv={r.tv_ratio:.1f}x{tv_tag} "
             f"기관연속={r.consec_inst_foreign_days}D"
         )
         for k, v in r.factors.items():

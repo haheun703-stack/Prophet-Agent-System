@@ -102,8 +102,18 @@ def _score_to_grade(total_score: float, confidence: str, nat_power_grade: str) -
         return "F"
 
 
-def _determine_signal_type(grade: str, inst_support: bool, volume_ratio: float) -> str:
-    """signal_type 결정 (FORCE_BUY / BUY / WATCH / AVOID)"""
+def _determine_signal_type(grade: str, inst_support: bool, volume_ratio: float,
+                           tv_pattern: str = "NORMAL") -> str:
+    """signal_type 결정 (FORCE_BUY / BUY / WATCH / AVOID)
+
+    tv_pattern이 QUIET_ACCUMULATION이면 FORCE_BUY 조건 완화:
+    조용한 매집 + A등급 이상 + 거래대금 2x+ → FORCE_BUY (기관 미동반이어도)
+    """
+    # 조용한 매집 특별 규칙
+    if tv_pattern == "QUIET_ACCUMULATION" and grade in ("AAA", "AA", "A") and volume_ratio >= 2.0:
+        return "FORCE_BUY"
+
+    # 기존 로직
     if grade in ("AAA", "AA", "A") and inst_support and volume_ratio >= 1.5:
         return "FORCE_BUY"
     elif grade in ("AAA", "AA", "A", "BBB") and (inst_support or volume_ratio >= 1.3):
@@ -158,15 +168,25 @@ def convert_recommendation_to_flowx(
         nat_detail = s.get("nationality_detail", "")
         inst_support = "기OK" in nat_detail or "기+" in nat_detail
 
-        # 거래량 비율: regime_detail에서 추출 또는 기본값
-        regime_detail = s.get("regime_detail", "")
-        volume_ratio = 1.0
-        if "VOL" in regime_detail:
-            try:
-                vol_str = regime_detail.split("VOL")[1].split("x")[0]
-                volume_ratio = float(vol_str)
-            except (ValueError, IndexError):
-                pass
+        # 거래대금 비율 (tv_ratio 우선, fallback: regime_detail에서 VOL 파싱)
+        tv_ratio = s.get("tv_ratio", 0)
+        tv_pattern = s.get("tv_pattern", "NORMAL")
+        if not tv_ratio or tv_ratio <= 1.0:
+            regime_detail = s.get("regime_detail", "")
+            if "TV" in regime_detail:
+                try:
+                    tv_str = regime_detail.split("TV")[1].split("x")[0]
+                    tv_ratio = float(tv_str)
+                except (ValueError, IndexError):
+                    pass
+            if (not tv_ratio or tv_ratio <= 1.0) and "VOL" in regime_detail:
+                try:
+                    vol_str = regime_detail.split("VOL")[1].split("x")[0]
+                    tv_ratio = float(vol_str)
+                except (ValueError, IndexError):
+                    pass
+            if not tv_ratio:
+                tv_ratio = 1.0
 
         # 등급 + 시그널 타입
         grade = _score_to_grade(
@@ -174,7 +194,7 @@ def convert_recommendation_to_flowx(
             s.get("confidence", ""),
             s.get("nat_power_grade", ""),
         )
-        signal_type = _determine_signal_type(grade, inst_support, volume_ratio)
+        signal_type = _determine_signal_type(grade, inst_support, tv_ratio, tv_pattern)
 
         signals.append({
             "date": today_str,
@@ -192,7 +212,7 @@ def convert_recommendation_to_flowx(
                 s.get("regime", "NORMAL"),
             ),
             "signal_type": signal_type,
-            "volume_ratio": round(volume_ratio, 2),
+            "volume_ratio": round(tv_ratio, 2),
             "momentum_regime": s.get("regime", "NORMAL"),
         })
 

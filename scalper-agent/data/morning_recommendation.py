@@ -70,6 +70,10 @@ class RecommendedStock:
     regime: str = "NORMAL"             # "MOMENTUM" or "NORMAL"
     regime_score: float = 0.0          # 0.0 ~ 1.0
     regime_detail: str = ""            # "VOL2.5x+기관5D"
+    # 거래대금 폭발 스캐너
+    tv_ratio: float = 1.0             # 거래대금 비율 (20일 평균 대비)
+    tv_pattern: str = "NORMAL"        # EXPLOSION / QUIET_ACCUMULATION / GRADUAL_BUILDUP
+    tv_score: float = 0.0             # TV 스캐너 점수 (0~100)
 
 
 @dataclass
@@ -574,11 +578,13 @@ def _step5_cross_validate(
     regime_info: dict = None,
     shock_info: dict = None,
     rotation_stocks: dict = None,
+    tv_signals: dict = None,
 ) -> list[RecommendedStock]:
     """모든 스텝 결과 통합 → Soft Scoring → 최종 랭킹
 
     v2: Hard gate 제거 → 모든 요소를 점수로 변환
     v3: 줍줍(bargain) 소스 추가 - 낙폭+수급매집 종목
+    v4: 거래대금 폭발 소스 추가 - TV 스캐너 교차검증
     v4: CORTEX 체제별 점수 배수 + 충격 섹터 페널티/보너스
     v5: 로테이션 디텍터 - 다음 섹터 종목 보너스 + 반전 섹터 페널티
     """
@@ -691,6 +697,12 @@ def _step5_cross_validate(
             cross += 1
             grade = b_info.get("supply_grade", "")
             sources.append(f"bargain({grade})")
+
+        # TV 스캐너 소스 (거래대금 폭발)
+        if tv_signals and code in tv_signals:
+            cross += 1
+            _tv_sig = tv_signals[code]
+            sources.append(f"tv:{_tv_sig.pattern}")
 
         # 로테이션 소스 (다음 섹터 종목)
         rot_info = rotation_stocks.get(code, {})
@@ -808,12 +820,24 @@ def _step5_cross_validate(
         if nat_power_sc != 0:
             sources.append(f"7SECRET({norm_np.grade}:{nat_power_sc:+.1f})")
 
+        # 거래대금 부스트 (최대 +15점)
+        tv_boost = 0.0
+        if tv_signals and code in tv_signals:
+            _tv = tv_signals[code]
+            if _tv.pattern == "QUIET_ACCUMULATION":
+                tv_boost = min(_tv.score * 0.15, 15)    # 조용한 매집: 최대 +15
+            elif _tv.pattern == "EXPLOSION":
+                tv_boost = min(_tv.score * 0.12, 12)    # 폭발: 최대 +12
+            elif _tv.pattern == "GRADUAL_BUILDUP":
+                tv_boost = min(_tv.score * 0.10, 10)    # 점진적: 최대 +10
+
         # ── 합산 ──────────────────────────────
         raw_total = (relay_sc + premove_sc + tech_sc + bargain_sc + cross_bonus
                      + nat_sc + news_pen + obv_pen + rel_pen
                      + shock_pen + opp_bonus + rotation_bonus + or_bias_adj
                      + eq_adj + gap_adj
-                     + nat_power_sc)  # 7 SECRET 파워
+                     + nat_power_sc   # 7 SECRET 파워
+                     + tv_boost)      # 거래대금 폭발 부스트
         # CORTEX 체제 배수 적용
         total = raw_total * regime_mult
 
@@ -1152,15 +1176,43 @@ def run_evening_recommendation() -> RecommendationReport:
         import traceback
         logger.debug(traceback.format_exc())
 
+    # Step 5a.5: 거래대금 폭발 스캔 (전체 유니버스)
+    tv_signals = {}  # {code: TVSignal dict}
+    try:
+        import json as _json5a5
+        t_tv = time.time()
+        _uni_path = Path(__file__).resolve().parent.parent / "data_store" / "universe.json"
+        with open(_uni_path, "r", encoding="utf-8") as _uf:
+            _universe = _json5a5.load(_uf)
+        from data.trading_value_scanner import scan_trading_value, save_tv_results
+        tv_results = scan_trading_value(_universe, min_tv_billion=10.0)
+        save_tv_results(tv_results)
+        tv_signals = {s.code: s for s in tv_results if s.score > 0}
+        # TV 스캐너에서 잡힌 종목도 교차검증 대상에 추가
+        tv_added = 0
+        for code, tv_sig in tv_signals.items():
+            if tv_sig.score >= 60 and (code, tv_sig.name) not in all_codes_set:
+                all_codes_set.add((code, tv_sig.name))
+                codes_names.append((code, tv_sig.name))
+                tv_added += 1
+        logger.info(f"[Step 5a.5] 거래대금 이상: {len(tv_signals)}종목 ({tv_added}종목 신규추가) ({time.time()-t_tv:.0f}s)")
+    except Exception as e:
+        logger.warning(f"TV 스캐너 실패 (무시): {e}")
+        import traceback
+        logger.debug(traceback.format_exc())
+
     # Step 5b: MOMENTUM 레짐 감지 (수급 기반 초기 진입 시그널)
     regime_signals = {}
     try:
         import json as _json5b
         t_regime = time.time()
         from data.regime_detector import detect_regime_batch
-        uni_path = Path(__file__).resolve().parent.parent / "data_store" / "universe.json"
-        with open(uni_path, "r", encoding="utf-8") as _uf:
-            _universe = _json5b.load(_uf)
+        try:
+            _universe  # 5a.5에서 이미 로드됨
+        except NameError:
+            uni_path = Path(__file__).resolve().parent.parent / "data_store" / "universe.json"
+            with open(uni_path, "r", encoding="utf-8") as _uf:
+                _universe = _json5b.load(_uf)
         # rotation_detail에서 sector breadth 재활용
         sector_breadths = {}
         for rd in report.rotation_detail:
@@ -1186,6 +1238,7 @@ def run_evening_recommendation() -> RecommendationReport:
         regime_info=regime_info,
         shock_info=shock_info,
         rotation_stocks=rotation_stocks,
+        tv_signals=tv_signals,
     )
     logger.info(f"  → {len(final_stocks)}종목 ({time.time()-t0:.0f}s)")
 
@@ -1196,13 +1249,20 @@ def run_evening_recommendation() -> RecommendationReport:
             r = regime_signals[s.code]
             s.regime = r.regime
             s.regime_score = r.score
-            s.regime_detail = f"VOL{r.vol_ratio:.1f}x+기관{r.consec_inst_foreign_days}D"
+            s.regime_detail = f"VOL{r.vol_ratio:.1f}x+TV{r.tv_ratio:.1f}x+기관{r.consec_inst_foreign_days}D"
             # MOMENTUM 종목: total_score에 가산 (TOP 8 진입 확률 증가)
             if r.regime == "MOMENTUM":
                 boost = min(r.score * 15, 10)  # score 0.40→+6, 0.55→+8, 최대+10
                 s.total_score += boost
                 mtm_boost_count += 1
                 logger.info(f"  [MTM 부스트] {s.name}: +{boost:.1f}점 → {s.total_score:.1f}")
+
+        # TV 스캐너 스탬핑 (regime과 독립)
+        if s.code in tv_signals:
+            _tv = tv_signals[s.code]
+            s.tv_ratio = _tv.tv_ratio
+            s.tv_pattern = _tv.pattern
+            s.tv_score = _tv.score
 
     # MOMENTUM 부스트 후 재정렬 (TOP 8에 MOMENTUM 종목 우선 배치)
     if mtm_boost_count > 0:
@@ -1714,6 +1774,9 @@ def save_recommendation(report: RecommendationReport):
                 "regime": getattr(s, "regime", "NORMAL"),
                 "regime_score": getattr(s, "regime_score", 0.0),
                 "regime_detail": getattr(s, "regime_detail", ""),
+                "tv_ratio": getattr(s, "tv_ratio", 1.0),
+                "tv_pattern": getattr(s, "tv_pattern", "NORMAL"),
+                "tv_score": getattr(s, "tv_score", 0.0),
             }
             for s in report.stocks
         ],
@@ -1785,6 +1848,9 @@ def load_recommendation() -> Optional[RecommendationReport]:
                 regime=sd.get("regime", "NORMAL"),
                 regime_score=sd.get("regime_score", 0.0),
                 regime_detail=sd.get("regime_detail", ""),
+                tv_ratio=sd.get("tv_ratio", 1.0),
+                tv_pattern=sd.get("tv_pattern", "NORMAL"),
+                tv_score=sd.get("tv_score", 0.0),
             ))
         # 소형주 모멘텀 후보 로드
         report.momentum_stocks = data.get("momentum_stocks", [])
@@ -2261,7 +2327,7 @@ def run_war_mode_recommendation() -> RecommendationReport:
     candidates.sort(key=lambda x: x.total_score, reverse=True)
     report.stocks = candidates[:8]
 
-    # 전쟁모드 종목에도 MOMENTUM 레짐 감지
+    # 전쟁모드 종목에도 MOMENTUM 레짐 감지 + TV 스캐너 스탬핑
     try:
         import json as _json_war
         from data.regime_detector import detect_regime_batch
@@ -2270,17 +2336,39 @@ def run_war_mode_recommendation() -> RecommendationReport:
             _universe = _json_war.load(_uf)
         war_codes = [s.code for s in report.stocks]
         war_regime = detect_regime_batch(war_codes, _universe)
+
+        # TV 스캐너 결과 로드 (normal 모드에서 이미 저장됨, or 직접 스캔)
+        war_tv_signals = {}
+        try:
+            from data.trading_value_scanner import load_tv_results
+            tv_data = load_tv_results()
+            war_tv_signals = {s["code"]: s for s in tv_data if s.get("score", 0) > 0}
+        except Exception:
+            pass
+
         war_mtm_boost = 0
         for s in report.stocks:
             if s.code in war_regime:
                 r = war_regime[s.code]
                 s.regime = r.regime
                 s.regime_score = r.score
-                s.regime_detail = f"VOL{r.vol_ratio:.1f}x+기관{r.consec_inst_foreign_days}D"
+                s.regime_detail = f"VOL{r.vol_ratio:.1f}x+TV{r.tv_ratio:.1f}x+기관{r.consec_inst_foreign_days}D"
                 if r.regime == "MOMENTUM":
                     boost = min(r.score * 15, 10)
                     s.total_score += boost
                     war_mtm_boost += 1
+
+            # TV 스탬핑 (전쟁모드)
+            if s.code in war_tv_signals:
+                tv = war_tv_signals[s.code]
+                s.tv_ratio = tv.get("tv_ratio", 1.0)
+                s.tv_pattern = tv.get("pattern", "NORMAL")
+                s.tv_score = tv.get("score", 0.0)
+                # 전쟁모드 TV 부스트 (최대 +5점)
+                if tv.get("pattern") in ("QUIET_ACCUMULATION", "EXPLOSION"):
+                    tv_boost = min(tv.get("score", 0) * 0.05, 5)
+                    s.total_score += tv_boost
+
         if war_mtm_boost > 0:
             report.stocks.sort(key=lambda x: x.total_score, reverse=True)
         war_mtm = sum(1 for r in war_regime.values() if r.regime == "MOMENTUM")
