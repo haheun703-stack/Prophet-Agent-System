@@ -2169,6 +2169,10 @@ class BodyHunterBot:
         jq.run_daily(self._job_record_signals, time=kst_time(16, 30))
         logger.info("일간 시그널 기록 등록: 16:30 KST")
 
+        # 일간 학습 리포트 (16:40 - 시그널 기록 후)
+        jq.run_daily(self._job_daily_learning, time=kst_time(16, 40))
+        logger.info("일간 학습 리포트 등록: 16:40 KST")
+
         # 옵션 만기일 알림 (08:10 - D-2/D-1/D-day)
         jq.run_daily(self._job_options_expiry_alert, time=kst_time(8, 10))
         logger.info("옵션 만기일 알림 등록: 08:10 KST")
@@ -2653,6 +2657,28 @@ class BodyHunterBot:
             await context.bot.send_message(
                 chat_id=chat_id, text=f"⚠️ 시그널 기록 실패: {str(e)[:200]}"
             )
+
+    # ── 일간 학습 리포트 ──────────────────────────────
+
+    async def _job_daily_learning(self, context):
+        """일간 학습 리포트 (16:40 - 일봉+시그널 수집 완료 후)"""
+        from datetime import date
+        if date.today().weekday() >= 5:
+            return
+
+        logger.info("일간 학습 리포트 시작...")
+
+        try:
+            from data.daily_learner import run as run_learner
+            result = await asyncio.to_thread(run_learner)
+            logger.info(f"일간 학습 완료: 적중률 {result['verify']['hit_rate']}%")
+        except Exception as e:
+            logger.error(f"일간 학습 실패: {e}")
+            chat_id = os.getenv("TELEGRAM_CHAT_ID")
+            if chat_id:
+                await context.bot.send_message(
+                    chat_id=chat_id, text=f"⚠️ 일간 학습 실패: {str(e)[:200]}"
+                )
 
     # ── 옵션 만기일 알림 ──────────────────────────────
 

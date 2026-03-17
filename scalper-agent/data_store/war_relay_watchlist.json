@@ -226,6 +226,32 @@
       "tp2": 72000,
       "rr": 1.6,
       "reason": "PBR0.81+PER12.9+배당2.9% 기초분석 1위, 글로벌인프라 수혜"
+    },
+    {
+      "code": "010950",
+      "name": "S-OIL",
+      "tier": "VWAP_MONITOR",
+      "priority": 16,
+      "entry": 105000,
+      "entry_aggressive": 108000,
+      "sl": 99000,
+      "tp1": 118000,
+      "tp2": 128000,
+      "rr": 2.2,
+      "reason": "파라볼릭 급등후 투매(-40%), 105K 지지 테스트, VWAP 반전 확인 필요"
+    },
+    {
+      "code": "161390",
+      "name": "한국타이어앤테크놀로지",
+      "tier": "VWAP_MONITOR",
+      "priority": 17,
+      "entry": 54000,
+      "entry_aggressive": 55500,
+      "sl": 51000,
+      "tp1": 59000,
+      "tp2": 63000,
+      "rr": 1.7,
+      "reason": "급등후 조정(-26%), 54K 지지, VWAP 장중 추적"
     }
   ]
 }
