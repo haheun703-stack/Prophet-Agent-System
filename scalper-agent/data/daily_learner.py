@@ -344,6 +344,7 @@ def format_learning_report(
     verify: dict,
     missed: list,
     rolling: dict,
+    insights: Optional[dict] = None,
 ) -> str:
     """텔레그램 학습 리포트 포맷"""
     lines = [
@@ -386,11 +387,270 @@ def format_learning_report(
         trend_icon = {"improving": "📈", "declining": "📉", "stable": "➡️"}
         lines.append(f"\n{trend_icon.get(rolling['trend'], '➡️')} 최근 {rolling['period']}일 누적: {rolling['rate']}% ({rolling['trend']})")
 
+    # ── 브레인 업데이트 (인사이트) ──
+    if insights and insights.get("source_weights"):
+        lines.append(f"\n🧠 브레인 업데이트 (D+{insights.get('score_adj_applied', 0)})")
+        lines.append("────────────────────────")
+
+        # 소스 가중치 TOP
+        sw = insights["source_weights"]
+        boosted = [(s, w) for s, w in sw.items() if w["weight"] > 1.0]
+        nerfed = [(s, w) for s, w in sw.items() if w["weight"] < 1.0]
+
+        if boosted:
+            boosted.sort(key=lambda x: x[1]["weight"], reverse=True)
+            lines.append("  신뢰 UP:")
+            for src, w in boosted[:3]:
+                lines.append(f"    📈 {src} x{w['weight']:.2f} ({w['hit_rate']}%적중)")
+
+        if nerfed:
+            nerfed.sort(key=lambda x: x[1]["weight"])
+            lines.append("  신뢰 DOWN:")
+            for src, w in nerfed[:3]:
+                lines.append(f"    📉 {src} x{w['weight']:.2f} ({w['hit_rate']}%적중)")
+
+        # 섹터 부스트
+        sb = insights.get("sector_boost", {})
+        if sb:
+            lines.append("  누락 섹터 부스트:")
+            for sector, b in sorted(sb.items(), key=lambda x: x[1]["boost"], reverse=True)[:3]:
+                lines.append(f"    ⚡ {sector} +{b['boost']:.0f}점 ({b['miss_count']}회 누락)")
+
+        # 패턴 인사이트 핵심만
+        pi = insights.get("pattern_insights", [])
+        notable = [p for p in pi if p.get("type") == "tv_pattern" and p.get("sample", 0) >= 3]
+        if notable:
+            lines.append("  TV 패턴 학습:")
+            for p in notable[:2]:
+                lines.append(f"    🔬 {p['pattern']}: {p['hit_rate']}% (n={p['sample']})")
+
     lines.append("")
     lines.append("━━━━━━━━━━━━━━━━━━━━━━━━")
     lines.append("Body Hunter | Daily Learner")
 
     return "\n".join(lines)
+
+
+# ═══════════════════════════════════════════
+#  6. 브레인 업데이트 (피드백 루프 핵심)
+# ═══════════════════════════════════════════
+INSIGHTS_PATH = LEARNING_DIR / "insights.json"
+
+
+def load_insights() -> dict:
+    """현재 인사이트 로드 (morning_recommendation.py에서도 호출)"""
+    if INSIGHTS_PATH.exists():
+        return json.loads(INSIGHTS_PATH.read_text("utf-8"))
+    return {
+        "updated": "",
+        "source_weights": {},
+        "sector_boost": {},
+        "pattern_insights": [],
+        "score_adj_applied": 0,
+    }
+
+
+def generate_insights() -> dict:
+    """누적 학습 데이터에서 인사이트 추출 → insights.json 저장
+
+    이 파일이 다음 날 morning_recommendation.py에 로드되어
+    스코어링에 반영됩니다. (피드백 루프)
+    """
+    log = load_signal_log()
+    if len(log) < 3:
+        logger.info("학습 데이터 3일 미만 — 인사이트 생성 스킵 (데이터 축적 필요)")
+        return load_insights()
+
+    insights = load_insights()
+    today = date.today().strftime("%Y-%m-%d")
+    insights["updated"] = today
+
+    # ─────────────────────────────────────
+    # A. 소스별 가중치 자동조정
+    # ─────────────────────────────────────
+    # 최근 전체 로그에서 소스별 적중률 집계
+    src_stats = defaultdict(lambda: {"total": 0, "hits": 0, "pnl_sum": 0.0})
+    for rec in log:
+        for src, stats in rec.get("by_source", {}).items():
+            src_key = src.split(":")[0] if ":" in src else src
+            src_stats[src_key]["total"] += stats["total"]
+            src_stats[src_key]["hits"] += stats["hits"]
+        # 종목별 PNL도 소스에 매핑
+        for det in rec.get("details", []):
+            for src in det.get("sources", []):
+                src_key = src.split(":")[0] if ":" in src else src
+                if src_key in src_stats:
+                    src_stats[src_key]["pnl_sum"] += det.get("pnl", 0)
+
+    source_weights = {}
+    for src, st in src_stats.items():
+        if st["total"] < 3:  # 샘플 3건 미만은 판단 불가
+            continue
+        rate = st["hits"] / st["total"]
+        avg_pnl = st["pnl_sum"] / st["total"]
+
+        # 가중치 공식: 적중률 60%+ → 부스트, 40%- → 페널티
+        if rate >= 0.70:
+            weight = 1.3   # 강한 부스트
+            reason = f"적중률 {rate*100:.0f}% (평균PNL {avg_pnl:+.1f}%) — 강한 신뢰"
+        elif rate >= 0.55:
+            weight = 1.15  # 약한 부스트
+            reason = f"적중률 {rate*100:.0f}% — 양호"
+        elif rate >= 0.40:
+            weight = 1.0   # 기본값
+            reason = f"적중률 {rate*100:.0f}% — 보통"
+        elif rate >= 0.25:
+            weight = 0.85  # 약한 페널티
+            reason = f"적중률 {rate*100:.0f}% — 부진"
+        else:
+            weight = 0.70  # 강한 페널티
+            reason = f"적중률 {rate*100:.0f}% — 매우 부진"
+
+        source_weights[src] = {
+            "weight": weight,
+            "hit_rate": round(rate * 100, 1),
+            "avg_pnl": round(avg_pnl, 2),
+            "sample": st["total"],
+            "reason": reason,
+        }
+
+    insights["source_weights"] = source_weights
+    logger.info(f"[Brain] 소스 가중치 업데이트: {len(source_weights)}개 소스")
+    for src, w in sorted(source_weights.items(), key=lambda x: x[1]["weight"], reverse=True):
+        logger.info(f"  {src}: x{w['weight']:.2f} ({w['reason']})")
+
+    # ─────────────────────────────────────
+    # B. 놓친 급등주 섹터 패턴 분석
+    # ─────────────────────────────────────
+    # 반복적으로 놓치는 섹터 = 스캐너 사각지대 → 다음 날 부스트
+    sector_miss = defaultdict(lambda: {"count": 0, "avg_gain": 0, "gains": []})
+
+    try:
+        from data.kis_collector import UNIVERSE
+        # 간단 섹터 매핑 (종목명 키워드 기반)
+        SECTOR_KEYWORDS = {
+            "반도체": ["하이닉스", "삼성전자", "한미반도체", "리노공업", "ISC", "원익", "테스"],
+            "2차전지": ["에코프로", "포스코퓨처", "엘앤에프", "LG에너지", "삼성SDI"],
+            "방산": ["한화에어로", "현대로템", "LIG넥스원", "한국항공", "풍산"],
+            "건설": ["삼성E&A", "현대건설", "GS건설", "DL이앤씨", "대우건설"],
+            "전력": ["한전", "HD현대일렉", "일진전기", "제룡전기", "LS일렉"],
+            "바이오": ["삼바", "셀트리온", "알테오젠", "리가켐"],
+            "금융": ["KB금융", "신한지주", "하나금융", "BNK"],
+            "자동차": ["현대차", "기아", "현대모비스"],
+            "조선": ["HD한국조선", "삼성중공업", "한화오션"],
+            "AI/SW": ["네이버", "카카오", "더존비즈온"],
+        }
+
+        for rec in log:
+            for m in rec.get("top_missed", []):
+                name = m.get("name", "")
+                gain = m.get("change_rate", 0)
+                sector_found = "기타"
+                for sector, keywords in SECTOR_KEYWORDS.items():
+                    if any(kw in name for kw in keywords):
+                        sector_found = sector
+                        break
+                sector_miss[sector_found]["count"] += 1
+                sector_miss[sector_found]["gains"].append(gain)
+    except ImportError:
+        logger.warning("UNIVERSE 임포트 실패 — 섹터 분석 스킵")
+
+    sector_boost = {}
+    for sector, info in sector_miss.items():
+        if info["count"] >= 3 and sector != "기타":  # 3회 이상 누락
+            avg_gain = sum(info["gains"]) / len(info["gains"])
+            # 누적 누락 횟수에 비례하여 부스트 (최대 +15점)
+            boost = min(info["count"] * 2.5, 15)
+            sector_boost[sector] = {
+                "boost": round(boost, 1),
+                "miss_count": info["count"],
+                "avg_gain": round(avg_gain, 1),
+                "reason": f"{info['count']}회 누락, 평균 +{avg_gain:.1f}% 상승",
+            }
+
+    insights["sector_boost"] = sector_boost
+    if sector_boost:
+        logger.info(f"[Brain] 누락 섹터 부스트: {len(sector_boost)}개 섹터")
+        for s, b in sorted(sector_boost.items(), key=lambda x: x[1]["boost"], reverse=True):
+            logger.info(f"  {s}: +{b['boost']:.1f}점 ({b['reason']})")
+
+    # ─────────────────────────────────────
+    # C. 패턴 인사이트 (고적중 + 저적중 패턴)
+    # ─────────────────────────────────────
+    pattern_insights = []
+
+    # C-1. TV 패턴별 적중률
+    tv_patterns = defaultdict(lambda: {"total": 0, "hits": 0, "pnl_sum": 0})
+    for rec in log:
+        for det in rec.get("details", []):
+            for src in det.get("sources", []):
+                if src.startswith("tv:"):
+                    pat = src.replace("tv:", "")
+                    tv_patterns[pat]["total"] += 1
+                    if det.get("hit"):
+                        tv_patterns[pat]["hits"] += 1
+                    tv_patterns[pat]["pnl_sum"] += det.get("pnl", 0)
+
+    for pat, st in tv_patterns.items():
+        if st["total"] >= 2:
+            rate = st["hits"] / st["total"] * 100
+            avg = st["pnl_sum"] / st["total"]
+            pattern_insights.append({
+                "type": "tv_pattern",
+                "pattern": pat,
+                "hit_rate": round(rate, 1),
+                "avg_pnl": round(avg, 2),
+                "sample": st["total"],
+                "note": f"TV {pat}: {rate:.0f}% 적중 (avg {avg:+.1f}%)",
+            })
+
+    # C-2. 점수대별 적중률 (high score 종목이 정말 더 잘 맞는가?)
+    score_buckets = {"high(80+)": {"t": 0, "h": 0}, "mid(50-80)": {"t": 0, "h": 0}, "low(<50)": {"t": 0, "h": 0}}
+    for rec in log:
+        for det in rec.get("details", []):
+            sc = det.get("total_score", 0)
+            if sc >= 80:
+                bucket = "high(80+)"
+            elif sc >= 50:
+                bucket = "mid(50-80)"
+            else:
+                bucket = "low(<50)"
+            score_buckets[bucket]["t"] += 1
+            if det.get("hit"):
+                score_buckets[bucket]["h"] += 1
+
+    for bucket, st in score_buckets.items():
+        if st["t"] >= 3:
+            rate = st["h"] / st["t"] * 100
+            pattern_insights.append({
+                "type": "score_band",
+                "pattern": bucket,
+                "hit_rate": round(rate, 1),
+                "sample": st["t"],
+                "note": f"점수 {bucket}: {rate:.0f}% 적중 (n={st['t']})",
+            })
+
+    # C-3. 놓친 급등주의 공통 특성 메모
+    total_missed = sum(rec.get("missed_gainers_count", 0) for rec in log)
+    total_recommended = sum(rec.get("total_recommended", 0) for rec in log)
+    if total_recommended > 0:
+        miss_ratio = total_missed / max(1, total_recommended)
+        pattern_insights.append({
+            "type": "coverage",
+            "pattern": "miss_ratio",
+            "value": round(miss_ratio, 1),
+            "note": f"추천 {total_recommended}건 대비 놓친 급등주 {total_missed}건 (비율 {miss_ratio:.1f}x)",
+        })
+
+    insights["pattern_insights"] = pattern_insights
+    insights["score_adj_applied"] = len(log)  # 몇 일치 데이터로 생성했는지
+
+    # ── 저장 ──
+    INSIGHTS_PATH.write_text(
+        json.dumps(insights, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    logger.info(f"[Brain] insights.json 저장 완료 ({len(pattern_insights)}개 패턴)")
+    return insights
 
 
 # ═══════════════════════════════════════════
@@ -422,9 +682,13 @@ def run(quick: bool = False):
     # 4. Rolling 적중률
     rolling = calc_rolling_accuracy(20)
 
-    # 5. 텔레그램 리포트
-    logger.info("[Phase 5] 텔레그램 리포트 전송...")
-    report = format_learning_report(today, verify, missed, rolling)
+    # 5. 브레인 업데이트 (피드백 루프 핵심!)
+    logger.info("[Phase 5] 브레인 업데이트 — 인사이트 추출...")
+    insights = generate_insights()
+
+    # 6. 텔레그램 리포트
+    logger.info("[Phase 6] 텔레그램 리포트 전송...")
+    report = format_learning_report(today, verify, missed, rolling, insights)
     tg_send(report)
 
     logger.info("=== Daily Learner 완료 ===")
@@ -433,6 +697,7 @@ def run(quick: bool = False):
         "verify": verify,
         "missed": missed,
         "rolling": rolling,
+        "insights": insights,
     }
 
 

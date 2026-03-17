@@ -566,6 +566,99 @@ def _step4_news_filter(codes_names: list[tuple[str, str]]) -> dict:
 
 
 # ═══════════════════════════════════════
+#  Brain Insights (학습 피드백 루프)
+# ═══════════════════════════════════════
+_BRAIN_CACHE = {}  # 세션 내 1회만 로드
+
+
+def _load_brain_insights() -> dict:
+    """daily_learner가 생성한 insights.json 로드
+
+    전날 학습 결과가 오늘 추천 스코어링에 반영됩니다.
+    """
+    if _BRAIN_CACHE:
+        return _BRAIN_CACHE
+
+    from pathlib import Path as _PathBrain
+    insights_path = _PathBrain(__file__).resolve().parent.parent / "data_store" / "learning" / "insights.json"
+    if not insights_path.exists():
+        logger.info("[Brain] insights.json 없음 — 학습 데이터 축적 중")
+        return {}
+
+    try:
+        data = json.loads(insights_path.read_text("utf-8"))
+        days = data.get("score_adj_applied", 0)
+        src_cnt = len(data.get("source_weights", {}))
+        sect_cnt = len(data.get("sector_boost", {}))
+        logger.info(
+            f"[Brain] 인사이트 로드: {days}일 학습, "
+            f"{src_cnt}개 소스 가중치, {sect_cnt}개 섹터 부스트"
+        )
+        _BRAIN_CACHE.update(data)
+        return data
+    except Exception as e:
+        logger.warning(f"[Brain] insights.json 로드 실패: {e}")
+        return {}
+
+
+def _apply_brain_adjustment(
+    insights: dict, sources: list, name: str, raw_total: float
+) -> float:
+    """학습 인사이트 기반 점수 조정
+
+    Returns: 가산/감산 점수 (양수 = 부스트, 음수 = 페널티)
+    """
+    if not insights:
+        return 0.0
+
+    adj = 0.0
+
+    # ── A. 소스 가중치 기반 조정 ──
+    # 소스별 학습된 신뢰도에 따라 raw_total에 보정
+    sw = insights.get("source_weights", {})
+    if sw and sources:
+        weight_sum = 0.0
+        weight_count = 0
+        for src in sources:
+            src_key = src.split(":")[0] if ":" in src else src
+            if src_key in sw:
+                weight_sum += sw[src_key]["weight"]
+                weight_count += 1
+
+        if weight_count > 0:
+            avg_weight = weight_sum / weight_count
+            # 기본 가중치(1.0) 대비 편차를 점수에 반영 (최대 ±15%)
+            source_adj = raw_total * (avg_weight - 1.0) * 0.5  # 50% 감쇠
+            source_adj = max(-raw_total * 0.15, min(raw_total * 0.15, source_adj))
+            adj += source_adj
+
+    # ── B. 누락 섹터 부스트 ──
+    # 반복적으로 놓친 섹터에 해당하는 종목 부스트
+    sb = insights.get("sector_boost", {})
+    if sb:
+        for sector, boost_info in sb.items():
+            # 종목명에 섹터 키워드가 포함되는지 간단 매칭
+            sector_kw = {
+                "반도체": ["하이닉스", "삼성전자", "한미반도체", "ISC", "원익", "테스"],
+                "2차전지": ["에코프로", "포스코퓨처", "엘앤에프", "LG에너지", "삼성SDI"],
+                "방산": ["한화에어로", "현대로템", "LIG넥스원", "한국항공", "풍산"],
+                "건설": ["삼성E&A", "현대건설", "GS건설", "DL이앤씨", "대우건설"],
+                "전력": ["한전", "HD현대일렉", "일진전기", "제룡전기", "LS일렉"],
+                "바이오": ["삼바", "셀트리온", "알테오젠", "리가켐"],
+                "금융": ["KB금융", "신한지주", "하나금융", "BNK"],
+                "자동차": ["현대차", "기아", "현대모비스"],
+                "조선": ["HD한국조선", "삼성중공업", "한화오션"],
+                "AI/SW": ["네이버", "카카오", "더존비즈온"],
+            }
+            if sector in sector_kw:
+                if any(kw in name for kw in sector_kw[sector]):
+                    adj += boost_info["boost"]
+                    break  # 1개 섹터만
+
+    return round(adj, 1)
+
+
+# ═══════════════════════════════════════
 #  Step 5: 교차검증 + 최종 랭킹
 # ═══════════════════════════════════════
 
@@ -600,6 +693,9 @@ def _step5_cross_validate(
         shock_info = {}
     if rotation_stocks is None:
         rotation_stocks = {}
+
+    # ── 학습 인사이트 로드 (피드백 루프) ──
+    _brain_insights = _load_brain_insights()
 
     # CORTEX 체제별 점수 배수
     regime_multipliers = {
@@ -848,6 +944,15 @@ def _step5_cross_validate(
                      + eq_adj + gap_adj
                      + nat_power_sc   # 7 SECRET 파워
                      + tv_boost)      # 거래대금 폭발 부스트
+
+        # ── 브레인 학습 가중치 적용 ──────────────
+        brain_adj = _apply_brain_adjustment(
+            _brain_insights, sources, name, raw_total
+        )
+        if abs(brain_adj) >= 0.5:
+            sources.append(f"brain({brain_adj:+.1f})")
+        raw_total += brain_adj
+
         # CORTEX 체제 배수 적용
         total = raw_total * regime_mult
 
