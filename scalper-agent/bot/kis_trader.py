@@ -25,6 +25,10 @@ logger = logging.getLogger("BH.KISTrader")
 JOURNAL_DIR = Path(__file__).resolve().parent.parent / "logs"
 JOURNAL_DIR.mkdir(parents=True, exist_ok=True)
 
+# mojito token.dat 절대경로 (CWD 변경 최소화)
+_SCALPER_DIR = str(Path(__file__).resolve().parent.parent)
+_CWD_LOCK = threading.Lock()  # 프로세스 전역 CWD 보호 (os.chdir 스레드 안전)
+
 # 종목명 매핑
 from data.kis_collector import UNIVERSE
 NAME_TO_CODE = {info[0]: code for code, info in UNIVERSE.items()}
@@ -107,20 +111,20 @@ class KISTrader:
             load_dotenv()
             import mojito
 
-            # mojito token.dat은 CWD 기준 상대경로 → scalper-agent 디렉토리로 고정
-            import os as _os
-            original_cwd = _os.getcwd()
-            target_cwd = str(Path(__file__).resolve().parent.parent)
-            try:
-                _os.chdir(target_cwd)
-                self._broker = mojito.KoreaInvestment(
-                    api_key=os.getenv("KIS_APP_KEY"),
-                    api_secret=os.getenv("KIS_APP_SECRET"),
-                    acc_no=os.getenv("KIS_ACC_NO"),
-                    mock=False,
-                )
-            finally:
-                _os.chdir(original_cwd)
+            # mojito token.dat은 CWD 기준 상대경로 → 모듈 레벨 락으로 CWD 보호
+            # (mojito 라이브러리가 절대경로를 지원하지 않아 os.chdir 불가피)
+            with _CWD_LOCK:
+                original_cwd = os.getcwd()
+                try:
+                    os.chdir(_SCALPER_DIR)
+                    self._broker = mojito.KoreaInvestment(
+                        api_key=os.getenv("KIS_APP_KEY"),
+                        api_secret=os.getenv("KIS_APP_SECRET"),
+                        acc_no=os.getenv("KIS_ACC_NO"),
+                        mock=False,
+                    )
+                finally:
+                    os.chdir(original_cwd)
 
             self._broker_created_at = now
             self._consecutive_failures = 0
@@ -653,7 +657,7 @@ class KISTrader:
             )
         except Exception as e:
             logger.warning(f"주문 수정 실패: {e} → 취소 후 시장가")
-            self.cancel_order(order_no)
+            self.cancel_order(order_no, org_no=org_no, qty=qty)
             return self.buy_market(code, qty, split=1)
 
         filled = self._wait_for_fill(order_no, wait_per_step)
@@ -667,7 +671,7 @@ class KISTrader:
             }
 
         # 최종 실패 → 취소
-        self.cancel_order(order_no)
+        self.cancel_order(order_no, org_no=org_no, qty=qty)
         self._log_trade("SMART_BUY_FAIL", code, name, 0, 3)
         return {"success": False, "message": f"스마트매수 실패 - {max_wait_sec}초 내 미체결 ({name})"}
 
@@ -758,7 +762,7 @@ class KISTrader:
             )
         except Exception as e:
             logger.warning(f"주문 수정 실패: {e} → 취소 후 시장가")
-            self.cancel_order(order_no)
+            self.cancel_order(order_no, org_no=org_no, qty=qty)
             return self.sell_market(code, qty, split=1)
 
         filled = self._wait_for_fill(order_no, wait_per_step)
@@ -772,7 +776,7 @@ class KISTrader:
             }
 
         # 최종 → 시장가 폴백
-        self.cancel_order(order_no)
+        self.cancel_order(order_no, org_no=org_no, qty=qty)
         logger.warning(f"스마트매도 실패 → 시장가 매도 폴백")
         return self.sell_market(code, qty, split=1)
 
@@ -956,12 +960,23 @@ class KISTrader:
             },
         }
 
-    def cancel_order(self, order_no: str) -> dict:
-        """주문 취소"""
+    def cancel_order(self, order_no: str, org_no: str = "", qty: int = 0) -> dict:
+        """주문 취소
+
+        Args:
+            order_no: 주문번호 (ODNO)
+            org_no: 한국거래소 원주문번호 (KRX_FWDG_ORD_ORGNO), 없으면 빈 문자열
+            qty: 취소 수량 (0이면 잔량 전부 취소)
+        """
         try:
             broker = self._get_broker()
-            resp = broker.cancel_order(order_no)
-            logger.info(f"주문 취소: {order_no} → {resp}")
+            resp = broker.cancel_order(
+                org_no=org_no,
+                order_no=order_no,
+                quantity=qty,
+                total=True,  # 잔량 전부 취소
+            )
+            logger.info(f"주문 취소: {order_no} (org={org_no}) → {resp}")
 
             if resp and resp.get("rt_cd") == "0":
                 return {"success": True, "message": f"주문 취소 완료: {order_no}"}

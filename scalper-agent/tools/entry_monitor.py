@@ -147,6 +147,7 @@ LEGACY_PICKS = [
 # ─── 장중 실시간 TV 스캔 ──────────────────────────────
 
 TV_SCAN_INTERVAL = 300  # 5분
+_BILLION = 1e8  # 억원 변환
 
 
 def _load_universe() -> dict:
@@ -158,26 +159,142 @@ def _load_universe() -> dict:
         return json.load(f)
 
 
-def _scan_tv_realtime(universe: dict, prev_codes: set) -> list:
-    """5분 주기 TV 스캔 → 신규 강신호만 반환
+def _precompute_tv_averages(universe: dict, min_avg_tv: float = 5.0) -> dict:
+    """시작 시 전 종목 20일 평균 거래대금 사전 계산 (CSV 기반)
+
+    Args:
+        universe: 유니버스 dict
+        min_avg_tv: 최소 평균 거래대금 (억원) — 잡주 필터
 
     Returns:
-        list of TVSignal (score >= 65, EXPLOSION or QUIET_ACCUMULATION, 미기보고)
+        {code: {"avg_tv": float, "name": str}}
     """
-    try:
-        from data.trading_value_scanner import scan_trading_value
-        results = scan_trading_value(universe, min_tv_billion=10.0)
-    except Exception as e:
-        logger.warning(f"[TV Scan] 실패: {e}")
-        return []
+    from data.trading_value_scanner import _load_daily
 
-    new_signals = []
-    for sig in results:
-        if sig.code in prev_codes:
+    avgs = {}
+    for code, info in universe.items():
+        daily = _load_daily(code)
+        if daily is None or len(daily) < 21:
             continue
-        if sig.score >= 65 and sig.pattern in ("EXPLOSION", "QUIET_ACCUMULATION"):
-            new_signals.append(sig)
-    return new_signals
+        try:
+            tv_series = daily["종가"] * daily["거래량"] / _BILLION
+            # 가장 최근일 제외 직전 20일 평균
+            avg_20 = float(tv_series.iloc[-21:-1].mean())
+            if avg_20 >= min_avg_tv:
+                avgs[code] = {
+                    "avg_tv": round(avg_20, 1),
+                    "name": info.get("name", code),
+                }
+        except Exception:
+            continue
+
+    logger.info(f"[TV] 20일 평균 거래대금 사전계산 완료: {len(avgs)}종목 (avg>={min_avg_tv}억)")
+    return avgs
+
+
+def _calc_time_factor() -> float:
+    """장 시작부터 현재까지 경과 → 전일 프로젝션 계수
+
+    Market: 09:00 ~ 15:30 (390분)
+    Returns: 390 / 경과분 (최소 1.0, 최대 10.0)
+    """
+    now = datetime.now()
+    market_open = now.replace(hour=9, minute=0, second=0, microsecond=0)
+    elapsed_min = max(1, (now - market_open).total_seconds() / 60)
+    return min(10.0, max(1.0, 390.0 / elapsed_min))
+
+
+def _scan_tv_realtime_live(trader, tv_avgs: dict, prev_codes: set,
+                           max_scan: int = 300) -> list:
+    """KIS API 실시간 데이터 기반 TV 스캔
+
+    CSV가 아닌 실시간 가격×거래량을 조회하여 당일 거래대금을 프로젝션.
+    20일 평균 대비 2x 이상 종목을 감지한다.
+
+    Args:
+        trader: KISTrader 인스턴스
+        tv_avgs: _precompute_tv_averages() 결과
+        prev_codes: 이미 알림 보낸 종목 코드 세트
+        max_scan: 최대 스캔 종목 수 (API 호출 제한)
+
+    Returns:
+        TVSignal 리스트 (score >= 60, 신규만)
+    """
+    from data.trading_value_scanner import TVSignal, _classify_pattern, _score_signal
+
+    time_factor = _calc_time_factor()
+    signals = []
+
+    # avg TV 높은 순으로 최대 max_scan개 스캔
+    candidates = sorted(tv_avgs.items(), key=lambda x: x[1]["avg_tv"], reverse=True)
+    candidates = [(c, info) for c, info in candidates if c not in prev_codes][:max_scan]
+
+    scanned = 0
+    for code, info in candidates:
+        try:
+            p = trader.fetch_price(code)
+            if not p or not p.get("success"):
+                continue
+
+            current_price = p["current_price"]
+            volume = p.get("volume", 0)
+            if current_price <= 0 or volume <= 0:
+                continue
+
+            scanned += 1
+
+            # 실시간 거래대금 (억원)
+            realtime_tv = current_price * volume / _BILLION
+            # 전일 프로젝션 (남은 시간 반영)
+            projected_tv = realtime_tv * time_factor
+
+            avg_tv = info["avg_tv"]
+            tv_ratio = projected_tv / avg_tv if avg_tv > 0 else 0
+            change_pct = p.get("change_rate", 0)
+
+            # 최소 1.5배 이상만
+            if tv_ratio < 1.5:
+                continue
+
+            pattern = _classify_pattern(tv_ratio, change_pct, 0.0)
+            if pattern == "NORMAL":
+                continue
+
+            score = _score_signal(
+                tv_ratio=tv_ratio,
+                change_pct=change_pct,
+                tv_5d_trend=0.0,  # 실시간 모드에서는 5일 추세 미지원
+                trading_value=projected_tv,
+                close=current_price,
+                high=p.get("high", current_price),
+            )
+
+            if score < 60:
+                continue
+
+            signals.append(TVSignal(
+                code=code,
+                name=info["name"],
+                sector="",
+                close=current_price,
+                change_pct=round(change_pct, 2),
+                trading_value=round(projected_tv, 1),
+                tv_avg20=round(avg_tv, 1),
+                tv_ratio=round(tv_ratio, 3),
+                tv_ratio_5d_trend=0.0,
+                pattern=pattern,
+                score=score,
+                detail=f"실시간TV {realtime_tv:.0f}억→예상{projected_tv:.0f}억 (배율x{time_factor:.1f})",
+            ))
+
+            time.sleep(0.05)  # API rate limit 배려
+
+        except Exception:
+            continue
+
+    signals.sort(key=lambda s: s.score, reverse=True)
+    logger.info(f"[TV Live] {scanned}종목 실시간 스캔 → {len(signals)}개 시그널 (배율 x{time_factor:.1f})")
+    return signals
 
 
 def _format_tv_alert(sig) -> str:
@@ -209,11 +326,17 @@ def run_monitor(targets: list[dict], interval: int = 30):
     open_prices = {}   # {code: 시가}
     last_summary = time.time()   # 마지막 요약 시간
 
-    # TV 실시간 스캔 상태
+    # TV 실시간 스캔 상태 (KIS API 기반)
     tv_universe = _load_universe()
+    tv_avgs = {}
     tv_prev_codes = set()  # 이미 알림 보낸 종목 코드
     last_tv_scan = 0
-    tv_enabled = len(tv_universe) > 0
+    tv_enabled = False
+    if len(tv_universe) > 0:
+        print("[TV] 20일 평균 거래대금 사전 계산 중...")
+        tv_avgs = _precompute_tv_averages(tv_universe, min_avg_tv=5.0)
+        tv_enabled = len(tv_avgs) > 0
+        print(f"[TV] 실시간 스캔 대상: {len(tv_avgs)}종목 (avg TV >= 5억)")
 
     # 시작 알림
     names = ", ".join(t["name"] for t in targets[:8])
@@ -328,22 +451,22 @@ def run_monitor(targets: list[dict], interval: int = 30):
 
             time.sleep(0.2)
 
-        # ── 5분 주기 TV 실시간 스캔 ──
+        # ── 5분 주기 TV 실시간 스캔 (KIS API 기반) ──
         if tv_enabled and time.time() - last_tv_scan >= TV_SCAN_INTERVAL:
             try:
-                new_tv = _scan_tv_realtime(tv_universe, tv_prev_codes)
+                new_tv = _scan_tv_realtime_live(trader, tv_avgs, tv_prev_codes)
                 if new_tv:
                     print(f"  [TV] 신규 {len(new_tv)}종목 감지!")
                     for sig in new_tv[:5]:  # 최대 5개 알림
                         msg = _format_tv_alert(sig)
-                        print(f"  [TV] {sig.name} {sig.pattern} TV={sig.tv_ratio:.1f}x")
+                        print(f"  [TV] {sig.name} {sig.pattern} TV={sig.tv_ratio:.1f}x score={sig.score:.0f}")
                         send_telegram(msg)
                         tv_prev_codes.add(sig.code)
                 else:
                     if check_count <= 2:
-                        print(f"  [TV] 스캔 완료 — 신규 시그널 없음")
+                        print(f"  [TV] 실시간 스캔 완료 — 신규 시그널 없음")
             except Exception as e:
-                print(f"  [TV] 스캔 오류: {e}")
+                print(f"  [TV] 실시간 스캔 오류: {e}")
             last_tv_scan = time.time()
 
         # ── 30분 요약 ──
