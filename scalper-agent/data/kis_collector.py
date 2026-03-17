@@ -155,11 +155,11 @@ def _parse_daily_data(rows: List[dict]) -> Optional[pd.DataFrame]:
         try:
             records.append({
                 "date": pd.Timestamp(dt),
-                "open": int(r.get("stck_oprc", 0)),
-                "high": int(r.get("stck_hgpr", 0)),
-                "low": int(r.get("stck_lwpr", 0)),
-                "close": int(r.get("stck_clpr", 0)),
-                "volume": int(r.get("acml_vol", 0)),
+                "시가": int(r.get("stck_oprc", 0)),
+                "고가": int(r.get("stck_hgpr", 0)),
+                "저가": int(r.get("stck_lwpr", 0)),
+                "종가": int(r.get("stck_clpr", 0)),
+                "거래량": int(r.get("acml_vol", 0)),
             })
         except (ValueError, TypeError):
             continue
@@ -169,7 +169,9 @@ def _parse_daily_data(rows: List[dict]) -> Optional[pd.DataFrame]:
 
     df = pd.DataFrame(records)
     df = df.set_index("date").sort_index()
-    df = df[df["volume"] > 0]  # 거래량 0 제외
+    df = df[df["거래량"] > 0]  # 거래량 0 제외
+    # 등락률 계산
+    df["등락률"] = df["종가"].pct_change() * 100
     return df
 
 
