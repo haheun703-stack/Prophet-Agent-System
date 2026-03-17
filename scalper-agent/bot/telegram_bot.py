@@ -2173,6 +2173,10 @@ class BodyHunterBot:
         jq.run_daily(self._job_daily_learning, time=kst_time(16, 40))
         logger.info("일간 학습 리포트 등록: 16:40 KST")
 
+        # Position Guardian (08:20 - 장 전 보유종목 수급 진단)
+        jq.run_daily(self._job_position_guardian, time=kst_time(8, 20))
+        logger.info("Position Guardian 등록: 08:20 KST")
+
         # 옵션 만기일 알림 (08:10 - D-2/D-1/D-day)
         jq.run_daily(self._job_options_expiry_alert, time=kst_time(8, 10))
         logger.info("옵션 만기일 알림 등록: 08:10 KST")
@@ -2657,6 +2661,30 @@ class BodyHunterBot:
             await context.bot.send_message(
                 chat_id=chat_id, text=f"⚠️ 시그널 기록 실패: {str(e)[:200]}"
             )
+
+    # ── Position Guardian (보유종목 수급 진단) ──────────
+
+    async def _job_position_guardian(self, context):
+        """보유종목 수급 변곡점 진단 (08:20 - 장 전)"""
+        from datetime import date
+        if date.today().weekday() >= 5:
+            return
+
+        logger.info("Position Guardian 시작...")
+        try:
+            from data.position_guardian import run as run_guardian
+            result = await asyncio.to_thread(run_guardian)
+            verdicts = result.get("verdicts", [])
+            exit_cnt = sum(1 for v in verdicts if v.action == "EXIT")
+            reduce_cnt = sum(1 for v in verdicts if v.action == "REDUCE")
+            logger.info(f"Guardian 완료: {len(verdicts)}종목 (EXIT:{exit_cnt} REDUCE:{reduce_cnt})")
+        except Exception as e:
+            logger.error(f"Guardian 실패: {e}")
+            chat_id = os.getenv("TELEGRAM_CHAT_ID")
+            if chat_id:
+                await context.bot.send_message(
+                    chat_id=chat_id, text=f"Position Guardian 오류: {e}"
+                )
 
     # ── 일간 학습 리포트 ──────────────────────────────
 
