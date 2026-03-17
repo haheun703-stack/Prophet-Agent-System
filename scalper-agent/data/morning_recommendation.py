@@ -586,7 +586,8 @@ def _load_brain_insights() -> dict:
         return {}
 
     try:
-        data = json.loads(insights_path.read_text("utf-8"))
+        import json as _json_brain
+        data = _json_brain.loads(insights_path.read_text("utf-8"))
         days = data.get("score_adj_applied", 0)
         src_cnt = len(data.get("source_weights", {}))
         sect_cnt = len(data.get("sector_boost", {}))
@@ -723,6 +724,9 @@ def _step5_cross_validate(
         if rot_info.get("rotation_source") != "reversal_exit":
             all_codes.add(code)
     all_codes.update(bargain_result.keys())
+    # TV 스캐너 종목도 교차검증 대상에 포함
+    if tv_signals:
+        all_codes.update(tv_signals.keys())
 
     # ── 7 SECRET 국적 파워 (NORMAL 모드) ──
     normal_nat_powers = {}
@@ -2467,22 +2471,8 @@ def run_war_mode_recommendation() -> RecommendationReport:
     # 정렬: 종합 스코어 내림차순
     candidates.sort(key=lambda x: x.total_score, reverse=True)
 
-    # ── 전쟁모드 TV 전용 슬롯: 최대 2개 ──
-    war_normal_top = candidates[:8]
-    war_top8_codes = {s.code for s in war_normal_top}
-    war_tv_only = []
-    for c in candidates[8:]:
-        if c.tv_score >= 70 and c.tv_pattern in ("QUIET_ACCUMULATION", "EXPLOSION"):
-            war_tv_only.append(c)
-    if war_tv_only:
-        war_tv_only.sort(key=lambda x: x.tv_score, reverse=True)
-        tv_ins = war_tv_only[:2]
-        war_final = war_normal_top[:8 - len(tv_ins)] + tv_ins
-        war_final.sort(key=lambda x: x.total_score, reverse=True)
-        logger.info(f"[전쟁 TV Slot] {len(tv_ins)}종목 삽입: {', '.join(s.name for s in tv_ins)}")
-        report.stocks = war_final
-    else:
-        report.stocks = war_normal_top
+    # 먼저 임시 TOP 선정 (TV 스탬핑 후 TV 슬롯 재배치)
+    report.stocks = candidates[:8]
 
     # 전쟁모드 종목에도 MOMENTUM 레짐 감지 + TV 스캐너 스탬핑
     try:
@@ -2532,6 +2522,20 @@ def run_war_mode_recommendation() -> RecommendationReport:
         logger.info(f"[전쟁모드] 레짐: {war_mtm}/{len(war_regime)} MOMENTUM ({war_mtm_boost} 부스트)")
     except Exception as e:
         logger.warning(f"[전쟁모드] 레짐 감지 실패 (무시): {e}")
+
+    # ── 전쟁모드 TV 전용 슬롯: 최대 2개 (TV 스탬핑 완료 후 실행) ──
+    war_normal_top = report.stocks[:8]
+    war_tv_only = []
+    for c in candidates[8:]:
+        if c.tv_score >= 70 and c.tv_pattern in ("QUIET_ACCUMULATION", "EXPLOSION"):
+            war_tv_only.append(c)
+    if war_tv_only:
+        war_tv_only.sort(key=lambda x: x.tv_score, reverse=True)
+        tv_ins = war_tv_only[:2]
+        war_final = war_normal_top[:8 - len(tv_ins)] + tv_ins
+        war_final.sort(key=lambda x: x.total_score, reverse=True)
+        logger.info(f"[전쟁 TV Slot] {len(tv_ins)}종목 삽입: {', '.join(s.name for s in tv_ins)}")
+        report.stocks = war_final
 
     elapsed = time.time() - t_start
     logger.info(f"[전쟁모드] 최종 추천: {len(report.stocks)}종목 ({elapsed:.0f}s)")

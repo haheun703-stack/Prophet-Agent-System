@@ -235,8 +235,11 @@ class AutoTrader:
                     price_info = self.trader.fetch_price(code)
                     cp = price_info.get("current_price", 0)
                     if cp <= 0:
-                        logger.error(f"가격 조회 실패 {code} — 진입 건너뜀")
-                        continue
+                        # 매수 완료됐으나 가격 조회 실패 → 안전장치로 포지션 등록
+                        logger.error(f"가격 조회 실패 {code} — 매수가 기반 포지션 등록")
+                        cp = item.get("amount", 0) // max(1, item.get("amount", 0) // 50000)  # 대략적 추정
+                        if cp <= 0:
+                            cp = item.get("sl", 10000)  # 최후 fallback
                     target_state = self._init_dynamic_target(code, name, cp)
                     sl = target_state.dynamic_sl if target_state else item["sl"]
                     tp = target_state.dynamic_tp if target_state else item["tp"]
@@ -878,6 +881,8 @@ class AutoTrader:
                             "tp": watch["tp"],
                             "tp1_quick": watch.get("tp1_quick", watch["tp"]),
                             "score": watch["score"],
+                            "regime": watch.get("regime", "NORMAL"),
+                            "source": watch.get("source", "swing"),
                             "_is_split": True,
                             "_split_label": split_label,
                         })
@@ -1044,6 +1049,11 @@ class AutoTrader:
                         "high_watermark": cp,
                         "trailing_activated": False,
                         "trailing_sl": 0,
+                        "entry_date": datetime.now().strftime("%Y-%m-%d"),
+                        "name": code,
+                        "target_state": None,
+                        "regime": "NORMAL",
+                        "source": "day_scan",
                     }
                 await _send(f"✅ 자동 매수: {result.get('message')}")
             else:
@@ -1123,16 +1133,20 @@ class AutoTrader:
 
                 if snap.decision == "FULL_SELL":
                     logger.info(f"AI 전량매도: {code} @ {snap.price:,} ({snap.decision_reason})")
-                    # 매도 먼저 실행, 성공 후 손익 기록 (이중기록 방지)
-                    result = self.trader.liquidate_one(code)
-                    # 실현 손익 기록 (주당→총액 보정)
-                    qty = pos.get("qty", 1)
-                    pnl_amount = (snap.price - pos["entry_price"]) * qty
-                    bal_info = self.trader.fetch_balance()
-                    for p in bal_info.get("positions", []):
+                    # 매도 전 실제 보유수량 조회 (qty 보정)
+                    pre_bal = self.trader.fetch_balance()
+                    actual_qty = 1
+                    for p in pre_bal.get("positions", []):
                         if p["code"] == code:
-                            pnl_amount = p.get("pnl_amount", pnl_amount)
+                            actual_qty = p.get("qty", 1)
                             break
+                    # 매도 실행
+                    result = self.trader.liquidate_one(code)
+                    if not result or not result.get("success"):
+                        logger.error(f"AI 매도 실패 {code}: {result} — 포지션 유지")
+                        continue
+                    # 실현 손익 기록
+                    pnl_amount = (snap.price - pos["entry_price"]) * actual_qty
                     self.record_realized_loss(pnl_amount)
                     self._positions.pop(code, None)
                     rtm.unregister_position(code)
@@ -1191,10 +1205,19 @@ class AutoTrader:
                 effective_sl = max(pos["stop_loss"], pos.get("trailing_sl", 0))
 
                 if cp <= effective_sl:
-                    # 매도 먼저 실행, 성공 후 손익 기록
+                    # 매도 전 실제 보유수량 조회
+                    pre_bal = self.trader.fetch_balance()
+                    actual_qty = 1
+                    for p_item in pre_bal.get("positions", []):
+                        if p_item["code"] == code:
+                            actual_qty = p_item.get("qty", 1)
+                            break
+                    # 매도 실행
                     result = self.trader.liquidate_one(code)
-                    qty = pos.get("qty", 1)
-                    pnl = (cp - entry) * qty
+                    if not result or not result.get("success"):
+                        logger.error(f"SL 매도 실패 {code}: {result} — 포지션 유지")
+                        continue
+                    pnl = (cp - entry) * actual_qty
                     self.record_realized_loss(pnl)
                     self._positions.pop(code, None)
 
@@ -1388,8 +1411,12 @@ class AutoTrader:
 
                 if action == ACTION_STOP_LOSS:
                     result = self.trader.liquidate_one(code)
-                    self._positions.pop(code, None)
-                    await self._alert(f"⛔ 동적 손절: {name}({code}) @ {cp:,}")
+                    if result and result.get("success"):
+                        self._positions.pop(code, None)
+                        await self._alert(f"⛔ 동적 손절: {name}({code}) @ {cp:,}")
+                    else:
+                        logger.error(f"동적 손절 매도 실패 {code}: {result}")
+                        await self._alert(f"❌ 손절 매도 실패: {name}({code}) — 수동 확인 필요")
                 elif action == ACTION_FULL_SELL:
                     # 체제별 반분할 익절: TP 히트 + partial_tp 체제 + 미분할 상태
                     from data.market_health import get_regime_rules as _get_rules
@@ -1431,6 +1458,8 @@ class AutoTrader:
                                     "tp": pos["take_profit"],
                                     "tp1_quick": pos["take_profit"],
                                     "score": 0,
+                                    "regime": pos.get("regime", "NORMAL"),
+                                    "source": pos.get("source", "add_on"),
                                 })
                                 await self._alert(
                                     f"🔵 추매 확인 대기: {name}({code})\n"

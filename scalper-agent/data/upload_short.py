@@ -70,7 +70,10 @@ def _build_foreign_detail(nat_daily: dict) -> dict:
     for day_data in nat_daily.values():
         for country, volume in day_data.items():
             region = _COUNTRY_REGION.get(country, "other")
-            region_totals[region] += int(volume)
+            try:
+                region_totals[region] += int(float(volume))
+            except (ValueError, TypeError):
+                continue
 
     region_totals["total"] = sum(region_totals.values())
     return region_totals
@@ -299,7 +302,7 @@ def upload_single_signal(signal: dict) -> bool:
 
     try:
         client.table("short_signals").upsert(
-            signal, on_conflict="date,code"
+            [signal], on_conflict="date,code"
         ).execute()
         logger.info(f"[FLOWX] {signal['signal_type']}: {signal['name']} (등급: {signal['grade']})")
         return True

@@ -271,7 +271,7 @@ def fetch_consensus_batch(
                 success += 1
 
         # 딜레이 (캐시 히트 시 불필요)
-        if i < len(codes) - 1 and result and result.get("updated"):
+        if i < len(codes) - 1 and result and result.get("source") != "cache":
             time.sleep(delay)
 
     logger.info(

@@ -31,6 +31,26 @@ NAME_TO_CODE = {info[0]: code for code, info in UNIVERSE.items()}
 CODE_TO_NAME = {code: info[0] for code, info in UNIVERSE.items()}
 
 
+def _safe_int(val, default=0) -> int:
+    """KIS API가 빈 문자열/None 반환 시 안전하게 int 변환"""
+    if val is None or val == "":
+        return default
+    try:
+        return int(float(val))
+    except (ValueError, TypeError):
+        return default
+
+
+def _safe_float(val, default=0.0) -> float:
+    """KIS API가 빈 문자열/None 반환 시 안전하게 float 변환"""
+    if val is None or val == "":
+        return default
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return default
+
+
 def resolve_stock(query: str):
     """종목명 or 코드 → (code, name). 부분매칭 지원"""
     query = query.strip()
@@ -150,7 +170,7 @@ class KISTrader:
 
                 positions = []
                 for item in output:
-                    qty = int(item.get("hldg_qty", 0))
+                    qty = _safe_int(item.get("hldg_qty", 0))
                     if qty <= 0:
                         continue
                     code = item.get("pdno", "")
@@ -158,17 +178,18 @@ class KISTrader:
                         "code": code,
                         "name": item.get("prdt_name", CODE_TO_NAME.get(code, code)),
                         "qty": qty,
-                        "avg_price": int(float(item.get("pchs_avg_pric", 0))),
-                        "current_price": int(item.get("prpr", 0)),
-                        "pnl_amount": int(item.get("evlu_pfls_amt", 0)),
-                        "pnl_rate": float(item.get("evlu_pfls_rt", 0)),
+                        "avg_price": _safe_int(item.get("pchs_avg_pric", 0)),
+                        "current_price": _safe_int(item.get("prpr", 0)),
+                        "pnl_amount": _safe_int(item.get("evlu_pfls_amt", 0)),
+                        "pnl_rate": _safe_float(item.get("evlu_pfls_rt", 0)),
                     })
 
                 s = summary[0] if summary else {}
-                cash = int(s.get("psbl_ord_amt", 0) or s.get("dnca_tot_amt", 0))
-                total_eval = int(s.get("tot_evlu_amt", 0))
+                cash = _safe_int(s.get("psbl_ord_amt", 0) or s.get("dnca_tot_amt", 0))
+                total_eval = _safe_int(s.get("tot_evlu_amt", 0))
 
-                self._consecutive_failures = 0
+                with self._lock:
+                    self._consecutive_failures = 0
                 return {
                     "success": True,
                     "cash": cash,

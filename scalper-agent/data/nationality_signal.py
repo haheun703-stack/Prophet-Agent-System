@@ -292,8 +292,8 @@ def format_nationality_report(
         date_old = _find_prev_trading_day(date_new) or "?"
 
     # 날짜 포맷 (M/D)
-    d_new = f"{int(date_new[4:6])}/{int(date_new[6:8])}"
-    d_old = f"{int(date_old[4:6])}/{int(date_old[6:8])}"
+    d_new = f"{int(date_new[4:6])}/{int(date_new[6:8])}" if len(date_new) >= 8 else date_new
+    d_old = f"{int(date_old[4:6])}/{int(date_old[6:8])}" if len(date_old) >= 8 else date_old
 
     header = f"🌍 {name}({code}) 국적별 수급 ({d_new} vs {d_old})"
     lines = [header, "─" * 20]

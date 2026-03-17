@@ -187,13 +187,24 @@ def find_missed_gainers(today: str, threshold: float = 3.0) -> list:
                 if not rows:
                     continue
                 last = rows[-1]
-                last_date = last.get("날짜", "")
+                last_date = last.get("날짜", "") or last.get("date", "")
                 if last_date != today:
                     continue
 
-                chg = float(last.get("등락률", 0))
-                vol = int(last.get("거래량", 0))
-                close = int(float(last.get("종가", 0)))
+                # CSV 컬럼: 한글(날짜/종가/거래량/등락률) 또는 영문(date/close/volume)
+                close_raw = last.get("종가") or last.get("close", 0)
+                vol_raw = last.get("거래량") or last.get("volume", 0)
+                chg_raw = last.get("등락률")
+                close = int(float(close_raw)) if close_raw else 0
+                vol = int(float(vol_raw)) if vol_raw else 0
+                # 등락률 없으면 전일 대비 계산
+                if chg_raw is not None and chg_raw != "":
+                    chg = float(chg_raw)
+                elif len(rows) >= 2:
+                    prev_close = float(rows[-2].get("종가") or rows[-2].get("close", 0) or 0)
+                    chg = ((close / prev_close) - 1) * 100 if prev_close > 0 else 0
+                else:
+                    chg = 0
                 checked += 1
 
                 if chg >= threshold and code not in rec_codes:
@@ -709,6 +720,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.test:
+        global TG_TOKEN
         TG_TOKEN = None  # 텔레그램 비활성화
         print("[TEST MODE] 텔레그램 전송 OFF")
 
