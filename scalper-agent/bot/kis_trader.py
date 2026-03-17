@@ -27,7 +27,7 @@ JOURNAL_DIR.mkdir(parents=True, exist_ok=True)
 
 # mojito token.dat 절대경로 (CWD 변경 최소화)
 _SCALPER_DIR = str(Path(__file__).resolve().parent.parent)
-_CWD_LOCK = threading.Lock()  # 프로세스 전역 CWD 보호 (os.chdir 스레드 안전)
+_CWD_LOCK = threading.RLock()  # 프로세스 전역 CWD 보호 (mojito token.dat이 상대경로 hardcoded)
 
 # 종목명 매핑
 from data.kis_collector import UNIVERSE
@@ -129,7 +129,7 @@ class KISTrader:
             self._broker_created_at = now
             self._consecutive_failures = 0
             action = "재발급" if need_refresh else "생성"
-            logger.info(f"KIS API 브로커 {action} 완료 (CWD={target_cwd})")
+            logger.info(f"KIS API 브로커 {action} 완료 (token_dir={_SCALPER_DIR})")
             return self._broker
 
     def _reset_broker(self):
@@ -384,12 +384,13 @@ class KISTrader:
             for item in resp.get("output", []):
                 orders.append({
                     "order_no": item.get("odno", ""),
+                    "org_no": item.get("orgn_odno", ""),  # 원주문번호 (취소 시 사용)
                     "code": item.get("pdno", ""),
                     "name": item.get("prdt_name", ""),
                     "side": "매수" if item.get("sll_buy_dvsn_cd") == "02" else "매도",
-                    "qty": int(item.get("ord_qty", 0)),
-                    "price": int(item.get("ord_unpr", 0)),
-                    "filled_qty": int(item.get("tot_ccld_qty", 0)),
+                    "qty": _safe_int(item.get("ord_qty", 0)),
+                    "price": _safe_int(item.get("ord_unpr", 0)),
+                    "filled_qty": _safe_int(item.get("tot_ccld_qty", 0)),
                 })
 
             return {"success": True, "orders": orders}
@@ -610,7 +611,7 @@ class KISTrader:
 
         # ── 체결 대기 (1단계: 30초) ──
         wait_per_step = max_wait_sec // 3
-        filled = self._wait_for_fill(order_no, wait_per_step)
+        filled = self._wait_for_fill(order_no, wait_per_step, org_no=org_no, qty=qty)
 
         if filled:
             self._log_trade("SMART_BUY", code, name, qty, 1)
@@ -634,7 +635,7 @@ class KISTrader:
         except Exception as e:
             logger.warning(f"주문 수정 실패: {e}")
 
-        filled = self._wait_for_fill(order_no, wait_per_step)
+        filled = self._wait_for_fill(order_no, wait_per_step, org_no=org_no, qty=qty)
 
         if filled:
             self._log_trade("SMART_BUY", code, name, qty, 2)
@@ -660,7 +661,7 @@ class KISTrader:
             self.cancel_order(order_no, org_no=org_no, qty=qty)
             return self.buy_market(code, qty, split=1)
 
-        filled = self._wait_for_fill(order_no, wait_per_step)
+        filled = self._wait_for_fill(order_no, wait_per_step, org_no=org_no, qty=qty)
 
         if filled:
             self._log_trade("SMART_BUY", code, name, qty, 3)
@@ -715,7 +716,7 @@ class KISTrader:
 
         # ── 체결 대기 ──
         wait_per_step = max_wait_sec // 3
-        filled = self._wait_for_fill(order_no, wait_per_step)
+        filled = self._wait_for_fill(order_no, wait_per_step, org_no=org_no, qty=qty)
 
         if filled:
             self._log_trade("SMART_SELL", code, name, qty, 1)
@@ -739,7 +740,7 @@ class KISTrader:
         except Exception as e:
             logger.warning(f"주문 수정 실패: {e}")
 
-        filled = self._wait_for_fill(order_no, wait_per_step)
+        filled = self._wait_for_fill(order_no, wait_per_step, org_no=org_no, qty=qty)
 
         if filled:
             self._log_trade("SMART_SELL", code, name, qty, 2)
@@ -765,7 +766,7 @@ class KISTrader:
             self.cancel_order(order_no, org_no=org_no, qty=qty)
             return self.sell_market(code, qty, split=1)
 
-        filled = self._wait_for_fill(order_no, wait_per_step)
+        filled = self._wait_for_fill(order_no, wait_per_step, org_no=org_no, qty=qty)
 
         if filled:
             self._log_trade("SMART_SELL", code, name, qty, 3)
@@ -780,11 +781,18 @@ class KISTrader:
         logger.warning(f"스마트매도 실패 → 시장가 매도 폴백")
         return self.sell_market(code, qty, split=1)
 
-    def _wait_for_fill(self, order_no: str, wait_sec: int) -> bool:
+    def _wait_for_fill(self, order_no: str, wait_sec: int,
+                       org_no: str = "", qty: int = 0) -> bool:
         """주문 체결 대기 (polling)
 
         부분 체결 시에도 잔량이 0이 되면 True 반환.
         타임아웃 시 부분 체결된 수량이 있으면 잔량 취소 후 True 반환.
+
+        Args:
+            order_no: 주문번호 (ODNO)
+            wait_sec: 최대 대기 시간 (초)
+            org_no: KRX 전송 주문 기관번호 (취소 시 필요)
+            qty: 원주문 수량 (취소 시 잔량 계산용)
         """
         check_interval = 3  # 3초마다 체크
         elapsed = 0
@@ -821,8 +829,9 @@ class KISTrader:
                 if pending and pending[0]["filled_qty"] > 0:
                     # 부분 체결 있음 → 잔량 취소, 체결분만 인정
                     filled = pending[0]["filled_qty"]
-                    logger.info(f"주문 {order_no} 부분 체결 {filled}주 → 잔량 취소")
-                    self.cancel_order(order_no)
+                    remain = pending[0]["qty"] - filled
+                    logger.info(f"주문 {order_no} 부분 체결 {filled}주 → 잔량 {remain}주 취소")
+                    self.cancel_order(order_no, org_no=org_no, qty=remain)
                     return True  # 부분이라도 체결됐으면 성공 처리
         except Exception:
             pass
