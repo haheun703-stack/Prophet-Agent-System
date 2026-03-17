@@ -187,7 +187,8 @@ def find_missed_gainers(today: str, threshold: float = 3.0) -> list:
                 if not rows:
                     continue
                 last = rows[-1]
-                last_date = last.get("날짜", "") or last.get("date", "")
+                # CSV 인덱스 컬럼명: pandas to_csv → 빈 문자열("") 키
+                last_date = last.get("", "") or last.get("날짜", "") or last.get("date", "")
                 if last_date != today:
                     continue
 
@@ -720,8 +721,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.test:
-        global TG_TOKEN
-        TG_TOKEN = None  # 텔레그램 비활성화
+        TG_TOKEN = None  # noqa: F841 — 텔레그램 비활성화 (모듈 변수 덮어쓰기)
         print("[TEST MODE] 텔레그램 전송 OFF")
 
     run(quick=args.quick)
