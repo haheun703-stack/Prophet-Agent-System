@@ -274,6 +274,11 @@ def _step_war_relay_inject() -> list[dict]:
         with open(watchlist_path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
+        # enabled=false → 평시 전환 (전쟁릴레이 비활성)
+        if not data.get("enabled", True):
+            logger.info("전쟁릴레이 비활성 (enabled=false) - 스킵")
+            return []
+
         stocks = data.get("stocks", [])
         if not stocks:
             return []

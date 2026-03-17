@@ -1,5 +1,6 @@
 {
-  "description": "전쟁→재건 섹터릴레이 감시 종목 (이란전쟁 2026-03)",
+  "enabled": false,
+  "description": "전쟁→재건 섹터릴레이 감시 종목 (이란전쟁 2026-03) — 3/18부터 평시 전환",
   "created": "2026-03-08",
   "tiers": {
     "T1_방산": {
@@ -252,6 +253,123 @@
       "tp2": 63000,
       "rr": 1.7,
       "reason": "급등후 조정(-26%), 54K 지지, VWAP 장중 추적"
+    },
+    {
+      "code": "033100",
+      "name": "제룡전기",
+      "tier": "HOLDING",
+      "priority": 18,
+      "entry": 49300,
+      "entry_aggressive": 50300,
+      "sl": 46800,
+      "tp1": 53200,
+      "tp2": 56700,
+      "rr": 1.6,
+      "reason": "보유종목 VWAP 추적"
+    },
+    {
+      "code": "138930",
+      "name": "BNK금융지주",
+      "tier": "HOLDING",
+      "priority": 19,
+      "entry": 18490,
+      "entry_aggressive": 18860,
+      "sl": 17570,
+      "tp1": 20000,
+      "tp2": 21300,
+      "rr": 1.6,
+      "reason": "보유종목 VWAP 추적"
+    },
+    {
+      "code": "105560",
+      "name": "KB금융",
+      "tier": "HOLDING",
+      "priority": 20,
+      "entry": 151900,
+      "entry_aggressive": 155000,
+      "sl": 144300,
+      "tp1": 164000,
+      "tp2": 174700,
+      "rr": 1.6,
+      "reason": "보유종목 VWAP 추적"
+    },
+    {
+      "code": "103590",
+      "name": "일진전기",
+      "tier": "HOLDING",
+      "priority": 21,
+      "entry": 79100,
+      "entry_aggressive": 80700,
+      "sl": 75100,
+      "tp1": 85400,
+      "tp2": 91000,
+      "rr": 1.6,
+      "reason": "보유종목 VWAP 추적"
+    },
+    {
+      "code": "005380",
+      "name": "현대차",
+      "tier": "HOLDING",
+      "priority": 22,
+      "entry": 528000,
+      "entry_aggressive": 538500,
+      "sl": 501600,
+      "tp1": 570000,
+      "tp2": 607000,
+      "rr": 1.6,
+      "reason": "보유종목 VWAP 추적"
+    },
+    {
+      "code": "042700",
+      "name": "한미반도체",
+      "tier": "HOLDING",
+      "priority": 23,
+      "entry": 313500,
+      "entry_aggressive": 319800,
+      "sl": 297800,
+      "tp1": 338600,
+      "tp2": 360500,
+      "rr": 1.6,
+      "reason": "보유종목 VWAP 추적"
+    },
+    {
+      "code": "064350",
+      "name": "현대로템",
+      "tier": "HOLDING",
+      "priority": 24,
+      "entry": 193600,
+      "entry_aggressive": 197500,
+      "sl": 183900,
+      "tp1": 209100,
+      "tp2": 222600,
+      "rr": 1.6,
+      "reason": "보유종목 VWAP 추적"
+    },
+    {
+      "code": "068270",
+      "name": "셀트리온",
+      "tier": "HOLDING",
+      "priority": 25,
+      "entry": 206000,
+      "entry_aggressive": 210100,
+      "sl": 195700,
+      "tp1": 222500,
+      "tp2": 236900,
+      "rr": 1.6,
+      "reason": "보유종목 VWAP 추적"
+    },
+    {
+      "code": "272210",
+      "name": "한화시스템",
+      "tier": "HOLDING",
+      "priority": 26,
+      "entry": 139300,
+      "entry_aggressive": 142100,
+      "sl": 132300,
+      "tp1": 150400,
+      "tp2": 160200,
+      "rr": 1.6,
+      "reason": "보유종목 VWAP 추적"
     }
   ]
 }
