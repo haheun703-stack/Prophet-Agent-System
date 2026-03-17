@@ -97,6 +97,8 @@ class RecommendationReport:
     # 섹터 로테이션 시그널
     rotation_signal: str = ""      # "HOT: 방산(MID 3D) | NEXT: 반도체(스테이징)"
     rotation_detail: list = field(default_factory=list)  # 섹터별 상세
+    # TV 클러스터 (그룹/섹터 동시 폭발)
+    tv_cluster_info: list = field(default_factory=list)
 
 
 # ═══════════════════════════════════════
@@ -660,6 +662,174 @@ def _apply_brain_adjustment(
 
 
 # ═══════════════════════════════════════
+#  TV 클러스터 감지 (그룹/섹터 동시 폭발)
+# ═══════════════════════════════════════
+
+# 추가 재벌그룹 (group_relay.py 7대 그룹 외)
+_EXTRA_GROUPS = {
+    "shinsegae": {
+        "name": "신세계",
+        "codes": ["004170", "031430", "035510", "139480", "034300", "160600"],
+        # 신세계, 신세계인터내셔날, 신세계I&C, 이마트, 신세계건설, 신세계푸드
+    },
+    "doosan": {
+        "name": "두산",
+        "codes": ["000150", "131970", "042660", "298040", "336260"],
+        # 두산, 두산테스나, 한화오션(구 두산인프라코어), 두산로보틱스, 두산퓨얼셀
+    },
+    "lotte": {
+        "name": "롯데",
+        "codes": ["004990", "023530", "004000", "071050", "002270"],
+        # 롯데지주, 롯데쇼핑, 롯데정밀화학, 한국금융지주(롯데카드), 롯데제과
+    },
+    "cj": {
+        "name": "CJ",
+        "codes": ["001040", "097950", "079160", "000120"],
+        # CJ, CJ제일제당, CJ CGV, CJ대한통운
+    },
+    "ls": {
+        "name": "LS",
+        "codes": ["006260", "010120", "417200", "112040"],
+        # LS, LS ELECTRIC, LS머트리얼즈, LS에코에너지
+    },
+}
+
+
+def _detect_tv_clusters(tv_signals: dict, universe: dict) -> dict:
+    """동일 그룹/섹터에서 TV 시그널 다발 감지 → 클러스터 보너스
+
+    Returns:
+        tv_cluster_map: {code: cluster_bonus_점수}
+        cluster_info: [{group_name, codes, patterns}] (텔레그램 표시용)
+    """
+    if not tv_signals:
+        return {}, []
+
+    # 1) 그룹별 매핑: code → group_name
+    code_to_group = {}
+    try:
+        from data.group_relay import GROUPS
+        for gkey, gdata in GROUPS.items():
+            gname = gdata["name"]
+            leader_code = gdata["leader"][0]
+            code_to_group[leader_code] = gname
+            for aff_code, _ in gdata.get("affiliates", []):
+                code_to_group[aff_code] = gname
+            for sob_code, _ in gdata.get("sobujan", []):
+                code_to_group[sob_code] = gname
+    except ImportError:
+        pass
+
+    for gkey, gdata in _EXTRA_GROUPS.items():
+        gname = gdata["name"]
+        for c in gdata["codes"]:
+            code_to_group[c] = gname
+
+    # 2) 섹터별 매핑: code → sector
+    code_to_sector = {}
+    for code, info in universe.items():
+        if isinstance(info, dict):
+            sec = info.get("sector", "")
+            if sec:
+                code_to_sector[code] = sec
+
+    # 3) TV 시그널을 그룹/섹터별로 그룹핑
+    group_tv = {}   # {group_name: [(code, name, pattern, score, tv_ratio)]}
+    sector_tv = {}  # {sector: [(code, name, pattern, score, tv_ratio)]}
+
+    for code, sig in tv_signals.items():
+        if isinstance(sig, dict):
+            sc = sig.get("score", 0)
+            pat = sig.get("pattern", "")
+            name = sig.get("name", "")
+            tvr = sig.get("tv_ratio", 1.0)
+        else:
+            sc = getattr(sig, "score", 0)
+            pat = getattr(sig, "pattern", "")
+            name = getattr(sig, "name", "")
+            tvr = getattr(sig, "tv_ratio", 1.0)
+
+        if sc < 60:
+            continue
+
+        entry = (code, name, pat, sc, tvr)
+
+        # 그룹 클러스터
+        grp = code_to_group.get(code)
+        if grp:
+            group_tv.setdefault(grp, []).append(entry)
+
+        # 섹터 클러스터
+        sec = code_to_sector.get(code)
+        if sec:
+            sector_tv.setdefault(sec, []).append(entry)
+
+    # 4) 클러스터 보너스 계산
+    tv_cluster_map = {}
+    cluster_info = []
+
+    # 그룹 클러스터 (2개+ 시그널)
+    for grp_name, entries in group_tv.items():
+        if len(entries) < 2:
+            continue
+        n = len(entries)
+        if n >= 4:
+            bonus = 15
+        elif n >= 3:
+            bonus = 12
+        else:
+            bonus = 8
+
+        # QUIET_ACCUMULATION 다중 동시 → 기관 동시매집 추가 보너스
+        qa_count = sum(1 for _, _, p, _, _ in entries if p == "QUIET_ACCUMULATION")
+        if qa_count >= 2:
+            bonus += 5
+
+        for code, name, pat, sc, tvr in entries:
+            tv_cluster_map[code] = max(tv_cluster_map.get(code, 0), bonus)
+
+        cluster_info.append({
+            "type": "group",
+            "name": grp_name,
+            "count": n,
+            "bonus": bonus,
+            "members": [(name, pat, tvr) for _, name, pat, _, tvr in entries],
+        })
+
+    # 섹터 클러스터 (3개+ 시그널 — 섹터는 종목수 많으니 기준 높임)
+    for sec_name, entries in sector_tv.items():
+        if len(entries) < 3:
+            continue
+        n = len(entries)
+        if n >= 6:
+            bonus = 12
+        elif n >= 4:
+            bonus = 8
+        else:
+            bonus = 5
+
+        for code, name, pat, sc, tvr in entries:
+            # 그룹 보너스와 중복 시 큰 값만
+            tv_cluster_map[code] = max(tv_cluster_map.get(code, 0), bonus)
+
+        cluster_info.append({
+            "type": "sector",
+            "name": sec_name,
+            "count": n,
+            "bonus": bonus,
+            "members": [(name, pat, tvr) for _, name, pat, _, tvr in entries],
+        })
+
+    if cluster_info:
+        logger.info(
+            f"[TV Cluster] {len(cluster_info)}개 클러스터 감지: "
+            + ", ".join(f"{c['name']}({c['count']}종목,+{c['bonus']})" for c in cluster_info)
+        )
+
+    return tv_cluster_map, cluster_info
+
+
+# ═══════════════════════════════════════
 #  Step 5: 교차검증 + 최종 랭킹
 # ═══════════════════════════════════════
 
@@ -673,6 +843,7 @@ def _step5_cross_validate(
     shock_info: dict = None,
     rotation_stocks: dict = None,
     tv_signals: dict = None,
+    tv_cluster_map: dict = None,
 ) -> list[RecommendedStock]:
     """모든 스텝 결과 통합 → Soft Scoring → 최종 랭킹
 
@@ -798,11 +969,15 @@ def _step5_cross_validate(
             grade = b_info.get("supply_grade", "")
             sources.append(f"bargain({grade})")
 
-        # TV 스캐너 소스 (거래대금 폭발)
+        # TV 스캐너 소스 (거래대금 폭발) — score 70+ = 2소스 취급
         if tv_signals and code in tv_signals:
-            cross += 1
             _tv_sig = tv_signals[code]
-            sources.append(f"tv:{_tv_sig.pattern}")
+            _tv_sc_cross = _tv_sig.get("score", 0) if isinstance(_tv_sig, dict) else getattr(_tv_sig, "score", 0)
+            if _tv_sc_cross >= 70:
+                cross += 2  # 강신호 = 2소스 취급
+            else:
+                cross += 1
+            sources.append(f"tv:{_tv_sig.pattern}({_tv_sc_cross:.0f})")
 
         # 로테이션 소스 (다음 섹터 종목)
         rot_info = rotation_stocks.get(code, {})
@@ -920,8 +1095,8 @@ def _step5_cross_validate(
         if nat_power_sc != 0:
             sources.append(f"7SECRET({norm_np.grade}:{nat_power_sc:+.1f})")
 
-        # 거래대금 부스트 (최대 +15점)
-        tv_boost = 0.0
+        # ── TV Direct Score (거래대금 강신호 직접 점수) ──
+        tv_direct = 0.0
         _tv_ratio = 1.0
         _tv_pattern = "NORMAL"
         _tv_score = 0.0
@@ -934,12 +1109,34 @@ def _step5_cross_validate(
             _tv_ratio = _tv_r
             _tv_pattern = _tv_pat
             _tv_score = _tv_sc
+
+            # TV 기본 점수 (패턴별 차등)
             if _tv_pat == "QUIET_ACCUMULATION":
-                tv_boost = min(_tv_sc * 0.15, 15)    # 조용한 매집: 최대 +15
+                if _tv_sc >= 80:
+                    tv_direct = 35     # 강 매집 → 릴레이급 대우
+                elif _tv_sc >= 70:
+                    tv_direct = 25
+                elif _tv_sc >= 60:
+                    tv_direct = 15
             elif _tv_pat == "EXPLOSION":
-                tv_boost = min(_tv_sc * 0.12, 12)    # 폭발: 최대 +12
+                if _tv_sc >= 80:
+                    tv_direct = 30
+                elif _tv_sc >= 70:
+                    tv_direct = 20
+                elif _tv_sc >= 60:
+                    tv_direct = 12
             elif _tv_pat == "GRADUAL_BUILDUP":
-                tv_boost = min(_tv_sc * 0.10, 10)    # 점진적: 최대 +10
+                if _tv_sc >= 70:
+                    tv_direct = 15
+                elif _tv_sc >= 60:
+                    tv_direct = 10
+
+            # 그룹/섹터 클러스터 보너스
+            _cluster_map = tv_cluster_map or {}
+            cluster_bonus = _cluster_map.get(code, 0)
+            if cluster_bonus > 0:
+                tv_direct += cluster_bonus
+                sources.append(f"tv_cluster(+{cluster_bonus})")
 
         # ── 합산 ──────────────────────────────
         raw_total = (relay_sc + premove_sc + tech_sc + bargain_sc + cross_bonus
@@ -947,7 +1144,7 @@ def _step5_cross_validate(
                      + shock_pen + opp_bonus + rotation_bonus + or_bias_adj
                      + eq_adj + gap_adj
                      + nat_power_sc   # 7 SECRET 파워
-                     + tv_boost)      # 거래대금 폭발 부스트
+                     + tv_direct)     # TV 강신호 직접 점수
 
         # ── 브레인 학습 가중치 적용 ──────────────
         brain_adj = _apply_brain_adjustment(
@@ -1016,19 +1213,25 @@ def _step5_cross_validate(
     # 정렬: total_score 내림차순
     candidates.sort(key=lambda x: x.total_score, reverse=True)
 
-    # ── TV 전용 슬롯: 최대 2개 ──
+    # ── TV 전용 슬롯: 최대 3개 ──
     # TV-only 강신호 종목이 다중소스 종목에 밀려 TOP 8에서 탈락하는 문제 해결
+    # v2: 65점, 3슬롯, GRADUAL 포함, 클러스터 소속 우선
     normal_top = candidates[:8]
     top8_codes = {s.code for s in normal_top}
 
+    _cluster_map = tv_cluster_map or {}
     tv_only_picks = []
     for c in candidates[8:]:  # TOP 8 밖의 후보들
-        if c.tv_score >= 70 and c.tv_pattern in ("QUIET_ACCUMULATION", "EXPLOSION"):
+        if c.tv_score >= 65 and c.tv_pattern in ("QUIET_ACCUMULATION", "EXPLOSION", "GRADUAL_BUILDUP"):
             tv_only_picks.append(c)
 
     if tv_only_picks:
-        tv_only_picks.sort(key=lambda x: x.tv_score, reverse=True)
-        tv_insert = tv_only_picks[:2]
+        # 클러스터 소속 종목 우선, 그 다음 tv_score 내림차순
+        tv_only_picks.sort(
+            key=lambda x: (_cluster_map.get(x.code, 0), x.tv_score),
+            reverse=True,
+        )
+        tv_insert = tv_only_picks[:3]
         # 하위 슬롯 교체
         final = normal_top[:8 - len(tv_insert)] + tv_insert
         final.sort(key=lambda x: x.total_score, reverse=True)
@@ -1346,6 +1549,15 @@ def run_evening_recommendation() -> RecommendationReport:
         import traceback
         logger.debug(traceback.format_exc())
 
+    # Step 5a.6: TV 클러스터 감지 (그룹/섹터 동시 폭발)
+    tv_cluster_map = {}
+    tv_cluster_info = []
+    if tv_signals:
+        try:
+            tv_cluster_map, tv_cluster_info = _detect_tv_clusters(tv_signals, _universe)
+        except Exception as e:
+            logger.warning(f"TV 클러스터 감지 실패 (무시): {e}")
+
     # Step 5b: MOMENTUM 레짐 감지 (수급 기반 초기 진입 시그널)
     regime_signals = {}
     try:
@@ -1384,6 +1596,7 @@ def run_evening_recommendation() -> RecommendationReport:
         shock_info=shock_info,
         rotation_stocks=rotation_stocks,
         tv_signals=tv_signals,
+        tv_cluster_map=tv_cluster_map,
     )
     logger.info(f"  → {len(final_stocks)}종목 ({time.time()-t0:.0f}s)")
 
@@ -1421,6 +1634,7 @@ def run_evening_recommendation() -> RecommendationReport:
     logger.info(f"  → 최종 {len(final_stocks)}종목 ({time.time()-t0:.0f}s)")
 
     report.stocks = final_stocks
+    report.tv_cluster_info = tv_cluster_info
     elapsed = time.time() - t_start
     logger.info(f"최종 추천: {len(final_stocks)}종목, 모멘텀 {len(report.momentum_stocks)}종목 (전체 {elapsed:.0f}s)")
 
@@ -1699,6 +1913,18 @@ def format_recommendation(report: RecommendationReport, max_budget: int = 0) -> 
     if report.warning:
         lines.append(f"\n⚠️ {report.warning}")
 
+    # TV 클러스터 알림
+    if report.tv_cluster_info:
+        for cl in report.tv_cluster_info:
+            cl_type = "그룹" if cl["type"] == "group" else "섹터"
+            members_str = " | ".join(
+                f"{m[0]} TV {m[2]:.1f}x" for m in cl["members"][:5]
+            )
+            lines.append(
+                f"🔥 {cl_type} TV 클러스터: [{cl['name']}] {cl['count']}종목 동시 거래대금 폭발!"
+            )
+            lines.append(f"   {members_str}")
+
     lines.append("")
 
     if not report.stocks:
@@ -1930,6 +2156,7 @@ def save_recommendation(report: RecommendationReport):
         "rotation_signal": report.rotation_signal,  # 섹터 로테이션 시그널
         "rotation_detail": report.rotation_detail,  # 섹터별 로테이션 상세
         "etf_signal": report.etf_signal,  # 위기 ETF 시그널
+        "tv_cluster_info": report.tv_cluster_info,  # TV 클러스터
     }
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
@@ -2005,6 +2232,7 @@ def load_recommendation() -> Optional[RecommendationReport]:
         report.rotation_signal = data.get("rotation_signal", "")
         report.rotation_detail = data.get("rotation_detail", [])
         report.etf_signal = data.get("etf_signal", {})
+        report.tv_cluster_info = data.get("tv_cluster_info", [])
         return report
     except Exception as e:
         logger.error(f"추천 로드 실패: {e}")
