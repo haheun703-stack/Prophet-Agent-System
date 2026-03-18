@@ -2,12 +2,15 @@
 FLOWX 시그널 트래킹 — signals + scoreboard Supabase CRUD
 ============================================================
 퀀트봇(QUANT): 추천 종목 → signals INSERT → 성과 추적 → 자동 청산
-단타봇(DAYTRADING): 장중 매매 시그널 → 15:20 일괄 청산
+단타봇(DAYTRADING): 장중 매매 시그널 → FLOWX 필터(A+/65+/BUY) → 15:20 일괄 청산
+
+스펙: FLOWX_TECHNICAL_SPEC.docx (Part 2)
 
 Usage:
   python data/flowx_signals.py --log-test       # 현재 추천 → signals INSERT 테스트
   python data/flowx_signals.py --update-test    # OPEN 시그널 현재가 업데이트 테스트
   python data/flowx_signals.py --scoreboard     # scoreboard 집계 테스트
+  python data/flowx_signals.py --full           # 전체 파이프라인
 """
 import os
 import sys
@@ -53,7 +56,7 @@ def _get_client():
 
 def _score_to_grade(total_score: float, confidence: str = "LOW",
                     nat_power_grade: str = "NEUTRAL") -> str:
-    """점수+신뢰도+국적파워 → AAA~F 등급"""
+    """점수+신뢰도+국적파워 -> AAA~F 등급"""
     if total_score >= 85 and confidence == "HIGH" \
        and nat_power_grade in ("POWER_BUY", "BUY"):
         return "AAA"
@@ -77,7 +80,7 @@ def _score_to_grade(total_score: float, confidence: str = "LOW",
 def _determine_signal_type(grade: str, inst_support: bool,
                            volume_ratio: float,
                            tv_pattern: str = "NORMAL") -> str:
-    """등급+기관+거래대금 → FORCE_BUY/BUY/WATCH/AVOID"""
+    """등급+기관+거래대금 -> FORCE_BUY/BUY/WATCH/AVOID"""
     top_grades = ("AAA", "AA", "A")
     buy_grades = ("AAA", "AA", "A", "BBB")
 
@@ -94,14 +97,11 @@ def _determine_signal_type(grade: str, inst_support: bool,
 
 
 # ══════════════════════════════════════════
-#  1. QUANT 시그널 로깅
+#  1. QUANT 시그널 로깅 (저녁 추천 → INSERT)
 # ══════════════════════════════════════════
 
 def log_quant_signals(rec_data: dict = None) -> int:
     """추천 종목 → signals 테이블 INSERT
-
-    Args:
-        rec_data: recommendation.json 데이터 (없으면 파일에서 로드)
 
     Returns:
         INSERT된 시그널 수
@@ -146,24 +146,32 @@ def log_quant_signals(rec_data: dict = None) -> int:
             grade, inst_support, tv_ratio, tv_pattern
         )
 
-        # AVOID 제외
-        if signal_type == "AVOID":
+        # AVOID/WATCH 제외 — BUY 계열만 업로드
+        if signal_type not in ("FORCE_BUY", "BUY"):
             continue
+
+        # FORCE_BUY → BUY (Supabase CHECK 제약)
+        db_signal_type = "BUY"
+
+        entry = s.get("entry", s.get("close", 0))
 
         rows.append({
             "bot_type": "QUANT",
             "ticker": code,
             "ticker_name": name,
-            "signal_type": signal_type,
+            "signal_type": db_signal_type,
             "grade": grade,
-            "score": int(round(total_score)),
-            "entry_price": s.get("entry", s.get("close", 0)),
+            "score": min(int(round(total_score)), 100),
+            "entry_price": entry,
             "target_price": s.get("tp", 0),
-            "stop_loss": s.get("sl", 0),
-            "current_price": s.get("entry", s.get("close", 0)),
+            "stop_price": s.get("sl", 0),
+            "current_price": entry,
             "return_pct": 0.0,
+            "max_return_pct": 0.0,
             "status": "OPEN",
             "signal_date": today_str,
+            "multiplier": 1.0,
+            "memo": ", ".join(s.get("sources", [])[:3]),
             "sources": s.get("sources", []),
         })
 
@@ -183,14 +191,28 @@ def log_quant_signals(rec_data: dict = None) -> int:
 
 
 # ══════════════════════════════════════════
-#  2. DAYTRADING 시그널 로깅
+#  2. DAYTRADING 시그널 로깅 (FLOWX 필터 적용)
 # ══════════════════════════════════════════
 
 def log_daytrading_signal(code: str, name: str, entry_price: int,
                           signal_type: str = "BUY",
-                          target_price: int = 0, stop_loss: int = 0,
+                          grade: str = "", score: int = 0,
+                          target_price: int = 0, stop_price: int = 0,
+                          multiplier: float = 1.0,
+                          memo: str = "",
                           sources: list = None) -> bool:
-    """장중 매매 시그널 → signals INSERT (bot_type=DAYTRADING)"""
+    """장중 매매 시그널 → signals INSERT (bot_type=DAYTRADING)
+
+    FLOWX 필터: A+ 등급 & 65점 이상 & BUY만 Supabase에 저장
+    """
+    # FLOWX 품질 필터
+    if grade not in ("AAA", "AA", "A"):
+        return False
+    if score < 65:
+        return False
+    if signal_type != "BUY":
+        return False
+
     client = _get_client()
     if not client:
         return False
@@ -200,15 +222,18 @@ def log_daytrading_signal(code: str, name: str, entry_price: int,
         "ticker": code,
         "ticker_name": name,
         "signal_type": signal_type,
-        "grade": "",
-        "score": 0,
+        "grade": grade,
+        "score": min(score, 100),
         "entry_price": entry_price,
         "target_price": target_price,
-        "stop_loss": stop_loss,
+        "stop_price": stop_price,
         "current_price": entry_price,
         "return_pct": 0.0,
+        "max_return_pct": 0.0,
         "status": "OPEN",
         "signal_date": date.today().isoformat(),
+        "multiplier": multiplier,
+        "memo": memo,
         "sources": sources or [],
     }
 
@@ -216,7 +241,7 @@ def log_daytrading_signal(code: str, name: str, entry_price: int,
         client.table("signals").upsert(
             [row], on_conflict="bot_type,ticker,signal_date"
         ).execute()
-        logger.info(f"[FLOWX] DAYTRADING 시그널: {name}({code}) @{entry_price}")
+        logger.info(f"[FLOWX] DAYTRADING: {name}({code}) @{entry_price}")
         return True
     except Exception as e:
         logger.error(f"[FLOWX] DAYTRADING upsert 실패: {e}")
@@ -228,7 +253,8 @@ def log_daytrading_signal(code: str, name: str, entry_price: int,
 # ══════════════════════════════════════════
 
 def update_performance(bot_type: str = "QUANT") -> dict:
-    """OPEN 시그널의 current_price / return_pct 업데이트 + 자동 청산
+    """OPEN 시그널의 current_price / return_pct / max_return_pct 업데이트
+    + TP/SL 자동 청산 (close_reason 포함)
 
     Returns:
         {"updated": int, "closed": int, "stopped": int}
@@ -237,7 +263,6 @@ def update_performance(bot_type: str = "QUANT") -> dict:
     if not client:
         return {"updated": 0, "closed": 0, "stopped": 0}
 
-    # OPEN 시그널 조회
     try:
         resp = client.table("signals").select("*").eq(
             "status", "OPEN"
@@ -267,7 +292,6 @@ def update_performance(bot_type: str = "QUANT") -> dict:
     for sig in signals:
         code = sig["ticker"]
         entry = sig["entry_price"]
-
         if entry <= 0:
             continue
 
@@ -282,30 +306,35 @@ def update_performance(bot_type: str = "QUANT") -> dict:
             continue
 
         ret_pct = round((current - entry) / entry * 100, 2)
+        prev_max = float(sig.get("max_return_pct", 0) or 0)
+        max_ret = max(prev_max, ret_pct)
 
         # 상태 판정
         tp = sig.get("target_price", 0)
-        sl = sig.get("stop_loss", 0)
+        sp = sig.get("stop_price", 0)
         new_status = "OPEN"
+        close_reason = None
 
-        # QUANT: 목표가 도달 → CLOSED, 손절가 도달 → STOPPED
         if bot_type == "QUANT":
-            if tp > 0 and current >= tp:
+            if tp and current >= tp:
                 new_status = "CLOSED"
+                close_reason = "TARGET_HIT"
                 closed += 1
-            elif sl > 0 and current <= sl:
+            elif sp and current <= sp:
                 new_status = "STOPPED"
+                close_reason = "STOP_HIT"
                 stopped += 1
-        # DAYTRADING: 별도 close_daytrading()에서 일괄 처리
 
         update_data = {
             "current_price": current,
             "return_pct": ret_pct,
+            "max_return_pct": max_ret,
         }
 
         if new_status != "OPEN":
             update_data["status"] = new_status
             update_data["close_date"] = today_str
+            update_data["close_reason"] = close_reason
 
         try:
             client.table("signals").update(update_data).eq(
@@ -325,7 +354,7 @@ def update_performance(bot_type: str = "QUANT") -> dict:
 # ══════════════════════════════════════════
 
 def close_daytrading() -> int:
-    """DAYTRADING OPEN 시그널 전량 CLOSED 처리"""
+    """DAYTRADING OPEN 시그널 전량 CLOSED 처리 (close_reason=DAILY_CLOSE)"""
     client = _get_client()
     if not client:
         return 0
@@ -336,8 +365,8 @@ def close_daytrading() -> int:
         # 먼저 현재가 업데이트
         update_performance("DAYTRADING")
 
-        # 남은 OPEN 시그널 전량 CLOSED
-        resp = client.table("signals").select("id").eq(
+        # 남은 OPEN 시그널 전량 청산
+        resp = client.table("signals").select("*").eq(
             "status", "OPEN"
         ).eq("bot_type", "DAYTRADING").execute()
 
@@ -346,9 +375,16 @@ def close_daytrading() -> int:
             return 0
 
         for sig in open_sigs:
+            cp = sig.get("current_price", sig["entry_price"])
+            entry = sig["entry_price"]
+            ret_pct = round((cp - entry) / entry * 100, 2) if entry else 0
+            status = "CLOSED" if ret_pct >= 0 else "STOPPED"
+
             client.table("signals").update({
-                "status": "CLOSED",
+                "status": status,
                 "close_date": today_str,
+                "close_reason": "DAILY_CLOSE",
+                "return_pct": ret_pct,
             }).eq("id", sig["id"]).execute()
 
         logger.info(f"[FLOWX] DAYTRADING {len(open_sigs)}건 일괄 청산")
@@ -363,7 +399,7 @@ def close_daytrading() -> int:
 # ══════════════════════════════════════════
 
 def close_expired_quant(max_days: int = 10) -> int:
-    """보유기간 초과 QUANT OPEN 시그널 CLOSED 처리"""
+    """보유기간 초과 QUANT OPEN 시그널 CLOSED (close_reason=TIME_LIMIT)"""
     client = _get_client()
     if not client:
         return 0
@@ -384,6 +420,7 @@ def close_expired_quant(max_days: int = 10) -> int:
             client.table("signals").update({
                 "status": "CLOSED",
                 "close_date": today_str,
+                "close_reason": "TIME_LIMIT",
             }).eq("id", sig["id"]).execute()
 
         logger.info(f"[FLOWX] QUANT 만기 청산 {len(expired)}건 (>{max_days}일)")
@@ -397,11 +434,16 @@ def close_expired_quant(max_days: int = 10) -> int:
 #  6. SCOREBOARD 집계
 # ══════════════════════════════════════════
 
+_PERIODS = {"30D": 30, "60D": 60, "90D": 90, "ALL": 9999}
+
+
 def aggregate_scoreboard(bot_type: str = "QUANT") -> dict:
-    """30/60/90일 성과 집계 → scoreboard upsert
+    """30D/60D/90D/ALL 성과 집계 -> scoreboard upsert
+
+    bot_type: 'QUANT', 'DAYTRADING', 'ALL'
 
     Returns:
-        {30: {...}, 60: {...}, 90: {...}}
+        {"30D": {...}, "60D": {...}, ...}
     """
     client = _get_client()
     if not client:
@@ -409,60 +451,72 @@ def aggregate_scoreboard(bot_type: str = "QUANT") -> dict:
 
     results = {}
 
-    for period in (30, 60, 90):
-        cutoff = (date.today() - timedelta(days=period)).isoformat()
+    for period_name, days in _PERIODS.items():
+        cutoff = (date.today() - timedelta(days=days)).isoformat()
 
         try:
-            # 해당 기간의 CLOSED/STOPPED 시그널 조회
-            resp = client.table("signals").select(
+            query = client.table("signals").select(
                 "ticker,ticker_name,return_pct,signal_date,status"
-            ).eq("bot_type", bot_type).in_(
-                "status", ["CLOSED", "STOPPED"]
-            ).gte("signal_date", cutoff).execute()
+            ).in_("status", ["CLOSED", "STOPPED"]).gte("signal_date", cutoff)
 
+            if bot_type != "ALL":
+                query = query.eq("bot_type", bot_type)
+
+            resp = query.execute()
             closed_sigs = resp.data or []
 
             total = len(closed_sigs)
             if total == 0:
-                results[period] = _empty_scoreboard(bot_type, period)
+                board = _empty_scoreboard(bot_type, period_name)
+                _upsert_scoreboard(client, board)
+                results[period_name] = board
                 continue
 
-            hits = sum(1 for s in closed_sigs if float(s["return_pct"]) > 0)
+            wins = [s for s in closed_sigs if float(s["return_pct"]) > 0]
+            loses = [s for s in closed_sigs if float(s["return_pct"]) <= 0]
+
             avg_ret = round(
                 sum(float(s["return_pct"]) for s in closed_sigs) / total, 2
             )
+            avg_win = round(
+                sum(float(s["return_pct"]) for s in wins) / max(len(wins), 1), 2
+            )
+            avg_lose = round(
+                sum(float(s["return_pct"]) for s in loses) / max(len(loses), 1), 2
+            )
 
-            # 최고/최저
             sorted_by_ret = sorted(
                 closed_sigs, key=lambda x: float(x["return_pct"])
             )
-            best = sorted_by_ret[-1] if sorted_by_ret else {}
-            worst = sorted_by_ret[0] if sorted_by_ret else {}
+            best = sorted_by_ret[-1]
+            worst = sorted_by_ret[0]
 
-            # 최근 5건
             recent = sorted(
                 closed_sigs, key=lambda x: x["signal_date"], reverse=True
             )[:5]
 
             board = {
                 "bot_type": bot_type,
-                "period_days": period,
+                "period": period_name,
                 "total_signals": total,
-                "hit_count": hits,
-                "hit_rate": round(hits / total * 100, 2) if total else 0,
+                "win_count": len(wins),
+                "lose_count": len(loses),
+                "win_rate": round(len(wins) / total * 100, 2),
                 "avg_return_pct": avg_ret,
+                "avg_win_pct": avg_win,
+                "avg_lose_pct": avg_lose,
                 "best_signal": {
-                    "ticker": best.get("ticker", ""),
-                    "name": best.get("ticker_name", ""),
-                    "return_pct": float(best.get("return_pct", 0)),
-                    "date": best.get("signal_date", ""),
-                } if best else {},
+                    "ticker": best["ticker"],
+                    "name": best["ticker_name"],
+                    "return_pct": float(best["return_pct"]),
+                    "date": best["signal_date"],
+                },
                 "worst_signal": {
-                    "ticker": worst.get("ticker", ""),
-                    "name": worst.get("ticker_name", ""),
-                    "return_pct": float(worst.get("return_pct", 0)),
-                    "date": worst.get("signal_date", ""),
-                } if worst else {},
+                    "ticker": worst["ticker"],
+                    "name": worst["ticker_name"],
+                    "return_pct": float(worst["return_pct"]),
+                    "date": worst["signal_date"],
+                },
                 "recent_closed": [
                     {
                         "ticker": r["ticker"],
@@ -471,34 +525,45 @@ def aggregate_scoreboard(bot_type: str = "QUANT") -> dict:
                         "date": r["signal_date"],
                     } for r in recent
                 ],
-                "updated_at": datetime.now().isoformat(),
+                "calculated_at": datetime.now().isoformat(),
             }
 
-            client.table("scoreboard").upsert(
-                [board], on_conflict="bot_type,period_days"
-            ).execute()
-
-            results[period] = board
+            _upsert_scoreboard(client, board)
+            results[period_name] = board
 
         except Exception as e:
-            logger.error(f"[FLOWX] scoreboard {period}일 집계 실패: {e}")
-            results[period] = _empty_scoreboard(bot_type, period)
+            logger.error(f"[FLOWX] scoreboard {period_name} 집계 실패: {e}")
+            results[period_name] = _empty_scoreboard(bot_type, period_name)
 
     logger.info(
         f"[FLOWX] {bot_type} scoreboard 집계 완료: "
-        + ", ".join(f"{p}d={r.get('hit_rate', 0):.1f}%" for p, r in results.items())
+        + ", ".join(
+            f"{p}={r.get('win_rate', 0):.1f}%" for p, r in results.items()
+        )
     )
     return results
 
 
-def _empty_scoreboard(bot_type: str, period: int) -> dict:
+def _upsert_scoreboard(client, board: dict):
+    try:
+        client.table("scoreboard").upsert(
+            [board], on_conflict="bot_type,period"
+        ).execute()
+    except Exception as e:
+        logger.warning(f"scoreboard upsert 실패: {e}")
+
+
+def _empty_scoreboard(bot_type: str, period: str) -> dict:
     return {
         "bot_type": bot_type,
-        "period_days": period,
+        "period": period,
         "total_signals": 0,
-        "hit_count": 0,
-        "hit_rate": 0,
+        "win_count": 0,
+        "lose_count": 0,
+        "win_rate": 0,
         "avg_return_pct": 0,
+        "avg_win_pct": 0,
+        "avg_lose_pct": 0,
         "best_signal": {},
         "worst_signal": {},
         "recent_closed": [],
@@ -510,19 +575,24 @@ def _empty_scoreboard(bot_type: str, period: int) -> dict:
 # ══════════════════════════════════════════
 
 def run_signal_update():
-    """16:10 KST 실행: 성과 업데이트 + 만기 청산 + scoreboard 집계"""
-    # 1) QUANT 성과 업데이트 (목표가/손절 자동 청산 포함)
+    """16:10+ KST 실행: 성과 업데이트 + 만기 청산 + scoreboard 집계"""
+    # 1) QUANT 성과 업데이트 (TP/SL 자동 청산 포함)
     quant_result = update_performance("QUANT")
 
     # 2) 만기 초과 QUANT 청산
     expired = close_expired_quant(max_days=10)
 
-    # 3) QUANT scoreboard 집계
+    # 3) QUANT scoreboard (30D/60D/90D/ALL)
     quant_board = aggregate_scoreboard("QUANT")
 
-    # 4) DAYTRADING도 실행 (있으면)
+    # 4) DAYTRADING 성과 업데이트
     dt_result = update_performance("DAYTRADING")
+
+    # 5) DAYTRADING scoreboard
     dt_board = aggregate_scoreboard("DAYTRADING")
+
+    # 6) ALL 통합 scoreboard
+    all_board = aggregate_scoreboard("ALL")
 
     return {
         "quant": quant_result,
@@ -530,6 +600,7 @@ def run_signal_update():
         "quant_scoreboard": quant_board,
         "daytrading": dt_result,
         "daytrading_scoreboard": dt_board,
+        "all_scoreboard": all_board,
     }
 
 
@@ -559,17 +630,19 @@ def _print_scoreboard(boards: dict):
     """콘솔 스코어보드 출력"""
     for period, b in sorted(boards.items()):
         if not b or not b.get("total_signals"):
-            print(f"  {period}일: 데이터 없음")
+            print(f"  {period}: 데이터 없음")
             continue
         print(
-            f"  {period}일: {b['total_signals']}건 | "
-            f"적중 {b['hit_count']}건({b['hit_rate']:.1f}%) | "
-            f"평균수익 {b['avg_return_pct']:+.2f}%"
+            f"  {period}: {b['total_signals']}건 | "
+            f"승 {b['win_count']}/패 {b['lose_count']} "
+            f"({b['win_rate']:.1f}%) | "
+            f"평균 {b['avg_return_pct']:+.2f}% "
+            f"(승 {b['avg_win_pct']:+.2f}% / 패 {b['avg_lose_pct']:+.2f}%)"
         )
         best = b.get("best_signal", {})
         worst = b.get("worst_signal", {})
         if best.get("ticker"):
-            print(f"    Best: {best['name']}({best['ticker']}) {best['return_pct']:+.2f}%")
+            print(f"    Best:  {best['name']}({best['ticker']}) {best['return_pct']:+.2f}%")
         if worst.get("ticker"):
             print(f"    Worst: {worst['name']}({worst['ticker']}) {worst['return_pct']:+.2f}%")
 
@@ -601,13 +674,10 @@ if __name__ == "__main__":
         print(f"\nQUANT 성과 업데이트: {result}")
 
     elif args.scoreboard:
-        print("\n[QUANT 스코어보드]")
-        boards = aggregate_scoreboard("QUANT")
-        _print_scoreboard(boards)
-
-        print("\n[DAYTRADING 스코어보드]")
-        boards_dt = aggregate_scoreboard("DAYTRADING")
-        _print_scoreboard(boards_dt)
+        for bt in ("QUANT", "DAYTRADING", "ALL"):
+            print(f"\n[{bt} 스코어보드]")
+            boards = aggregate_scoreboard(bt)
+            _print_scoreboard(boards)
 
     elif args.close_dt:
         count = close_daytrading()
@@ -620,8 +690,11 @@ if __name__ == "__main__":
         print(f"  QUANT 만기청산: {result['quant_expired']}건")
         print(f"  DAYTRADING: {result['daytrading']}")
 
-        print("\n[QUANT 스코어보드]")
-        _print_scoreboard(result.get("quant_scoreboard", {}))
+        for bt in ("quant", "daytrading", "all"):
+            key = f"{bt}_scoreboard"
+            if key in result and result[key]:
+                print(f"\n[{bt.upper()} 스코어보드]")
+                _print_scoreboard(result[key])
 
     else:
         parser.print_help()

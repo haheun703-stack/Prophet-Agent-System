@@ -259,9 +259,25 @@ def generate_morning_briefing() -> dict:
         rec.get("cross_regime", ""),
     )
 
+    # KOSPI/KOSDAQ 종가 추출
+    raw_ind = _extract_raw_indicators(nw)
+    kospi_close = None
+    kosdaq_close = None
+    # nightwatch에서 KOSPI/KOSDAQ 종가 시도
+    for key in ("kospi", "KOSPI"):
+        v = nw.get(key, {})
+        if isinstance(v, dict) and v.get("close"):
+            kospi_close = v["close"]
+    for key in ("kosdaq", "KOSDAQ"):
+        v = nw.get(key, {})
+        if isinstance(v, dict) and v.get("close"):
+            kosdaq_close = v["close"]
+
     briefing = {
         "date": str(date.today()),
         "market_status": market_status,
+        "kospi_close": kospi_close,
+        "kosdaq_close": kosdaq_close,
         "us_summary": rec.get("us_market_note", ""),
         "kr_summary": _build_kr_summary(rec),
         "cross_regime": rec.get("cross_regime", "NORMAL"),
@@ -272,7 +288,7 @@ def generate_morning_briefing() -> dict:
         "global_events": _extract_events(events),
         "top_stocks": _extract_top_stocks(rec),
         "guardian_alerts": _extract_guardian_alerts(guardian),
-        "raw_indicators": _extract_raw_indicators(nw),
+        "raw_indicators": raw_ind,
     }
 
     logger.info(
@@ -295,10 +311,14 @@ def upload_morning_briefing(briefing: dict) -> bool:
         return False
 
     try:
-        # jsonb 컬럼은 json 직렬화 필요
+        # full_report: 개인 텔레그램용 전체 본문 (FLOWX에는 비공개)
+        full_report = _format_full_briefing(briefing)
+
         row = {
             "date": briefing["date"],
             "market_status": briefing["market_status"],
+            "kospi_close": briefing.get("kospi_close"),
+            "kosdaq_close": briefing.get("kosdaq_close"),
             "us_summary": briefing.get("us_summary", ""),
             "kr_summary": briefing.get("kr_summary", ""),
             "cross_regime": briefing.get("cross_regime", "NORMAL"),
@@ -310,6 +330,7 @@ def upload_morning_briefing(briefing: dict) -> bool:
             "top_stocks": json.dumps(briefing.get("top_stocks", []), ensure_ascii=False),
             "guardian_alerts": json.dumps(briefing.get("guardian_alerts", []), ensure_ascii=False),
             "raw_indicators": json.dumps(briefing.get("raw_indicators", {}), ensure_ascii=False),
+            "full_report": full_report,
         }
 
         client.table("morning_briefings").upsert(
