@@ -1761,7 +1761,7 @@ def run_evening_recommendation() -> RecommendationReport:
         import json
         rec_path = Path(__file__).resolve().parent.parent / "data_store" / "recommendation.json"
         rec_data = json.loads(rec_path.read_text("utf-8"))
-        run_flowx_upload(rec_data, nat_daily_all=norm_daily or None)
+        run_flowx_upload(rec_data, nat_daily_all=None)
         logger.info("[FLOWX] 업로드 완료")
     except Exception as e:
         logger.warning(f"[FLOWX] 업로드 실패 (무시): {e}")
@@ -2164,11 +2164,91 @@ def _get_store_path():
     return _STORE_PATH
 
 
+def _calc_grade(total_score: float, confidence: str, nat_power_grade: str) -> str:
+    """total_score → 등급 (AAA~F) — upload_short._score_to_grade와 동일"""
+    if total_score >= 85 and confidence == "HIGH" and nat_power_grade in ("POWER_BUY", "BUY"):
+        return "AAA"
+    elif total_score >= 75 and confidence == "HIGH":
+        return "AA"
+    elif total_score >= 65 and confidence == "HIGH":
+        return "A"
+    elif total_score >= 55:
+        return "BBB"
+    elif total_score >= 45:
+        return "BB"
+    elif total_score >= 35:
+        return "B"
+    elif total_score >= 25:
+        return "C"
+    elif total_score >= 15:
+        return "D"
+    else:
+        return "F"
+
+
+def _calc_signal_type(grade: str, nat_detail: str, tv_ratio: float,
+                      tv_pattern: str = "NORMAL") -> str:
+    """grade → signal_type (FORCE_BUY/BUY/WATCH/AVOID) — upload_short와 동일"""
+    inst_support = "기OK" in nat_detail or "기+" in nat_detail
+    if tv_pattern == "QUIET_ACCUMULATION" and grade in ("AAA", "AA", "A") and tv_ratio >= 2.0:
+        return "FORCE_BUY"
+    if grade in ("AAA", "AA", "A") and inst_support and tv_ratio >= 1.5:
+        return "FORCE_BUY"
+    elif grade in ("AAA", "AA", "A", "BBB") and (inst_support or tv_ratio >= 1.3):
+        return "BUY"
+    elif grade in ("AAA", "AA", "A", "BBB", "BB"):
+        return "WATCH"
+    else:
+        return "AVOID"
+
+
 def save_recommendation(report: RecommendationReport):
     """추천 리포트 저장 (stage간 전달용)"""
     import json
     path = _get_store_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+
+    stock_list = []
+    for s in report.stocks:
+        _grade = _calc_grade(
+            s.total_score, s.confidence,
+            getattr(s, "nat_power_grade", ""),
+        )
+        _sig = _calc_signal_type(
+            _grade, s.nationality_detail,
+            getattr(s, "tv_ratio", 1.0),
+            getattr(s, "tv_pattern", "NORMAL"),
+        )
+        stock_list.append({
+            "code": s.code, "name": s.name, "close": s.close,
+            "total_score": s.total_score, "confidence": s.confidence,
+            "grade": _grade, "signal_type": _sig,
+            "entry": s.entry, "sl": s.sl, "tp": s.tp,
+            "sl_source": s.sl_source,
+            "tech_detail": s.tech_detail, "news_detail": s.news_detail,
+            "sources": s.sources, "cross_count": s.cross_count,
+            "relay_score": s.relay_score, "premove_score": s.premove_score,
+            "tech_score": s.tech_score, "news_score": s.news_score,
+            "nationality_score": s.nationality_score,
+            "nationality_detail": s.nationality_detail,
+            "flow_signal": getattr(s, "flow_signal", ""),
+            "flow_score": getattr(s, "flow_score", 0.0),
+            "flow_detail": getattr(s, "flow_detail", ""),
+            "nat_power": getattr(s, "nat_power", 0.0),
+            "nat_power_grade": getattr(s, "nat_power_grade", ""),
+            "nat_power_detail": getattr(s, "nat_power_detail", ""),
+            "news_penalty": s.news_penalty,
+            "obv_penalty": s.obv_penalty,
+            "relative_penalty": s.relative_penalty,
+            "today_chg": s.today_chg,
+            "relative_str": s.relative_str,
+            "regime": getattr(s, "regime", "NORMAL"),
+            "regime_score": getattr(s, "regime_score", 0.0),
+            "regime_detail": getattr(s, "regime_detail", ""),
+            "tv_ratio": getattr(s, "tv_ratio", 1.0),
+            "tv_pattern": getattr(s, "tv_pattern", "NORMAL"),
+            "tv_score": getattr(s, "tv_score", 0.0),
+        })
 
     data = {
         "stage": report.stage,
@@ -2180,38 +2260,7 @@ def save_recommendation(report: RecommendationReport):
         "warning": report.warning,
         "cross_regime": report.cross_regime,
         "cross_regime_detail": report.cross_regime_detail,
-        "stocks": [
-            {
-                "code": s.code, "name": s.name, "close": s.close,
-                "total_score": s.total_score, "confidence": s.confidence,
-                "entry": s.entry, "sl": s.sl, "tp": s.tp,
-                "sl_source": s.sl_source,
-                "tech_detail": s.tech_detail, "news_detail": s.news_detail,
-                "sources": s.sources, "cross_count": s.cross_count,
-                "relay_score": s.relay_score, "premove_score": s.premove_score,
-                "tech_score": s.tech_score, "news_score": s.news_score,
-                "nationality_score": s.nationality_score,
-                "nationality_detail": s.nationality_detail,
-                "flow_signal": getattr(s, "flow_signal", ""),
-                "flow_score": getattr(s, "flow_score", 0.0),
-                "flow_detail": getattr(s, "flow_detail", ""),
-                "nat_power": getattr(s, "nat_power", 0.0),
-                "nat_power_grade": getattr(s, "nat_power_grade", ""),
-                "nat_power_detail": getattr(s, "nat_power_detail", ""),
-                "news_penalty": s.news_penalty,
-                "obv_penalty": s.obv_penalty,
-                "relative_penalty": s.relative_penalty,
-                "today_chg": s.today_chg,
-                "relative_str": s.relative_str,
-                "regime": getattr(s, "regime", "NORMAL"),
-                "regime_score": getattr(s, "regime_score", 0.0),
-                "regime_detail": getattr(s, "regime_detail", ""),
-                "tv_ratio": getattr(s, "tv_ratio", 1.0),
-                "tv_pattern": getattr(s, "tv_pattern", "NORMAL"),
-                "tv_score": getattr(s, "tv_score", 0.0),
-            }
-            for s in report.stocks
-        ],
+        "stocks": stock_list,
         "momentum_stocks": report.momentum_stocks,  # 소형주 급등 후보 (dict list)
         "war_relay_stocks": report.war_relay_stocks,  # 전쟁→재건 릴레이 종목
         "rotation_signal": report.rotation_signal,  # 섹터 로테이션 시그널

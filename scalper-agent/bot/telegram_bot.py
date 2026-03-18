@@ -2442,7 +2442,29 @@ class BodyHunterBot:
                 chat_id=chat_id, text=f"⚠️ 국적별 수급 실패: {str(e)[:200]}"
             )
 
-        # 4. Parquet 통합 빌드 (CSV → raw parquet → processed parquet)
+        # 4. 핵심 수집 완료 기록 (parquet/sync 실패해도 일봉+수급은 기록)
+        try:
+            import json as _json
+            collect_info = {
+                "date": date.today().strftime("%Y-%m-%d"),
+                "source": "bot",
+                "time": datetime.now().strftime("%H:%M:%S"),
+                "steps": {
+                    "daily": pykrx_cnt,
+                    "flow": len(r1) if r1 else 0,
+                    "nationality": 8,
+                    "parquet": 0,
+                    "sync": 0,
+                },
+            }
+            lc_path = Path(__file__).parent.parent / "data_store" / "_last_collect.json"
+            with open(lc_path, "w", encoding="utf-8") as f:
+                _json.dump(collect_info, f, ensure_ascii=False, indent=2)
+            logger.info(f"핵심 수집 완료 기록: 일봉={pykrx_cnt}, 수급={len(r1) if r1 else 0}")
+        except Exception as e:
+            logger.error(f"수집 기록 저장 실패: {e}")
+
+        # 5. Parquet 통합 빌드 (CSV → raw parquet → processed parquet)
         try:
             from data.extend_parquet_data import extend_parquet_all
             await context.bot.send_message(
@@ -2460,11 +2482,14 @@ class BodyHunterBot:
             logger.info(f"Parquet 빌드 완료: ok={ok}, fail={fail}")
         except Exception as e:
             logger.error(f"Parquet 빌드 실패: {e}")
-            await context.bot.send_message(
-                chat_id=chat_id, text=f"⚠️ Parquet 빌드 실패: {str(e)[:200]}"
-            )
+            try:
+                await context.bot.send_message(
+                    chat_id=chat_id, text=f"⚠️ Parquet 빌드 실패: {str(e)[:200]}"
+                )
+            except Exception:
+                pass
 
-        # 5. stock_data_daily 동기화
+        # 6. stock_data_daily 동기화
         try:
             from collect_all import step5_sync_stock_data_daily
             sync_cnt = await asyncio.to_thread(step5_sync_stock_data_daily)
@@ -2472,26 +2497,16 @@ class BodyHunterBot:
         except Exception as e:
             logger.error(f"stock_data_daily 동기화 실패: {e}")
 
-        # 6. 수집 완료 기록
+        # 7. 최종 수집 기록 업데이트 (parquet/sync 포함)
         try:
-            import json as _json
-            collect_info = {
-                "date": date.today().strftime("%Y-%m-%d"),
-                "source": "bot",
-                "steps": {
-                    "daily": pykrx_cnt,
-                    "flow": len(r1) if r1 else 0,
-                    "parquet": ok,
-                    "sync": sync_cnt,
-                },
-            }
-            lc_path = Path(__file__).parent.parent / "data_store" / "_last_collect.json"
+            collect_info["steps"]["parquet"] = ok
+            collect_info["steps"]["sync"] = sync_cnt
             with open(lc_path, "w", encoding="utf-8") as f:
                 _json.dump(collect_info, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
 
-        # 7. 최종 완료 요약 텔레그램 전송
+        # 8. 최종 완료 요약 텔레그램 전송
         total_elapsed = int(time.time() - t0)
         mins, secs = divmod(total_elapsed, 60)
         summary = (
