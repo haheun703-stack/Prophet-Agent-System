@@ -2140,7 +2140,7 @@ class AutoTrader:
                     if not hasattr(self, '_nxt_positions'):
                         self._nxt_positions = {}
                     pi = self.trader.fetch_price(code)
-                    entry_price = pi.get("current_price", 0) if pi.get("success") else 0
+                    entry_price = pi.get("current_price", 0) if pi and pi.get("success") else 0
                     self._nxt_positions[code] = {
                         "name": name,
                         "entry_price": entry_price,
