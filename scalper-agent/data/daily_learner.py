@@ -349,6 +349,199 @@ def calc_rolling_accuracy(days: int = 20) -> dict:
 
 
 # ═══════════════════════════════════════════
+#  4.5 NXT Nightwatch 성과 검증
+# ═══════════════════════════════════════════
+NXT_LOG_PATH = LEARNING_DIR / "nxt_signal_log.json"
+NXT_HISTORY_PATH = STORE_DIR / "learning" / "nxt_history.json"
+
+
+def _load_nxt_log() -> list:
+    if NXT_LOG_PATH.exists():
+        try:
+            return json.loads(NXT_LOG_PATH.read_text("utf-8"))
+        except (json.JSONDecodeError, Exception):
+            pass
+    return []
+
+
+def _save_nxt_log(log: list):
+    NXT_LOG_PATH.write_text(
+        json.dumps(log, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def verify_nxt_signals(today: str) -> Optional[dict]:
+    """어제 NXT 시그널의 오늘 수익률 검증
+
+    어제 nightwatch가 추천한 tier1 종목들의 당일 등락률을 측정.
+    Returns: {signal_date, signal, score, targets: [{code, name, return_pct}],
+             avg_return, hit_count, total, hit_rate} or None
+    """
+    # 히스토리에서 어제 리포트 찾기
+    if not NXT_HISTORY_PATH.exists():
+        logger.info("[NXT] 히스토리 없음 — 검증 스킵")
+        return None
+
+    try:
+        history = json.loads(NXT_HISTORY_PATH.read_text("utf-8"))
+    except (json.JSONDecodeError, Exception):
+        return None
+
+    if not history:
+        return None
+
+    # 어제 날짜 계산
+    from datetime import timedelta
+    today_dt = datetime.strptime(today, "%Y-%m-%d").date()
+    # 주말 고려: 월요일이면 금요일 리포트
+    if today_dt.weekday() == 0:  # 월요일
+        yesterday = (today_dt - timedelta(days=3)).strftime("%Y-%m-%d")
+    elif today_dt.weekday() == 6:  # 일요일
+        return None
+    elif today_dt.weekday() == 5:  # 토요일
+        return None
+    else:
+        yesterday = (today_dt - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    # 어제 리포트 찾기
+    yesterday_report = None
+    for h in history:
+        if h.get("date") == yesterday:
+            yesterday_report = h
+            break
+
+    if not yesterday_report:
+        logger.info(f"[NXT] {yesterday} 리포트 없음 — 검증 스킵")
+        return None
+
+    # tier1 종목의 오늘 수익률 확인
+    targets = yesterday_report.get("nxt_targets", [])
+    tier1 = [t for t in targets if t.get("tier") == 1]
+    if not tier1:
+        logger.info(f"[NXT] {yesterday} tier1 종목 없음")
+        return None
+
+    # KIS API로 당일 수익률 조회
+    sys.path.insert(0, str(BASE_DIR))
+    from bot.kis_trader import KISTrader
+    import time as _time
+    trader = KISTrader()
+
+    results = []
+    for t in tier1[:5]:  # 최대 5종목
+        code = t["code"]
+        name = t["name"]
+        try:
+            resp = trader.fetch_price(code)
+            _time.sleep(0.15)
+            if not resp or not resp.get("success"):
+                continue
+            change_pct = resp.get("change_rate", 0)
+            results.append({
+                "code": code,
+                "name": name,
+                "sector": t.get("sector", ""),
+                "return_pct": round(change_pct, 2),
+                "hit": change_pct > 0,
+            })
+        except Exception:
+            continue
+
+    if not results:
+        logger.info("[NXT] 수익률 조회 실패")
+        return None
+
+    total = len(results)
+    hits = sum(1 for r in results if r["hit"])
+    avg_ret = round(sum(r["return_pct"] for r in results) / total, 2)
+    hit_rate = round(hits / total * 100, 1)
+
+    record = {
+        "signal_date": yesterday,
+        "verify_date": today,
+        "signal": yesterday_report.get("signal", ""),
+        "signal_text": yesterday_report.get("signal_text", ""),
+        "total_score": yesterday_report.get("total_score", 0),
+        "recommended_sectors": yesterday_report.get("recommended_sectors", []),
+        "targets": results,
+        "total": total,
+        "hit_count": hits,
+        "hit_rate": hit_rate,
+        "avg_return": avg_ret,
+    }
+
+    # NXT 로그에 누적
+    log = _load_nxt_log()
+    log = [r for r in log if r.get("signal_date") != yesterday]  # 중복 방지
+    log.append(record)
+    if len(log) > 90:
+        log = log[-90:]
+    _save_nxt_log(log)
+
+    logger.info(f"[NXT] {yesterday} 검증: {hits}/{total} ({hit_rate}%) 평균 {avg_ret:+.2f}%")
+    return record
+
+
+def calc_nxt_rolling(days: int = 30) -> dict:
+    """NXT 시그널 Rolling 적중률
+
+    Returns: {period, total_days, total_stocks, hits, hit_rate,
+              avg_return, by_signal: {signal: {count, avg_return, hit_rate}},
+              best, worst}
+    """
+    log = _load_nxt_log()
+    if not log:
+        return {"period": 0, "total_days": 0, "total_stocks": 0,
+                "hits": 0, "hit_rate": 0, "avg_return": 0,
+                "by_signal": {}, "best": None, "worst": None}
+
+    recent = log[-days:]
+
+    all_targets = []
+    by_signal = defaultdict(lambda: {"count": 0, "return_sum": 0, "hits": 0})
+
+    for rec in recent:
+        sig = rec.get("signal_text", "")
+        for t in rec.get("targets", []):
+            all_targets.append(t)
+            by_signal[sig]["count"] += 1
+            by_signal[sig]["return_sum"] += t["return_pct"]
+            if t["hit"]:
+                by_signal[sig]["hits"] += 1
+
+    total_stocks = len(all_targets)
+    hits = sum(1 for t in all_targets if t["hit"])
+    avg_ret = round(sum(t["return_pct"] for t in all_targets) / total_stocks, 2) if total_stocks else 0
+    hit_rate = round(hits / total_stocks * 100, 1) if total_stocks else 0
+
+    # 시그널별 통계
+    by_signal_out = {}
+    for sig, stats in by_signal.items():
+        cnt = stats["count"]
+        by_signal_out[sig] = {
+            "count": cnt,
+            "avg_return": round(stats["return_sum"] / cnt, 2) if cnt else 0,
+            "hit_rate": round(stats["hits"] / cnt * 100, 1) if cnt else 0,
+        }
+
+    # 최고/최저 종목
+    best = max(all_targets, key=lambda t: t["return_pct"]) if all_targets else None
+    worst = min(all_targets, key=lambda t: t["return_pct"]) if all_targets else None
+
+    return {
+        "period": len(recent),
+        "total_days": len(recent),
+        "total_stocks": total_stocks,
+        "hits": hits,
+        "hit_rate": hit_rate,
+        "avg_return": avg_ret,
+        "by_signal": by_signal_out,
+        "best": best,
+        "worst": worst,
+    }
+
+
+# ═══════════════════════════════════════════
 #  5. 텔레그램 학습 리포트
 # ═══════════════════════════════════════════
 def format_learning_report(
@@ -357,6 +550,8 @@ def format_learning_report(
     missed: list,
     rolling: dict,
     insights: Optional[dict] = None,
+    nxt_verify: Optional[dict] = None,
+    nxt_rolling: Optional[dict] = None,
 ) -> str:
     """텔레그램 학습 리포트 포맷"""
     lines = [
@@ -435,6 +630,29 @@ def format_learning_report(
             lines.append("  TV 패턴 학습:")
             for p in notable[:2]:
                 lines.append(f"    🔬 {p['pattern']}: {p['hit_rate']}% (n={p['sample']})")
+
+    # ── NXT Nightwatch 성과 ──
+    if nxt_verify and nxt_verify.get("total", 0) > 0:
+        nv = nxt_verify
+        sig_icon = nv.get("signal", "🟡")
+        lines.append(f"\n{sig_icon} NXT 시그널 검증 ({nv['signal_date']})")
+        lines.append("────────────────────────")
+        lines.append(f"  신호: {nv.get('signal_text', '')} (점수 {nv.get('total_score', 0):+.1f})")
+        for t in nv.get("targets", []):
+            icon = "✅" if t["hit"] else "❌"
+            lines.append(f"  {icon} {t['name']}({t['code']}) {t['return_pct']:+.1f}%")
+        lines.append(f"  적중: {nv['hit_count']}/{nv['total']} ({nv['hit_rate']}%) | 평균 {nv['avg_return']:+.2f}%")
+
+    if nxt_rolling and nxt_rolling.get("total_days", 0) > 0:
+        nr = nxt_rolling
+        lines.append(f"\n📡 NXT {nr['period']}일 누적: {nr['hit_rate']}% ({nr['hits']}/{nr['total_stocks']}) 평균 {nr['avg_return']:+.2f}%")
+        if nr.get("by_signal"):
+            for sig, stats in sorted(nr["by_signal"].items(), key=lambda x: x[1]["avg_return"], reverse=True):
+                lines.append(f"    {sig}: {stats['hit_rate']}% (n={stats['count']}) 평균{stats['avg_return']:+.1f}%")
+        if nr.get("best"):
+            lines.append(f"  최고: {nr['best']['name']} {nr['best']['return_pct']:+.1f}%")
+        if nr.get("worst"):
+            lines.append(f"  최저: {nr['worst']['name']} {nr['worst']['return_pct']:+.1f}%")
 
     lines.append("")
     lines.append("━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -694,13 +912,26 @@ def run(quick: bool = False):
     # 4. Rolling 적중률
     rolling = calc_rolling_accuracy(20)
 
+    # 4.5 NXT Nightwatch 성과 검증
+    logger.info("[Phase 4.5] NXT 시그널 검증...")
+    nxt_verify = None
+    nxt_rolling = None
+    try:
+        nxt_verify = verify_nxt_signals(today)
+        nxt_rolling = calc_nxt_rolling(30)
+        if nxt_verify:
+            logger.info(f"NXT 검증: {nxt_verify['hit_count']}/{nxt_verify['total']} ({nxt_verify['hit_rate']}%)")
+    except Exception as e:
+        logger.error(f"NXT 검증 실패: {e}")
+
     # 5. 브레인 업데이트 (피드백 루프 핵심!)
     logger.info("[Phase 5] 브레인 업데이트 — 인사이트 추출...")
     insights = generate_insights()
 
     # 6. 텔레그램 리포트
     logger.info("[Phase 6] 텔레그램 리포트 전송...")
-    report = format_learning_report(today, verify, missed, rolling, insights)
+    report = format_learning_report(today, verify, missed, rolling, insights,
+                                     nxt_verify=nxt_verify, nxt_rolling=nxt_rolling)
     tg_send(report)
 
     logger.info("=== Daily Learner 완료 ===")
@@ -710,6 +941,8 @@ def run(quick: bool = False):
         "missed": missed,
         "rolling": rolling,
         "insights": insights,
+        "nxt_verify": nxt_verify,
+        "nxt_rolling": nxt_rolling,
     }
 
 

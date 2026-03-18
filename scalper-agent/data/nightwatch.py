@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data_store"
 REPORT_PATH = DATA_DIR / "nightwatch_report.json"
+HISTORY_PATH = DATA_DIR / "learning" / "nxt_history.json"
 
 # ═══════════════════════════════════════════════════
 #  yfinance 지연 import (설치 안 되어도 에러 안 남)
@@ -958,11 +959,61 @@ def run_nightwatch() -> NightwatchReport:
 #  저장 / 로드
 # ═══════════════════════════════════════════════════
 def save_nightwatch_report(report: NightwatchReport):
-    """리포트 JSON 저장"""
+    """리포트 JSON 저장 + 히스토리 누적"""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    report_dict = asdict(report)
+
+    # 최신 리포트 저장 (덮어쓰기)
     with open(REPORT_PATH, "w", encoding="utf-8") as f:
-        json.dump(asdict(report), f, ensure_ascii=False, indent=2)
-    logger.info(f"[NIGHTWATCH] 저장: {REPORT_PATH}")
+        json.dump(report_dict, f, ensure_ascii=False, indent=2)
+
+    # 히스토리 누적 (90일 보관)
+    _append_history(report_dict)
+    logger.info(f"[NIGHTWATCH] 저장: {REPORT_PATH} + 히스토리 누적")
+
+
+def _append_history(report_dict: dict):
+    """nxt_history.json에 날짜별 리포트 누적 (90일)"""
+    HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    history = []
+    if HISTORY_PATH.exists():
+        try:
+            history = json.loads(HISTORY_PATH.read_text("utf-8"))
+        except (json.JSONDecodeError, Exception):
+            history = []
+
+    report_date = report_dict.get("timestamp", "")[:10]  # "2026-03-18"
+
+    # 슬림 버전 저장 (raw_indicators 등 대형 필드 제외)
+    slim = {
+        "date": report_date,
+        "timestamp": report_dict.get("timestamp", ""),
+        "total_score": report_dict.get("total_score", 0),
+        "signal": report_dict.get("signal", ""),
+        "signal_text": report_dict.get("signal_text", ""),
+        "asian_score": report_dict.get("asian_score", 0),
+        "europe_score": report_dict.get("europe_score", 0),
+        "divergence_score": report_dict.get("divergence_score", 0),
+        "divergences": report_dict.get("divergences", []),
+        "recommended_sectors": report_dict.get("recommended_sectors", []),
+        "nxt_targets": [
+            {"code": t["code"], "name": t["name"], "sector": t.get("sector", ""),
+             "tier": t.get("tier", 2)}
+            for t in report_dict.get("nxt_targets", [])
+        ],
+        "selection_reason": report_dict.get("selection_reason", ""),
+    }
+
+    # 같은 날짜 중복 교체
+    history = [h for h in history if h.get("date") != report_date]
+    history.append(slim)
+
+    # 90일만 보관
+    if len(history) > 90:
+        history = history[-90:]
+
+    with open(HISTORY_PATH, "w", encoding="utf-8") as f:
+        json.dump(history, f, ensure_ascii=False, indent=2)
 
 
 def load_nightwatch_report() -> Optional[NightwatchReport]:
