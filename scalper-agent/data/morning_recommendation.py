@@ -949,8 +949,15 @@ def _step5_cross_validate(
         m_info = macd_result.get(code, {})
         b_info = bargain_result.get(code, {})
 
+        # TV-only 종목도 이름 해석 (tv_signals에서 조회)
+        _tv_name = ""
+        if tv_signals and code in tv_signals:
+            _tv_obj = tv_signals[code]
+            _tv_name = getattr(_tv_obj, "name", "") or (
+                _tv_obj.get("name", "") if isinstance(_tv_obj, dict) else "")
         name = (r_info.get("name") or p_info.get("name")
-                or m_info.get("name") or b_info.get("name", code))
+                or m_info.get("name") or b_info.get("name")
+                or _tv_name or code)
         close = (t_info.get("close")
                  or r_info.get("close")
                  or p_info.get("close")

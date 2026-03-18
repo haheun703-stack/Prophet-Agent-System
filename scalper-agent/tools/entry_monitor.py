@@ -68,13 +68,34 @@ def load_war_mode_targets() -> list[dict]:
     with open(rec_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
+    # 코드→이름 해석 캐시 (pykrx fallback)
+    _name_cache = {}
+
+    def _resolve_name(code: str, raw_name: str) -> str:
+        """코드가 이름으로 들어온 경우 pykrx로 해석"""
+        if raw_name and not raw_name.isdigit():
+            return raw_name
+        if code in _name_cache:
+            return _name_cache[code]
+        try:
+            from pykrx import stock
+            resolved = stock.get_market_ticker_name(code)
+            if resolved:
+                _name_cache[code] = resolved
+                return resolved
+        except Exception:
+            pass
+        _name_cache[code] = raw_name or code
+        return _name_cache[code]
+
     targets = []
     for s in data.get("stocks", []):
         if not s.get("code") or not s.get("name"):
             continue
+        name = _resolve_name(s["code"], s["name"])
         targets.append({
             "code": s.get("code", ""),
-            "name": s.get("name", ""),
+            "name": name,
             "close": s.get("close", 0),
             "sl": s.get("sl", 0),
             "tp": s.get("tp", 0),
