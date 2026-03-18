@@ -261,19 +261,19 @@ class KISTrader:
                     return {"success": False, "message": f"토큰 재발급 후에도 실패: {resp.get('msg1', '')}"}
 
                 output = resp.get("output", {})
-                cp = int(output.get("stck_prpr", 0))
+                cp = _safe_int(output.get("stck_prpr", 0))
                 if cp > 0:
                     with self._lock:
                         self._consecutive_failures = 0  # 성공 시 카운터 리셋
                     return {
                         "success": True,
                         "current_price": cp,
-                        "change_rate": float(output.get("prdy_ctrt", 0)),
-                        "volume": int(output.get("acml_vol", 0)),
-                        "high": int(output.get("stck_hgpr", 0)),
-                        "low": int(output.get("stck_lwpr", 0)),
-                        "open": int(output.get("stck_oprc", 0)),
-                        "strength": float(output.get("tday_rltv", 0) or 0),
+                        "change_rate": _safe_float(output.get("prdy_ctrt", 0)),
+                        "volume": _safe_int(output.get("acml_vol", 0)),
+                        "high": _safe_int(output.get("stck_hgpr", 0)),
+                        "low": _safe_int(output.get("stck_lwpr", 0)),
+                        "open": _safe_int(output.get("stck_oprc", 0)),
+                        "strength": _safe_float(output.get("tday_rltv", 0) or 0),
                     }
                 # cp == 0: API 응답은 왔지만 가격 없음 (장외시간/정지 등)
                 if attempt == 0:
@@ -863,8 +863,8 @@ class KISTrader:
                 headers=headers, params=params, timeout=5,
             )
             d = resp.json().get("output1", {})
-            ask1 = int(d.get("askp1", 0))
-            bid1 = int(d.get("bidp1", 0))
+            ask1 = _safe_int(d.get("askp1", 0))
+            bid1 = _safe_int(d.get("bidp1", 0))
 
             if ask1 <= 0 or bid1 <= 0:
                 return {"ok": True, "spread_pct": 0, "message": "호가 조회 실패 - 통과"}

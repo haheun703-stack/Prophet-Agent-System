@@ -2159,8 +2159,8 @@ class BodyHunterBot:
             jq.run_daily(self._job_start_tick_polling, time=kst_time(9, 1))
             logger.info("체결 폴링 등록: 09:01 KST 시작 (1분 간격, 장중)")
 
-        # 유니버스 리빌드 (08:30)
-        uni_str = bot_conf.get("universe_rebuild_time", "08:30")
+        # 유니버스 리빌드 (08:35 - premium_levels 08:30과 충돌 방지)
+        uni_str = bot_conf.get("universe_rebuild_time", "08:35")
         h5, m5 = map(int, uni_str.split(":"))
         jq.run_daily(self._job_rebuild_universe, time=kst_time(h5, m5))
         logger.info(f"유니버스 리빌드 등록: {uni_str} KST")
@@ -2189,9 +2189,9 @@ class BodyHunterBot:
         jq.run_daily(self._job_swing_picker, time=kst_time(16, 35))
         logger.info("스윙 종목 선정 등록: 16:35 KST")
 
-        # MACD 제로선 크로스 스캔 (16:40 - 일봉+수급 수집 후)
-        jq.run_daily(self._job_macd_scan, time=kst_time(16, 40))
-        logger.info("MACD 크로스 스캔 등록: 16:40 KST")
+        # MACD 제로선 크로스 스캔 (16:50 - 학습 리포트 후)
+        jq.run_daily(self._job_macd_scan, time=kst_time(16, 50))
+        logger.info("MACD 크로스 스캔 등록: 16:50 KST")
 
         # 사전감지 스캔 (08:50 - 장 시작 전)
         jq.run_daily(self._job_premove_scan, time=kst_time(8, 50))

@@ -42,8 +42,10 @@ def _load_cache() -> dict:
 
 def _save_cache(cache: dict):
     _STORE_DIR.mkdir(parents=True, exist_ok=True)
-    with open(_CACHE_PATH, "w", encoding="utf-8") as f:
+    tmp_path = _CACHE_PATH.with_suffix(".tmp")
+    with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(cache, f, ensure_ascii=False, indent=2)
+    tmp_path.replace(_CACHE_PATH)  # atomic rename
 
 
 # ─── WiseReport 크롤링 (Primary) ─────────────────────

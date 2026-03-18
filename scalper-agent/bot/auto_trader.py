@@ -235,11 +235,11 @@ class AutoTrader:
                     price_info = self.trader.fetch_price(code)
                     cp = price_info.get("current_price", 0)
                     if cp <= 0:
-                        # 매수 완료됐으나 가격 조회 실패 → 안전장치로 포지션 등록
-                        logger.error(f"가격 조회 실패 {code} — 매수가 기반 포지션 등록")
-                        cp = item.get("amount", 0) // max(1, item.get("amount", 0) // 50000)  # 대략적 추정
+                        # 매수 완료됐으나 가격 조회 실패 → SL 기반 포지션 등록
+                        logger.error(f"가격 조회 실패 {code} — SL/TP 기반 포지션 등록")
+                        cp = item.get("sl", 0) or item.get("tp", 0)
                         if cp <= 0:
-                            cp = item.get("sl", 10000)  # 최후 fallback
+                            cp = 10000  # 최후 fallback
                     target_state = self._init_dynamic_target(code, name, cp)
                     sl = target_state.dynamic_sl if target_state else item["sl"]
                     tp = target_state.dynamic_tp if target_state else item["tp"]
@@ -1040,21 +1040,26 @@ class AutoTrader:
             if result.get("success"):
                 bought += 1
                 price_info = self.trader.fetch_price(code)
-                cp = price_info.get("current_price", 0)
-                if cp > 0:
-                    self._positions[code] = {
-                        "entry_price": cp,
-                        "stop_loss": int(cp * (1 - sl_pct)),
-                        "take_profit": int(cp * (1 + tp_pct)),
-                        "high_watermark": cp,
-                        "trailing_activated": False,
-                        "trailing_sl": 0,
-                        "entry_date": datetime.now().strftime("%Y-%m-%d"),
-                        "name": code,
-                        "target_state": None,
-                        "regime": "NORMAL",
-                        "source": "day_scan",
-                    }
+                cp = price_info.get("current_price", 0) if price_info.get("success") else 0
+                if cp <= 0:
+                    # 매수 성공 후 가격 조회 실패 → 근사치 사용
+                    cp = int(buy_amount / max(1, result.get("qty", 1)))
+                    if cp <= 0:
+                        cp = 10000
+                    logger.error(f"day mode 가격 조회 실패 {code} — 근사치 {cp:,}원 사용")
+                self._positions[code] = {
+                    "entry_price": cp,
+                    "stop_loss": int(cp * (1 - sl_pct)),
+                    "take_profit": int(cp * (1 + tp_pct)),
+                    "high_watermark": cp,
+                    "trailing_activated": False,
+                    "trailing_sl": 0,
+                    "entry_date": datetime.now().strftime("%Y-%m-%d"),
+                    "name": code,
+                    "target_state": None,
+                    "regime": "NORMAL",
+                    "source": "day_scan",
+                }
                 await _send(f"✅ 자동 매수: {result.get('message')}")
             else:
                 await _send(f"❌ 매수 실패 {code}: {result.get('message')}")
@@ -1158,8 +1163,11 @@ class AutoTrader:
                     for p in bal.get("positions", []):
                         if p["code"] == code:
                             half = max(1, p["qty"] // 2)
-                            self.trader.smart_sell(code, half)  # 스마트 매도
-                            await self._alert(rtm.format_decision_alert(snap))
+                            sell_r = self.trader.smart_sell(code, half)
+                            if sell_r and sell_r.get("success"):
+                                await self._alert(rtm.format_decision_alert(snap))
+                            else:
+                                logger.error(f"AI 부분매도 실패 {code}: {sell_r}")
                             break
 
                 # 10분마다 전체 리포트 (매 20회차)
@@ -1236,6 +1244,9 @@ class AutoTrader:
 
                 elif self.mode == "day" and cp >= pos["take_profit"]:
                     result = self.trader.liquidate_one(code)
+                    if not result or not result.get("success"):
+                        logger.error(f"TP 매도 실패 {code}: {result} — 포지션 유지")
+                        continue
                     self._positions.pop(code, None)
                     gain = cp - entry
                     await self._alert(
@@ -1429,15 +1440,19 @@ class AutoTrader:
                         for p in bal_pt.get("positions", []):
                             if p["code"] == code:
                                 half = max(1, p["qty"] // 2)
-                                self.trader.smart_sell(code, half)
-                                pos["partial_sold"] = True
-                                await self._alert(
-                                    f"🟡 반분할 익절: {name}({code}) {half}주 @ {cp:,}\n"
-                                    f"   나머지 트레일링 전환 ({reason})"
+                                sell_r = self.trader.smart_sell(code, half)
+                                if sell_r and sell_r.get("success"):
+                                    pos["partial_sold"] = True
+                                    await self._alert(
+                                        f"🟡 반분할 익절: {name}({code}) {half}주 @ {cp:,}\n"
+                                        f"   나머지 트레일링 전환 ({reason})"
                                 )
                                 break
                     else:
                         result = self.trader.liquidate_one(code)
+                        if not result or not result.get("success"):
+                            logger.error(f"동적 전량매도 실패 {code}: {result} — 포지션 유지")
+                            continue
                         self._positions.pop(code, None)
                         await self._alert(f"🔴 동적 전량매도: {name}({code}) @ {cp:,} ({reason})")
                 elif action == ACTION_ADD:
@@ -1491,8 +1506,11 @@ class AutoTrader:
                     for p in bal.get("positions", []):
                         if p["code"] == code:
                             half = max(1, p["qty"] // 2)
-                            self.trader.smart_sell(code, half)
-                            await self._alert(f"🟡 부분매도: {name}({code}) {half}주 @ {cp:,}")
+                            sell_r = self.trader.smart_sell(code, half)
+                            if sell_r and sell_r.get("success"):
+                                await self._alert(f"🟡 부분매도: {name}({code}) {half}주 @ {cp:,}")
+                            else:
+                                logger.error(f"재평가 부분매도 실패 {code}: {sell_r}")
                             break
 
             except Exception as e:

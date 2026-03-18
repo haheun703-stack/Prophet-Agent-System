@@ -104,7 +104,7 @@ def verify_recommendations(today: str) -> dict:
         resp = trader.fetch_price(code)
         time.sleep(0.15)
 
-        if not resp.get("success"):
+        if not resp or not resp.get("success"):
             continue
 
         close = resp["current_price"]

@@ -290,14 +290,14 @@ def update_performance(bot_type: str = "QUANT") -> dict:
     today_str = date.today().isoformat()
 
     for sig in signals:
-        code = sig["ticker"]
-        entry = sig["entry_price"]
-        if entry <= 0:
+        code = sig.get("ticker", "")
+        entry = sig.get("entry_price") or 0
+        if not code or entry <= 0:
             continue
 
         try:
             pi = trader.fetch_price(code)
-            current = pi.get("current_price", 0) if pi else 0
+            current = pi.get("current_price", 0) if pi and pi.get("success") else 0
             time.sleep(0.15)
         except Exception:
             continue
@@ -375,9 +375,9 @@ def close_daytrading() -> int:
             return 0
 
         for sig in open_sigs:
-            cp = sig.get("current_price", sig["entry_price"])
-            entry = sig["entry_price"]
-            ret_pct = round((cp - entry) / entry * 100, 2) if entry else 0
+            entry = sig.get("entry_price") or 0
+            cp = sig.get("current_price") or entry
+            ret_pct = round((cp - entry) / entry * 100, 2) if entry > 0 else 0
             status = "CLOSED" if ret_pct >= 0 else "STOPPED"
 
             client.table("signals").update({

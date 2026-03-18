@@ -543,8 +543,8 @@ def evaluate_all_holdings() -> List[PositionVerdict]:
         resp = trader.fetch_price(code)
         time.sleep(0.2)
 
-        cp = resp.get("current_price", 0) if resp.get("success") else 0
-        chg = resp.get("change_rate", 0) if resp.get("success") else 0
+        cp = resp.get("current_price", 0) if resp and resp.get("success") else 0
+        chg = resp.get("change_rate", 0) if resp and resp.get("success") else 0
 
         verdict = evaluate_position(
             code=code, name=name,
