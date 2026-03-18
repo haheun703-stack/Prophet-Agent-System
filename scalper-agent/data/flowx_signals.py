@@ -609,9 +609,22 @@ def run_signal_update():
 # ══════════════════════════════════════════
 
 def _resolve_name(code: str, raw_name: str) -> str:
-    """코드가 이름으로 들어온 경우 pykrx로 해석"""
+    """코드가 이름으로 들어온 경우 universe.json → pykrx 순으로 해석"""
     if raw_name and not raw_name.isdigit():
         return raw_name
+    # universe.json fallback (빠르고 안정적)
+    try:
+        uni_path = _DATA_STORE / "universe.json"
+        if uni_path.exists():
+            import json as _jrn
+            with open(uni_path, "r", encoding="utf-8") as _f:
+                uni = _jrn.load(_f)
+            name = uni.get(code, {}).get("name", "")
+            if name:
+                return name
+    except Exception:
+        pass
+    # pykrx fallback
     try:
         from pykrx import stock
         resolved = stock.get_market_ticker_name(code)

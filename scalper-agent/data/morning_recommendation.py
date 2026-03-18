@@ -493,8 +493,12 @@ def _step3_tech_filter(codes_names: list[tuple[str, str]], market_chg: float = 0
 #  Step 4: 뉴스AI 필터
 # ═══════════════════════════════════════
 
-def _step4_news_filter(codes_names: list[tuple[str, str]]) -> dict:
-    """뉴스AI로 네거티브 종목 제거 (캐시 활용)
+def _step4_news_filter(codes_names: list[tuple[str, str]],
+                       max_new_stocks: int = 40) -> dict:
+    """뉴스AI로 네거티브 종목 제거 (캐시 활용 + 종목 수 제한)
+
+    Args:
+        max_new_stocks: 캐시 미스 시 최대 신규 분석 종목 수
 
     Returns: {code: {"sentiment": "...", "reason": "...", "score": N}}
     """
@@ -540,6 +544,11 @@ def _step4_news_filter(codes_names: list[tuple[str, str]]) -> dict:
     if not need_analysis:
         logger.info(f"뉴스AI: 전종목 캐시 히트 ({len(news_map)}건)")
         return news_map
+
+    # 캐시 미스 종목이 max_new_stocks 초과 시 제한
+    if len(need_analysis) > max_new_stocks:
+        logger.info(f"뉴스AI: 미분석 {len(need_analysis)}종목 → 상위 {max_new_stocks}종목만 분석")
+        need_analysis = need_analysis[:max_new_stocks]
 
     # 미분석 종목만 뉴스AI 실행
     try:
@@ -1274,6 +1283,18 @@ def _step6_kis_verify(stocks: list[RecommendedStock], market_chg: float = 0.0) -
         logger.warning(f"KIS API 초기화 실패: {e} - 검증 생략")
         return stocks
 
+    # 종목명 fallback용 universe 로드
+    _uni_names = {}
+    try:
+        import json as _j6
+        _uni_p = Path(__file__).resolve().parent.parent / "data_store" / "universe.json"
+        if _uni_p.exists():
+            with open(_uni_p, "r", encoding="utf-8") as _uf6:
+                for _c6, _v6 in _j6.load(_uf6).items():
+                    _uni_names[_c6] = _v6.get("name", _c6)
+    except Exception:
+        pass
+
     verified = []
     for s in stocks:
         try:
@@ -1285,8 +1306,18 @@ def _step6_kis_verify(stocks: list[RecommendedStock], market_chg: float = 0.0) -
             kis_price = r["current_price"]
             kis_chg = r["change_rate"]
 
-            # pykrx vs KIS 가격 괴리 체크 → 가격 교체
-            if s.close > 0:
+            # TV-only 등 close=0인 종목 → KIS 가격으로 설정
+            if s.close == 0 and kis_price > 0:
+                s.close = kis_price
+                s.entry = kis_price
+                s.sl = int(kis_price * 0.95)
+                s.tp = int(kis_price * 1.10)
+                logger.info(
+                    f"가격 보완: {s.name}({s.code}) close=0 "
+                    f"→ KIS {kis_price:,}원 (SL {s.sl:,} / TP {s.tp:,})"
+                )
+            elif s.close > 0:
+                # pykrx vs KIS 가격 괴리 체크 → 가격 교체
                 gap_pct = abs(kis_price - s.close) / s.close * 100
                 if gap_pct > 5.0:
                     logger.warning(
@@ -1302,6 +1333,12 @@ def _step6_kis_verify(stocks: list[RecommendedStock], market_chg: float = 0.0) -
             # KIS 기준 상대강도 업데이트
             s.today_chg = round(kis_chg, 1)
             s.relative_str = round(kis_chg - market_chg, 1)
+
+            # 이름 미해결 종목 보완 (종목코드가 이름인 경우)
+            if s.name == s.code:
+                resolved = _uni_names.get(s.code, "")
+                if resolved:
+                    s.name = resolved
 
             verified.append(s)
         except Exception as e:
@@ -1502,15 +1539,27 @@ def run_evening_recommendation() -> RecommendationReport:
     tech_result = _step3_tech_filter(codes_names, market_chg=market_chg)
     logger.info(f"  → 완료 ({time.time()-t0:.0f}s)")
 
-    # Step 4: 뉴스AI - 전종목 분석 (사전필터 제거)
+    # Step 4: 뉴스AI - 전종목 분석 (타임아웃 방어)
     t0 = time.time()
-    logger.info(f"[Step 4/6] 뉴스AI ({len(codes_names)}종목, 전체)...")
-    news_result = _step4_news_filter(codes_names)
+    NEWS_AI_TIMEOUT = 600  # 10분 최대
+    NEWS_AI_MAX_STOCKS = 40  # 캐시 미스 시 최대 40종목만 신규 분석
+    logger.info(f"[Step 4/6] 뉴스AI ({len(codes_names)}종목, timeout={NEWS_AI_TIMEOUT}s, max_new={NEWS_AI_MAX_STOCKS})...")
+    try:
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="news_ai") as _executor:
+            _future = _executor.submit(_step4_news_filter, codes_names, NEWS_AI_MAX_STOCKS)
+            news_result = _future.result(timeout=NEWS_AI_TIMEOUT)
+    except FuturesTimeout:
+        logger.warning(f"[Step 4] 뉴스AI 타임아웃 ({NEWS_AI_TIMEOUT}s) - 분석된 것만 사용")
+        news_result = {}
+    except Exception as e_news:
+        logger.warning(f"[Step 4] 뉴스AI 실패: {e_news} - 전체 NEUTRAL 처리")
+        news_result = {}
     # 누락 종목 NEUTRAL
     for code, name in codes_names:
         if code not in news_result:
             news_result[code] = {"sentiment": "NEUTRAL", "reason": "미분석", "score": 0}
-    logger.info(f"  → 완료 ({time.time()-t0:.0f}s)")
+    logger.info(f"  → 완료 ({time.time()-t0:.0f}s, 분석={len(news_result)}건)")
 
     # Step 5a: 네이버 수급 검증 (외국인/기관 5일 누적 순매매)
     #   기존 nationality_signal.py는 KRX 국적별 데이터 3종목만 존재 → 사실상 미작동
