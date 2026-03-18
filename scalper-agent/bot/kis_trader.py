@@ -341,22 +341,22 @@ class KISTrader:
             for item in data.get("output", []):
                 rows.append({
                     "date": item.get("stck_bsop_date", ""),
-                    "close": int(item.get("stck_clpr", 0)),
-                    "change": int(item.get("prdy_vrss", 0)),
+                    "close": _safe_int(item.get("stck_clpr", 0)),
+                    "change": _safe_int(item.get("prdy_vrss", 0)),
                     # 순매수 수량
-                    "foreign_net_qty": int(item.get("frgn_ntby_qty", 0)),
-                    "inst_net_qty": int(item.get("orgn_ntby_qty", 0)),
-                    "indi_net_qty": int(item.get("prsn_ntby_qty", 0)),
+                    "foreign_net_qty": _safe_int(item.get("frgn_ntby_qty", 0)),
+                    "inst_net_qty": _safe_int(item.get("orgn_ntby_qty", 0)),
+                    "indi_net_qty": _safe_int(item.get("prsn_ntby_qty", 0)),
                     # 순매수 금액 (백만원)
-                    "foreign_net_amount": int(item.get("frgn_ntby_tr_pbmn", 0)),
-                    "inst_net_amount": int(item.get("orgn_ntby_tr_pbmn", 0)),
-                    "indi_net_amount": int(item.get("prsn_ntby_tr_pbmn", 0)),
+                    "foreign_net_amount": _safe_int(item.get("frgn_ntby_tr_pbmn", 0)),
+                    "inst_net_amount": _safe_int(item.get("orgn_ntby_tr_pbmn", 0)),
+                    "indi_net_amount": _safe_int(item.get("prsn_ntby_tr_pbmn", 0)),
                     # 매수 수량
-                    "foreign_buy_qty": int(item.get("frgn_shnu_vol", 0)),
-                    "inst_buy_qty": int(item.get("orgn_shnu_vol", 0)),
+                    "foreign_buy_qty": _safe_int(item.get("frgn_shnu_vol", 0)),
+                    "inst_buy_qty": _safe_int(item.get("orgn_shnu_vol", 0)),
                     # 매도 수량
-                    "foreign_sell_qty": int(item.get("frgn_seln_vol", 0)),
-                    "inst_sell_qty": int(item.get("orgn_seln_vol", 0)),
+                    "foreign_sell_qty": _safe_int(item.get("frgn_seln_vol", 0)),
+                    "inst_sell_qty": _safe_int(item.get("orgn_seln_vol", 0)),
                 })
 
             return {"success": True, "data": rows}
