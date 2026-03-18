@@ -2232,6 +2232,10 @@ class BodyHunterBot:
         jq.run_daily(self._job_war_summary, time=kst_time(15, 15))
         logger.info("전쟁모드 추적 등록: 09:00 시작알림 + 60초 감시 + 30분 요약")
 
+        # ── FLOWX DAYTRADING 일괄 청산 (15:20 - 장 마감 전) ──
+        jq.run_daily(self._job_flowx_close_daytrading, time=kst_time(15, 20))
+        logger.info("FLOWX DAYTRADING 일괄 청산 등록: 15:20 KST")
+
         # ── JARVIS BRAIN 자본 배분 (백업용 - NIGHTWATCH 미실행 대비) ──
         jq.run_daily(self.auto_trader.job_brain_allocation, time=kst_time(16, 36))
         logger.info("BRAIN 배분 백업 등록: 16:36 KST")
@@ -2700,6 +2704,15 @@ class BodyHunterBot:
             from data.daily_learner import run as run_learner
             result = await asyncio.to_thread(run_learner)
             logger.info(f"일간 학습 완료: 적중률 {result['verify']['hit_rate']}%")
+
+            # FLOWX 시그널 성과 업데이트 + scoreboard 집계
+            try:
+                from data.flowx_signals import run_signal_update
+                fx_result = await asyncio.to_thread(run_signal_update)
+                logger.info(f"[FLOWX] 시그널 업데이트: {fx_result.get('quant', {})}")
+            except Exception as e_fx:
+                logger.warning(f"[FLOWX] 시그널 업데이트 실패 (무시): {e_fx}")
+
         except Exception as e:
             logger.error(f"일간 학습 실패: {e}")
             chat_id = os.getenv("TELEGRAM_CHAT_ID")
@@ -2707,6 +2720,21 @@ class BodyHunterBot:
                 await context.bot.send_message(
                     chat_id=chat_id, text=f"⚠️ 일간 학습 실패: {str(e)[:200]}"
                 )
+
+    # ── FLOWX DAYTRADING 일괄 청산 ────────────────────
+
+    async def _job_flowx_close_daytrading(self, context):
+        """15:20 KST - DAYTRADING OPEN 시그널 전량 CLOSED"""
+        from datetime import date
+        if date.today().weekday() >= 5:
+            return
+        try:
+            from data.flowx_signals import close_daytrading
+            count = await asyncio.to_thread(close_daytrading)
+            if count > 0:
+                logger.info(f"[FLOWX] DAYTRADING {count}건 일괄 청산")
+        except Exception as e:
+            logger.warning(f"[FLOWX] DAYTRADING 청산 실패 (무시): {e}")
 
     # ── 옵션 만기일 알림 ──────────────────────────────
 

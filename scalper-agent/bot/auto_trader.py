@@ -1569,6 +1569,13 @@ class AutoTrader:
             report = await asyncio.to_thread(run_evening_recommendation)
             save_recommendation(report)
 
+            # FLOWX 시그널 로깅 (추천 → signals 테이블)
+            try:
+                from data.flowx_signals import log_quant_signals
+                await asyncio.to_thread(log_quant_signals)
+            except Exception as e_sig:
+                logger.warning(f"[FLOWX] 시그널 로깅 실패 (무시): {e_sig}")
+
             msg = format_recommendation(report)
             # 긴 메시지 분할
             if len(msg) > 4000:
