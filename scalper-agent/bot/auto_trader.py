@@ -1735,6 +1735,19 @@ class AutoTrader:
                 except Exception as e2:
                     logger.warning(f"ETF 시그널 전송 실패: {e2}")
 
+            # FLOWX 모닝 브리핑 생성 + 업로드
+            try:
+                from data.flowx_briefing import run_morning_briefing
+                result = await asyncio.to_thread(
+                    run_morning_briefing, upload=True, telegram=True
+                )
+                if result:
+                    logger.info(f"[FLOWX] 모닝 브리핑 업로드 완료: {result['date']}")
+                else:
+                    logger.warning("[FLOWX] 모닝 브리핑 생성 실패")
+            except Exception as e_fx:
+                logger.error(f"[FLOWX] 브리핑 실패: {e_fx}")
+
         except Exception as e:
             logger.error(f"미국장 체크 실패: {e}")
             await _send(f"❌ 미국장 체크 실패: {e}")
