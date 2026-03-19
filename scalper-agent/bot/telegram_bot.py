@@ -2299,6 +2299,16 @@ class BodyHunterBot:
         jq.run_daily(self._job_paper_eod, time=kst_time(15, 25))
         logger.info("PAPER 트레이딩 등록: 09:05 등록 + 5분 체크 + 15:25 EOD")
 
+        # ── 장중 TV 실시간 스캔 (30분마다 유니버스 전체) ──
+        jq.run_daily(self._job_intraday_tv_init, time=kst_time(10, 0))
+        jq.run_repeating(self._job_intraday_tv_scan, interval=1800, first=3600)
+        logger.info("장중 TV 스캔 등록: 10:00 초기화 + 30분 유니버스 스캔")
+
+        # ── 프리클로즈 스캔 (14:30 스캔 + 14:50 리포트) ──
+        jq.run_daily(self._job_preclose_scan, time=kst_time(14, 30))
+        jq.run_daily(self._job_preclose_report, time=kst_time(14, 50))
+        logger.info("프리클로즈 등록: 14:30 스캔 + 14:50 리포트")
+
         # ── FLOWX DAYTRADING 일괄 청산 (15:20 - 장 마감 전) ──
         jq.run_daily(self._job_flowx_close_daytrading, time=kst_time(15, 20))
         logger.info("FLOWX DAYTRADING 일괄 청산 등록: 15:20 KST")
@@ -2858,6 +2868,183 @@ class BodyHunterBot:
                 logger.info(f"PAPER EOD: {len(events)}건 시간손절")
         except Exception as e:
             logger.error(f"PAPER EOD 실패: {e}")
+
+    # ── 장중 TV 실시간 스캔 ────────────────────────────
+
+    # 클래스 레벨 상태 (인스턴스별)
+    _tv_avgs: dict = None
+    _tv_history = None
+    _tv_prev_codes: set = None
+
+    async def _job_intraday_tv_init(self, context):
+        """10:00 장중 TV 스캔 초기화 — 20일 평균 거래대금 사전계산"""
+        from datetime import date
+        if date.today().weekday() >= 5:
+            return
+        try:
+            from data.trading_value_scanner import (
+                precompute_tv_averages, IntradayHistory,
+            )
+            uni_path = Path(__file__).resolve().parent.parent / "data_store" / "universe.json"
+            if not uni_path.exists():
+                return
+            import json as _json
+            with open(uni_path, "r", encoding="utf-8") as f:
+                universe = _json.load(f)
+
+            self._tv_avgs = await asyncio.to_thread(
+                precompute_tv_averages, universe, 5.0
+            )
+            self._tv_history = IntradayHistory()
+            self._tv_prev_codes = set()
+            logger.info(f"[TV Intraday] 초기화 완료: {len(self._tv_avgs)}종목")
+        except Exception as e:
+            logger.error(f"[TV Intraday] 초기화 실패: {e}")
+
+    async def _job_intraday_tv_scan(self, context):
+        """30분 반복 — 유니버스 전체 장중 TV 스캔"""
+        from datetime import date
+        now = datetime.now()
+        if date.today().weekday() >= 5:
+            return
+        # 장중(10:00~15:20)만 실행
+        now_min = now.hour * 60 + now.minute
+        if now_min < 600 or now_min > 920:
+            return
+        if not self._tv_avgs:
+            return
+
+        try:
+            from data.trading_value_scanner import (
+                scan_intraday_universe, save_intraday_results,
+            )
+            signals = await asyncio.to_thread(
+                scan_intraday_universe,
+                self.trader,
+                self._tv_avgs,
+                self._tv_history,
+                self._tv_prev_codes,
+                500,
+                60.0,
+            )
+
+            if signals:
+                save_intraday_results(signals)
+                chat_id = os.getenv("TELEGRAM_CHAT_ID")
+                # 상위 5개만 텔레그램 알림
+                for sig in signals[:5]:
+                    if sig.code in self._tv_prev_codes:
+                        continue
+                    tag = {"QUIET_ACCUMULATION": "조용한매집",
+                           "GRADUAL_BUILDUP": "점진적증가"}.get(
+                        sig.pattern, "거래대금폭발")
+                    accel = f" | 가속 {sig.acceleration:.1f}x" if sig.acceleration > 1.1 else ""
+                    msg = (
+                        f"[장중감지] {sig.name} — {tag}\n"
+                        f"  TV {sig.estimated_tv_ratio:.1f}x | "
+                        f"가격 {sig.change_pct:+.1f}% | score {sig.score:.0f}\n"
+                        f"  예상{sig.estimated_daily_tv:,.0f}억 "
+                        f"(실제{sig.intraday_tv:,.0f}억, "
+                        f"평균{sig.avg_20d_tv:,.0f}억){accel}\n"
+                        f"  신뢰도: {sig.confidence}"
+                    )
+                    await context.bot.send_message(chat_id=chat_id, text=msg)
+                    self._tv_prev_codes.add(sig.code)
+
+                logger.info(f"[TV Intraday] {len(signals)}개 신호, "
+                            f"{len(self._tv_prev_codes)}개 알림 누적")
+        except Exception as e:
+            logger.error(f"[TV Intraday] 스캔 실패: {e}")
+
+    # ── 14:30 프리클로즈 스캔 ────────────────────────────
+
+    async def _job_preclose_scan(self, context):
+        """14:30 프리클로즈 스캔 — 장중 데이터 기반 내일 후보 도출"""
+        from datetime import date
+        if date.today().weekday() >= 5:
+            return
+        try:
+            from data.preclose_scanner import scan_preclose, save_preclose_results
+            candidates = await asyncio.to_thread(
+                scan_preclose,
+                trader=self.trader,
+                min_preclose_score=50.0,
+                max_candidates=5,
+            )
+            if candidates:
+                save_preclose_results(candidates)
+                logger.info(f"[Preclose] 14:30 스캔 완료: {len(candidates)}종목")
+            else:
+                logger.info("[Preclose] 14:30 스캔 — 후보 없음")
+        except Exception as e:
+            logger.error(f"[Preclose] 스캔 실패: {e}")
+
+    async def _job_preclose_report(self, context):
+        """14:50 프리클로즈 리포트 텔레그램 전송"""
+        from datetime import date
+        if date.today().weekday() >= 5:
+            return
+        try:
+            from data.preclose_scanner import (
+                load_preclose_results, format_preclose_report,
+                PrecloseCandidate, cross_validate_with_evening,
+            )
+            raw = load_preclose_results()
+            if not raw:
+                return
+
+            # dict → PrecloseCandidate 변환
+            candidates = []
+            for r in raw:
+                try:
+                    cand = PrecloseCandidate(
+                        code=r["code"],
+                        name=r["name"],
+                        sector=r.get("sector", ""),
+                        preclose_score=r["preclose_score"],
+                        score_detail=r.get("score_detail", {}),
+                        intraday_tv_ratio=r.get("intraday_tv_ratio", 0),
+                        tv_pattern=r.get("tv_pattern", ""),
+                        change_pct=r.get("change_pct", 0),
+                        current_price=r.get("current_price", 0),
+                        acceleration=r.get("acceleration", 1.0),
+                        inst_net_buy=r.get("inst_net_buy", 0),
+                        foreign_net_buy=r.get("foreign_net_buy", 0),
+                        trade_object=r.get("trade_object"),
+                        rr_verdict=r.get("rr_verdict", ""),
+                    )
+                    candidates.append(cand)
+                except Exception:
+                    continue
+
+            if not candidates:
+                return
+
+            report = format_preclose_report(candidates)
+
+            # 교차 검증 (저녁 분석 결과와 겹치는 종목)
+            overlap = cross_validate_with_evening([c.code for c in candidates])
+            if overlap:
+                from data.preclose_scanner import DATA_DIR
+                rec_path = DATA_DIR / "recommendation.json"
+                if rec_path.exists():
+                    import json as _json
+                    rec = _json.loads(rec_path.read_text(encoding="utf-8"))
+                    name_map = {s["code"]: s["name"]
+                                for s in rec.get("stocks", []) if "code" in s}
+                    names = [name_map.get(c, c) for c in overlap]
+                    report += f"\n\n[교차검증] 저녁 분석과 겹침: {', '.join(names)}"
+                    report += "\n→ 확신도 UP (conviction HIGH)"
+
+            # PAPER 태그
+            report = "[PAPER-PRECLOSE]\n" + report
+
+            chat_id = os.getenv("TELEGRAM_CHAT_ID")
+            await context.bot.send_message(chat_id=chat_id, text=report)
+            logger.info(f"[Preclose] 리포트 전송: {len(candidates)}종목")
+
+        except Exception as e:
+            logger.error(f"[Preclose] 리포트 실패: {e}")
 
     # ── FLOWX DAYTRADING 일괄 청산 ────────────────────
 

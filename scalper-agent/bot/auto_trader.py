@@ -1550,11 +1550,32 @@ class AutoTrader:
             return
 
         if self.mode == "day":
-            # 데이 모드: 전량 청산
-            logger.info("장마감 전량 청산")
-            await self._alert("🏁 장마감 전량 청산 시작...")
-            result = self.trader.liquidate_all()
-            self._positions.clear()
+            # 데이 모드: 전량 청산 (preclose 태그 포지션은 제외)
+            preclose_codes = {c for c, p in self._positions.items()
+                              if p.get("source") == "preclose"}
+            if preclose_codes:
+                logger.info(f"장마감 청산 (preclose {len(preclose_codes)}종목 제외)")
+                await self._alert(
+                    f"🏁 장마감 청산 시작...\n"
+                    f"  (preclose {len(preclose_codes)}종목 제외 — 내일용)"
+                )
+                # preclose 제외하고 개별 청산
+                for code, pos in list(self._positions.items()):
+                    if code in preclose_codes:
+                        continue
+                    qty = pos.get("qty", 0)
+                    if qty > 0:
+                        try:
+                            self.trader.liquidate_one(code, qty)
+                        except Exception as e:
+                            logger.warning(f"EOD 청산 실패 {code}: {e}")
+                    self._positions.pop(code, None)
+                result = {"success": True, "message": "preclose 제외 청산 완료"}
+            else:
+                logger.info("장마감 전량 청산")
+                await self._alert("🏁 장마감 전량 청산 시작...")
+                result = self.trader.liquidate_all()
+                self._positions.clear()
             await self._alert(f"{'✅' if result.get('success') else '❌'} {result.get('message')}")
         else:
             # 스윙 모드: 요약만

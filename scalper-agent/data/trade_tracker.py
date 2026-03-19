@@ -389,6 +389,131 @@ class TradeTracker:
 
         return "\n".join(lines)
 
+    # ═══════════════════════════════════════════
+    #  PAPER-PRECLOSE 트레이딩
+    # ═══════════════════════════════════════════
+
+    def register_paper_preclose(self, candidates: list, kis=None) -> list:
+        """프리클로즈 후보를 PAPER-PRECLOSE로 등록
+
+        Args:
+            candidates: PrecloseCandidate 리스트 (또는 dict 리스트)
+            kis: KISTrader 인스턴스 (현재가 조회용)
+        Returns:
+            등록된 종목명 리스트
+        """
+        registered = []
+        for c in candidates:
+            # dict 또는 PrecloseCandidate 지원
+            if hasattr(c, "code"):
+                code = c.code
+                name = c.name
+                to = c.trade_object if hasattr(c, "trade_object") else None
+            elif isinstance(c, dict):
+                code = c["code"]
+                name = c.get("name", code)
+                to = c.get("trade_object")
+            else:
+                continue
+
+            if self.is_tracked(code):
+                continue
+
+            # 현재가 조회
+            entry = 0
+            if kis:
+                try:
+                    p = kis.fetch_price(code)
+                    if p.get("success"):
+                        entry = p.get("current_price", 0)
+                except Exception:
+                    pass
+
+            # trade_object가 있으면 그 정보 사용
+            if isinstance(to, dict) and to.get("entry_price"):
+                if entry <= 0:
+                    entry = to["entry_price"]
+                trade_data = {
+                    "trade_id": to.get("trade_id", f"PC_{datetime.now():%Y%m%d}_{code}"),
+                    "code": code,
+                    "name": name,
+                    "status": "ACTIVE",
+                    "entry_price": to.get("entry_price", entry),
+                    "stop_loss": to.get("stop_loss", 0),
+                    "target_price": to.get("target_price", 0),
+                    "rr_ratio": to.get("rr_ratio", 0),
+                    "rr_verdict": to.get("rr_verdict", ""),
+                    "expected_return": to.get("reward_pct", 0),
+                    "expected_hold_days": to.get("expected_hold_days", 3),
+                    "time_stop_days": to.get("time_stop_days", 5),
+                    "total_score": to.get("total_score", 0),
+                    "sources": to.get("sources", []),
+                    "conviction": to.get("conviction", 0.7),
+                    "position_krw": int(to.get("position_krw", 0) * 0.7),
+                    "shares": to.get("shares", 0),
+                    "registered_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "actual_entry": entry,
+                    "actual_exit": 0,
+                    "actual_pnl": 0.0,
+                    "hold_start": datetime.now().strftime("%Y-%m-%d"),
+                    "hold_days": 0,
+                    "paper": True,
+                    "preclose": True,
+                    "source": "preclose",
+                }
+            else:
+                # trade_object 없이 기본 등록
+                preclose_score = 0
+                if hasattr(c, "preclose_score"):
+                    preclose_score = c.preclose_score
+                elif isinstance(c, dict):
+                    preclose_score = c.get("preclose_score", 0)
+
+                if entry <= 0:
+                    entry = c.current_price if hasattr(c, "current_price") else c.get("current_price", 0)
+
+                trade_data = {
+                    "trade_id": f"PC_{datetime.now():%Y%m%d}_{code}",
+                    "code": code,
+                    "name": name,
+                    "status": "ACTIVE",
+                    "entry_price": entry,
+                    "stop_loss": int(entry * 0.965),
+                    "target_price": int(entry * 1.05),
+                    "rr_ratio": 1.4,
+                    "rr_verdict": "MARGINAL",
+                    "expected_return": 5.0,
+                    "expected_hold_days": 3,
+                    "time_stop_days": 5,
+                    "total_score": preclose_score,
+                    "sources": ["preclose"],
+                    "conviction": 0.7,
+                    "position_krw": 0,
+                    "shares": 0,
+                    "registered_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                    "actual_entry": entry,
+                    "actual_exit": 0,
+                    "actual_pnl": 0.0,
+                    "hold_start": datetime.now().strftime("%Y-%m-%d"),
+                    "hold_days": 0,
+                    "paper": True,
+                    "preclose": True,
+                    "source": "preclose",
+                }
+
+            self._active[code] = trade_data
+            registered.append(name)
+            logger.info(f"[TradeTracker] PAPER-PRECLOSE: {name} @ {entry:,}")
+
+        if registered:
+            self._save()
+        return registered
+
+    def get_preclose_codes(self) -> list:
+        """현재 활성 PAPER-PRECLOSE 종목 코드 리스트"""
+        return [code for code, t in self._active.items()
+                if t.get("preclose") and t.get("status") == "ACTIVE"]
+
     @staticmethod
     def get_paper_review_stats() -> dict:
         """2주 리뷰용 핵심 4 지표
