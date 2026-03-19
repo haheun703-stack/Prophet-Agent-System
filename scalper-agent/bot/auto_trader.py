@@ -364,33 +364,116 @@ class AutoTrader:
             return
 
         candidates = []
+        manual_picks = []  # 수동 모드 종목 (알림만)
 
-        # 1) 저녁 추천 파이프라인 결과 우선 (Stage 1~3)
+        # 0.5) /내일 사용자 지정 종목 우선
+        user_picks_used = False
+        try:
+            import json as _json_at
+            from datetime import date as _date_at
+            picks_path = Path(__file__).parent.parent / "data_store" / "tomorrow_picks.json"
+            if picks_path.exists():
+                with open(picks_path, "r", encoding="utf-8") as f:
+                    picks_data = _json_at.load(f)
+                pick_date = picks_data.get("date", "")
+                today_str = _date_at.today().strftime("%Y-%m-%d")
+                if pick_date == today_str and picks_data.get("picks"):
+                    # 유효한 오늘자 picks → recommendation 대신 사용
+                    from data.morning_recommendation import load_recommendation
+                    rec_for_picks = load_recommendation()
+                    # 추천 데이터에서 SL/TP/score 가져오기
+                    rec_map = {}
+                    if rec_for_picks and rec_for_picks.stocks:
+                        for s in rec_for_picks.stocks:
+                            rec_map[s.code] = s
+
+                    # Trade Object에서 SL/TP 가져오기
+                    to_map_picks = {}
+                    try:
+                        to_path = Path(__file__).parent.parent / "data_store" / "trade_objects.json"
+                        if to_path.exists():
+                            with open(to_path, "r", encoding="utf-8") as f:
+                                to_data = _json_at.load(f)
+                            for t in to_data.get("objects", []):
+                                to_map_picks[t.get("code", "")] = t
+                    except Exception:
+                        pass
+
+                    for p in picks_data["picks"]:
+                        code, name = p["code"], p["name"]
+                        if p.get("mode") == "manual":
+                            manual_picks.append({"code": code, "name": name})
+                            continue
+
+                        # SL/TP: trade_object > recommendation > 기본값
+                        to = to_map_picks.get(code, {})
+                        rs = rec_map.get(code)
+                        entry = to.get("entry_price", 0) or (rs.entry if rs else 0)
+                        sl = to.get("stop_loss", 0) or (rs.sl if rs else 0)
+                        tp = to.get("target_price", 0) or (rs.tp if rs else 0)
+
+                        # entry/sl/tp 없으면 현재가 기반 기본값
+                        if not entry:
+                            try:
+                                cp_data = await asyncio.to_thread(
+                                    self.trader.fetch_current_price, code
+                                )
+                                entry = cp_data.get("price", 0) if cp_data else 0
+                            except Exception:
+                                entry = 0
+                        if entry and not sl:
+                            sl = int(entry * 0.965)  # 기본 -3.5%
+                        if entry and not tp:
+                            tp = int(entry * 1.05)   # 기본 +5%
+
+                        candidates.append({
+                            "code": code, "name": name,
+                            "total_score": to.get("total_score", rs.total_score if rs else 50),
+                            "entry": entry, "sl": sl, "tp": tp,
+                            "tp1_quick": tp,
+                            "source": "user_pick",
+                            "confidence": to.get("confidence", rs.confidence if rs else "USER"),
+                            "regime": to.get("regime", getattr(rs, "regime", "NORMAL") if rs else "NORMAL"),
+                        })
+
+                    user_picks_used = True
+                    auto_cnt = len(candidates)
+                    manual_cnt = len(manual_picks)
+                    await _send(
+                        f"📋 사용자 지정 종목 로드: 자동 {auto_cnt} + 수동 {manual_cnt}"
+                    )
+                    # 사용 후 파일 삭제 (1회성)
+                    picks_path.unlink(missing_ok=True)
+        except Exception as e:
+            logger.warning(f"tomorrow_picks 로드 실패: {e}")
+
+        # 1) 저녁 추천 파이프라인 결과 (사용자 지정 없을 때만)
         cross_regime = ""
         rec = None
-        try:
-            from data.morning_recommendation import load_recommendation
-            rec = load_recommendation()
-            if rec and rec.stocks:
-                candidates = [
-                    {
-                        "code": s.code, "name": s.name,
-                        "total_score": s.total_score,
-                        "entry": s.entry, "sl": s.sl, "tp": s.tp,
-                        "tp1_quick": s.tp,
-                        "source": "pipeline",
-                        "confidence": s.confidence,
-                        "regime": getattr(s, "regime", "NORMAL"),
-                        "regime_score": getattr(s, "regime_score", 0.0),
-                    }
-                    for s in rec.stocks
-                ]
-                cross_regime = getattr(rec, "cross_regime", "")
-                await _send(f"저녁 추천 {len(candidates)}종목 로드 완료")
-                if rec.warning:
-                    await _send(f"{rec.warning}")
-        except Exception as e:
-            logger.warning(f"추천 로드 실패: {e}")
+        if not user_picks_used:
+            try:
+                from data.morning_recommendation import load_recommendation
+                rec = load_recommendation()
+                if rec and rec.stocks:
+                    candidates = [
+                        {
+                            "code": s.code, "name": s.name,
+                            "total_score": s.total_score,
+                            "entry": s.entry, "sl": s.sl, "tp": s.tp,
+                            "tp1_quick": s.tp,
+                            "source": "pipeline",
+                            "confidence": s.confidence,
+                            "regime": getattr(s, "regime", "NORMAL"),
+                            "regime_score": getattr(s, "regime_score", 0.0),
+                        }
+                        for s in rec.stocks
+                    ]
+                    cross_regime = getattr(rec, "cross_regime", "")
+                    await _send(f"저녁 추천 {len(candidates)}종목 로드 완료")
+                    if rec.warning:
+                        await _send(f"{rec.warning}")
+            except Exception as e:
+                logger.warning(f"추천 로드 실패: {e}")
 
         # 1.2) 전쟁→재건 릴레이 종목 추가
         war_relay_count = 0
@@ -680,6 +763,13 @@ class AutoTrader:
         lines.append(f"\n30초마다 KIS API로 가격/거래량/체결강도 관찰 중...")
         lines.append(f"진입 조건 충족 시 자동 매수 (최대 30분 관찰)")
         await _send("\n".join(lines))
+
+        # 수동 모드 종목 알림 (자동매수 안 함)
+        if manual_picks:
+            manual_lines = ["📋 수동 종목 (알림만, 자동매수 안 함):"]
+            for mp in manual_picks:
+                manual_lines.append(f"   {mp['name']}({mp['code']}) — 직접 진입 판단")
+            await _send("\n".join(manual_lines))
 
     # _morning_momentum 삭제됨 (PF 0.70 비활성화 → 데드코드 정리 2026-03-14)
 

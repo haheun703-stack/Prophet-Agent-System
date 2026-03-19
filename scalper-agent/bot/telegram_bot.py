@@ -2093,6 +2093,7 @@ class BodyHunterBot:
             r"^감시$": self.cmd_watchlist,
             r"^ㄹ$": self.cmd_event_log,
             r"^이벤트로그$": self.cmd_event_log,
+            r"^내일$": self.cmd_tomorrow,
         }
 
         for pattern, handler in exact_commands.items():
@@ -2130,6 +2131,9 @@ class BodyHunterBot:
 
         app.add_handler(
             MessageHandler(filters.Regex(r"^국적수급\s+.+"), self.cmd_nationality)
+        )
+        app.add_handler(
+            MessageHandler(filters.Regex(r"^내일\s+.+"), self.cmd_tomorrow)
         )
 
         # 인자 없는 "분석" / "뉴스" → 안내
@@ -3377,6 +3381,149 @@ class BodyHunterBot:
             return
         text = read_today_log(20)
         await update.message.reply_text(f"이벤트 로그 (최근 20줄)\n━━━━━━━━━━━━━━━━━━━\n{text[-3500:]}")
+
+    async def cmd_tomorrow(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """내일 매수 종목 등록 / 조회 / 취소
+
+        사용법:
+            /내일                → 현재 등록 목록 조회
+            /내일 GS건설 제일일렉트릭  → 자동 VWAP 진입 등록
+            /내일 GS건설 풍산수동      → 풍산은 알림만 (수동)
+            /내일 취소            → 목록 초기화
+        """
+        if not self._is_authorized(update):
+            return
+
+        import json as _json
+        from bot.kis_trader import resolve_stock
+
+        picks_path = Path(__file__).parent.parent / "data_store" / "tomorrow_picks.json"
+        text = update.message.text.strip()
+        # "내일 ..." 또는 "/내일 ..."
+        parts = text.split()
+        args = parts[1:] if len(parts) > 1 else []
+
+        # ── 조회 (인수 없음) ──
+        if not args:
+            if not picks_path.exists():
+                await update.message.reply_text("내일 매수 목록 없음\n사용법: 내일 GS건설 제일일렉트릭")
+                return
+            with open(picks_path, "r", encoding="utf-8") as f:
+                data = _json.load(f)
+            if not data.get("picks"):
+                await update.message.reply_text("내일 매수 목록 비어있음")
+                return
+            lines = [f"📋 내일 매수 목록 ({data.get('date', '?')})"]
+            lines.append("━━━━━━━━━━━━━━━━━━━")
+            for p in data["picks"]:
+                mode_tag = "수동" if p.get("mode") == "manual" else "자동"
+                lines.append(f"   {p['name']}({p['code']}) — {mode_tag}")
+            await update.message.reply_text("\n".join(lines))
+            return
+
+        # ── 취소 ──
+        if args[0] == "취소":
+            if picks_path.exists():
+                picks_path.unlink()
+            await update.message.reply_text("✅ 내일 매수 목록 초기화")
+            return
+
+        # ── 등록 ──
+        picks = []
+        not_found = []
+        for arg in args:
+            # "풍산수동" → name="풍산", mode="manual"
+            if arg.endswith("수동"):
+                query = arg[:-2]
+                mode = "manual"
+            else:
+                query = arg
+                mode = "auto"
+
+            code, name = resolve_stock(query)
+            if code:
+                picks.append({"code": code, "name": name, "mode": mode})
+            else:
+                not_found.append(query)
+
+        if not picks and not_found:
+            await update.message.reply_text(f"❌ 종목을 찾을 수 없습니다: {', '.join(not_found)}")
+            return
+
+        # 날짜: 오늘 15시 이후면 내일, 아니면 오늘
+        from datetime import date, timedelta
+        now = datetime.now()
+        target_date = date.today()
+        if now.hour >= 15:
+            target_date += timedelta(days=1)
+            # 주말 건너뛰기
+            while target_date.weekday() >= 5:
+                target_date += timedelta(days=1)
+
+        data = {
+            "date": target_date.strftime("%Y-%m-%d"),
+            "created_at": now.strftime("%Y-%m-%d %H:%M"),
+            "picks": picks,
+        }
+        with open(picks_path, "w", encoding="utf-8") as f:
+            _json.dump(data, f, ensure_ascii=False, indent=2)
+
+        # ── 응답: Trade Object R:R 정보 포함 ──
+        lines = [f"✅ 내일 매수 등록 ({len(picks)}종목)"]
+        lines.append("━━━━━━━━━━━━━━━━━━━")
+
+        # Trade Object 로드
+        to_map = {}
+        try:
+            to_path = Path(__file__).parent.parent / "data_store" / "trade_objects.json"
+            if to_path.exists():
+                with open(to_path, "r", encoding="utf-8") as f:
+                    to_data = _json.load(f)
+                for t in to_data.get("objects", []):
+                    to_map[t.get("code", "")] = t
+        except Exception:
+            pass
+
+        for p in picks:
+            mode_tag = "수동 (알림만)" if p["mode"] == "manual" else "자동 VWAP 진입"
+            to = to_map.get(p["code"], {})
+            rr = to.get("rr_ratio", 0)
+            verdict = to.get("rr_verdict", "")
+            if rr > 0:
+                lines.append(f"   {p['name']} — R:R {rr:.2f} {verdict} | {mode_tag}")
+            else:
+                lines.append(f"   {p['name']} — {mode_tag}")
+
+        if not_found:
+            lines.append(f"   ⚠️ 미발견: {', '.join(not_found)}")
+
+        # BRAIN 상태 요약
+        try:
+            brain_path = Path(__file__).parent.parent / "data_store" / "brain_report.json"
+            if brain_path.exists():
+                with open(brain_path, "r", encoding="utf-8") as f:
+                    brain = _json.load(f)
+                regime = brain.get("regime", "?")
+                alloc = brain.get("allocation", {})
+                pct = alloc.get("position_size_pct", 100) if alloc else 100
+                lines.append(f"   BRAIN: {regime} {pct}%")
+        except Exception:
+            pass
+
+        # 종목당 예상 금액
+        try:
+            bal = await asyncio.to_thread(self.trader.fetch_balance)
+            if bal.get("success"):
+                cash = bal["cash"]
+                auto_count = sum(1 for p in picks if p["mode"] == "auto")
+                if auto_count > 0:
+                    per_stock = int(cash * 0.9 / auto_count)
+                    lines.append(f"   종목당 ~{per_stock:,}원")
+        except Exception:
+            pass
+
+        lines.append("━━━━━━━━━━━━━━━━━━━")
+        await update.message.reply_text("\n".join(lines))
 
     async def _error_handler(self, update, context):
         import traceback
