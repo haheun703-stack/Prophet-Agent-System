@@ -1109,9 +1109,19 @@ class BodyHunterBot:
         async def _send_alert(text):
             # MSG-03/04: 체결/긴급만 텔레그램, 나머지 log_event
             _TG_KEYWORDS = ("✅ 자동 매수", "❌ 매수 실패", "매도 체결", "청산",
-                            "리스크 게이트", "BRAIN 관망", "위기 모드", "🚫", "⛔")
+                            "리스크 게이트", "BRAIN 관망", "위기 모드", "🚫", "⛔",
+                            "📉 트레일링", "손절")
             if any(kw in text for kw in _TG_KEYWORDS):
-                await context.bot.send_message(chat_id=int(self.chat_id), text=text)
+                # 이모지 가이드: 금지 이모지 → 기능 마커
+                out = text.replace("📈", "").replace("📉", "")
+                if "✅ 자동 매수" in out:
+                    out = out.replace("✅ 자동 매수", "💰 매수 체결")
+                elif "⛔ 손절" in out or "⛔ 동적 손절" in out:
+                    out = out.replace("⛔ 손절", "🛑 [손절]").replace("⛔ 동적 손절", "🛑 [손절]")
+                elif "청산" in out or "매도 체결" in out:
+                    if not out.startswith("📤"):
+                        out = "📤 " + out
+                await context.bot.send_message(chat_id=int(self.chat_id), text=out)
             else:
                 cat = "TRADE_BUY" if "매수" in text else "TRADE_SELL" if "매도" in text else "SYSTEM"
                 log_event(cat, text[:200])
@@ -1965,9 +1975,19 @@ class BodyHunterBot:
             async def _send_alert(text):
                 # MSG-03/04: 체결/긴급만 텔레그램, 나머지 log_event
                 _TG_KEYWORDS = ("✅ 자동 매수", "❌ 매수 실패", "매도 체결", "청산",
-                                "리스크 게이트", "BRAIN 관망", "위기 모드", "🚫", "⛔")
+                                "리스크 게이트", "BRAIN 관망", "위기 모드", "🚫", "⛔",
+                                "📉 트레일링", "손절")
                 if any(kw in text for kw in _TG_KEYWORDS):
-                    await app.bot.send_message(chat_id=chat_id, text=text)
+                    # 이모지 가이드: 금지 이모지 → 기능 마커
+                    out = text.replace("📈", "").replace("📉", "")
+                    if "✅ 자동 매수" in out:
+                        out = out.replace("✅ 자동 매수", "💰 매수 체결")
+                    elif "⛔ 손절" in out or "⛔ 동적 손절" in out:
+                        out = out.replace("⛔ 손절", "🛑 [손절]").replace("⛔ 동적 손절", "🛑 [손절]")
+                    elif "청산" in out or "매도 체결" in out:
+                        if not out.startswith("📤"):
+                            out = "📤 " + out
+                    await app.bot.send_message(chat_id=chat_id, text=out)
                 else:
                     # 로그에만 기록 — 텔레그램 미전송
                     cat = "TRADE_BUY" if "매수" in text else "TRADE_SELL" if "매도" in text else "SYSTEM"
@@ -2971,7 +2991,7 @@ class BodyHunterBot:
             now = datetime.now()
             dow = ["월", "화", "수", "목", "금", "토", "일"][now.weekday()]
             lines = [
-                f"[모닝 브리프] {now.month}/{now.day} ({dow})",
+                f"📋 [모닝 브리프] {now.month}/{now.day} ({dow})",
                 "━━━━━━━━━━━━━━━━━━━",
             ]
 
@@ -2985,9 +3005,9 @@ class BodyHunterBot:
                     macro = brain.get("macro_summary", "")
                     mode = brain.get("regime", "표준")
                     contradictions = brain.get("contradictions", 0)
-                    lines.append(f"매크로: {macro}" if macro else f"BRAIN: {mode}모드")
+                    lines.append(f"🌍 매크로: {macro}" if macro else f"🌍 BRAIN: {mode}모드")
                     if contradictions:
-                        lines.append(f"  → 모순 {contradictions}개 감지")
+                        lines.append(f"   모순 {contradictions}개 감지")
             except Exception:
                 pass
 
@@ -3005,19 +3025,19 @@ class BodyHunterBot:
                     elif isinstance(ev, str):
                         event_lines.append(ev[:40])
             if event_lines:
-                lines.append(f"이벤트: {' | '.join(event_lines)}")
+                lines.append(f"⚠️ 이벤트: {' | '.join(event_lines)}")
 
             # ── 보유종목 진단 (Guardian) ──
             verdicts = self._morning_data.get("guardian", [])
             if verdicts:
                 lines.append("")
-                lines.append("보유종목 진단:")
+                lines.append("🛡 보유종목:")
                 for v in verdicts:
                     name = v.name if hasattr(v, "name") else v.get("name", "")
                     action = v.action if hasattr(v, "action") else v.get("action", "")
                     risk = v.risk_score if hasattr(v, "risk_score") else v.get("risk_score", 0)
-                    icon = "✅" if action == "HOLD" else "⚠️"
-                    lines.append(f"  {name}: {action} (리스크 {risk:.0f}) {icon}")
+                    icon = "✅" if action == "HOLD" else ("🛑" if action == "EXIT" else "⚠️")
+                    lines.append(f"   {name} {action} ({risk:.0f}) {icon}")
 
             # ── 매수 후보 (추천+TradeObject) ──
             try:
@@ -3061,11 +3081,11 @@ class BodyHunterBot:
                                 line += f"\n    → 진입 {entry:,} 부근 대기"
                             accepts.append(line)
 
-                    lines.append(f"매수 후보 ({len(accepts)}종목):")
+                    lines.append(f"📊 매수 후보 ({len(accepts)}종목):")
                     for i, a in enumerate(accepts[:3], 1):
-                        lines.append(f"  {i}. {a.strip()}")
+                        lines.append(f"   {i}. {a.strip()}")
                     if rejects:
-                        lines.append(f"  REJECT: {', '.join(rejects[:3])}")
+                        lines.append(f"   REJECT: {', '.join(rejects[:3])}")
             except Exception:
                 pass
 
@@ -3077,7 +3097,7 @@ class BodyHunterBot:
                     total = bal.get("total_eval", cash)
                     ratio = cash / total * 100 if total > 0 else 0
                     lines.append("")
-                    lines.append(f"가용현금: {cash:,}원 ({ratio:.1f}%)")
+                    lines.append(f"💰 현금 {cash:,}원 ({ratio:.1f}%)")
             except Exception:
                 pass
 
@@ -3109,7 +3129,7 @@ class BodyHunterBot:
             from data.trading_value_scanner import load_intraday_results
 
             lines = [
-                "[프리클로즈] 내일 후보",
+                "📋 [프리클로즈] 내일 후보",
                 "━━━━━━━━━━━━━━━━━━━",
             ]
 
@@ -3117,13 +3137,13 @@ class BodyHunterBot:
             intraday = load_intraday_results()
             if intraday:
                 lines.append("")
-                lines.append("장중 감지:")
+                lines.append("📊 장중 감지:")
                 tag_map = {"QUIET_ACCUMULATION": "조용한매집",
                            "GRADUAL_BUILDUP": "점진적증가"}
                 for sig in intraday[:3]:
                     pat = tag_map.get(sig.get("pattern", ""), "거래대금폭발")
                     lines.append(
-                        f"  {sig.get('name', '')} — {pat}"
+                        f"   {sig.get('name', '')} — {pat}"
                         f" (TV {sig.get('estimated_tv_ratio', 0):.1f}x)"
                     )
 
@@ -3131,7 +3151,7 @@ class BodyHunterBot:
             raw = load_preclose_results()
             if raw:
                 lines.append("")
-                lines.append(f"내일 후보 ({len(raw)}종목):")
+                lines.append(f"📊 내일 후보 ({len(raw)}종목):")
                 for i, r in enumerate(raw[:3], 1):
                     to = r.get("trade_object", {})
                     rr = to.get("rr_ratio", r.get("rr_ratio", 0))
@@ -3187,7 +3207,7 @@ class BodyHunterBot:
             now = datetime.now()
             dow = ["월", "화", "수", "목", "금", "토", "일"][now.weekday()]
             lines = [
-                f"[일일 마감] {now.month}/{now.day} ({dow})",
+                f"📊 [마감] {now.month}/{now.day} ({dow})",
                 "━━━━━━━━━━━━━━━━━━━",
             ]
 
@@ -3196,11 +3216,11 @@ class BodyHunterBot:
             if trades:
                 total_pnl = sum(t.get("pnl_krw", 0) for t in trades)
                 lines.append("")
-                lines.append(f"오늘 실현 P&L: {total_pnl:+,}원")
+                lines.append(f"💰 실현 P&L: {total_pnl:+,}원")
                 for t in trades:
                     icon = "✅" if t.get("pnl_pct", 0) > 0 else "🛑"
                     lines.append(
-                        f"  {t.get('name', '')}: {t.get('pnl_pct', 0):+.1f}%"
+                        f"   {t.get('name', '')} {t.get('pnl_pct', 0):+.1f}%"
                         f" ({t.get('pnl_krw', 0):+,}원) {t.get('reason', '')} {icon}"
                     )
 
@@ -3208,22 +3228,19 @@ class BodyHunterBot:
             try:
                 bal = await asyncio.to_thread(self.trader.fetch_balance)
                 if bal.get("success"):
-                    lines.append("")
-                    lines.append("포트폴리오:")
                     total = bal.get("total_eval", 0)
                     cash = bal.get("cash", 0)
                     pos_cnt = len(bal.get("positions", []))
                     ratio = cash / total * 100 if total > 0 else 0
-                    lines.append(f"  총자산: {total:,}원")
-                    lines.append(f"  보유 {pos_cnt}종목 | 현금 {ratio:.1f}%")
+                    lines.append("")
+                    lines.append(f"📊 총자산 {total:,}원 | 보유 {pos_cnt} | 현금 {ratio:.1f}%")
 
                     # 보유종목 상세
                     for p in bal.get("positions", []):
                         pnl = p.get("pnl_pct", 0)
-                        icon = "📈" if pnl > 0 else "📉"
                         lines.append(
-                            f"  {icon} {p.get('name', '')} {pnl:+.1f}%"
-                            f" (D+{p.get('hold_days', '?')})"
+                            f"   {p.get('name', '')} {pnl:+.1f}%"
+                            f" D+{p.get('hold_days', '?')}"
                         )
             except Exception:
                 pass
@@ -3243,7 +3260,7 @@ class BodyHunterBot:
                 pc_path = Path(__file__).parent.parent / "data_store" / "preclose_results.json"
 
                 lines.append("")
-                lines.append("내일 준비:")
+                lines.append("📋 내일:")
 
                 # 프리클로즈 진입
                 if pc_path.exists():
@@ -3270,8 +3287,7 @@ class BodyHunterBot:
                 hit_rate = verify.get("hit_rate", 0)
                 missed = learning.get("missed_gainers", [])
                 lines.append("")
-                lines.append("학습:")
-                lines.append(f"  적중률 {hit_rate}%")
+                lines.append(f"🧠 적중 {hit_rate}%")
                 if missed:
                     top = missed[0] if missed else {}
                     if isinstance(top, dict):
