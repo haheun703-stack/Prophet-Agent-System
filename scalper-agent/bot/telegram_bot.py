@@ -83,6 +83,7 @@ Body Hunter v5 명령어
 ⚙️ 시스템
   시작/정지  — 자동매매 ON/OFF
   상태      — 봇 상태 + 리스크
+  데이터     — 데이터 수집 현황
   위기모드/위기해제 — 위기 모드
 
 💰 매매
@@ -142,6 +143,9 @@ class BodyHunterBot:
         self._morning_data = {}
         # 마감 리포트용 데이터 (장중 체결 기록 등)
         self._closing_data = {"trades_today": [], "paper_events": []}
+        # 데이터 파이프라인 검증 결과
+        self._data_verified = False
+        self._verify_result = None
 
     def _is_authorized(self, update: Update) -> bool:
         """본인 채팅 확인"""
@@ -2101,6 +2105,8 @@ class BodyHunterBot:
             r"^내일$": self.cmd_tomorrow,
             r"^내일취소$": self.cmd_tomorrow,
             r"^내일확인$": self.cmd_tomorrow,
+            # ── 데이터 검증 ──
+            r"^데이터$": self.cmd_data_status,
             # ── 시장 일지 ──
             r"^시장일지$": self.cmd_market_journal,
             r"^ㅇ$": self.cmd_market_journal,
@@ -2238,6 +2244,10 @@ class BodyHunterBot:
         h5, m5 = map(int, uni_str.split(":"))
         jq.run_daily(self._job_rebuild_universe, time=kst_time(h5, m5))
         logger.info(f"유니버스 리빌드 등록: {uni_str} KST")
+
+        # ★ 데이터 파이프라인 검증 (16:25 - 일봉 수집 후, 시그널 기록 전)
+        jq.run_daily(self._job_verify_data, time=kst_time(16, 25))
+        logger.info("데이터 파이프라인 검증 등록: 16:25 KST")
 
         # 일간 시그널 기록 (16:30 - 일봉 수집 후)
         jq.run_daily(self._job_record_signals, time=kst_time(16, 30))
@@ -2612,10 +2622,100 @@ class BodyHunterBot:
         except Exception as e:
             logger.error(f"유니버스 리빌드 실패: {e}")
 
+    async def _job_verify_data(self, context):
+        """16:25 데이터 파이프라인 검증 — 수집 완료 확인 후 분석 진행"""
+        from datetime import date as _date
+        if _date.today().weekday() >= 5:
+            return
+        logger.info("[VER] 데이터 파이프라인 검증 시작...")
+        try:
+            from data.data_verifier import DataVerifier, format_verify_oneliner
+            from bot.bot_logger import log_event
+
+            verifier = DataVerifier()
+            result = verifier.verify_all()
+            self._verify_result = result
+            log_event("VERIFY", f"데이터 검증: {result['status']}", {
+                "passed": result["passed"], "total": result["total"],
+                "critical_failures": result["critical_failures"],
+            })
+
+            if not result["can_proceed"]:
+                # CRITICAL 실패 → 재수집 시도
+                logger.warning(f"[VER] CRITICAL 실패: {result['critical_failures']} — 재수집 시도")
+                await self._retry_failed_collections(result)
+
+                # 재검증
+                result2 = DataVerifier().verify_all()
+                self._verify_result = result2
+
+                if not result2["can_proceed"]:
+                    # 여전히 실패 → 긴급 알림
+                    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+                    if chat_id:
+                        descs = []
+                        from data.data_verifier import CHECKLIST
+                        for k in result2["critical_failures"]:
+                            descs.append(CHECKLIST[k]["description"])
+                        await context.bot.send_message(
+                            chat_id=chat_id,
+                            text=(
+                                f"🚨 데이터 수집 실패 — 분석 중단\n"
+                                f"   {', '.join(descs)}\n"
+                                f"   수동 확인 필요"
+                            ),
+                        )
+                    self._data_verified = False
+                    return
+                else:
+                    logger.info("[VER] 재수집 후 CRITICAL 통과 — 분석 진행")
+
+            self._data_verified = True
+
+            if result.get("status") == "PARTIAL":
+                logger.warning(f"[VER] 일부 누락: {result['failed']}건 — 분석 진행")
+
+            logger.info(f"[VER] 검증 완료: {format_verify_oneliner(self._verify_result)}")
+        except Exception as e:
+            logger.error(f"[VER] 검증 실패 (무시, 진행): {e}", exc_info=True)
+            self._data_verified = True  # 검증 자체 실패 시 → 기존대로 진행
+
+    async def _retry_failed_collections(self, result: dict):
+        """검증 실패 항목 재수집 시도 (최대 1회)"""
+        from data.data_verifier import RETRY_MAP
+        retried = set()
+        for key, detail in result["details"].items():
+            if detail["status"] != "FAIL" or key not in RETRY_MAP:
+                continue
+            job_name = RETRY_MAP[key]
+            if job_name in retried:
+                continue
+            retried.add(job_name)
+            logger.info(f"[VER] 재수집: {key} → {job_name}")
+            try:
+                # auto_trader의 job인 경우
+                if job_name.startswith("job_"):
+                    method = getattr(self.auto_trader, job_name, None)
+                else:
+                    method = getattr(self, job_name, None)
+                if method:
+                    await asyncio.wait_for(method(None), timeout=120)
+            except Exception as e:
+                logger.warning(f"[VER] 재수집 실패 {job_name}: {e}")
+
+        # 재수집 후 30초 대기
+        if retried:
+            logger.info(f"[VER] {len(retried)}개 job 재수집 완료, 30초 대기 후 재검증")
+            await asyncio.sleep(30)
+
     async def _job_record_signals(self, context):
         """일간 시그널 기록 (16:30) — Silent: 로그만"""
         from datetime import date
         if date.today().weekday() >= 5:
+            return
+        if not self._data_verified:
+            log_event("SKIP", "시그널 기록 — 데이터 미검증")
+            logger.warning("시그널 기록 스킵: 데이터 미검증")
             return
         logger.info("일간 시그널 기록 시작...")
         try:
@@ -3302,6 +3402,15 @@ class BodyHunterBot:
             except Exception:
                 pass
 
+            # ── 데이터 검증 결과 ──
+            if self._verify_result:
+                try:
+                    from data.data_verifier import format_verify_oneliner
+                    lines.append("")
+                    lines.append(format_verify_oneliner(self._verify_result))
+                except Exception:
+                    pass
+
             # ── 학습 ──
             learning = self._closing_data.get("learning", {})
             if learning:
@@ -3324,8 +3433,10 @@ class BodyHunterBot:
             await context.bot.send_message(chat_id=chat_id, text=msg)
             logger.info("[일일 마감 리포트] 전송 완료")
 
-            # 다음날을 위해 _closing_data 초기화
+            # 다음날을 위해 초기화
             self._closing_data = {"trades_today": [], "paper_events": []}
+            self._data_verified = False
+            self._verify_result = None
 
         except Exception as e:
             logger.error(f"일일 마감 리포트 실패: {e}", exc_info=True)
@@ -3552,6 +3663,21 @@ class BodyHunterBot:
         lines.append("변경: 내일 종목명 / 취소: 내일취소")
         lines.append("추천 보기: 추천")
         await update.message.reply_text("\n".join(lines))
+
+    # ── 데이터 검증 핸들러 ────────────────────────
+
+    async def cmd_data_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """데이터 수집 현황 조회"""
+        if not self._is_authorized(update):
+            return
+        try:
+            from data.data_verifier import DataVerifier, format_verify_result
+            result = await asyncio.to_thread(DataVerifier().verify_all)
+            text = format_verify_result(result)
+            for chunk in [text[i:i+TG_MAX] for i in range(0, len(text), TG_MAX)]:
+                await update.message.reply_text(chunk)
+        except Exception as e:
+            await update.message.reply_text(f"데이터 검증 실패: {e}")
 
     # ── 시장 일지 핸들러 ────────────────────────
 
