@@ -99,6 +99,8 @@ class RecommendationReport:
     rotation_detail: list = field(default_factory=list)  # 섹터별 상세
     # TV 클러스터 (그룹/섹터 동시 폭발)
     tv_cluster_info: list = field(default_factory=list)
+    # 원자재 릴레이 상황
+    commodity_info: dict = field(default_factory=dict)
 
 
 # ═══════════════════════════════════════
@@ -1688,6 +1690,68 @@ def run_evening_recommendation() -> RecommendationReport:
         final_stocks.sort(key=lambda x: x.total_score, reverse=True)
         logger.info(f"  [MTM] {mtm_boost_count}종목 부스트 → 재정렬 완료")
 
+    # ── Step 5c: 원자재 릴레이 부스트 ──
+    try:
+        from data.nightwatch import get_commodity_trend, JARVIS_SECTORS
+        commodity = get_commodity_trend(5)
+        if commodity:
+            # JARVIS 섹터별 수혜 종목 코드 수집
+            _commodity_sector_map = {}  # code → (sector_name, boost_reason)
+            _active_sectors = []
+            # 원자재 조건 → 활성 섹터 결정
+            relay = commodity.get("relay")
+            active_sigs = commodity.get("active_signals", [])
+            if "ng_up" in active_sigs or (commodity.get("ng", {}).get("direction") == "UP"):
+                _active_sectors.append(("natural_gas", "NG↑"))
+            if "oil_up" in active_sigs or (commodity.get("oil", {}).get("direction") == "UP"):
+                _active_sectors.append(("oil_resource", "OIL↑"))
+            if relay == "silver" or "silver_up" in active_sigs:
+                _active_sectors.append(("precious_metals", "은릴레이"))
+            if relay == "copper" or "copper_up" in active_sigs:
+                _active_sectors.append(("industrial_metals", "구리릴레이"))
+
+            for sector_key, reason in _active_sectors:
+                sector = JARVIS_SECTORS.get(sector_key, {})
+                for stock in sector.get("kr_tier1", []) + sector.get("kr_tier2", []):
+                    _commodity_sector_map[stock["code"]] = (sector.get("name", ""), reason)
+
+            # 후보 종목에 부스트 적용
+            commodity_boost_count = 0
+            for s in final_stocks:
+                if s.code in _commodity_sector_map:
+                    sector_name, reason = _commodity_sector_map[s.code]
+                    boost = 10  # tier1/tier2 동일 +10 (릴레이 종목이므로)
+                    s.total_score += boost
+                    if not hasattr(s, 'sources') or not s.sources:
+                        s.sources = []
+                    s.sources.append(f"commodity:{reason}({sector_name})")
+                    commodity_boost_count += 1
+                    logger.info(f"  [원자재 부스트] {s.name}: +{boost}점 ({reason}) → {s.total_score:.1f}")
+
+            if commodity_boost_count > 0:
+                final_stocks.sort(key=lambda x: x.total_score, reverse=True)
+                logger.info(f"  [원자재] {commodity_boost_count}종목 부스트 → 재정렬 완료")
+            elif _active_sectors:
+                logger.info(f"  [원자재] 활성 섹터 {[s[1] for s in _active_sectors]} — 추천 후보에 해당 종목 없음")
+
+            # report에 원자재 상황 저장 (텔레그램 표시용)
+            report.commodity_info = {
+                "relay": relay or "없음",
+                "active_sectors": [s[1] for s in _active_sectors],
+                "boosted_count": commodity_boost_count,
+                "prices": {},
+            }
+            for key in ("gold", "oil", "ng", "silver", "copper"):
+                c_data = commodity.get(key, {})
+                if c_data:
+                    report.commodity_info["prices"][key] = {
+                        "price": c_data.get("price", 0),
+                        "change_pct": c_data.get("change_pct", 0),
+                        "direction": c_data.get("direction", "FLAT"),
+                    }
+    except Exception as e:
+        logger.warning(f"[원자재 부스트] 실패 (무시): {e}")
+
     # Step 6: KIS API 가격 교차검증
     t0 = time.time()
     logger.info("[Step 6/6] KIS API 가격 교차검증...")
@@ -1971,6 +2035,31 @@ def format_recommendation(report: RecommendationReport, max_budget: int = 0) -> 
     if report.us_market_note:
         lines.append(f"🇺🇸 미국: {report.us_market_note}")
 
+    # 원자재 릴레이 상황
+    if report.commodity_info and report.commodity_info.get("prices"):
+        ci = report.commodity_info
+        prices = ci["prices"]
+        _labels = {"gold": "금", "silver": "은", "copper": "구리", "oil": "유", "ng": "NG"}
+        _icons = {"UP": "▲", "DOWN": "▼", "FLAT": "─"}
+        price_parts = []
+        for key in ("gold", "silver", "copper", "oil", "ng"):
+            if key in prices:
+                p = prices[key]
+                icon = _icons.get(p["direction"], "─")
+                price_parts.append(f"{_labels[key]}{icon}{p['change_pct']:+.1f}%")
+        if price_parts:
+            lines.append(f"⛏️ 원자재: {' | '.join(price_parts)}")
+        relay = ci.get("relay", "없음")
+        active = ci.get("active_sectors", [])
+        if relay != "없음" or active:
+            relay_str = f"릴레이:{relay}" if relay != "없음" else ""
+            active_str = " ".join(active) if active else ""
+            combined = " | ".join(filter(None, [relay_str, active_str]))
+            boosted = ci.get("boosted_count", 0)
+            if boosted > 0:
+                combined += f" → {boosted}종목 부스트"
+            lines.append(f"   {combined}")
+
     if report.warning:
         lines.append(f"\n⚠️ {report.warning}")
 
@@ -2047,6 +2136,9 @@ def format_recommendation(report: RecommendationReport, max_budget: int = 0) -> 
             elif src.startswith("gap:"):
                 val = src.split("(")[1].rstrip(")")
                 score_parts.append(f"갭{val}")
+            elif src.startswith("commodity:"):
+                reason = src.split(":")[1]
+                score_parts.append(f"원자재+10({reason})")
 
         # 페널티 표시
         penalties = []
@@ -2267,6 +2359,7 @@ def save_recommendation(report: RecommendationReport):
         "rotation_detail": report.rotation_detail,  # 섹터별 로테이션 상세
         "etf_signal": report.etf_signal,  # 위기 ETF 시그널
         "tv_cluster_info": report.tv_cluster_info,  # TV 클러스터
+        "commodity_info": report.commodity_info,  # 원자재 릴레이 상황
     }
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
@@ -2343,6 +2436,7 @@ def load_recommendation() -> Optional[RecommendationReport]:
         report.rotation_detail = data.get("rotation_detail", [])
         report.etf_signal = data.get("etf_signal", {})
         report.tv_cluster_info = data.get("tv_cluster_info", [])
+        report.commodity_info = data.get("commodity_info", {})
         return report
     except Exception as e:
         logger.error(f"추천 로드 실패: {e}")

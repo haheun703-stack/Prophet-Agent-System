@@ -40,6 +40,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data_store"
 REPORT_PATH = DATA_DIR / "nightwatch_report.json"
 HISTORY_PATH = DATA_DIR / "learning" / "nxt_history.json"
+COMMODITY_HISTORY_PATH = DATA_DIR / "learning" / "commodity_history.json"
 
 # ═══════════════════════════════════════════════════
 #  yfinance 지연 import (설치 안 되어도 에러 안 남)
@@ -1110,7 +1111,9 @@ def save_nightwatch_report(report: NightwatchReport):
 
     # 히스토리 누적 (90일 보관)
     _append_history(report_dict)
-    logger.info(f"[NIGHTWATCH] 저장: {REPORT_PATH} + 히스토리 누적")
+    # 원자재 가격 히스토리 누적
+    _append_commodity_history(report_dict)
+    logger.info(f"[NIGHTWATCH] 저장: {REPORT_PATH} + 히스토리 + 원자재 누적")
 
 
 def _append_history(report_dict: dict):
@@ -1155,6 +1158,103 @@ def _append_history(report_dict: dict):
 
     with open(HISTORY_PATH, "w", encoding="utf-8") as f:
         json.dump(history, f, ensure_ascii=False, indent=2)
+
+
+def _append_commodity_history(report_dict: dict):
+    """commodity_history.json에 원자재 일별 가격/변동률 누적 (90일)"""
+    COMMODITY_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+    history = []
+    if COMMODITY_HISTORY_PATH.exists():
+        try:
+            history = json.loads(COMMODITY_HISTORY_PATH.read_text("utf-8"))
+        except (json.JSONDecodeError, Exception):
+            history = []
+
+    report_date = report_dict.get("timestamp", "")[:10]
+    ri = report_dict.get("raw_indicators", {})
+    mc = report_dict.get("macro_conditions", {})
+
+    # 원자재 5종 가격/변동률 추출
+    commodities = {}
+    for key, label in [("GOLD", "gold"), ("CL", "oil"), ("HG", "copper"),
+                        ("NG", "ng"), ("SI", "silver")]:
+        data = ri.get(key, {})
+        if data.get("value") is not None:
+            commodities[label] = {
+                "price": data.get("value"),
+                "change_pct": data.get("change_pct", 0),
+            }
+
+    if not commodities:
+        return  # 데이터 없으면 스킵
+
+    entry = {
+        "date": report_date,
+        "commodities": commodities,
+        "relay": mc.get("commodity_relay", None),
+        "active_signals": [k for k in ["ng_up", "silver_up", "copper_up", "oil_up"]
+                           if mc.get(k)],
+    }
+
+    # 같은 날짜 교체
+    history = [h for h in history if h.get("date") != report_date]
+    history.append(entry)
+    if len(history) > 90:
+        history = history[-90:]
+
+    with open(COMMODITY_HISTORY_PATH, "w", encoding="utf-8") as f:
+        json.dump(history, f, ensure_ascii=False, indent=2)
+
+
+def load_commodity_history(days: int = 30) -> list:
+    """최근 N일 원자재 히스토리 로드"""
+    if not COMMODITY_HISTORY_PATH.exists():
+        return []
+    try:
+        history = json.loads(COMMODITY_HISTORY_PATH.read_text("utf-8"))
+        return history[-days:]
+    except Exception:
+        return []
+
+
+def get_commodity_trend(days: int = 5) -> dict:
+    """최근 N일 원자재 추세 분석 → 추천 파이프라인에서 사용"""
+    history = load_commodity_history(days)
+    if len(history) < 2:
+        return {}
+
+    trend = {}
+    for commodity in ["gold", "oil", "copper", "ng", "silver"]:
+        prices = []
+        for h in history:
+            c = h.get("commodities", {}).get(commodity, {})
+            if c.get("price") is not None:
+                prices.append(c["price"])
+
+        if len(prices) < 2:
+            continue
+
+        first, last = prices[0], prices[-1]
+        pct_change = ((last - first) / first) * 100 if first else 0
+        # 추세: 3일 연속 상승/하락 감지
+        consecutive_up = all(prices[i] > prices[i - 1] for i in range(1, len(prices)))
+        consecutive_down = all(prices[i] < prices[i - 1] for i in range(1, len(prices)))
+
+        direction = "UP" if consecutive_up else ("DOWN" if consecutive_down else "FLAT")
+
+        trend[commodity] = {
+            "price": last,
+            "change_pct": round(pct_change, 2),
+            "direction": direction,
+            "days": len(prices),
+        }
+
+    # 릴레이 단계 판단 (최근 기록 기준)
+    latest = history[-1] if history else {}
+    trend["relay"] = latest.get("relay")
+    trend["active_signals"] = latest.get("active_signals", [])
+
+    return trend
 
 
 def load_nightwatch_report() -> Optional[NightwatchReport]:
