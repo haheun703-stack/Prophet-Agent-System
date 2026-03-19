@@ -58,6 +58,10 @@ class AutoTrader:
         # AI 실시간 모니터
         self._rt_monitor = None
 
+        # Intraday AI Eye (5분 주기 흐름 분석)
+        self._eye = None
+        self._eye_counter = 0  # 30초 카운터 (10 = 5분)
+
         # ── 리스크 게이트 (일일손실한도 + MDD) ──
         risk = config.get("risk", {})
         self._daily_loss_limit = risk.get("daily_loss_limit", 500000)
@@ -1300,6 +1304,77 @@ class AutoTrader:
 
             except Exception as e:
                 logger.error(f"AI 모니터 처리 실패 {code}: {e}")
+
+        # ── Intraday AI Eye (5분 주기) ──
+        self._eye_counter += 1
+        if self._eye_counter >= 10:  # 30초 × 10 = 5분
+            self._eye_counter = 0
+            try:
+                await self._run_intraday_eye()
+            except Exception as e:
+                logger.error(f"Intraday Eye 실패: {e}")
+
+    async def _run_intraday_eye(self):
+        """5분마다 보유+감시 종목 흐름 분석 → 상태 전이 알림 + DYING 자동청산"""
+        if self._eye is None:
+            from data.intraday_eye import IntradayEye
+            self._eye = IntradayEye(self.trader)
+
+        # 대상: 보유 종목 + 진입 감시 종목
+        codes = list(self._positions.keys())
+        codes += [c for c in self._entry_watch if c not in codes]
+        if not codes:
+            return
+
+        for code in codes:
+            pos = self._positions.get(code, {})
+            entry_price = pos.get("entry_price", 0)
+            name = pos.get("name", self._entry_watch.get(code, {}).get("name", code))
+
+            # 종목명 설정
+            self._eye.set_name(code, name)
+
+            try:
+                verdict = await asyncio.to_thread(
+                    self._eye.evaluate, code, entry_price=entry_price
+                )
+            except Exception as e:
+                logger.warning(f"Eye 평가 실패 {code}: {e}")
+                continue
+
+            if verdict is None or verdict.verdict == "WARMUP":
+                continue
+
+            # 상태 전이 시에만 텔레그램 알림
+            if verdict.verdict != verdict.prev_verdict:
+                await self._send_eye_alert(verdict)
+
+            # DYING 2연속 → 자동 대응 (보유 종목만)
+            if verdict.verdict == "DYING" and verdict.prev_verdict == "DYING":
+                if code in self._positions:
+                    await self._alert(
+                        f"🚨 Eye DYING: {name}\n"
+                        f"   점수 {verdict.composite_score:.0f} "
+                        f"(L1:{verdict.l1_price_structure:.0f} "
+                        f"L2:{verdict.l2_volume_supply:.0f} "
+                        f"L3:{verdict.l3_momentum:.0f})\n"
+                        f"   {verdict.summary}\n"
+                        f"   수동 매도 검토 필요"
+                    )
+
+    async def _send_eye_alert(self, verdict):
+        """Eye 상태 전이 텔레그램 알림"""
+        icon = "🚨" if verdict.verdict == "DYING" else "🔍"
+        msg = (
+            f"{icon} Eye: {verdict.name} "
+            f"{verdict.prev_verdict} → {verdict.verdict}\n"
+            f"  점수 {verdict.composite_score:.0f} "
+            f"(L1:{verdict.l1_price_structure:.0f} "
+            f"L2:{verdict.l2_volume_supply:.0f} "
+            f"L3:{verdict.l3_momentum:.0f})\n"
+            f"  {verdict.summary}"
+        )
+        await self._alert(msg)
 
     async def _job_monitor_fallback(self):
         """AI 모니터 실패 시 폴백: SL + 인트라데이 트레일링 스탑 체크"""
