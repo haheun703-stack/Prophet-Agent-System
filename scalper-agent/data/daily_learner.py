@@ -949,6 +949,14 @@ def run(quick: bool = False):
     except Exception as e:
         logger.warning(f"[BRAIN Perf] 실패 (무시): {e}")
 
+    # Phase 7: 시장 일지 기록 (market_journal 피드백 루프)
+    try:
+        from data.market_journal import record_daily as _journal_record
+        journal_entry = _journal_record(today, verify)
+        logger.info(f"[Phase 7] 시장 일지 기록 완료: {journal_entry.get('date', today)}")
+    except Exception as e:
+        logger.warning(f"[MarketJournal] 시장 일지 기록 실패 (무시): {e}")
+
     logger.info("=== Daily Learner 완료 ===")
     return {
         "date": today,

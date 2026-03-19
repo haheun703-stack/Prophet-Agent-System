@@ -371,13 +371,67 @@ class PositionSizer:
 # ═══════════════════════════════════════════════════════
 
 class RRGate:
-    """R:R < 1.5 → REJECT (점수 무관)"""
+    """R:R < 1.5 → REJECT (점수 무관)
+    패턴별 R:R override 지원 (market_journal 피드백 루프)
+    """
+    _overrides: dict = None
 
-    @staticmethod
-    def evaluate(rr: float, regime: str, confidence: str) -> str:
+    @classmethod
+    def _load_overrides(cls):
+        path = _STORE / "learning" / "journal" / "rr_overrides.json"
+        if path.exists():
+            try:
+                data = json.loads(path.read_text("utf-8"))
+                cls._overrides = data.get("overrides", {})
+                logger.info(f"[RRGate] rr_overrides 로드: {len(cls._overrides)}개 패턴")
+            except Exception:
+                cls._overrides = {}
+        else:
+            cls._overrides = {}
+
+    @classmethod
+    def _normalize_source(cls, src: str) -> str:
+        """소스 문자열 → 패턴 키 (market_journal과 동일)"""
+        s = src.lower().strip()
+        if s.startswith("brain"):
+            return ""
+        if s.startswith("tv_cluster"):
+            return "tv_cluster"
+        if s.startswith("tv:"):
+            part = src[3:].split("(")[0].strip().upper()
+            return f"tv:{part}" if part else "tv"
+        if s.startswith("7secret"):
+            return "7SECRET"
+        if ":" in s:
+            return s.split(":")[0]
+        if "(" in s:
+            return s.split("(")[0]
+        return s
+
+    @classmethod
+    def evaluate(cls, rr: float, regime: str, confidence: str,
+                 sources: list = None) -> str:
+        if cls._overrides is None:
+            cls._load_overrides()
+
+        # 패턴별 R:R override — 가장 낮은 값 사용
+        effective_min = RR_MIN  # 기본 1.5
+        override_used = None
+        if sources and cls._overrides:
+            for src in sources:
+                key = cls._normalize_source(src)
+                if key and key in cls._overrides:
+                    ov_rr = cls._overrides[key].get("rr_min", RR_MIN)
+                    if ov_rr < effective_min:
+                        effective_min = ov_rr
+                        override_used = key
+
+        if override_used:
+            logger.debug(f"[RRGate] R:R override 적용: {override_used} → min={effective_min}")
+
         if rr < 1.0:
             return "REJECT"
-        if rr < RR_MIN:
+        if rr < effective_min:
             # MOMENTUM + HIGH만 예외 (rr >= 1.2)
             if (regime == "MOMENTUM" and confidence == "HIGH"
                     and rr >= RR_MOMENTUM_EXCEPTION):
@@ -445,7 +499,7 @@ class TradeBuilder:
         rr_ratio = reward_pct / risk_pct if risk_pct > 0 else 0
 
         # Step 5: R:R 게이트
-        rr_verdict = RRGate.evaluate(rr_ratio, regime, confidence)
+        rr_verdict = RRGate.evaluate(rr_ratio, regime, confidence, sources=sources)
 
         # Step 6: 포지션 사이징
         conviction = self.sizer.calc_conviction(confidence, regime, total_score, sources)

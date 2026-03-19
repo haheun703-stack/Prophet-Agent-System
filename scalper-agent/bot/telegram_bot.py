@@ -113,6 +113,12 @@ Body Hunter v5 명령어
 🌙 NXT 야간
   NXT/NXT켜기/NXT끄기/NXT실행
 
+📓 시장 일지
+  시장일지 (ㅇ)  — 오늘 시장 일기
+  주간          — 주간 보고
+  월간          — 월간 보고 + 조정 제안
+  적용 1 2     — 제안 적용
+
 📁 기타
   현재잔고/체결내역/일지/시그널
   워치리스트/시나리오/유니버스/로그
@@ -2095,6 +2101,11 @@ class BodyHunterBot:
             r"^내일$": self.cmd_tomorrow,
             r"^내일취소$": self.cmd_tomorrow,
             r"^내일확인$": self.cmd_tomorrow,
+            # ── 시장 일지 ──
+            r"^시장일지$": self.cmd_market_journal,
+            r"^ㅇ$": self.cmd_market_journal,
+            r"^주간$": self.cmd_weekly_report,
+            r"^월간$": self.cmd_monthly_report,
         }
 
         for pattern, handler in exact_commands.items():
@@ -2135,6 +2146,9 @@ class BodyHunterBot:
         )
         app.add_handler(
             MessageHandler(filters.Regex(r"^내일\s+.+"), self.cmd_tomorrow)
+        )
+        app.add_handler(
+            MessageHandler(filters.Regex(r"^적용\s+.+"), self.cmd_apply_proposals)
         )
         app.add_handler(
             MessageHandler(filters.Regex(r"^위기모드\s+.+"), self.cmd_crisis_on)
@@ -3538,6 +3552,99 @@ class BodyHunterBot:
         lines.append("변경: 내일 종목명 / 취소: 내일취소")
         lines.append("추천 보기: 추천")
         await update.message.reply_text("\n".join(lines))
+
+    # ── 시장 일지 핸들러 ────────────────────────
+
+    async def cmd_market_journal(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """시장 일지 (오늘)"""
+        if not self._is_authorized(update):
+            return
+        try:
+            from data.market_journal import format_daily_journal, DAILY_DIR
+            import json as _json
+            from datetime import date as _date
+
+            today = _date.today().strftime("%Y-%m-%d")
+            path = DAILY_DIR / f"{today}.json"
+            if not path.exists():
+                await update.message.reply_text(f"오늘({today}) 시장 일지가 아직 없습니다.\n16:45 이후 자동 생성됩니다.")
+                return
+            journal = _json.loads(path.read_text("utf-8"))
+            text = format_daily_journal(journal)
+            for chunk in [text[i:i+TG_MAX] for i in range(0, len(text), TG_MAX)]:
+                await update.message.reply_text(chunk)
+        except Exception as e:
+            await update.message.reply_text(f"시장 일지 조회 실패: {e}")
+
+    async def cmd_weekly_report(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """주간 보고"""
+        if not self._is_authorized(update):
+            return
+        try:
+            from data.market_journal import generate_weekly_report, format_weekly_report
+            report = await asyncio.to_thread(generate_weekly_report)
+            text = format_weekly_report(report)
+            for chunk in [text[i:i+TG_MAX] for i in range(0, len(text), TG_MAX)]:
+                await update.message.reply_text(chunk)
+        except Exception as e:
+            await update.message.reply_text(f"주간 보고 실패: {e}")
+
+    async def cmd_monthly_report(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """월간 보고 + 파라미터 조정 제안"""
+        if not self._is_authorized(update):
+            return
+        try:
+            from data.market_journal import generate_monthly_report, format_monthly_report
+            report = await asyncio.to_thread(generate_monthly_report)
+            text = format_monthly_report(report)
+            # 제안이 있으면 context에 저장 (적용 명령에서 사용)
+            proposals = report.get("parameter_proposals", [])
+            if proposals:
+                context.user_data["journal_proposals"] = proposals
+            for chunk in [text[i:i+TG_MAX] for i in range(0, len(text), TG_MAX)]:
+                await update.message.reply_text(chunk)
+        except Exception as e:
+            await update.message.reply_text(f"월간 보고 실패: {e}")
+
+    async def cmd_apply_proposals(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """R:R 조정 제안 적용 ('적용 1 2' 또는 '적용 전체')"""
+        if not self._is_authorized(update):
+            return
+        try:
+            from data.market_journal import apply_proposals
+
+            proposals = context.user_data.get("journal_proposals", [])
+            if not proposals:
+                await update.message.reply_text("적용할 제안이 없습니다. 먼저 '월간' 명령으로 보고를 조회하세요.")
+                return
+
+            text = update.message.text.strip()
+            args = text.split()[1:]  # "적용" 뒤의 인자
+
+            if "전체" in args:
+                indices = list(range(1, len(proposals) + 1))
+            else:
+                indices = []
+                for a in args:
+                    try:
+                        indices.append(int(a))
+                    except ValueError:
+                        pass
+
+            if not indices:
+                await update.message.reply_text("사용법: 적용 1 2  또는  적용 전체")
+                return
+
+            result = await asyncio.to_thread(apply_proposals, indices, proposals)
+            applied = result.get("applied", [])
+            if applied:
+                lines = ["R:R override 적용 완료:"] + applied
+                lines.append("\n다음 매매부터 반영됩니다.")
+                await update.message.reply_text("\n".join(lines))
+            else:
+                await update.message.reply_text("적용된 항목이 없습니다. 번호를 확인하세요.")
+        except Exception as e:
+            await update.message.reply_text(f"제안 적용 실패: {e}")
 
     async def _error_handler(self, update, context):
         import traceback
