@@ -27,6 +27,7 @@ from telegram.ext import (
 
 from bot.kis_trader import KISTrader, resolve_stock, CODE_TO_NAME
 from bot.auto_trader import AutoTrader
+from bot.bot_logger import log_event, read_today_log, cleanup_old_logs
 
 logger = logging.getLogger("BH.Bot")
 
@@ -502,6 +503,10 @@ class BodyHunterBot:
             context.bot_data["portfolio_alert_states"] = new_states
 
             if alerts:
+                # 모든 알림은 log_event에 기록
+                for a in alerts:
+                    log_event("PORTFOLIO", f"{a.get('name', '')} {a.get('pnl_pct', 0):+.1f}%", a)
+
                 # 긴급 알림: -5% 이상 급락만 텔레그램 전송
                 urgent = [a for a in alerts if a.get("pnl_pct", 0) <= -5.0]
                 if urgent:
@@ -536,7 +541,7 @@ class BodyHunterBot:
             return []
 
     async def _job_war_startup(self, context):
-        """09:00 전쟁모드 시작 알림 — 감시 종목 + 7SECRET 정보"""
+        """09:00 전쟁모드 시작 — Silent: log_event만 (모닝브리프에 포함됨)"""
         from datetime import date as _date
         if _date.today().weekday() >= 5:
             return
@@ -544,37 +549,9 @@ class BodyHunterBot:
         if not targets:
             logger.info("전쟁모드 종목 없음 — 추적 비활성")
             return
-        chat_id = os.getenv("TELEGRAM_CHAT_ID")
-        if not chat_id:
-            logger.warning("TELEGRAM_CHAT_ID 미설정 — 전쟁모드 알림 비활성")
-            return
         names = [s.get("name", s.get("code")) for s in targets[:8]]
-        lines = [
-            "🎯 전쟁모드 추적 시작!",
-            f"감시 종목 {len(targets[:8])}개: {', '.join(names)}",
-            "60초 간격 급등/급락/SL 감시 중",
-        ]
-        # 만기일 경고
-        from datetime import date
-        exp_date, d_day, is_quarterly = self._upcoming_expiry_info(date.today())
-        if d_day is not None and d_day <= 5:
-            q_label = "동시만기일" if is_quarterly else "옵션만기일"
-            if d_day == 0:
-                lines.append(f"\n🔴 오늘 {q_label}! 신규매수 자제, 14:30~ 변동성 주의")
-            elif d_day == 1:
-                lines.append(f"\n🟠 내일 {q_label} — 약한 종목 정리 검토")
-            else:
-                lines.append(f"\n📌 {q_label} D-{d_day} — 만기주간 변동성 주의")
-        for s in targets[:8]:
-            np_grade = s.get("nat_power_grade", "")
-            if np_grade and np_grade != "NEUTRAL":
-                emoji = {"POWER_BUY": "💥", "BUY": "🟢", "CAUTION": "🟡", "DANGER": "🔴"}.get(np_grade, "⚪")
-                lines.append(f"  {emoji} {s.get('name')}: {np_grade}({s.get('nat_power', 0):+.1f})")
-        try:
-            await context.bot.send_message(chat_id=chat_id, text="\n".join(lines))
-            logger.info(f"전쟁모드 시작 알림 전송: {len(targets[:8])}종목")
-        except Exception as e:
-            logger.error(f"전쟁모드 시작 알림 실패: {e}")
+        log_event("WAR", f"전쟁모드 추적 시작 {len(targets[:8])}종목: {', '.join(names)}")
+        logger.info(f"전쟁모드 시작: {len(targets[:8])}종목 (로그만)")
 
     async def _job_war_tracker(self, context):
         """전쟁모드 추적 — 60초 간격, 급등/급락/SL 알림"""
@@ -631,52 +608,43 @@ class BodyHunterBot:
                 code_alerts = alert_sent.setdefault(code, [])
                 open_p = open_prices.get(code, cp)
 
-                # 1) SL 근접 (SL보다 위에 있지만 2% 이내)
+                # 1) SL 근접 (SL보다 위에 있지만 2% 이내) — log_event만
                 if sl > 0 and cp > sl:
                     vs_sl = (cp / sl - 1) * 100
                     if vs_sl <= 2.0 and "SL_NEAR" not in code_alerts:
-                        await context.bot.send_message(
-                            chat_id=chat_id,
-                            text=f"⚠️ {name} SL근접!\n현재 {cp:,} → SL {sl:,} ({vs_sl:+.1f}%)"
-                        )
+                        log_event("WAR", f"{name} SL근접 {cp:,} → SL {sl:,} ({vs_sl:+.1f}%)")
                         code_alerts.append("SL_NEAR")
-                        logger.info(f"전쟁추적 알림: {name} SL_NEAR")
 
-                # 2) SL 이탈 (SL 이하로 하락)
+                # 2) SL 이탈 — 긴급 텔레그램 전송
                 if sl > 0 and cp <= sl and "SL_BREAK" not in code_alerts:
                     await context.bot.send_message(
                         chat_id=chat_id,
-                        text=f"🚨 {name} SL 이탈!\n현재 {cp:,} ≤ SL {sl:,}"
+                        text=f"🚨 [긴급] {name} SL 이탈!\n  현재 {cp:,} ≤ SL {sl:,}\n  즉시 대응 필요"
                     )
+                    log_event("WAR", f"{name} SL_BREAK {cp:,} ≤ {sl:,}")
                     code_alerts.append("SL_BREAK")
-                    logger.info(f"전쟁추적 알림: {name} SL_BREAK")
 
-                # 3) 급등 (+3%) / 급락 (-3%) — 시가 대비
+                # 3) 급등/급락 — log_event만 (급락 -5% 이상만 긴급 전송)
                 if open_p > 0:
                     day_chg = (cp / open_p - 1) * 100
                     if day_chg >= 3.0 and "SURGE" not in code_alerts:
-                        await context.bot.send_message(
-                            chat_id=chat_id,
-                            text=f"🚀 {name} 급등!\n{cp:,}원 ({day_chg:+.1f}% from 시가)"
-                        )
+                        log_event("WAR", f"{name} 급등 {day_chg:+.1f}% ({cp:,}원)")
                         code_alerts.append("SURGE")
-                        logger.info(f"전쟁추적 알림: {name} SURGE {day_chg:+.1f}%")
-                    if day_chg <= -3.0 and "DROP" not in code_alerts:
+                    if day_chg <= -5.0 and "DROP5" not in code_alerts:
                         await context.bot.send_message(
                             chat_id=chat_id,
-                            text=f"📉 {name} 급락!\n{cp:,}원 ({day_chg:+.1f}% from 시가)"
+                            text=f"🚨 [긴급] {name} 급락 {day_chg:+.1f}%\n  현재 {cp:,}원"
                         )
+                        log_event("WAR", f"{name} 급락 {day_chg:+.1f}% 긴급알림")
+                        code_alerts.append("DROP5")
+                    elif day_chg <= -3.0 and "DROP" not in code_alerts:
+                        log_event("WAR", f"{name} 하락 {day_chg:+.1f}% ({cp:,}원)")
                         code_alerts.append("DROP")
-                        logger.info(f"전쟁추적 알림: {name} DROP {day_chg:+.1f}%")
 
-                # 4) TP 도달
+                # 4) TP 도달 — log_event만
                 if tp > 0 and cp >= tp and "TP_HIT" not in code_alerts:
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=f"🎯 {name} TP 도달!\n{cp:,} ≥ TP {tp:,}"
-                    )
+                    log_event("WAR", f"{name} TP도달 {cp:,} ≥ {tp:,}")
                     code_alerts.append("TP_HIT")
-                    logger.info(f"전쟁추적 알림: {name} TP_HIT")
 
             except Exception as e:
                 fail_count += 1
@@ -687,7 +655,7 @@ class BodyHunterBot:
             logger.info(f"전쟁추적: {ok_count}/{ok_count+fail_count} 조회성공")
 
     async def _job_war_summary(self, context):
-        """전쟁모드 30분 요약 텔레그램 전송"""
+        """전쟁모드 30분 요약 — Silent: log_event만 (/ㅍ로 수동 조회)"""
         from datetime import date as _date
         if _date.today().weekday() >= 5:
             return
@@ -696,18 +664,12 @@ class BodyHunterBot:
         if not targets:
             return
 
-        chat_id = os.getenv("TELEGRAM_CHAT_ID")
-        if not chat_id:
-            return
         war_state = context.bot_data.get("war_tracker", {})
         last_prices = war_state.get("prices", {})
         open_prices = war_state.get("opens", {})
 
-        now = datetime.now(KST)
-        lines = [f"📊 전쟁모드 추적 [{now:%H:%M}]", ""]
-
         data_count = 0
-        fail_reasons = []
+        summary_items = []
         for idx, s in enumerate(targets[:8]):
             code = s.get("code", "")
             name = s.get("name", code)
@@ -715,7 +677,6 @@ class BodyHunterBot:
             cp = last_prices.get(code, 0)
 
             if cp == 0:
-                # KIS API rate limit 방지: 종목 간 0.3초 딜레이
                 if idx > 0:
                     await asyncio.sleep(0.3)
                 try:
@@ -726,12 +687,7 @@ class BodyHunterBot:
                         if code not in open_prices:
                             open_p_val = p.get("open", 0)
                             open_prices[code] = open_p_val if open_p_val > 0 else cp
-                    else:
-                        msg = p.get("message", "unknown") if p else "resp=None"
-                        fail_reasons.append(f"{name}:{msg}")
-                except Exception as e:
-                    fail_reasons.append(f"{name}:{e}")
-                    logger.warning(f"전쟁요약 {name} 가격조회 실패: {e}")
+                except Exception:
                     continue
 
             if cp == 0:
@@ -741,24 +697,10 @@ class BodyHunterBot:
             open_p = open_prices.get(code, cp)
             day_chg = (cp / open_p - 1) * 100 if open_p > 0 else 0
             vs_tp = (tp / cp - 1) * 100 if tp > 0 and cp > 0 else 0
+            summary_items.append(f"{name} {cp:,}원 ({day_chg:+.1f}%) →TP({vs_tp:+.1f}%)")
 
-            icon = "🟢" if day_chg > 0 else ("🔴" if day_chg < -1 else "⚪")
-            # 7SECRET nat_power 아이콘
-            np_grade = s.get("nat_power_grade", "")
-            np_icon = {"POWER_BUY": "💥", "BUY": "🟢", "CAUTION": "🟡", "DANGER": "🔴"}.get(np_grade, "")
-            lines.append(f"{icon} {name} {cp:,}원 ({day_chg:+.1f}%) →TP({vs_tp:+.1f}%) {np_icon}")
-
-        if data_count == 0:
-            reason_summary = "; ".join(fail_reasons[:3]) if fail_reasons else "캐시+API 모두 데이터 없음"
-            lines.append(f"⚠️ 가격 데이터 조회 실패 ({len(fail_reasons)}건)")
-            lines.append(f"원인: {reason_summary[:100]}")
-            logger.error(f"전쟁요약 전체 실패 ({len(fail_reasons)}건): {'; '.join(fail_reasons[:5])}")
-
-        try:
-            await context.bot.send_message(chat_id=chat_id, text="\n".join(lines))
-            logger.info(f"전쟁추적 요약 전송: {data_count}종목")
-        except Exception as e:
-            logger.error(f"전쟁추적 요약 전송 실패: {e}")
+        log_event("WAR", f"30분 요약 {data_count}종목", summary_items)
+        logger.info(f"전쟁추적 요약: {data_count}종목 (로그만)")
 
     async def cmd_buy(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update):
@@ -1165,7 +1107,14 @@ class BodyHunterBot:
             return
 
         async def _send_alert(text):
-            await context.bot.send_message(chat_id=int(self.chat_id), text=text)
+            # MSG-03/04: 체결/긴급만 텔레그램, 나머지 log_event
+            _TG_KEYWORDS = ("✅ 자동 매수", "❌ 매수 실패", "매도 체결", "청산",
+                            "리스크 게이트", "BRAIN 관망", "위기 모드", "🚫", "⛔")
+            if any(kw in text for kw in _TG_KEYWORDS):
+                await context.bot.send_message(chat_id=int(self.chat_id), text=text)
+            else:
+                cat = "TRADE_BUY" if "매수" in text else "TRADE_SELL" if "매도" in text else "SYSTEM"
+                log_event(cat, text[:200])
 
         self.auto_trader.start(_send_alert)
         bot_conf = self.config.get("bot", {})
@@ -2003,6 +1952,8 @@ class BodyHunterBot:
     async def _on_startup(self, app: Application):
         """봇 시작 시 자동매매 자동 시작 + 키보드 전송"""
         logger.info("봇 초기화 완료 - 자동매매 자동 시작")
+        cleanup_old_logs(30)
+        log_event("SYSTEM", "봇 시작")
 
         if not self.chat_id:
             logger.error("TELEGRAM_CHAT_ID 미설정 - 시작 메시지/자동매매 비활성")
@@ -2012,7 +1963,15 @@ class BodyHunterBot:
         # 자동매매 자동 시작 (auto_trade: true일 때)
         if self.config.get("bot", {}).get("auto_trade", False):
             async def _send_alert(text):
-                await app.bot.send_message(chat_id=chat_id, text=text)
+                # MSG-03/04: 체결/긴급만 텔레그램, 나머지 log_event
+                _TG_KEYWORDS = ("✅ 자동 매수", "❌ 매수 실패", "매도 체결", "청산",
+                                "리스크 게이트", "BRAIN 관망", "위기 모드", "🚫", "⛔")
+                if any(kw in text for kw in _TG_KEYWORDS):
+                    await app.bot.send_message(chat_id=chat_id, text=text)
+                else:
+                    # 로그에만 기록 — 텔레그램 미전송
+                    cat = "TRADE_BUY" if "매수" in text else "TRADE_SELL" if "매도" in text else "SYSTEM"
+                    log_event(cat, text[:200])
 
             self.auto_trader.start(_send_alert)
             now_str = datetime.now().strftime("%H:%M")
@@ -2112,6 +2071,8 @@ class BodyHunterBot:
             r"^ㅍ$": self.cmd_port,
             r"^뇌$": self.cmd_brain_status,
             r"^감시$": self.cmd_watchlist,
+            r"^ㄹ$": self.cmd_event_log,
+            r"^이벤트로그$": self.cmd_event_log,
         }
 
         for pattern, handler in exact_commands.items():
@@ -2395,6 +2356,7 @@ class BodyHunterBot:
         try:
             from data.kis_collector import collect_today_minutes, UNIVERSE
             results = await asyncio.to_thread(collect_today_minutes)
+            log_event("COLLECT", f"분봉 수집 {len(results)}/{len(UNIVERSE)}종목")
             logger.info(f"분봉 수집 완료: {len(results)}/{len(UNIVERSE)}종목 (로그만)")
 
             try:
@@ -2603,6 +2565,7 @@ class BodyHunterBot:
         try:
             from data.universe_builder import build_universe
             uni = await asyncio.to_thread(build_universe)
+            log_event("UNIVERSE", f"리빌드 {len(uni)}종목")
             logger.info(f"유니버스 리빌드 완료: {len(uni)}종목 (로그만)")
         except Exception as e:
             logger.error(f"유니버스 리빌드 실패: {e}")
@@ -2621,6 +2584,7 @@ class BodyHunterBot:
             names = {c: UNIVERSE[c][0] for c in codes if c in UNIVERSE}
             sa = SignalAnalyzer()
             count = await asyncio.to_thread(sa.record_daily, codes, names)
+            log_event("SIGNAL", f"일간 시그널 기록 {count}종목")
             logger.info(f"일간 시그널 기록 완료: {count}종목 (로그만)")
         except Exception as e:
             logger.error(f"시그널 기록 실패: {e}")
@@ -2641,6 +2605,7 @@ class BodyHunterBot:
             self._morning_data["guardian"] = verdicts
             exit_cnt = sum(1 for v in verdicts if v.action == "EXIT")
             reduce_cnt = sum(1 for v in verdicts if v.action == "REDUCE")
+            log_event("GUARDIAN", f"{len(verdicts)}종목 진단 (EXIT:{exit_cnt} REDUCE:{reduce_cnt})")
             logger.info(f"Guardian 완료: {len(verdicts)}종목 (EXIT:{exit_cnt} REDUCE:{reduce_cnt})")
         except Exception as e:
             logger.error(f"Guardian 실패: {e}")
@@ -2657,6 +2622,7 @@ class BodyHunterBot:
             from data.daily_learner import run as run_learner
             result = await asyncio.to_thread(run_learner)
             self._closing_data["learning"] = result
+            log_event("LEARNER", f"적중률 {result['verify']['hit_rate']}%", result.get("verify"))
             logger.info(f"일간 학습 완료: 적중률 {result['verify']['hit_rate']}% (마감리포트에 통합)")
 
             try:
@@ -2680,6 +2646,7 @@ class BodyHunterBot:
             tracker = TradeTracker()
             names = tracker.register_paper_from_objects(kis=self.trader)
             if names:
+                log_event("PAPER", f"{len(names)}종목 추적 시작: {', '.join(names)}")
                 logger.info(f"[PAPER] {len(names)}종목 추적 시작: {', '.join(names)} (로그만)")
         except Exception as e:
             logger.error(f"PAPER 등록 실패: {e}")
@@ -2698,6 +2665,7 @@ class BodyHunterBot:
             events = tracker.check_paper_prices(self.trader)
             if events:
                 self._closing_data["paper_events"].extend(events)
+                log_event("PAPER", f"TP/SL 이벤트 {len(events)}건", events)
                 logger.info(f"[PAPER] TP/SL 이벤트 {len(events)}건 (마감리포트에 통합)")
         except Exception as e:
             logger.warning(f"PAPER 가격체크 실패: {e}")
@@ -2713,6 +2681,7 @@ class BodyHunterBot:
             events = tracker.paper_close_eod(self.trader)
             if events:
                 self._closing_data["paper_events"].extend(events)
+                log_event("PAPER", f"EOD 시간손절 {len(events)}건", events)
                 logger.info(f"PAPER EOD: {len(events)}건 시간손절 (마감리포트에 통합)")
         except Exception as e:
             logger.error(f"PAPER EOD 실패: {e}")
@@ -2783,15 +2752,15 @@ class BodyHunterBot:
             from data.market_brain import emergency_reassess
             result = await asyncio.to_thread(emergency_reassess)
             if result and result.get("triggered"):
+                log_event("EMERGENCY", f"BRAIN 긴급 하향 {result['old_pct']}%→{result['new_pct']}%", result)
                 chat_id = self.chat_id
                 if chat_id:
                     await context.bot.send_message(
                         chat_id=chat_id,
                         text=(
-                            f"🚨 BRAIN 긴급 하향\n"
+                            f"🚨 [긴급] BRAIN 하향\n"
                             f"  {result['reason']}\n"
                             f"  비중 {result['old_pct']}% → {result['new_pct']}%\n"
-                            f"  리스크: {result['risk_level']}\n"
                             f"  → 신규 매수 자동 축소/중단"
                         ),
                     )
@@ -2822,69 +2791,18 @@ class BodyHunterBot:
             logger.error(f"[Preclose] 스캔 실패: {e}")
 
     async def _job_preclose_report(self, context):
-        """14:50 프리클로즈 리포트 텔레그램 전송"""
+        """14:50 프리클로즈 리포트 — Silent: _send_preclose_brief에 통합됨"""
+        # _send_preclose_brief(14:50)가 동일 시각에 통합 메시지 전송
+        # 여기서는 log_event만 기록
         from datetime import date
         if date.today().weekday() >= 5:
             return
         try:
-            from data.preclose_scanner import (
-                load_preclose_results, format_preclose_report,
-                PrecloseCandidate, cross_validate_with_evening,
-            )
+            from data.preclose_scanner import load_preclose_results
             raw = load_preclose_results()
-            if not raw:
-                return
-
-            # dict → PrecloseCandidate 변환
-            candidates = []
-            for r in raw:
-                try:
-                    cand = PrecloseCandidate(
-                        code=r["code"],
-                        name=r["name"],
-                        sector=r.get("sector", ""),
-                        preclose_score=r["preclose_score"],
-                        score_detail=r.get("score_detail", {}),
-                        intraday_tv_ratio=r.get("intraday_tv_ratio", 0),
-                        tv_pattern=r.get("tv_pattern", ""),
-                        change_pct=r.get("change_pct", 0),
-                        current_price=r.get("current_price", 0),
-                        acceleration=r.get("acceleration", 1.0),
-                        inst_net_buy=r.get("inst_net_buy", 0),
-                        foreign_net_buy=r.get("foreign_net_buy", 0),
-                        trade_object=r.get("trade_object"),
-                        rr_verdict=r.get("rr_verdict", ""),
-                    )
-                    candidates.append(cand)
-                except Exception:
-                    continue
-
-            if not candidates:
-                return
-
-            report = format_preclose_report(candidates)
-
-            # 교차 검증 (저녁 분석 결과와 겹치는 종목)
-            overlap = cross_validate_with_evening([c.code for c in candidates])
-            if overlap:
-                from data.preclose_scanner import DATA_DIR
-                rec_path = DATA_DIR / "recommendation.json"
-                if rec_path.exists():
-                    import json as _json
-                    rec = _json.loads(rec_path.read_text(encoding="utf-8"))
-                    name_map = {s["code"]: s["name"]
-                                for s in rec.get("stocks", []) if "code" in s}
-                    names = [name_map.get(c, c) for c in overlap]
-                    report += f"\n\n[교차검증] 저녁 분석과 겹침: {', '.join(names)}"
-                    report += "\n→ 확신도 UP (conviction HIGH)"
-
-            # PAPER 태그
-            report = "[PAPER-PRECLOSE]\n" + report
-
-            chat_id = os.getenv("TELEGRAM_CHAT_ID")
-            await context.bot.send_message(chat_id=chat_id, text=report)
-            logger.info(f"[Preclose] 리포트 전송: {len(candidates)}종목")
-
+            n = len(raw) if raw else 0
+            log_event("PRECLOSE", f"프리클로즈 리포트 {n}종목 (통합메시지에 포함)")
+            logger.info(f"[Preclose] 리포트 {n}종목 (프리클로즈 브리프에 통합)")
         except Exception as e:
             logger.error(f"[Preclose] 리포트 실패: {e}")
 
@@ -2958,6 +2876,7 @@ class BodyHunterBot:
             "date": exp_date.strftime("%m/%d"),
             "is_quarterly": is_quarterly,
         }
+        log_event("OPTIONS", f"만기일 D-{d_day}: {q_tag}", {"d_day": d_day, "is_quarterly": is_quarterly})
         logger.info(f"옵션 만기일 D-{d_day}: {q_tag} (모닝브리프에 통합)")
 
     async def _job_global_event_scan(self, context):
@@ -2971,6 +2890,7 @@ class BodyHunterBot:
             from data.global_event_calendar import scan_global_events
             result = await asyncio.to_thread(scan_global_events)
             self._morning_data["global_events"] = result
+            log_event("GLOBAL_EVENT", "해외 이벤트 스캔 완료", result)
             logger.info("해외 이벤트 스캔 완료 (모닝브리프에 통합)")
         except Exception as e:
             logger.error(f"해외 이벤트 스캔 실패: {e}", exc_info=True)
@@ -2986,6 +2906,7 @@ class BodyHunterBot:
             result = await asyncio.to_thread(run_picker)
             self._closing_data["swing"] = result
             n = len(result.get("candidates", []))
+            log_event("SIGNAL", f"스윙 종목 선정 {n}종목")
             logger.info(f"스윙 종목 선정 완료: {n}종목 (마감리포트에 통합)")
         except Exception as e:
             logger.error(f"스윙 종목 선정 실패: {e}", exc_info=True)
@@ -3001,6 +2922,7 @@ class BodyHunterBot:
             result = await asyncio.to_thread(run_daily_scan)
             p1 = len(result.get("phase1_new", []))
             p2 = len(result.get("phase2_entries", []))
+            log_event("MACD", f"신규{p1} 진입{p2}")
             logger.info(f"MACD 스캔 완료: 신규{p1} 진입{p2} (로그만)")
         except Exception as e:
             logger.error(f"MACD 스캔 실패: {e}", exc_info=True)
@@ -3018,6 +2940,7 @@ class BodyHunterBot:
             if candidates:
                 await asyncio.to_thread(save_premove_candidates, candidates)
             self._morning_data["premove"] = candidates or []
+            log_event("PREMOVE", f"{len(candidates or [])}개 후보 감지", {"count": len(candidates or [])})
             logger.info(f"사전감지 완료: {len(candidates or [])}개 후보 (모닝브리프에 통합)")
         except Exception as e:
             logger.error(f"사전감지 실패: {e}", exc_info=True)
@@ -3431,6 +3354,13 @@ class BodyHunterBot:
             await update.message.reply_text("\n".join(lines))
         except Exception as e:
             await update.message.reply_text(f"감시목록 조회 실패: {e}")
+
+    async def cmd_event_log(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """오늘 이벤트 로그 최근 20줄 (bot_logger)"""
+        if not self._is_authorized(update):
+            return
+        text = read_today_log(20)
+        await update.message.reply_text(f"이벤트 로그 (최근 20줄)\n━━━━━━━━━━━━━━━━━━━\n{text[-3500:]}")
 
     async def _error_handler(self, update, context):
         import traceback
