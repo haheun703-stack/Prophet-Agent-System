@@ -942,6 +942,13 @@ def run(quick: bool = False):
                                      nxt_verify=nxt_verify, nxt_rolling=nxt_rolling)
     tg_send(report)
 
+    # FIX-08: BRAIN 자기 학습 — 성과 추적
+    brain_perf = {}
+    try:
+        brain_perf = brain_performance_check()
+    except Exception as e:
+        logger.warning(f"[BRAIN Perf] 실패 (무시): {e}")
+
     logger.info("=== Daily Learner 완료 ===")
     return {
         "date": today,
@@ -951,6 +958,129 @@ def run(quick: bool = False):
         "insights": insights,
         "nxt_verify": nxt_verify,
         "nxt_rolling": nxt_rolling,
+        "brain_perf": brain_perf,
+    }
+
+
+# ═══════════════════════════════════════
+#  FIX-08: BRAIN 자기 학습 — 성과 추적
+# ═══════════════════════════════════════
+
+def brain_performance_check() -> dict:
+    """BRAIN 판단 vs 실제 시장 결과를 기록 → brain_performance.json (30일 롤링)
+
+    적중 판정:
+      - 공격/표준 + 코스피↑ → correct
+      - 방어/관망 + 코스피↓ → correct
+      - 공격 + 코스피 -2% 이상 → bad_call
+      - 관망 + 코스피 +2% 이상 → missed_opportunity
+    """
+    PERF_PATH = DATA_DIR / "learning" / "brain_performance.json"
+
+    # 현재 brain_report 로드
+    brain_path = DATA_DIR / "brain_report.json"
+    if not brain_path.exists():
+        logger.info("[BRAIN Perf] brain_report.json 없음 — 스킵")
+        return {}
+
+    try:
+        brain = json.loads(brain_path.read_text("utf-8"))
+    except Exception:
+        return {}
+
+    brain_date = brain.get("date", "")
+    pct = brain.get("position_size_pct", 70)
+    verdict = brain.get("overall_verdict", "")
+
+    # 오늘 코스피 등락률 (pykrx)
+    try:
+        from pykrx import stock
+        today_str = date.today().strftime("%Y%m%d")
+        yesterday = (date.today() - timedelta(days=7)).strftime("%Y%m%d")
+        df = stock.get_index_ohlcv(yesterday, today_str, "1001")
+        if df is not None and len(df) >= 2:
+            kospi_today = df["종가"].iloc[-1]
+            kospi_prev = df["종가"].iloc[-2]
+            kospi_chg = (kospi_today / kospi_prev - 1) * 100
+        else:
+            kospi_chg = 0.0
+    except Exception as e:
+        logger.warning(f"[BRAIN Perf] 코스피 조회 실패: {e}")
+        kospi_chg = 0.0
+
+    # 추천 종목 평균 수익률 (signal_log에서)
+    log = load_signal_log()
+    rec_avg = 0.0
+    if log:
+        latest = log[-1]
+        details = latest.get("details", [])
+        if details:
+            pnls = [d.get("pnl_pct", 0) for d in details]
+            rec_avg = sum(pnls) / len(pnls) if pnls else 0.0
+
+    # 적중 판정
+    label_map = {100: "공격", 70: "표준", 50: "방어", 30: "최소", 0: "관망"}
+    label = label_map.get(pct, "표준")
+
+    if pct >= 70 and kospi_chg > 0:
+        correct = True
+    elif pct <= 50 and kospi_chg < 0:
+        correct = True
+    else:
+        correct = False
+
+    bad_call = pct >= 70 and kospi_chg <= -2.0
+    missed = pct <= 30 and kospi_chg >= 2.0
+
+    entry = {
+        "date": date.today().isoformat(),
+        "brain_date": brain_date,
+        "verdict": f"{label}{pct}%",
+        "score_detail": brain.get("position_size_reason", ""),
+        "kospi_change": round(kospi_chg, 2),
+        "rec_avg_return": round(rec_avg, 2),
+        "correct": correct,
+        "bad_call": bad_call,
+        "missed_opportunity": missed,
+    }
+
+    # 기존 파일 로드 + 추가 (30일 롤링)
+    perf_list = []
+    if PERF_PATH.exists():
+        try:
+            perf_list = json.loads(PERF_PATH.read_text("utf-8"))
+        except Exception:
+            perf_list = []
+
+    # 중복 방지
+    if perf_list and perf_list[-1].get("date") == entry["date"]:
+        perf_list[-1] = entry  # 덮어쓰기
+    else:
+        perf_list.append(entry)
+
+    # 30일 롤링
+    perf_list = perf_list[-30:]
+
+    PERF_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(PERF_PATH, "w", encoding="utf-8") as f:
+        json.dump(perf_list, f, ensure_ascii=False, indent=2)
+
+    # 적중률 계산
+    recent_10 = perf_list[-10:]
+    if recent_10:
+        hit_rate = sum(1 for p in recent_10 if p.get("correct")) / len(recent_10) * 100
+    else:
+        hit_rate = 50.0
+
+    logger.info(
+        f"[BRAIN Perf] {label}{pct}% | 코스피{kospi_chg:+.1f}% | "
+        f"{'적중' if correct else '빗나감'} | 10일 적중률 {hit_rate:.0f}%"
+    )
+
+    return {
+        "entry": entry,
+        "hit_rate_10d": hit_rate,
+        "total_records": len(perf_list),
     }
 
 

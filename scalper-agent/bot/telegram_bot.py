@@ -2778,6 +2778,26 @@ class BodyHunterBot:
         except Exception as e:
             logger.error(f"[TV Intraday] 스캔 실패: {e}")
 
+        # FIX-07: 장중 BRAIN 긴급 재평가 (30분 주기 체크)
+        try:
+            from data.market_brain import emergency_reassess
+            result = await asyncio.to_thread(emergency_reassess)
+            if result and result.get("triggered"):
+                chat_id = self.chat_id
+                if chat_id:
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=(
+                            f"🚨 BRAIN 긴급 하향\n"
+                            f"  {result['reason']}\n"
+                            f"  비중 {result['old_pct']}% → {result['new_pct']}%\n"
+                            f"  리스크: {result['risk_level']}\n"
+                            f"  → 신규 매수 자동 축소/중단"
+                        ),
+                    )
+        except Exception as e:
+            logger.error(f"[BRAIN 긴급] 체크 실패: {e}")
+
     # ── 14:30 프리클로즈 스캔 ────────────────────────────
 
     async def _job_preclose_scan(self, context):

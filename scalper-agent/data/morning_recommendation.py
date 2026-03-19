@@ -1825,6 +1825,17 @@ def run_evening_recommendation() -> RecommendationReport:
         brain = generate_brain_report()
         save_brain_report(brain)
         logger.info(f"[Market Brain] 비중 {brain.position_size_pct}% | {brain.overall_verdict[:50]}")
+
+        # FIX-01: BRAIN 비중 → 추천 종목 수 캡
+        _BRAIN_STOCK_CAP = {100: 8, 70: 5, 50: 3, 30: 1, 0: 0}
+        cap = _BRAIN_STOCK_CAP.get(brain.position_size_pct, 5)
+        if len(report.stocks) > cap:
+            logger.info(
+                f"[BRAIN CAP] {len(report.stocks)}종목 → {cap}종목 "
+                f"(비중 {brain.position_size_pct}%)"
+            )
+            report.stocks = report.stocks[:cap]
+            save_recommendation(report)  # 캡 적용된 리스트로 재저장
     except Exception as e:
         logger.warning(f"[Market Brain] 실패 (무시): {e}")
 
@@ -3049,6 +3060,17 @@ def run_war_mode_recommendation() -> RecommendationReport:
         brain = generate_brain_report()
         save_brain_report(brain)
         logger.info(f"[Market Brain] 비중 {brain.position_size_pct}% | {brain.overall_verdict[:50]}")
+
+        # FIX-01: BRAIN 비중 → 추천 종목 수 캡
+        _BRAIN_STOCK_CAP = {100: 8, 70: 5, 50: 3, 30: 1, 0: 0}
+        cap = _BRAIN_STOCK_CAP.get(brain.position_size_pct, 5)
+        if len(report.stocks) > cap:
+            logger.info(
+                f"[BRAIN CAP] {len(report.stocks)}종목 → {cap}종목 "
+                f"(비중 {brain.position_size_pct}%)"
+            )
+            report.stocks = report.stocks[:cap]
+            save_recommendation(report)  # 캡 적용된 리스트로 재저장
     except Exception as e:
         logger.warning(f"[Market Brain] 실패 (무시): {e}")
 

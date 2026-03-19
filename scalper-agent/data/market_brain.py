@@ -70,6 +70,18 @@ def _load_insights() -> dict:
     return _load_json(DATA_DIR / "learning" / "insights.json")
 
 
+def _load_brain_performance() -> list:
+    """FIX-08: brain_performance.json (30일 롤링 리스트)"""
+    path = DATA_DIR / "learning" / "brain_performance.json"
+    try:
+        if path.exists():
+            data = json.loads(path.read_text("utf-8"))
+            return data if isinstance(data, list) else []
+    except Exception:
+        pass
+    return []
+
+
 # ═══════════════════════════════════════
 #  데이터 클래스
 # ═══════════════════════════════════════
@@ -244,6 +256,86 @@ def _phase1_macro(nw: dict) -> MacroAssessment:
 
     m.narrative = ". ".join(parts) if parts else "매크로 데이터 부족"
     return m
+
+
+# ── FIX-05: 지수 기술적 분석 헬퍼 ──
+
+def _calc_index_technicals() -> dict:
+    """코스피 60일 일봉 → MA/MACD/RSI 계산.
+    Returns: {"bull": bool, "bear": bool, "oversold": bool, "overbought": bool, "detail": str}
+    실패 시 빈 dict → Phase 6에서 무시됨.
+    """
+    try:
+        from pykrx import stock
+        from datetime import timedelta
+
+        end = date.today()
+        start = end - timedelta(days=120)  # 60영업일 확보 위해 넉넉히
+        df = stock.get_index_ohlcv(
+            start.strftime("%Y%m%d"), end.strftime("%Y%m%d"), "1001"  # 코스피
+        )
+        if df is None or len(df) < 30:
+            return {}
+
+        closes = df["종가"].values
+        n = len(closes)
+
+        # 이동평균
+        ma5 = closes[-5:].mean()
+        ma20 = closes[-20:].mean() if n >= 20 else ma5
+        ma60 = closes[-60:].mean() if n >= 60 else ma20
+
+        # MACD(12,26,9)
+        def _ema(arr, span):
+            alpha = 2 / (span + 1)
+            out = [arr[0]]
+            for v in arr[1:]:
+                out.append(alpha * v + (1 - alpha) * out[-1])
+            return out
+
+        ema12 = _ema(list(closes), 12)
+        ema26 = _ema(list(closes), 26)
+        macd_line = [a - b for a, b in zip(ema12, ema26)]
+        signal_line = _ema(macd_line, 9)
+        macd_hist = macd_line[-1] - signal_line[-1]
+        prev_hist = macd_line[-2] - signal_line[-2] if len(macd_line) > 1 else 0
+
+        # RSI(14)
+        if n >= 15:
+            diffs = [closes[i] - closes[i - 1] for i in range(1, n)]
+            gains = [max(d, 0) for d in diffs[-14:]]
+            losses = [max(-d, 0) for d in diffs[-14:]]
+            avg_gain = sum(gains) / 14
+            avg_loss = sum(losses) / 14
+            rs = avg_gain / avg_loss if avg_loss > 0 else 100
+            rsi = 100 - (100 / (1 + rs))
+        else:
+            rsi = 50
+
+        cur = closes[-1]
+        bull = cur > ma20 and macd_hist > 0 and prev_hist <= 0  # 골든크로스
+        bear = cur < ma20 and macd_hist < 0
+        oversold = rsi < 30
+        overbought = rsi > 70
+
+        parts = []
+        parts.append(f"코스피{cur:,.0f}")
+        if cur > ma20:
+            parts.append(f"20MA↑{(cur/ma20-1)*100:+.1f}%")
+        else:
+            parts.append(f"20MA↓{(cur/ma20-1)*100:+.1f}%")
+        parts.append(f"MACD{'↑' if macd_hist > 0 else '↓'}")
+        parts.append(f"RSI{rsi:.0f}")
+
+        return {
+            "bull": bull, "bear": bear,
+            "oversold": oversold, "overbought": overbought,
+            "rsi": rsi, "macd_hist": macd_hist,
+            "detail": " ".join(parts),
+        }
+    except Exception as e:
+        logger.warning(f"[FIX-05] 지수 기술적 분석 실패: {e}")
+        return {}
 
 
 # ═══════════════════════════════════════
@@ -451,6 +543,93 @@ def _phase3_sector(history: dict, rotation_detail: list = None) -> SectorAssessm
     return sa
 
 
+# ── FIX-06: 시장 전체 수급 헬퍼 ──
+
+def _calc_market_flow() -> dict:
+    """코스피 투자자별 매매동향 5일 → 기관/외인 수급 판정.
+    Returns: {"bull": bool, "bear": bool, "retail_panic": bool, "detail": str}
+    """
+    try:
+        from pykrx import stock
+        from datetime import timedelta
+
+        end = date.today()
+        start = end - timedelta(days=14)  # 5영업일 확보
+
+        df = stock.get_market_trading_value_by_date(
+            start.strftime("%Y%m%d"), end.strftime("%Y%m%d"), "KOSPI"
+        )
+        if df is None or len(df) < 3:
+            return {}
+
+        # 최근 5일 (영업일)
+        recent = df.tail(5)
+        inst_col = "기관합계" if "기관합계" in recent.columns else None
+        foreign_col = "외국인합계" if "외국인합계" in recent.columns else None
+        retail_col = "개인" if "개인" in recent.columns else None
+
+        if not inst_col or not foreign_col:
+            # 컬럼명 다를 수 있음
+            return {}
+
+        inst_5d = recent[inst_col].sum()
+        foreign_5d = recent[foreign_col].sum()
+        retail_today = recent[retail_col].iloc[-1] if retail_col else 0
+
+        # 연속 매수일 카운트
+        inst_consec_buy = 0
+        foreign_consec_buy = 0
+        for _, row in recent.iloc[::-1].iterrows():
+            if row[inst_col] > 0:
+                inst_consec_buy += 1
+            else:
+                break
+        for _, row in recent.iloc[::-1].iterrows():
+            if row[foreign_col] > 0:
+                foreign_consec_buy += 1
+            else:
+                break
+
+        bull = inst_consec_buy >= 3 and foreign_consec_buy >= 3
+        # 기관+외인 동반 순매도 3일
+        inst_consec_sell = 0
+        foreign_consec_sell = 0
+        for _, row in recent.iloc[::-1].iterrows():
+            if row[inst_col] < 0:
+                inst_consec_sell += 1
+            else:
+                break
+        for _, row in recent.iloc[::-1].iterrows():
+            if row[foreign_col] < 0:
+                foreign_consec_sell += 1
+            else:
+                break
+        bear = inst_consec_sell >= 3 and foreign_consec_sell >= 3
+
+        # 개인만 순매수 + 기관/외인 매도 = 위험
+        retail_panic = (retail_today > 0 and
+                        recent[inst_col].iloc[-1] < 0 and
+                        recent[foreign_col].iloc[-1] < 0)
+
+        parts = []
+        parts.append(f"기관{inst_5d/1e8:+,.0f}억(5D)")
+        parts.append(f"외인{foreign_5d/1e8:+,.0f}억(5D)")
+        if bull:
+            parts.append("동반매수")
+        elif bear:
+            parts.append("동반매도")
+        if retail_panic:
+            parts.append("개인쏠림⚠")
+
+        return {
+            "bull": bull, "bear": bear, "retail_panic": retail_panic,
+            "detail": " ".join(parts),
+        }
+    except Exception as e:
+        logger.warning(f"[FIX-06] 시장 수급 분석 실패: {e}")
+        return {}
+
+
 # ═══════════════════════════════════════
 #  Phase 4: 수급 흐름 판정
 # ═══════════════════════════════════════
@@ -656,6 +835,10 @@ def _phase6_synthesis(
     risk: RiskAssessment,
     rec: dict,
     themes: dict,
+    insights: dict = None,
+    index_tech: dict = None,
+    market_flow: dict = None,
+    brain_perf: list = None,
 ) -> tuple:
     """Returns: (overall_verdict, position_size_pct, position_size_reason, stock_narratives)"""
 
@@ -707,11 +890,93 @@ def _phase6_synthesis(
         score += 5
         reasons.append(f"STRONG_BUY{flow.strong_buy_count}건(+5)")
 
-    # 5. 모순 페널티
+    # 5. 원자재 모멘텀 (FIX-03)
+    n_active = len(commodity.active_signals)
+    if n_active >= 2:
+        score += 8
+        reasons.append(f"원자재활성{n_active}건(+8)")
+    elif n_active >= 1:
+        score += 3
+        reasons.append(f"원자재활성{n_active}건(+3)")
+    if commodity.relay_stage not in (None, "NONE", ""):
+        score += 5
+        reasons.append(f"릴레이{commodity.relay_stage}(+5)")
+    # 원자재 전면 하락 (금+유가 동반 하락)
+    if commodity.gold_chg < -1.0 and commodity.oil_chg < -1.0:
+        score -= 5
+        reasons.append("원자재하락(-5)")
+
+    # 6. 모순 페널티
     n_cont = len(macro.contradictions)
     if n_cont > 0:
         score -= n_cont * 5
         reasons.append(f"모순{n_cont}건({-n_cont*5:+d})")
+
+    # 7. 지수 기술적 분석 (FIX-05)
+    if index_tech:
+        if index_tech.get("bull"):
+            score += 5
+            reasons.append(f"지수MACD골든({index_tech.get('detail', '')})(+5)")
+        elif index_tech.get("bear"):
+            score -= 10
+            reasons.append(f"지수약세({index_tech.get('detail', '')})(-10)")
+        if index_tech.get("oversold"):
+            score += 3
+            reasons.append("RSI과매도(+3)")
+        elif index_tech.get("overbought"):
+            score -= 5
+            reasons.append("RSI과열(-5)")
+
+    # 8. 학습 인사이트 반영 (FIX-04)
+    if insights:
+        # 전체 시스템 적중률 (source_weights 평균)
+        sw = insights.get("source_weights", {})
+        if sw:
+            hit_rates = [v.get("hit_rate", 50) for v in sw.values()
+                         if isinstance(v, dict) and v.get("sample", 0) >= 3]
+            if hit_rates:
+                avg_hit = sum(hit_rates) / len(hit_rates)
+                if avg_hit < 50:
+                    score -= 5
+                    reasons.append(f"학습적중률{avg_hit:.0f}%↓(-5)")
+                elif avg_hit >= 70:
+                    score += 3
+                    reasons.append(f"학습적중률{avg_hit:.0f}%↑(+3)")
+
+        # 섹터별 부스트 (sector_boost 맵)
+        sb = insights.get("sector_boost", {})
+        if sb and sector.hot_sectors:
+            for hs in sector.hot_sectors:
+                sname = hs.get("name", "")
+                boost = sb.get(sname, 0)
+                if boost > 0:
+                    score += 3
+                    reasons.append(f"학습섹터{sname}(+3)")
+                    break  # 최대 1개만
+
+    # 9. 시장 전체 수급 (FIX-06)
+    if market_flow:
+        if market_flow.get("bull"):
+            score += 8
+            reasons.append(f"기관외인동반매수(+8)")
+        elif market_flow.get("bear"):
+            score -= 8
+            reasons.append(f"기관외인동반매도(-8)")
+        if market_flow.get("retail_panic"):
+            score -= 5
+            reasons.append("개인쏠림(-5)")
+
+    # 10. BRAIN 자기 학습 적중률 (FIX-08)
+    if brain_perf and len(brain_perf) >= 5:
+        recent = brain_perf[-10:]  # 최근 10일
+        correct_count = sum(1 for r in recent if r.get("correct"))
+        hit_rate = correct_count / len(recent) * 100
+        if hit_rate < 40:
+            score -= 5
+            reasons.append(f"BRAIN적중률{hit_rate:.0f}%↓(-5)")
+        elif hit_rate > 70:
+            score += 3
+            reasons.append(f"BRAIN적중률{hit_rate:.0f}%↑(+3)")
 
     # 결정
     if score >= 20:
@@ -980,6 +1245,10 @@ def generate_brain_report() -> BrainReport:
     guardian = _load_guardian()
     events = _load_global_events()
     themes = _load_macro_themes()
+    insights = _load_insights()  # FIX-04: 학습 데이터 연결
+    index_tech = _calc_index_technicals()  # FIX-05: 지수 기술적 분석
+    market_flow = _calc_market_flow()  # FIX-06: 시장 전체 수급
+    brain_perf = _load_brain_performance()  # FIX-08: BRAIN 자기 학습
 
     # 6 Phase 실행
     macro = _phase1_macro(nw)
@@ -998,7 +1267,8 @@ def generate_brain_report() -> BrainReport:
     logger.info(f"  [Phase 5] 리스크: {risk.risk_level} ({risk.risk_score:.0f}점)")
 
     verdict, pct, reason, narratives = _phase6_synthesis(
-        macro, commodity, sector, flow, risk, rec, themes
+        macro, commodity, sector, flow, risk, rec, themes,
+        insights, index_tech, market_flow, brain_perf,
     )
     logger.info(f"  [Phase 6] 판정: 비중 {pct}% | {verdict[:60]}")
 
@@ -1030,6 +1300,43 @@ def save_brain_report(report: BrainReport) -> None:
     with open(BRAIN_REPORT_PATH, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
     logger.info(f"[Market Brain] 저장: {BRAIN_REPORT_PATH}")
+
+    # FIX-02: brain_allocation.json도 같이 갱신 (auto_trader 연동)
+    _save_brain_allocation(report)
+
+
+def _save_brain_allocation(report: BrainReport) -> None:
+    """brain_allocation.json — auto_trader가 읽는 포맷으로 저장"""
+    pct = report.position_size_pct  # 0 / 30 / 50 / 70 / 100
+
+    # 포지션 캡: auto_trader의 max_auto_positions(2)에 곱해지는 비율
+    # 관망(0%) → 0, 최소(30%) → 0.5, 방어(50%) → 1.0, 표준/공격 → 1.0
+    if pct == 0:
+        pos_cap = 0.0
+    elif pct <= 30:
+        pos_cap = 0.5
+    else:
+        pos_cap = 1.0
+
+    label_map = {100: "공격", 70: "표준", 50: "방어", 30: "최소", 0: "관망"}
+    label = label_map.get(pct, "표준")
+
+    alloc = {
+        "timestamp": report.generated_at,
+        "effective_regime": label,
+        "position_size_pct": pct,
+        "cross_signal": {
+            "max_positions_cap": pos_cap,
+            "mode_kr": label,
+        },
+        "overall_verdict": report.overall_verdict,
+        "source": "market_brain",
+    }
+
+    alloc_path = DATA_DIR / "brain_allocation.json"
+    with open(alloc_path, "w", encoding="utf-8") as f:
+        json.dump(alloc, f, ensure_ascii=False, indent=2)
+    logger.info(f"[Market Brain] allocation 저장: {alloc_path} ({label} {pct}%)")
 
 
 def load_brain_report() -> BrainReport | None:
@@ -1071,6 +1378,107 @@ def load_brain_report() -> BrainReport | None:
         )
 
     return report
+
+
+# ═══════════════════════════════════════
+#  FIX-07: 장중 긴급 재평가
+# ═══════════════════════════════════════
+
+def emergency_reassess() -> dict | None:
+    """장중 리스크 급변 시 Phase 5만 재계산 → brain_allocation 갱신.
+
+    트리거 조건 (하나라도 충족 시):
+      - VIX 30+ 돌파 (기존 BRAIN 판단 시 VIX < 25)
+      - USDKRW 1510+ 돌파
+      - S&P 선물(ES) -2% 이상 급락
+
+    Returns:
+      {"triggered": True, "new_pct": 30, "reason": "..."} or None (미트리거)
+    """
+    # 현재 brain_report 로드
+    report = load_brain_report()
+    if not report:
+        return None
+
+    # 실시간 nightwatch 데이터
+    nw = _load_nightwatch()
+    if not nw:
+        return None
+
+    ri = nw.get("raw_indicators", {})
+    current_vix = ri.get("VIX", {}).get("value", 0) or 0
+    current_usdkrw = ri.get("USDKRW", {}).get("value", 0) or 0
+    current_es_chg = ri.get("ES", {}).get("change_pct", 0) or 0
+
+    original_vix = report.macro.vix
+    original_pct = report.position_size_pct
+
+    # 트리거 체크
+    triggers = []
+    if current_vix >= 30 and original_vix < 25:
+        triggers.append(f"VIX {original_vix:.0f}→{current_vix:.0f} 패닉")
+    if current_usdkrw >= 1510:
+        triggers.append(f"원화 {current_usdkrw:.0f}원 위험")
+    if current_es_chg <= -2.0:
+        triggers.append(f"S&P {current_es_chg:+.1f}% 급락")
+
+    if not triggers:
+        return None
+
+    # Phase 5만 재계산
+    guardian = _load_guardian()
+    events = _load_global_events()
+    new_risk = _phase5_risk(nw, guardian, events)
+
+    # 기존 Phase 6 score에서 리스크만 교체
+    # 원래 리스크 조정분 복원 → 새 리스크 적용
+    old_risk_adj = {"LOW": 0, "MEDIUM": -10, "HIGH": -30, "EXTREME": -50}
+    old_pts = old_risk_adj.get(report.risk.risk_level, 0)
+    new_pts = old_risk_adj.get(new_risk.risk_level, 0)
+
+    # 원래 score 역산 (size_reason에서 score 추출)
+    pct_to_min_score = {100: 20, 70: 0, 50: -20, 30: -40, 0: -41}
+    # 보수적 추정: 원래 score의 하한값 사용
+    estimated_old_score = pct_to_min_score.get(original_pct, 0)
+    new_score = estimated_old_score - old_pts + new_pts
+
+    # 새 비중 결정
+    if new_score >= 20:
+        new_pct = 100
+    elif new_score >= 0:
+        new_pct = 70
+    elif new_score >= -20:
+        new_pct = 50
+    elif new_score >= -40:
+        new_pct = 30
+    else:
+        new_pct = 0
+
+    # 긴급이므로 원래보다 높아질 수는 없음 (방어 방향만)
+    new_pct = min(new_pct, original_pct)
+
+    if new_pct >= original_pct:
+        return None  # 악화 안 됐으면 무시
+
+    reason = " + ".join(triggers)
+    logger.warning(
+        f"[BRAIN 긴급] {reason} → 비중 {original_pct}%→{new_pct}%"
+    )
+
+    # brain_report + brain_allocation 갱신
+    report.risk = new_risk
+    report.position_size_pct = new_pct
+    report.position_size_reason = f"긴급({new_pct}) — {reason}"
+    report.overall_verdict = f"[긴급 하향] {reason}. {report.overall_verdict}"
+    save_brain_report(report)
+
+    return {
+        "triggered": True,
+        "old_pct": original_pct,
+        "new_pct": new_pct,
+        "reason": reason,
+        "risk_level": new_risk.risk_level,
+    }
 
 
 # ═══════════════════════════════════════

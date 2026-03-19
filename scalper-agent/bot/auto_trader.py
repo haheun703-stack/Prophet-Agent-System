@@ -512,16 +512,29 @@ class AutoTrader:
         bot_conf = self.config.get("bot", {})
         max_pos = bot_conf.get("max_auto_positions", 2)
 
-        # BRAIN 교차 신호 - 경계/방어 모드 시 진입 캡 축소
+        # ── BRAIN 교차 신호 — 진입 캡 + 관망 차단 (FIX-02) ──
         brain_alloc = self._load_brain_allocation()
+        brain_pct = brain_alloc.get("position_size_pct", 100)
+        brain_regime = brain_alloc.get("effective_regime", "")
+
+        # 관망(0%): 완전 매수 차단
+        if brain_alloc.get("_block_all_buys"):
+            await _send(
+                f"🚫 BRAIN 관망모드 — 신규 매수 전면 중단\n"
+                f"  {brain_alloc.get('overall_verdict', '')}"
+            )
+            return
+
+        # 포지션 수 캡 (cross_signal)
         cross = brain_alloc.get("cross_signal", {})
-        if cross.get("max_positions_cap"):
+        if cross.get("max_positions_cap") is not None:
+            cap_ratio = cross["max_positions_cap"]
             original_max = max_pos
-            max_pos = max(1, int(max_pos * cross["max_positions_cap"]))
+            max_pos = max(1, int(max_pos * cap_ratio)) if cap_ratio > 0 else 0
             if max_pos < original_max:
                 await _send(
-                    f"🛡️ BRAIN 교차신호 [{cross.get('mode_kr', '')}모드]"
-                    f" - 진입 캡 {original_max}→{max_pos}"
+                    f"🛡️ BRAIN [{brain_regime}모드]"
+                    f" — 진입 캡 {original_max}→{max_pos}"
                 )
 
         bal = self.trader.fetch_balance()
@@ -546,22 +559,17 @@ class AutoTrader:
             capital_use *= 0.5  # 연말 시즌: 50% 축소
             await _send("연말 계절성 필터: 사이즈 50% 축소 (12/15~1/5)")
         usable_cash = int(available_cash * (1 - cash_reserve_ratio) * capital_use)
-        buy_amount = usable_cash // num_targets if num_targets > 0 else 0
 
-        # ── BRAIN 자본 배분 캡 적용 (위에서 로드한 brain_alloc 재사용) ──
-        brain_cap = 0
-        if brain_alloc:
-            brain_cap = brain_alloc.get("allocation_krw", {}).get("bh_swing", 0)
-            if brain_cap > 0 and usable_cash > brain_cap:
-                old_usable = usable_cash
-                usable_cash = brain_cap
-                buy_amount = usable_cash // num_targets if num_targets > 0 else 0
-                brain_regime = brain_alloc.get("effective_regime", "?")
-                await _send(
-                    f"BRAIN 캡 적용: {brain_regime}\n"
-                    f"스윙 배분 {brain_cap:,}원 "
-                    f"(잔고 {old_usable:,}원 → {usable_cash:,}원)"
-                )
+        # FIX-02: BRAIN 비중 캡 — pct 기반 자금 조절
+        if brain_pct < 100 and brain_alloc:
+            old_usable = usable_cash
+            usable_cash = int(usable_cash * brain_pct / 100)
+            await _send(
+                f"BRAIN 비중 적용: {brain_regime} {brain_pct}%\n"
+                f"  가용자금 {old_usable:,}원 → {usable_cash:,}원"
+            )
+
+        buy_amount = usable_cash // num_targets if num_targets > 0 else 0
 
         if buy_amount < 50000:
             await _send(f"가용 현금 부족: {available_cash:,}원 → 매수 불가")
@@ -570,7 +578,7 @@ class AutoTrader:
         await _send(
             f"자금 배분: 현금 {available_cash:,}원 "
             f"→ {num_targets}종목 x {buy_amount:,}원"
-            + (f" (BRAIN {brain_alloc.get('effective_regime', '')})" if brain_cap else "")
+            + (f" (BRAIN {brain_regime} {brain_pct}%)" if brain_pct < 100 else "")
         )
 
         # ── Trade Object PAPER 로깅 ──
@@ -1036,11 +1044,16 @@ class AutoTrader:
         max_pos = bot_conf.get("max_auto_positions", 2)
         buy_amount = bot_conf.get("auto_buy_amount", 500000)
 
-        # BRAIN 교차 신호 - 경계/방어 모드 시 진입 캡 축소
+        # FIX-02: BRAIN 교차 신호 — 관망 차단 + 포지션 캡
         brain_alloc = self._load_brain_allocation()
+        if brain_alloc.get("_block_all_buys"):
+            await _send(f"🚫 BRAIN 관망모드 — day mode 매수 중단")
+            return
+
         cross = brain_alloc.get("cross_signal", {})
-        if cross.get("max_positions_cap"):
-            max_pos = max(1, int(max_pos * cross["max_positions_cap"]))
+        if cross.get("max_positions_cap") is not None:
+            cap_ratio = cross["max_positions_cap"]
+            max_pos = max(1, int(max_pos * cap_ratio)) if cap_ratio > 0 else 0
 
         bal = self.trader.fetch_balance()
         current_positions = len(bal.get("positions", [])) if bal.get("success") else 0
@@ -1825,16 +1838,26 @@ class AutoTrader:
     # ═══════════════════════════════════════
 
     def _load_brain_allocation(self) -> dict:
-        """brain_allocation.json 로드 - 매수금액 캡에 사용"""
-        brain_path = BASE_DIR.parent / "jarvis" / "data" / "brain_allocation.json"
-        if not brain_path.exists():
-            return {}
-        try:
-            with open(brain_path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as e:
-            logger.warning(f"BRAIN 배분 로드 실패: {e}")
-            return {}
+        """brain_allocation.json 로드 - 매수금액 캡에 사용
+        FIX-02: data_store 우선 → jarvis fallback"""
+        # 1차: market_brain이 생성한 data_store/brain_allocation.json
+        primary = BASE_DIR / "data_store" / "brain_allocation.json"
+        # 2차: 기존 jarvis/brain 호환 (레거시)
+        fallback = BASE_DIR.parent / "jarvis" / "data" / "brain_allocation.json"
+
+        for path in (primary, fallback):
+            if not path.exists():
+                continue
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                # 관망 모드(0%): 완전 매수 차단 플래그 추가
+                if data.get("position_size_pct", 100) == 0:
+                    data["_block_all_buys"] = True
+                return data
+            except Exception as e:
+                logger.warning(f"BRAIN 배분 로드 실패 ({path.name}): {e}")
+        return {}
 
     async def _run_brain_after_nightwatch(self, _send):
         """NIGHTWATCH 완료 후 BRAIN 자본 배분 자동 실행"""
