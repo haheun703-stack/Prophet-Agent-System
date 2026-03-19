@@ -135,6 +135,12 @@ class BodyHunterBot:
         self.start_time = datetime.now(KST)
         self._pending_orders = {}  # chat_id → {type, code, qty, name}
 
+        # ── 메시지 재설계: 하루 5~7개 ──
+        # 각 job이 결과를 여기에 저장 → _send_morning_brief에서 1개로 합침
+        self._morning_data = {}
+        # 마감 리포트용 데이터 (장중 체결 기록 등)
+        self._closing_data = {"trades_today": [], "paper_events": []}
+
     def _is_authorized(self, update: Update) -> bool:
         """본인 채팅 확인"""
         cid = update.effective_chat.id
@@ -473,33 +479,22 @@ class BodyHunterBot:
             await update.message.reply_text(f"\u274c 대시보드 실패: {str(e)[:200]}")
 
     async def _job_portfolio_dashboard(self, context):
-        """보유종목 대시보드 정기 발송 (장중 3회)"""
-        from datetime import date as _date
-        if _date.today().weekday() >= 5:
-            return
-        chat_id = os.getenv("TELEGRAM_CHAT_ID")
-        try:
-            from bot.portfolio_monitor import generate_dashboard
-            text = await asyncio.to_thread(generate_dashboard, self.trader)
-            await context.bot.send_message(chat_id=chat_id, text=text)
-            logger.info("보유종목 대시보드 발송 완료")
-        except Exception as e:
-            logger.error(f"보유종목 대시보드 실패: {e}")
+        """보유종목 대시보드 (10:00/13:00/14:30) — Silent: 제거 (명령어로 대체)"""
+        # 대시보드는 /포트 명령어로 온디맨드 조회
+        pass
 
     async def _job_portfolio_alert(self, context):
-        """보유종목 이상 감지 (장중 60초 간격)"""
+        """보유종목 긴급 알림 (60초) — 급락(-5%) 시에만 전송"""
         now = datetime.now(KST)
-        # 장중만 동작 (09:00~15:30, 주말 제외)
         if now.weekday() >= 5:
             return
         now_min = now.hour * 60 + now.minute
-        if now_min < 540 or now_min >= 930:  # 09:00=540, 15:30=930
+        if now_min < 540 or now_min >= 930:
             return
 
         try:
-            from bot.portfolio_monitor import check_alerts, format_alerts
+            from bot.portfolio_monitor import check_alerts
 
-            # prev_states 보존 (context.bot_data에 저장)
             prev = context.bot_data.get("portfolio_alert_states", {})
             alerts, new_states = await asyncio.to_thread(
                 check_alerts, self.trader, None, prev
@@ -507,10 +502,20 @@ class BodyHunterBot:
             context.bot_data["portfolio_alert_states"] = new_states
 
             if alerts:
-                chat_id = os.getenv("TELEGRAM_CHAT_ID")
-                msg = format_alerts(alerts)
-                await context.bot.send_message(chat_id=chat_id, text=msg)
-                logger.info(f"보유종목 알림 발송: {len(alerts)}건")
+                # 긴급 알림: -5% 이상 급락만 텔레그램 전송
+                urgent = [a for a in alerts if a.get("pnl_pct", 0) <= -5.0]
+                if urgent:
+                    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+                    lines = ["🚨 [긴급] 보유종목 급락"]
+                    for a in urgent:
+                        lines.append(
+                            f"  {a.get('name', '')} {a.get('pnl_pct', 0):+.1f}%"
+                            f" ({a.get('current_price', 0):,}원)"
+                        )
+                    await context.bot.send_message(
+                        chat_id=chat_id, text="\n".join(lines)
+                    )
+                    logger.info(f"긴급 알림 발송: {len(urgent)}건 급락")
         except Exception as e:
             logger.error(f"보유종목 알림 체크 실패: {e}")
 
@@ -2102,6 +2107,11 @@ class BodyHunterBot:
             r"^NXT끄기$": self.cmd_nxt_off,
             r"^NXT실행$": self.cmd_nxt_run,
             r"^페이퍼$": self.cmd_paper,
+            # ── 온디맨드 명령어 (하루 5~7개 체제) ──
+            r"^포트$": self.cmd_port,
+            r"^ㅍ$": self.cmd_port,
+            r"^뇌$": self.cmd_brain_status,
+            r"^감시$": self.cmd_watchlist,
         }
 
         for pattern, handler in exact_commands.items():
@@ -2258,6 +2268,16 @@ class BodyHunterBot:
         jq.run_daily(self._job_premove_scan, time=kst_time(8, 50))
         logger.info("사전감지 스캔 등록: 08:50 KST")
 
+        # ── 통합 메시지: 하루 5~7개 ──
+        # ① 모닝 브리프 (08:55 - 추천 파이프라인 직후)
+        jq.run_daily(self._send_morning_brief, time=kst_time(8, 55))
+        logger.info("모닝 브리프 등록: 08:55 KST")
+        # ⑤ 프리클로즈 리포트 (14:50 — 기존 _job_preclose_report 대체)
+        # → 이미 14:30 스캔 + 14:50 리포트 등록됨, _send_preclose_brief로 교체
+        # ⑥ 일일 마감 리포트 (16:50 - 학습 완료 후)
+        jq.run_daily(self._send_daily_closing, time=kst_time(16, 50))
+        logger.info("일일 마감 리포트 등록: 16:50 KST")
+
         # ── 추천 파이프라인 3-Stage ──
         # Stage 1: 저녁 분석 (16:45 - 데이터 수집 완료 후)
         jq.run_daily(self.auto_trader.job_evening_analysis, time=kst_time(16, 45))
@@ -2306,7 +2326,7 @@ class BodyHunterBot:
 
         # ── 프리클로즈 스캔 (14:30 스캔 + 14:50 리포트) ──
         jq.run_daily(self._job_preclose_scan, time=kst_time(14, 30))
-        jq.run_daily(self._job_preclose_report, time=kst_time(14, 50))
+        jq.run_daily(self._send_preclose_brief, time=kst_time(14, 50))
         logger.info("프리클로즈 등록: 14:30 스캔 + 14:50 리포트")
 
         # ── FLOWX DAYTRADING 일괄 청산 (15:20 - 장 마감 전) ──
@@ -2367,101 +2387,49 @@ class BodyHunterBot:
             logger.error(f"체결 폴링 에러: {e}")
 
     async def _job_collect_minutes(self, context):
-        """장마감 후 자동 분봉(5분/15분) 수집 + 수급 분석"""
+        """장마감 후 분봉 수집 + 수급 분석 (15:40) — Silent: 로그만"""
         from datetime import date
-        if date.today().weekday() >= 5:  # 주말 스킵
+        if date.today().weekday() >= 5:
             return
         logger.info("분봉 자동 수집 시작...")
-        chat_id = os.getenv("TELEGRAM_CHAT_ID")
-
         try:
             from data.kis_collector import collect_today_minutes, UNIVERSE
             results = await asyncio.to_thread(collect_today_minutes)
+            logger.info(f"분봉 수집 완료: {len(results)}/{len(UNIVERSE)}종목 (로그만)")
 
-            logger.info(f"분봉 수집 완료: {len(results)}/{len(UNIVERSE)}종목 성공")
-
-            # ── 수급 분석 ──
             try:
-                from data.minute_supply_analyzer import (
-                    analyze_minute_supply,
-                    format_supply_report,
-                )
-                logger.info("분봉 수급 분석 시작...")
+                from data.minute_supply_analyzer import analyze_minute_supply
                 signals = await asyncio.to_thread(
-                    analyze_minute_supply,
-                    target_date=None,
-                    universe=UNIVERSE,
-                    top_n=20,
+                    analyze_minute_supply, target_date=None, universe=UNIVERSE, top_n=20,
                 )
-                if signals:
-                    report = format_supply_report(signals)
-                    await context.bot.send_message(chat_id=chat_id, text=report)
-                    logger.info(f"수급 분석 완료: {len(signals)}종목 발송")
-                else:
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text="📊 수급 분석: 특이 종목 없음 (vol_ratio < 1.5x)",
-                    )
+                logger.info(f"수급 분석 완료: {len(signals or [])}종목 (로그만)")
             except Exception as e:
                 logger.error(f"수급 분석 실패: {e}")
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=f"⚠️ 수급 분석 실패: {str(e)[:200]}",
-                )
-
         except Exception as e:
             logger.error(f"분봉 수집 실패: {e}")
-            await context.bot.send_message(
-                chat_id=chat_id, text=f"⚠️ 분봉 수집 실패: {str(e)[:200]}"
-            )
 
     async def _job_collect_daily(self, context):
-        """장마감 후 일봉(pykrx) + 수급(pykrx) 데이터 수집
-
-        force=True로 캐시 무시 - 당일 데이터 확실히 갱신
-        NOTE: KIS 일봉은 영문 컬럼(open/close)이라 한글 컬럼(시가/종가) CSV를
-              덮어쓰는 버그가 있어 제거함. pykrx만 사용.
-        """
+        """장마감 후 일봉+수급 데이터 수집 (16:00) — Silent: 로그만"""
         from datetime import date
         if date.today().weekday() >= 5:
             return
         logger.info("일봉+수급 자동 수집 시작...")
-        chat_id = os.getenv("TELEGRAM_CHAT_ID")
         t0 = time.time()
-
-        # 초기값 (수집 완료 기록용)
         pykrx_cnt = 0
         r1 = []
         ok, fail, sync_cnt = 0, 0, 0
 
-        # 1. 일봉 pykrx (한글 컬럼: 시가/고가/저가/종가/거래량)
+        # 1. 일봉 pykrx
         try:
             from data.universe_builder import collect_daily_pykrx
             from data.kis_collector import UNIVERSE
-
             codes = list(UNIVERSE.keys())
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=f"📈 일봉+수급 수집 시작: {len(codes)}종목 (force=True)",
-            )
-
-            pykrx_cnt = await asyncio.to_thread(
-                collect_daily_pykrx, codes, 24, True
-            )
+            pykrx_cnt = await asyncio.to_thread(collect_daily_pykrx, codes, 24, True)
             logger.info(f"pykrx 일봉 수집 완료: {pykrx_cnt}종목")
-
         except Exception as e:
             logger.error(f"pykrx 일봉 수집 실패: {e}")
-            await context.bot.send_message(
-                chat_id=chat_id, text=f"⚠️ pykrx 일봉 실패: {str(e)[:200]}"
-            )
 
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=f"📈 일봉 수집 완료: {pykrx_cnt}종목",
-        )
-
-        # 2. 수급 데이터 (pykrx - 투자자순매수, 외인소진율, 공매도) force=True
+        # 2. 수급 데이터
         try:
             from data.kis_collector import UNIVERSE
             from data.flow_collector import (
@@ -2469,102 +2437,49 @@ class BodyHunterBot:
                 collect_short_balance, collect_short_volume,
             )
             codes = list(UNIVERSE.keys())
-
             r1 = await asyncio.to_thread(collect_investor_flow, codes, 24, True)
             r2 = await asyncio.to_thread(collect_foreign_exhaustion, codes, 24, True)
             r3 = await asyncio.to_thread(collect_short_balance, codes, 24, True)
             r4 = await asyncio.to_thread(collect_short_volume, codes, 24, True)
-
-            elapsed = int(time.time() - t0)
-            cnt = (len(r1), len(r2), len(r3), len(r4))
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=(
-                    f"📊 수급 수집 완료 ({elapsed}초)\n"
-                    f"  투자자: {cnt[0]} | 외인소진: {cnt[1]}\n"
-                    f"  공매도잔고: {cnt[2]} | 공매도거래량: {cnt[3]}"
-                ),
-            )
-            logger.info(f"수급 수집 완료: {cnt}")
-
+            logger.info(f"수급 수집 완료: {len(r1)}/{len(r2)}/{len(r3)}/{len(r4)}")
         except Exception as e:
             logger.error(f"수급 수집 실패: {e}")
-            await context.bot.send_message(
-                chat_id=chat_id, text=f"⚠️ 수급 수집 실패: {str(e)[:200]}"
-            )
 
-        # 3. 외국인 국적별 수급 (추천/보유 종목만 - HTTP JSON API)
+        # 3. 외국인 국적별 수급
         try:
             nat_codes = self._get_nationality_targets()
             if nat_codes:
                 from data.krx_nationality_crawler import afetch_nationality_batch
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=f"🌍 국적별 수급 수집: {len(nat_codes)}종목...",
-                )
                 date_from = (datetime.now() - timedelta(days=5)).strftime("%Y%m%d")
                 date_to = datetime.now().strftime("%Y%m%d")
-                nat_results = await afetch_nationality_batch(
-                    nat_codes, date_from, date_to,
-                )
+                nat_results = await afetch_nationality_batch(nat_codes, date_from, date_to)
                 nat_ok = sum(1 for df in nat_results.values() if not df.empty)
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=f"🌍 국적별 수급 완료: {nat_ok}/{len(nat_codes)}종목",
-                )
                 logger.info(f"국적별 수급 수집: {nat_ok}/{len(nat_codes)}")
         except Exception as e:
             logger.error(f"국적별 수급 실패: {e}")
-            await context.bot.send_message(
-                chat_id=chat_id, text=f"⚠️ 국적별 수급 실패: {str(e)[:200]}"
-            )
 
-        # 4. 핵심 수집 완료 기록 (parquet/sync 실패해도 일봉+수급은 기록)
+        # 4. 수집 기록
         try:
             import json as _json
             collect_info = {
-                "date": date.today().strftime("%Y-%m-%d"),
-                "source": "bot",
+                "date": date.today().strftime("%Y-%m-%d"), "source": "bot",
                 "time": datetime.now().strftime("%H:%M:%S"),
-                "steps": {
-                    "daily": pykrx_cnt,
-                    "flow": len(r1) if r1 else 0,
-                    "nationality": 8,
-                    "parquet": 0,
-                    "sync": 0,
-                },
+                "steps": {"daily": pykrx_cnt, "flow": len(r1) if r1 else 0,
+                           "nationality": 8, "parquet": 0, "sync": 0},
             }
             lc_path = Path(__file__).parent.parent / "data_store" / "_last_collect.json"
             with open(lc_path, "w", encoding="utf-8") as f:
                 _json.dump(collect_info, f, ensure_ascii=False, indent=2)
-            logger.info(f"핵심 수집 완료 기록: 일봉={pykrx_cnt}, 수급={len(r1) if r1 else 0}")
         except Exception as e:
             logger.error(f"수집 기록 저장 실패: {e}")
 
-        # 5. Parquet 통합 빌드 (CSV → raw parquet → processed parquet)
+        # 5. Parquet 빌드
         try:
             from data.extend_parquet_data import extend_parquet_all
-            await context.bot.send_message(
-                chat_id=chat_id, text="📦 Parquet 통합 빌드 시작..."
-            )
-            t1 = time.time()
-            ok, fail = await asyncio.to_thread(
-                lambda: extend_parquet_all(codes=None, force=True)
-            )
-            elapsed_pq = int(time.time() - t1)
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=f"📦 Parquet 빌드 완료 ({elapsed_pq}초): 성공 {ok} / 실패 {fail}",
-            )
+            ok, fail = await asyncio.to_thread(lambda: extend_parquet_all(codes=None, force=True))
             logger.info(f"Parquet 빌드 완료: ok={ok}, fail={fail}")
         except Exception as e:
             logger.error(f"Parquet 빌드 실패: {e}")
-            try:
-                await context.bot.send_message(
-                    chat_id=chat_id, text=f"⚠️ Parquet 빌드 실패: {str(e)[:200]}"
-                )
-            except Exception:
-                pass
 
         # 6. stock_data_daily 동기화
         try:
@@ -2574,7 +2489,7 @@ class BodyHunterBot:
         except Exception as e:
             logger.error(f"stock_data_daily 동기화 실패: {e}")
 
-        # 7. 최종 수집 기록 업데이트 (parquet/sync 포함)
+        # 7. 최종 기록 업데이트
         try:
             collect_info["steps"]["parquet"] = ok
             collect_info["steps"]["sync"] = sync_cnt
@@ -2583,24 +2498,8 @@ class BodyHunterBot:
         except Exception:
             pass
 
-        # 8. 최종 완료 요약 텔레그램 전송
         total_elapsed = int(time.time() - t0)
-        mins, secs = divmod(total_elapsed, 60)
-        summary = (
-            f"✅ 장마감 데이터 수집 완료! ({mins}분 {secs}초)\n"
-            f"\n"
-            f"📈 일봉(종가): {pykrx_cnt}종목\n"
-            f"📊 수급(투자자/외인/공매도): {len(r1) if r1 else 0}종목\n"
-            f"📦 Parquet 빌드: 성공 {ok} / 실패 {fail}\n"
-            f"🔄 stock_data_daily 동기화: {sync_cnt}종목\n"
-            f"\n"
-            f"→ 16:45 저녁 추천 분석 대기중"
-        )
-        try:
-            await context.bot.send_message(chat_id=chat_id, text=summary)
-            logger.info(f"데이터 수집 완료 요약 전송 ({total_elapsed}초)")
-        except Exception as e:
-            logger.error(f"수집 완료 요약 전송 실패: {e}")
+        logger.info(f"데이터 수집 완료 ({total_elapsed}초): 일봉={pykrx_cnt}, 수급={len(r1) if r1 else 0}, parquet={ok}")
 
     def _get_nationality_targets(self) -> list:
         """국적별 수급 수집 대상 종목 = 추천 + 보유 (중복 제거)"""
@@ -2695,73 +2594,41 @@ class BodyHunterBot:
             await update.message.reply_text(f"국적수급 실패: {str(e)[:300]}")
 
     async def _job_rebuild_universe(self, context):
-        """장전 유니버스 리빌드 (시총 변동 반영)"""
+        """장전 유니버스 리빌드 (08:35) — Silent: 로그만"""
         from datetime import date
-        # 평일만 실행
         if date.today().weekday() >= 5:
             return
 
         logger.info("유니버스 자동 리빌드 시작...")
-        chat_id = os.getenv("TELEGRAM_CHAT_ID")
-
         try:
             from data.universe_builder import build_universe
             uni = await asyncio.to_thread(build_universe)
-
-            kospi = sum(1 for v in uni.values() if v.get("market") == "KOSPI")
-            kosdaq = len(uni) - kospi
-
-            msg = (
-                f"🔄 유니버스 리빌드 완료\n"
-                f"  총 {len(uni)}종목 (KOSPI {kospi} + KOSDAQ {kosdaq})"
-            )
-            await context.bot.send_message(chat_id=chat_id, text=msg)
-            logger.info(f"유니버스 리빌드 완료: {len(uni)}종목")
-
+            logger.info(f"유니버스 리빌드 완료: {len(uni)}종목 (로그만)")
         except Exception as e:
             logger.error(f"유니버스 리빌드 실패: {e}")
-            await context.bot.send_message(
-                chat_id=chat_id, text=f"⚠️ 유니버스 리빌드 실패: {str(e)[:200]}"
-            )
 
     async def _job_record_signals(self, context):
-        """일간 1D~4D 시그널 기록 (16:30 - 일봉 수집 완료 후)"""
+        """일간 시그널 기록 (16:30) — Silent: 로그만"""
         from datetime import date
         if date.today().weekday() >= 5:
             return
-
         logger.info("일간 시그널 기록 시작...")
-        chat_id = os.getenv("TELEGRAM_CHAT_ID")
-
         try:
             from data.signal_analyzer import SignalAnalyzer
             from data.kis_collector import UNIVERSE
-
             exclude = {"069500", "371160", "102780", "305720"}
             codes = [c for c in UNIVERSE.keys() if c not in exclude]
             names = {c: UNIVERSE[c][0] for c in codes if c in UNIVERSE}
-
             sa = SignalAnalyzer()
             count = await asyncio.to_thread(sa.record_daily, codes, names)
-
-            summary = sa.format_daily_summary()
-            msg = f"📋 일간 시그널 기록 완료: {count}종목\n\n{summary}"
-
-            for chunk in _split_message(msg):
-                await context.bot.send_message(chat_id=chat_id, text=chunk)
-
-            logger.info(f"일간 시그널 기록 완료: {count}종목")
-
+            logger.info(f"일간 시그널 기록 완료: {count}종목 (로그만)")
         except Exception as e:
             logger.error(f"시그널 기록 실패: {e}")
-            await context.bot.send_message(
-                chat_id=chat_id, text=f"⚠️ 시그널 기록 실패: {str(e)[:200]}"
-            )
 
     # ── Position Guardian (보유종목 수급 진단) ──────────
 
     async def _job_position_guardian(self, context):
-        """보유종목 수급 변곡점 진단 (08:20 - 장 전)"""
+        """보유종목 수급 변곡점 진단 (08:20) — Silent: _morning_data에 저장"""
         from datetime import date
         if date.today().weekday() >= 5:
             return
@@ -2771,52 +2638,40 @@ class BodyHunterBot:
             from data.position_guardian import run as run_guardian
             result = await asyncio.to_thread(run_guardian)
             verdicts = result.get("verdicts", [])
+            self._morning_data["guardian"] = verdicts
             exit_cnt = sum(1 for v in verdicts if v.action == "EXIT")
             reduce_cnt = sum(1 for v in verdicts if v.action == "REDUCE")
             logger.info(f"Guardian 완료: {len(verdicts)}종목 (EXIT:{exit_cnt} REDUCE:{reduce_cnt})")
         except Exception as e:
             logger.error(f"Guardian 실패: {e}")
-            chat_id = os.getenv("TELEGRAM_CHAT_ID")
-            if chat_id:
-                await context.bot.send_message(
-                    chat_id=chat_id, text=f"Position Guardian 오류: {e}"
-                )
 
     # ── 일간 학습 리포트 ──────────────────────────────
 
     async def _job_daily_learning(self, context):
-        """일간 학습 리포트 (16:40 - 일봉+시그널 수집 완료 후)"""
+        """일간 학습 (16:40) — Silent: 결과를 _closing_data에 저장"""
         from datetime import date
         if date.today().weekday() >= 5:
             return
-
         logger.info("일간 학습 리포트 시작...")
-
         try:
             from data.daily_learner import run as run_learner
             result = await asyncio.to_thread(run_learner)
-            logger.info(f"일간 학습 완료: 적중률 {result['verify']['hit_rate']}%")
+            self._closing_data["learning"] = result
+            logger.info(f"일간 학습 완료: 적중률 {result['verify']['hit_rate']}% (마감리포트에 통합)")
 
-            # FLOWX 시그널 성과 업데이트 + scoreboard 집계
             try:
                 from data.flowx_signals import run_signal_update
                 fx_result = await asyncio.to_thread(run_signal_update)
                 logger.info(f"[FLOWX] 시그널 업데이트: {fx_result.get('quant', {})}")
             except Exception as e_fx:
                 logger.warning(f"[FLOWX] 시그널 업데이트 실패 (무시): {e_fx}")
-
         except Exception as e:
             logger.error(f"일간 학습 실패: {e}")
-            chat_id = os.getenv("TELEGRAM_CHAT_ID")
-            if chat_id:
-                await context.bot.send_message(
-                    chat_id=chat_id, text=f"⚠️ 일간 학습 실패: {str(e)[:200]}"
-                )
 
     # ── PAPER 트레이딩 자동 추적 ────────────────────────
 
     async def _job_paper_register(self, context):
-        """09:05 PAPER 종목 자동 등록 — trade_objects.json ACCEPT 종목"""
+        """09:05 PAPER 종목 자동 등록 — Silent: 로그만"""
         from datetime import date
         if date.today().weekday() >= 5:
             return
@@ -2825,35 +2680,30 @@ class BodyHunterBot:
             tracker = TradeTracker()
             names = tracker.register_paper_from_objects(kis=self.trader)
             if names:
-                chat_id = os.getenv("TELEGRAM_CHAT_ID")
-                msg = f"[PAPER] {len(names)}종목 추적 시작: {', '.join(names)}"
-                await context.bot.send_message(chat_id=chat_id, text=msg)
-                logger.info(msg)
+                logger.info(f"[PAPER] {len(names)}종목 추적 시작: {', '.join(names)} (로그만)")
         except Exception as e:
             logger.error(f"PAPER 등록 실패: {e}")
 
     async def _job_paper_check(self, context):
-        """장중 5분마다 — PAPER 종목 TP/SL 도달 체크"""
+        """장중 5분 — PAPER TP/SL 체크 — Silent: 이벤트를 _closing_data에 저장"""
         now = datetime.now(KST)
         if now.weekday() >= 5:
             return
         now_min = now.hour * 60 + now.minute
-        if now_min < 545 or now_min >= 920:  # 09:05~15:20
+        if now_min < 545 or now_min >= 920:
             return
-
         try:
             from data.trade_tracker import TradeTracker
             tracker = TradeTracker()
             events = tracker.check_paper_prices(self.trader)
             if events:
-                chat_id = os.getenv("TELEGRAM_CHAT_ID")
-                for ev in events:
-                    await context.bot.send_message(chat_id=chat_id, text=ev)
+                self._closing_data["paper_events"].extend(events)
+                logger.info(f"[PAPER] TP/SL 이벤트 {len(events)}건 (마감리포트에 통합)")
         except Exception as e:
             logger.warning(f"PAPER 가격체크 실패: {e}")
 
     async def _job_paper_eod(self, context):
-        """15:25 PAPER 시간손절 — time_stop_days 경과 종목 종가 클로즈"""
+        """15:25 PAPER 시간손절 — Silent: _closing_data에 저장"""
         from datetime import date
         if date.today().weekday() >= 5:
             return
@@ -2862,10 +2712,8 @@ class BodyHunterBot:
             tracker = TradeTracker()
             events = tracker.paper_close_eod(self.trader)
             if events:
-                chat_id = os.getenv("TELEGRAM_CHAT_ID")
-                msg = "\n\n".join(events)
-                await context.bot.send_message(chat_id=chat_id, text=msg)
-                logger.info(f"PAPER EOD: {len(events)}건 시간손절")
+                self._closing_data["paper_events"].extend(events)
+                logger.info(f"PAPER EOD: {len(events)}건 시간손절 (마감리포트에 통합)")
         except Exception as e:
             logger.error(f"PAPER EOD 실패: {e}")
 
@@ -2902,12 +2750,11 @@ class BodyHunterBot:
             logger.error(f"[TV Intraday] 초기화 실패: {e}")
 
     async def _job_intraday_tv_scan(self, context):
-        """30분 반복 — 유니버스 전체 장중 TV 스캔"""
+        """30분 반복 — 장중 TV 스캔 — Silent: 저장만 (프리클로즈에 통합)"""
         from datetime import date
         now = datetime.now()
         if date.today().weekday() >= 5:
             return
-        # 장중(10:00~15:20)만 실행
         now_min = now.hour * 60 + now.minute
         if now_min < 600 or now_min > 920:
             return
@@ -2920,39 +2767,14 @@ class BodyHunterBot:
             )
             signals = await asyncio.to_thread(
                 scan_intraday_universe,
-                self.trader,
-                self._tv_avgs,
-                self._tv_history,
-                self._tv_prev_codes,
-                500,
-                60.0,
+                self.trader, self._tv_avgs, self._tv_history,
+                self._tv_prev_codes, 500, 60.0,
             )
-
             if signals:
                 save_intraday_results(signals)
-                chat_id = os.getenv("TELEGRAM_CHAT_ID")
-                # 상위 5개만 텔레그램 알림
                 for sig in signals[:5]:
-                    if sig.code in self._tv_prev_codes:
-                        continue
-                    tag = {"QUIET_ACCUMULATION": "조용한매집",
-                           "GRADUAL_BUILDUP": "점진적증가"}.get(
-                        sig.pattern, "거래대금폭발")
-                    accel = f" | 가속 {sig.acceleration:.1f}x" if sig.acceleration > 1.1 else ""
-                    msg = (
-                        f"[장중감지] {sig.name} — {tag}\n"
-                        f"  TV {sig.estimated_tv_ratio:.1f}x | "
-                        f"가격 {sig.change_pct:+.1f}% | score {sig.score:.0f}\n"
-                        f"  예상{sig.estimated_daily_tv:,.0f}억 "
-                        f"(실제{sig.intraday_tv:,.0f}억, "
-                        f"평균{sig.avg_20d_tv:,.0f}억){accel}\n"
-                        f"  신뢰도: {sig.confidence}"
-                    )
-                    await context.bot.send_message(chat_id=chat_id, text=msg)
                     self._tv_prev_codes.add(sig.code)
-
-                logger.info(f"[TV Intraday] {len(signals)}개 신호, "
-                            f"{len(self._tv_prev_codes)}개 알림 누적")
+                logger.info(f"[TV Intraday] {len(signals)}개 신호 저장 (프리클로즈에 통합)")
         except Exception as e:
             logger.error(f"[TV Intraday] 스캔 실패: {e}")
 
@@ -3100,181 +2922,495 @@ class BodyHunterBot:
         return None, -1, False
 
     async def _job_options_expiry_alert(self, context):
-        """08:10 옵션 만기일 사전 알림 (D-7 ~ D-day)"""
+        """08:10 옵션 만기일 (D-7~D-day) — Silent: _morning_data에 저장"""
         from datetime import date
         today = date.today()
         if today.weekday() >= 5:
-            return
-
-        chat_id = os.getenv("TELEGRAM_CHAT_ID")
-        if not chat_id:
             return
 
         exp_date, d_day, is_quarterly = self._upcoming_expiry_info(today)
         if exp_date is None or d_day > 7:
             return
 
-        q_tag = "동시만기일(선물+옵션)" if is_quarterly else "월간 옵션만기일"
-        dow = ["월", "화", "수", "목", "금", "토", "일"][exp_date.weekday()]
-        date_str = f"{exp_date.strftime('%Y-%m-%d')} ({dow})"
-
-        if d_day == 0:
-            msg = (
-                f"🔴 오늘 {q_tag}!\n"
-                f"📅 {date_str}\n\n"
-                f"⚠️ 방어 모드:\n"
-                f"• 신규 매수 자제 (프로그램 매도 폭탄)\n"
-                f"• 보유종목 SL 타이트하게\n"
-                f"• 14:30~15:00 변동성 극대화 주의\n"
-                f"• 만기 후 반등 노리려면 내일 매수"
-            )
-        elif d_day == 1:
-            msg = (
-                f"🟠 내일 {q_tag}! [D-1]\n"
-                f"📅 {date_str}\n\n"
-                f"⚠️ 사전 준비:\n"
-                f"• 약한 종목 오늘 정리 검토\n"
-                f"• 내일 신규 매수 자제\n"
-                f"• 현금 비중 확보"
-            )
-        elif d_day == 2:
-            msg = (
-                f"🟡 만기일 D-2 ({q_tag})\n"
-                f"📅 {date_str}\n\n"
-                f"📋 준비:\n"
-                f"• 포트폴리오 점검 (약한 종목 선별)\n"
-                f"• 대형주 프로그램 매도 주의"
-            )
-        elif d_day <= 5:
-            # D-3 ~ D-5: 간단 알림
-            msg = (
-                f"📌 {q_tag} D-{d_day}\n"
-                f"📅 {date_str}\n"
-                f"• 만기주간 진입 — 변동성 확대 예상\n"
-                f"• 신규 포지션 규모 축소 권고"
-            )
-        else:
-            # D-6 ~ D-7: 예고
-            msg = (
-                f"📅 {q_tag} D-{d_day}\n"
-                f"다음주 {dow}요일 {exp_date.month}/{exp_date.day} 만기\n"
-                f"• 만기주간 대비 포트폴리오 점검 시작"
-            )
-
-        logger.info(f"옵션 만기일 D-{d_day} 알림: {q_tag}")
-        try:
-            await context.bot.send_message(chat_id=chat_id, text=msg)
-        except Exception as e:
-            logger.error(f"만기일 알림 전송 실패: {e}")
+        q_tag = "동시만기일" if is_quarterly else "옵션만기일"
+        self._morning_data["options_expiry"] = {
+            "d_day": d_day, "tag": q_tag,
+            "date": exp_date.strftime("%m/%d"),
+            "is_quarterly": is_quarterly,
+        }
+        logger.info(f"옵션 만기일 D-{d_day}: {q_tag} (모닝브리프에 통합)")
 
     async def _job_global_event_scan(self, context):
-        """해외 이벤트 캘린더 스캔 (08:00 - D-3 알림)"""
+        """해외 이벤트 캘린더 스캔 (08:00) — Silent: _morning_data에 저장"""
         from datetime import date
         if date.today().weekday() >= 5:
             return
 
         logger.info("해외 이벤트 캘린더 스캔 시작...")
-        chat_id = os.getenv("TELEGRAM_CHAT_ID")
-
         try:
-            from data.global_event_calendar import scan_global_events, format_telegram_message
+            from data.global_event_calendar import scan_global_events
             result = await asyncio.to_thread(scan_global_events)
-            msg = format_telegram_message(result)
-
-            for chunk in _split_message(msg):
-                await context.bot.send_message(chat_id=chat_id, text=chunk)
-
-            logger.info("해외 이벤트 스캔 완료")
-
+            self._morning_data["global_events"] = result
+            logger.info("해외 이벤트 스캔 완료 (모닝브리프에 통합)")
         except Exception as e:
             logger.error(f"해외 이벤트 스캔 실패: {e}", exc_info=True)
-            await context.bot.send_message(
-                chat_id=chat_id, text=f"⚠️ 해외 이벤트 스캔 실패: {str(e)[:200]}"
-            )
 
     async def _job_swing_picker(self, context):
-        """스윙 종목 선정 (16:35 - 시그널 기록 후)"""
+        """스윙 종목 선정 (16:35) — Silent: _closing_data에 저장"""
         from datetime import date
         if date.today().weekday() >= 5:
             return
-
         logger.info("스윙 종목 선정 시작...")
-        chat_id = os.getenv("TELEGRAM_CHAT_ID")
-
         try:
-            from data.swing_picker import run_picker, format_telegram_message as fmt_swing
+            from data.swing_picker import run_picker
             result = await asyncio.to_thread(run_picker)
-            msg = fmt_swing(result)
-
-            for chunk in _split_message(msg):
-                await context.bot.send_message(chat_id=chat_id, text=chunk)
-
+            self._closing_data["swing"] = result
             n = len(result.get("candidates", []))
-            logger.info(f"스윙 종목 선정 완료: {n}종목")
-
+            logger.info(f"스윙 종목 선정 완료: {n}종목 (마감리포트에 통합)")
         except Exception as e:
             logger.error(f"스윙 종목 선정 실패: {e}", exc_info=True)
-            await context.bot.send_message(
-                chat_id=chat_id, text=f"⚠️ 스윙 종목 선정 실패: {str(e)[:200]}"
-            )
 
     async def _job_macd_scan(self, context):
-        """MACD 제로선 크로스 스캔 (16:40 - 일봉+수급 수집 후)"""
+        """MACD 크로스 스캔 (16:50) — Silent: 로그만"""
         from datetime import date
         if date.today().weekday() >= 5:
             return
-
         logger.info("MACD 크로스 스캔 시작...")
-        chat_id = os.getenv("TELEGRAM_CHAT_ID")
-
         try:
-            from strategies.macd_zero_scanner import (
-                run_daily_scan,
-                format_telegram_message as fmt_macd,
-            )
+            from strategies.macd_zero_scanner import run_daily_scan
             result = await asyncio.to_thread(run_daily_scan)
-            msg = fmt_macd(result)
-
-            for chunk in _split_message(msg):
-                await context.bot.send_message(chat_id=chat_id, text=chunk)
-
             p1 = len(result.get("phase1_new", []))
             p2 = len(result.get("phase2_entries", []))
-            logger.info(f"MACD 스캔 완료: 신규{p1} 진입{p2}")
-
+            logger.info(f"MACD 스캔 완료: 신규{p1} 진입{p2} (로그만)")
         except Exception as e:
             logger.error(f"MACD 스캔 실패: {e}", exc_info=True)
-            await context.bot.send_message(
-                chat_id=chat_id, text=f"MACD 스캔 실패: {str(e)[:200]}"
-            )
 
     async def _job_premove_scan(self, context):
-        """사전감지 스캔 (08:50 - 장 시작 전)"""
+        """사전감지 스캔 (08:50) — Silent: 저장만 (모닝브리프에 반영됨)"""
         from datetime import date
         if date.today().weekday() >= 5:
             return
 
         logger.info("사전감지 스캔 시작...")
-        chat_id = os.getenv("TELEGRAM_CHAT_ID")
-
         try:
-            from data.premove_scanner import scan_premove, format_premove_report, save_premove_candidates
+            from data.premove_scanner import scan_premove, save_premove_candidates
             candidates = await asyncio.to_thread(scan_premove, 5)
-            report = format_premove_report(candidates)
-
-            for chunk in _split_message(report):
-                await context.bot.send_message(chat_id=chat_id, text=chunk)
-
             if candidates:
                 await asyncio.to_thread(save_premove_candidates, candidates)
-
-            logger.info(f"사전감지 완료: {len(candidates)}개 후보")
-
+            self._morning_data["premove"] = candidates or []
+            logger.info(f"사전감지 완료: {len(candidates or [])}개 후보 (모닝브리프에 통합)")
         except Exception as e:
             logger.error(f"사전감지 실패: {e}", exc_info=True)
-            await context.bot.send_message(
-                chat_id=chat_id, text=f"사전감지 실패: {str(e)[:200]}"
+
+    # ═══════════════════════════════════════════
+    #  통합 메시지 시스템 (하루 5~7개)
+    # ═══════════════════════════════════════════
+
+    async def _send_morning_brief(self, context):
+        """08:55 모닝 브리프 — 하루 시작 전 1개 메시지로 전체 요약
+
+        이 시점에 이미 계산된 것들:
+        - 06:30 nightwatch → market_brain
+        - 08:00 global_events → _morning_data
+        - 08:10 options_expiry → _morning_data
+        - 08:20 position_guardian → _morning_data
+        - 08:50 premove_scan → _morning_data
+        - 08:55 morning_recommendation → recommendation.json
+        """
+        from datetime import date
+        if date.today().weekday() >= 5:
+            return
+        chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        if not chat_id:
+            return
+
+        try:
+            now = datetime.now()
+            dow = ["월", "화", "수", "목", "금", "토", "일"][now.weekday()]
+            lines = [
+                f"[모닝 브리프] {now.month}/{now.day} ({dow})",
+                "━━━━━━━━━━━━━━━━━━━",
+            ]
+
+            # ── 매크로 ──
+            try:
+                import json as _json
+                brain_path = Path(__file__).parent.parent / "data_store" / "brain_report.json"
+                if brain_path.exists():
+                    with open(brain_path, "r", encoding="utf-8") as f:
+                        brain = _json.load(f)
+                    macro = brain.get("macro_summary", "")
+                    mode = brain.get("regime", "표준")
+                    contradictions = brain.get("contradictions", 0)
+                    lines.append(f"매크로: {macro}" if macro else f"BRAIN: {mode}모드")
+                    if contradictions:
+                        lines.append(f"  → 모순 {contradictions}개 감지")
+            except Exception:
+                pass
+
+            # ── 이벤트 (D-day, D-1, D-2만) ──
+            events = self._morning_data.get("global_events", {})
+            opt = self._morning_data.get("options_expiry")
+            event_lines = []
+            if opt and opt["d_day"] <= 2:
+                event_lines.append(f"{opt['tag']} D-{opt['d_day']} ({opt['date']})")
+            if events:
+                upcoming = events.get("upcoming", [])
+                for ev in upcoming[:2]:
+                    if isinstance(ev, dict):
+                        event_lines.append(ev.get("title", "")[:40])
+                    elif isinstance(ev, str):
+                        event_lines.append(ev[:40])
+            if event_lines:
+                lines.append(f"이벤트: {' | '.join(event_lines)}")
+
+            # ── 보유종목 진단 (Guardian) ──
+            verdicts = self._morning_data.get("guardian", [])
+            if verdicts:
+                lines.append("")
+                lines.append("보유종목 진단:")
+                for v in verdicts:
+                    name = v.name if hasattr(v, "name") else v.get("name", "")
+                    action = v.action if hasattr(v, "action") else v.get("action", "")
+                    risk = v.risk_score if hasattr(v, "risk_score") else v.get("risk_score", 0)
+                    icon = "✅" if action == "HOLD" else "⚠️"
+                    lines.append(f"  {name}: {action} (리스크 {risk:.0f}) {icon}")
+
+            # ── 매수 후보 (추천+TradeObject) ──
+            try:
+                import json as _json
+                rec_path = Path(__file__).parent.parent / "data_store" / "recommendation.json"
+                to_path = Path(__file__).parent.parent / "data_store" / "trade_objects.json"
+
+                stocks = []
+                if rec_path.exists():
+                    with open(rec_path, "r", encoding="utf-8") as f:
+                        rec = _json.load(f)
+                    stocks = rec.get("stocks", [])
+
+                trade_objs = {}
+                if to_path.exists():
+                    with open(to_path, "r", encoding="utf-8") as f:
+                        to_data = _json.load(f)
+                    for to in to_data.get("objects", []):
+                        trade_objs[to.get("code", "")] = to
+
+                if stocks:
+                    lines.append("")
+                    accepts = []
+                    rejects = []
+                    for s in stocks:
+                        code = s.get("code", "")
+                        name = s.get("name", "")
+                        score = s.get("total", s.get("total_score", 0))
+                        grade = s.get("grade", "")
+                        to = trade_objs.get(code, {})
+                        rr = to.get("rr_ratio", 0)
+                        verdict = to.get("rr_verdict", "")
+                        entry = to.get("entry_price", 0)
+
+                        if verdict == "REJECT":
+                            rejects.append(f"{name}(R:R {rr:.1f})")
+                        else:
+                            tag = "STRONG" if verdict == "STRONG_BUY" else verdict or grade
+                            line = f"  {name} {score:.0f}점 {grade} | R:R {rr:.1f} {tag}"
+                            if entry > 0:
+                                line += f"\n    → 진입 {entry:,} 부근 대기"
+                            accepts.append(line)
+
+                    lines.append(f"매수 후보 ({len(accepts)}종목):")
+                    for i, a in enumerate(accepts[:3], 1):
+                        lines.append(f"  {i}. {a.strip()}")
+                    if rejects:
+                        lines.append(f"  REJECT: {', '.join(rejects[:3])}")
+            except Exception:
+                pass
+
+            # ── 가용현금 ──
+            try:
+                bal = await asyncio.to_thread(self.trader.fetch_balance)
+                if bal.get("success"):
+                    cash = bal["cash"]
+                    total = bal.get("total_eval", cash)
+                    ratio = cash / total * 100 if total > 0 else 0
+                    lines.append("")
+                    lines.append(f"가용현금: {cash:,}원 ({ratio:.1f}%)")
+            except Exception:
+                pass
+
+            lines.append("━━━━━━━━━━━━━━━━━━━")
+
+            msg = "\n".join(lines)
+            await context.bot.send_message(chat_id=chat_id, text=msg)
+            logger.info("[모닝 브리프] 전송 완료")
+
+            # 다음날을 위해 _morning_data 초기화
+            self._morning_data = {}
+
+        except Exception as e:
+            logger.error(f"모닝 브리프 실패: {e}", exc_info=True)
+
+    async def _send_preclose_brief(self, context):
+        """14:50 프리클로즈 리포트 — 장중 감지 + 내일 후보"""
+        from datetime import date
+        if date.today().weekday() >= 5:
+            return
+        chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        if not chat_id:
+            return
+
+        try:
+            from data.preclose_scanner import (
+                load_preclose_results, cross_validate_with_evening,
             )
+            from data.trading_value_scanner import load_intraday_results
+
+            lines = [
+                "[프리클로즈] 내일 후보",
+                "━━━━━━━━━━━━━━━━━━━",
+            ]
+
+            # 장중 감지 요약
+            intraday = load_intraday_results()
+            if intraday:
+                lines.append("")
+                lines.append("장중 감지:")
+                tag_map = {"QUIET_ACCUMULATION": "조용한매집",
+                           "GRADUAL_BUILDUP": "점진적증가"}
+                for sig in intraday[:3]:
+                    pat = tag_map.get(sig.get("pattern", ""), "거래대금폭발")
+                    lines.append(
+                        f"  {sig.get('name', '')} — {pat}"
+                        f" (TV {sig.get('estimated_tv_ratio', 0):.1f}x)"
+                    )
+
+            # 프리클로즈 후보
+            raw = load_preclose_results()
+            if raw:
+                lines.append("")
+                lines.append(f"내일 후보 ({len(raw)}종목):")
+                for i, r in enumerate(raw[:3], 1):
+                    to = r.get("trade_object", {})
+                    rr = to.get("rr_ratio", r.get("rr_ratio", 0))
+                    verdict = to.get("rr_verdict", r.get("rr_verdict", ""))
+                    entry = to.get("entry_price", 0)
+                    tp = to.get("target_price", 0)
+                    icon = "✅" if verdict in ("GOOD", "STRONG_BUY") else "⚠️"
+                    lines.append(
+                        f"  {i}. {r['name']} | R:R {rr:.2f} {icon}"
+                    )
+                    if entry > 0 and tp > 0:
+                        lines.append(f"     진입 {entry:,} → 목표 {tp:,}")
+
+                # 교차검증
+                codes = [r["code"] for r in raw]
+                overlaps = cross_validate_with_evening(codes)
+                if overlaps:
+                    lines.append(f"  저녁분석 겹침: {', '.join(overlaps[:3])} ✅")
+
+                lines.append("")
+                lines.append("15:00~15:20 진입 대기")
+            else:
+                lines.append("")
+                lines.append("후보 없음 — 저녁분석 대기")
+
+            lines.append("━━━━━━━━━━━━━━━━━━━")
+
+            msg = "\n".join(lines)
+            await context.bot.send_message(chat_id=chat_id, text=msg)
+            logger.info("[프리클로즈 리포트] 전송 완료")
+
+        except Exception as e:
+            logger.error(f"프리클로즈 리포트 실패: {e}", exc_info=True)
+
+    async def _send_daily_closing(self, context):
+        """16:50 일일 마감 리포트 — 하루 결과 1개 메시지
+
+        이 시점에 이미 계산된 것들:
+        - 장중 체결 기록 (_closing_data["trades_today"])
+        - PAPER 이벤트 (_closing_data["paper_events"])
+        - 16:40 daily_learner (_closing_data["learning"])
+        - 16:35 swing_picker (_closing_data["swing"])
+        - 16:45 job_evening_analysis → recommendation.json
+        """
+        from datetime import date
+        if date.today().weekday() >= 5:
+            return
+        chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        if not chat_id:
+            return
+
+        try:
+            now = datetime.now()
+            dow = ["월", "화", "수", "목", "금", "토", "일"][now.weekday()]
+            lines = [
+                f"[일일 마감] {now.month}/{now.day} ({dow})",
+                "━━━━━━━━━━━━━━━━━━━",
+            ]
+
+            # ── 오늘 실현 P&L ──
+            trades = self._closing_data.get("trades_today", [])
+            if trades:
+                total_pnl = sum(t.get("pnl_krw", 0) for t in trades)
+                lines.append("")
+                lines.append(f"오늘 실현 P&L: {total_pnl:+,}원")
+                for t in trades:
+                    icon = "✅" if t.get("pnl_pct", 0) > 0 else "🛑"
+                    lines.append(
+                        f"  {t.get('name', '')}: {t.get('pnl_pct', 0):+.1f}%"
+                        f" ({t.get('pnl_krw', 0):+,}원) {t.get('reason', '')} {icon}"
+                    )
+
+            # ── 포트폴리오 현황 ──
+            try:
+                bal = await asyncio.to_thread(self.trader.fetch_balance)
+                if bal.get("success"):
+                    lines.append("")
+                    lines.append("포트폴리오:")
+                    total = bal.get("total_eval", 0)
+                    cash = bal.get("cash", 0)
+                    pos_cnt = len(bal.get("positions", []))
+                    ratio = cash / total * 100 if total > 0 else 0
+                    lines.append(f"  총자산: {total:,}원")
+                    lines.append(f"  보유 {pos_cnt}종목 | 현금 {ratio:.1f}%")
+
+                    # 보유종목 상세
+                    for p in bal.get("positions", []):
+                        pnl = p.get("pnl_pct", 0)
+                        icon = "📈" if pnl > 0 else "📉"
+                        lines.append(
+                            f"  {icon} {p.get('name', '')} {pnl:+.1f}%"
+                            f" (D+{p.get('hold_days', '?')})"
+                        )
+            except Exception:
+                pass
+
+            # ── PAPER 결과 ──
+            paper_events = self._closing_data.get("paper_events", [])
+            if paper_events:
+                lines.append("")
+                lines.append(f"[PAPER] {len(paper_events)}건:")
+                for ev in paper_events[:3]:
+                    lines.append(f"  {ev[:60]}" if isinstance(ev, str) else f"  {ev}")
+
+            # ── 내일 준비 ──
+            try:
+                import json as _json
+                rec_path = Path(__file__).parent.parent / "data_store" / "recommendation.json"
+                pc_path = Path(__file__).parent.parent / "data_store" / "preclose_results.json"
+
+                lines.append("")
+                lines.append("내일 준비:")
+
+                # 프리클로즈 진입
+                if pc_path.exists():
+                    with open(pc_path, "r", encoding="utf-8") as f:
+                        pc = _json.load(f)
+                    pc_names = [c.get("name", "") for c in pc.get("candidates", pc) if isinstance(c, dict)]
+                    if pc_names:
+                        lines.append(f"  프리클로즈: {', '.join(pc_names[:3])}")
+
+                # 저녁 분석 후보
+                if rec_path.exists():
+                    with open(rec_path, "r", encoding="utf-8") as f:
+                        rec = _json.load(f)
+                    rec_names = [s.get("name", "") for s in rec.get("stocks", [])[:3]]
+                    if rec_names:
+                        lines.append(f"  저녁분석: {', '.join(rec_names)}")
+            except Exception:
+                pass
+
+            # ── 학습 ──
+            learning = self._closing_data.get("learning", {})
+            if learning:
+                verify = learning.get("verify", {})
+                hit_rate = verify.get("hit_rate", 0)
+                missed = learning.get("missed_gainers", [])
+                lines.append("")
+                lines.append("학습:")
+                lines.append(f"  적중률 {hit_rate}%")
+                if missed:
+                    top = missed[0] if missed else {}
+                    if isinstance(top, dict):
+                        lines.append(
+                            f"  놓친 급등: {top.get('name', '')} "
+                            f"+{top.get('pnl', 0):.1f}%"
+                        )
+
+            lines.append("━━━━━━━━━━━━━━━━━━━")
+
+            msg = "\n".join(lines)
+            await context.bot.send_message(chat_id=chat_id, text=msg)
+            logger.info("[일일 마감 리포트] 전송 완료")
+
+            # 다음날을 위해 _closing_data 초기화
+            self._closing_data = {"trades_today": [], "paper_events": []}
+
+        except Exception as e:
+            logger.error(f"일일 마감 리포트 실패: {e}", exc_info=True)
+
+    # ═══════════════════════════════════════════
+    #  온디맨드 명령어 (내가 보고 싶을 때만)
+    # ═══════════════════════════════════════════
+
+    async def cmd_port(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """포트폴리오 현황 (보유종목 + 수익률 + 현금)"""
+        if not self._is_authorized(update):
+            return
+        try:
+            from bot.portfolio_monitor import generate_dashboard
+            text = await asyncio.to_thread(generate_dashboard, self.trader)
+            await update.message.reply_text(text)
+        except Exception as e:
+            await update.message.reply_text(f"포트폴리오 조회 실패: {e}")
+
+    async def cmd_brain_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Market Brain 현재 상태"""
+        if not self._is_authorized(update):
+            return
+        try:
+            import json as _json
+            brain_path = Path(__file__).parent.parent / "data_store" / "brain_report.json"
+            if not brain_path.exists():
+                await update.message.reply_text("Brain 데이터 없음")
+                return
+            with open(brain_path, "r", encoding="utf-8") as f:
+                brain = _json.load(f)
+
+            regime = brain.get("regime", "?")
+            macro = brain.get("macro_summary", "")
+            contradictions = brain.get("contradictions", 0)
+            alloc = brain.get("allocation", {})
+
+            lines = [
+                f"Market Brain 상태",
+                "━━━━━━━━━━━━━━━━━━━",
+                f"레짐: {regime}",
+                f"매크로: {macro}",
+                f"모순: {contradictions}개",
+            ]
+            if alloc:
+                lines.append(f"배분: {alloc}")
+            await update.message.reply_text("\n".join(lines))
+        except Exception as e:
+            await update.message.reply_text(f"Brain 조회 실패: {e}")
+
+    async def cmd_watchlist(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """현재 진입 감시 중인 종목 목록"""
+        if not self._is_authorized(update):
+            return
+        try:
+            watches = self.auto_trader.get_entry_watches() if hasattr(self.auto_trader, "get_entry_watches") else {}
+            if not watches:
+                await update.message.reply_text("현재 감시 중인 종목 없음")
+                return
+            lines = ["진입 감시 목록", "━━━━━━━━━━━━━━━━━━━"]
+            for code, w in watches.items():
+                name = w.get("name", code)
+                lines.append(f"  {name} | VWAP {w.get('entry_price', 0):,}")
+            await update.message.reply_text("\n".join(lines))
+        except Exception as e:
+            await update.message.reply_text(f"감시목록 조회 실패: {e}")
 
     async def _error_handler(self, update, context):
         import traceback
