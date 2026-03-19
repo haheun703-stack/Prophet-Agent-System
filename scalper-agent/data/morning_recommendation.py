@@ -1819,6 +1819,15 @@ def run_evening_recommendation() -> RecommendationReport:
     except Exception as e:
         logger.warning(f"추천 자동저장 실패: {e}")
 
+    # Market Brain 합성 리포트 생성
+    try:
+        from data.market_brain import generate_brain_report, save_brain_report
+        brain = generate_brain_report()
+        save_brain_report(brain)
+        logger.info(f"[Market Brain] 비중 {brain.position_size_pct}% | {brain.overall_verdict[:50]}")
+    except Exception as e:
+        logger.warning(f"[Market Brain] 실패 (무시): {e}")
+
     # FLOWX 업로드 (Supabase short_signals)
     try:
         from data.upload_short import run_flowx_upload
@@ -3023,6 +3032,15 @@ def run_war_mode_recommendation() -> RecommendationReport:
         save_recommendation(report)
     except Exception as e:
         logger.warning(f"추천 자동저장 실패: {e}")
+
+    # Market Brain 합성 리포트 생성
+    try:
+        from data.market_brain import generate_brain_report, save_brain_report
+        brain = generate_brain_report()
+        save_brain_report(brain)
+        logger.info(f"[Market Brain] 비중 {brain.position_size_pct}% | {brain.overall_verdict[:50]}")
+    except Exception as e:
+        logger.warning(f"[Market Brain] 실패 (무시): {e}")
 
     # FLOWX 업로드 (Supabase short_signals)
     try:

@@ -1698,6 +1698,17 @@ class BodyHunterBot:
             )
             report = load_recommendation()
             if report and report.stocks:
+                # Brain 리포트 먼저 전송
+                try:
+                    from data.market_brain import load_brain_report, format_brain_telegram
+                    brain = load_brain_report()
+                    if brain:
+                        brain_msg = format_brain_telegram(brain)
+                        for chunk in _split_message(brain_msg):
+                            await update.message.reply_text(chunk)
+                except Exception as e:
+                    logger.warning(f"Brain 리포트 전송 실패: {e}")
+                # 기존 상세 리포트 후속 전송
                 msg = format_recommendation(report)
                 for chunk in _split_message(msg):
                     await update.message.reply_text(chunk)
@@ -1705,6 +1716,16 @@ class BodyHunterBot:
                 await update.message.reply_text("저장된 추천 없음 - 5단계 분석 즉시 실행 중... (3~5분)")
                 report = await asyncio.to_thread(run_evening_recommendation)
                 save_recommendation(report)
+                # Brain은 save_recommendation 내에서 자동 생성됨
+                try:
+                    from data.market_brain import load_brain_report, format_brain_telegram
+                    brain = load_brain_report()
+                    if brain:
+                        brain_msg = format_brain_telegram(brain)
+                        for chunk in _split_message(brain_msg):
+                            await update.message.reply_text(chunk)
+                except Exception:
+                    pass
                 msg = format_recommendation(report)
                 for chunk in _split_message(msg):
                     await update.message.reply_text(chunk)
