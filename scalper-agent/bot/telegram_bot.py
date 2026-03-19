@@ -59,9 +59,8 @@ def _split_message(text: str, limit: int = TG_MAX) -> list:
 # 한글 키보드 레이아웃
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
-        ["상태", "포트폴리오", "현재잔고"],
-        ["내일추천", "배분현황", "로테이션"],
-        ["시작", "정지", "도움"],
+        ["추천", "내일", "포트"],
+        ["뇌", "상태", "도움"],
     ],
     resize_keyboard=True,
 )
@@ -70,57 +69,53 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup(
 HELP_TEXT = """
 Body Hunter v5 명령어
 
-[버튼 메뉴]
-  상태 - 봇 상태 + 리스크
-  포트폴리오 - 보유 + 손익
-  현재잔고 - 계좌 잔고
-  내일추천 - 추천 파이프라인 조회/실행
-  배분현황 - BRAIN 자본 배분
-  로테이션 - 섹터 HOT/STAGING
-  시작/정지 - 자동매매 ON/OFF
+📋 매일 사용
+  추천       — 봇 추천 종목 보기
+  내일       — 내일 매수 등록 현황
+  내일 [종목...]  — 매수 종목 등록
+  내일취소    — 매수 등록 초기화
+  포트 (ㅍ)   — 포트폴리오 현황
+  뇌 (ㅂ)     — BRAIN 상태
+  감시 (ㄱ)   — 진입 감시 종목
+  페이퍼 (ㅌ)  — PAPER 현황
+  이벤트로그 (ㄹ) — 오늘 봇 활동 로그
 
-[매매]
-  매수 삼성전자 10 - 시장가 매수
-  매도 삼성전자 - 전량 매도
-  청산 - 전종목 청산
-  자동확인 - 대기 중 자동매수 실행
-  자동취소 - 대기 중 자동매수 취소
-  위기모드 [사유] - 매수 완전 차단
-  위기해제 - 위기 모드 해제
+⚙️ 시스템
+  시작/정지  — 자동매매 ON/OFF
+  상태      — 봇 상태 + 리스크
+  위기모드/위기해제 — 위기 모드
 
-[분석 (텍스트 입력)]
-  스캔 - 5D 전종목 수급 스캔
-  스윙스캔 - 4층 파이프라인 TOP10
-  사전감지 - 폭발 직전 종목 포착
-  MACD스캔 - MACD 0선 + 수급 스캔
-  이상거래 - 이상거래 감지
-  건전성 - 시장 수급 건전성
-  이벤트 - DART+뉴스 이벤트
-  해외이벤트 - 해외 경제지표 D-3
-  종목선정 - 7팩터 스윙 TOP10
-  뉴스AI - Claude AI 뉴스 분석
-  AI모니터 - 보유종목 4팩터 분석
+💰 매매
+  매수 삼성전자 10 — 시장가 매수
+  매도 삼성전자 — 전량 매도
+  청산 — 전종목 청산
+  자동확인/자동취소 — 대기 매수 처리
+  확인 — 분할매수 확인
 
-[개별 종목]
-  분석 삼성전자 - 6D 분석
-  스윙 삼성전자 - 스윙 분석
-  뉴스 삼성전자 - 뉴스 감성분석
-  국적수급 SK하이닉스 - 국적별 매매
+📊 분석
+  스캔/스윙스캔/MACD스캔
+  사전감지/이상거래/건전성
+  이벤트/해외이벤트/종목선정
+  뉴스AI/AI모니터
 
-[릴레이]
-  섹터릴레이 / 그룹릴레이 / ETF릴레이
-  릴레이종합 - 교차 검증 통합
+🔍 개별 종목
+  분석 삼성전자 / 스윙 삼성전자
+  뉴스 삼성전자 / 국적수급 SK하이닉스
 
-[JARVIS 5D]
-  선행지표 / 스트레스 / COT / 유동성
+📈 릴레이
+  섹터릴레이/그룹릴레이/ETF릴레이
+  릴레이종합/로테이션
 
-[NXT 야간매매]
-  NXT / NXT켜기 / NXT끄기 / NXT실행
+🌐 JARVIS
+  선행지표/스트레스/COT/유동성
+  배분현황 — BRAIN 자본 배분
 
-[기타]
-  체결내역 / 일지 / 시그널
-  워치리스트 / 시나리오
-  유니버스 / 로그
+🌙 NXT 야간
+  NXT/NXT켜기/NXT끄기/NXT실행
+
+📁 기타
+  현재잔고/체결내역/일지/시그널
+  워치리스트/시나리오/유니버스/로그
 """.strip()
 
 
@@ -2055,7 +2050,7 @@ class BodyHunterBot:
             r"^확인$": self.cmd_confirm,
             r"^자동확인$": self.cmd_auto_confirm,
             r"^자동취소$": self.cmd_auto_cancel,
-            r"^위기모드": self.cmd_crisis_on,
+            r"^위기모드$": self.cmd_crisis_on,
             r"^위기해제$": self.cmd_crisis_off,
             r"^사전감지$": self.cmd_premove_scan,
             r"^AI모니터$": self.cmd_ai_monitor,
@@ -2073,6 +2068,7 @@ class BodyHunterBot:
             r"^그룹릴레이$": self.cmd_group_relay,
             r"^ETF릴레이$": self.cmd_etf_relay,
             r"^릴레이종합$": self.cmd_relay_hub,
+            r"^추천$": self.cmd_recommendation,
             r"^내일추천$": self.cmd_recommendation,
             r"^국적수급$": self.cmd_nationality,
             r"^배분현황$": self.cmd_brain,
@@ -2091,9 +2087,14 @@ class BodyHunterBot:
             r"^ㅍ$": self.cmd_port,
             r"^뇌$": self.cmd_brain_status,
             r"^감시$": self.cmd_watchlist,
+            r"^ㅂ$": self.cmd_brain_status,
+            r"^ㄱ$": self.cmd_watchlist,
+            r"^ㅌ$": self.cmd_paper,
             r"^ㄹ$": self.cmd_event_log,
             r"^이벤트로그$": self.cmd_event_log,
             r"^내일$": self.cmd_tomorrow,
+            r"^내일취소$": self.cmd_tomorrow,
+            r"^내일확인$": self.cmd_tomorrow,
         }
 
         for pattern, handler in exact_commands.items():
@@ -2134,6 +2135,9 @@ class BodyHunterBot:
         )
         app.add_handler(
             MessageHandler(filters.Regex(r"^내일\s+.+"), self.cmd_tomorrow)
+        )
+        app.add_handler(
+            MessageHandler(filters.Regex(r"^위기모드\s+.+"), self.cmd_crisis_on)
         )
 
         # 인자 없는 "분석" / "뉴스" → 안내
@@ -3399,14 +3403,27 @@ class BodyHunterBot:
 
         picks_path = Path(__file__).parent.parent / "data_store" / "tomorrow_picks.json"
         text = update.message.text.strip()
-        # "내일 ..." 또는 "/내일 ..."
+        # "내일 ..." 또는 "내일취소" 또는 "내일확인"
         parts = text.split()
+        cmd = parts[0]  # "내일" / "내일취소" / "내일확인"
         args = parts[1:] if len(parts) > 1 else []
 
-        # ── 조회 (인수 없음) ──
-        if not args:
+        # ── 취소 ("내일취소" 또는 "내일 취소") ──
+        if cmd == "내일취소" or (args and args[0] == "취소"):
+            if picks_path.exists():
+                picks_path.unlink()
+            await update.message.reply_text("✅ 내일 매수 목록 초기화")
+            return
+
+        # ── 조회 ("내일" 인수 없음 또는 "내일확인") ──
+        if not args or cmd == "내일확인":
             if not picks_path.exists():
-                await update.message.reply_text("내일 매수 목록 없음\n사용법: 내일 GS건설 제일일렉트릭")
+                await update.message.reply_text(
+                    "내일 매수 목록 없음\n"
+                    "━━━━━━━━━━━━━━━━━━━\n"
+                    "등록: 내일 GS건설 제일일렉트릭\n"
+                    "추천 보기: 추천"
+                )
                 return
             with open(picks_path, "r", encoding="utf-8") as f:
                 data = _json.load(f)
@@ -3418,14 +3435,9 @@ class BodyHunterBot:
             for p in data["picks"]:
                 mode_tag = "수동" if p.get("mode") == "manual" else "자동"
                 lines.append(f"   {p['name']}({p['code']}) — {mode_tag}")
+            lines.append("━━━━━━━━━━━━━━━━━━━")
+            lines.append("변경: 내일 종목명 / 취소: 내일취소")
             await update.message.reply_text("\n".join(lines))
-            return
-
-        # ── 취소 ──
-        if args[0] == "취소":
-            if picks_path.exists():
-                picks_path.unlink()
-            await update.message.reply_text("✅ 내일 매수 목록 초기화")
             return
 
         # ── 등록 ──
@@ -3523,6 +3535,8 @@ class BodyHunterBot:
             pass
 
         lines.append("━━━━━━━━━━━━━━━━━━━")
+        lines.append("변경: 내일 종목명 / 취소: 내일취소")
+        lines.append("추천 보기: 추천")
         await update.message.reply_text("\n".join(lines))
 
     async def _error_handler(self, update, context):
