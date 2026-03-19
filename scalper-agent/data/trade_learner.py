@@ -155,8 +155,18 @@ def _categorize(reason: str, pnl: float) -> str:
 
 # ─── Bucket Returns 업데이트 (장마감 후) ───────────────
 
-def update_bucket_returns(closed_trades: list):
-    """종료된 트레이드로 bucket returns 테이블 업데이트"""
+def update_bucket_returns(closed_trades: list = None):
+    """종료된 트레이드로 bucket returns 테이블 업데이트
+
+    Args:
+        closed_trades: 종료 트레이드 리스트. None이면 오늘 기록된 trade_log에서 자동 로드
+    """
+    if closed_trades is None:
+        # 오늘 기록된 트레이드 자동 로드
+        today = datetime.now().strftime("%Y-%m-%d")
+        all_log = load_trade_log()
+        closed_trades = [t for t in all_log if t.get("date") == today]
+
     if not closed_trades:
         return
 

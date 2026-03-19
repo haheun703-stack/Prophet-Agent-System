@@ -1756,6 +1756,23 @@ class BodyHunterBot:
             await update.message.reply_text(f"❌ 추천 조회 실패: {e}")
 
     # ═══════════════════════════════════════
+    #  PAPER 트레이딩 현황
+    # ═══════════════════════════════════════
+
+    async def cmd_paper(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """PAPER 트레이딩 현황 조회 + 2주 리뷰 통계"""
+        if not self._is_authorized(update):
+            return
+        try:
+            from data.trade_tracker import TradeTracker
+            tracker = TradeTracker()
+            msg = tracker.get_paper_dashboard(kis=self.trader)
+            for chunk in _split_message(msg):
+                await update.message.reply_text(chunk)
+        except Exception as e:
+            await update.message.reply_text(f"❌ PAPER 현황 조회 실패: {e}")
+
+    # ═══════════════════════════════════════
     #  JARVIS BRAIN 자본 배분
     # ═══════════════════════════════════════
 
@@ -2084,6 +2101,7 @@ class BodyHunterBot:
             r"^NXT켜기$": self.cmd_nxt_on,
             r"^NXT끄기$": self.cmd_nxt_off,
             r"^NXT실행$": self.cmd_nxt_run,
+            r"^페이퍼$": self.cmd_paper,
         }
 
         for pattern, handler in exact_commands.items():
@@ -2274,6 +2292,12 @@ class BodyHunterBot:
         jq.run_daily(self._job_war_summary, time=kst_time(14, 30))
         jq.run_daily(self._job_war_summary, time=kst_time(15, 15))
         logger.info("전쟁모드 추적 등록: 09:00 시작알림 + 60초 감시 + 30분 요약")
+
+        # ── PAPER 트레이딩 자동 추적 ──
+        jq.run_daily(self._job_paper_register, time=kst_time(9, 5))
+        jq.run_repeating(self._job_paper_check, interval=300, first=600)  # 5분마다
+        jq.run_daily(self._job_paper_eod, time=kst_time(15, 25))
+        logger.info("PAPER 트레이딩 등록: 09:05 등록 + 5분 체크 + 15:25 EOD")
 
         # ── FLOWX DAYTRADING 일괄 청산 (15:20 - 장 마감 전) ──
         jq.run_daily(self._job_flowx_close_daytrading, time=kst_time(15, 20))
@@ -2778,6 +2802,62 @@ class BodyHunterBot:
                 await context.bot.send_message(
                     chat_id=chat_id, text=f"⚠️ 일간 학습 실패: {str(e)[:200]}"
                 )
+
+    # ── PAPER 트레이딩 자동 추적 ────────────────────────
+
+    async def _job_paper_register(self, context):
+        """09:05 PAPER 종목 자동 등록 — trade_objects.json ACCEPT 종목"""
+        from datetime import date
+        if date.today().weekday() >= 5:
+            return
+        try:
+            from data.trade_tracker import TradeTracker
+            tracker = TradeTracker()
+            names = tracker.register_paper_from_objects(kis=self.trader)
+            if names:
+                chat_id = os.getenv("TELEGRAM_CHAT_ID")
+                msg = f"[PAPER] {len(names)}종목 추적 시작: {', '.join(names)}"
+                await context.bot.send_message(chat_id=chat_id, text=msg)
+                logger.info(msg)
+        except Exception as e:
+            logger.error(f"PAPER 등록 실패: {e}")
+
+    async def _job_paper_check(self, context):
+        """장중 5분마다 — PAPER 종목 TP/SL 도달 체크"""
+        now = datetime.now(KST)
+        if now.weekday() >= 5:
+            return
+        now_min = now.hour * 60 + now.minute
+        if now_min < 545 or now_min >= 920:  # 09:05~15:20
+            return
+
+        try:
+            from data.trade_tracker import TradeTracker
+            tracker = TradeTracker()
+            events = tracker.check_paper_prices(self.trader)
+            if events:
+                chat_id = os.getenv("TELEGRAM_CHAT_ID")
+                for ev in events:
+                    await context.bot.send_message(chat_id=chat_id, text=ev)
+        except Exception as e:
+            logger.warning(f"PAPER 가격체크 실패: {e}")
+
+    async def _job_paper_eod(self, context):
+        """15:25 PAPER 시간손절 — time_stop_days 경과 종목 종가 클로즈"""
+        from datetime import date
+        if date.today().weekday() >= 5:
+            return
+        try:
+            from data.trade_tracker import TradeTracker
+            tracker = TradeTracker()
+            events = tracker.paper_close_eod(self.trader)
+            if events:
+                chat_id = os.getenv("TELEGRAM_CHAT_ID")
+                msg = "\n\n".join(events)
+                await context.bot.send_message(chat_id=chat_id, text=msg)
+                logger.info(f"PAPER EOD: {len(events)}건 시간손절")
+        except Exception as e:
+            logger.error(f"PAPER EOD 실패: {e}")
 
     # ── FLOWX DAYTRADING 일괄 청산 ────────────────────
 

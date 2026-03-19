@@ -201,3 +201,231 @@ class TradeTracker:
                 lines.append(f"  {name} [{status}] R:R {rr:.1f}")
 
         return "\n".join(lines)
+
+    # ═══════════════════════════════════════════
+    #  PAPER 트레이딩 시스템
+    # ═══════════════════════════════════════════
+
+    def register_paper_from_objects(self, kis=None) -> list:
+        """trade_objects.json에서 ACCEPT 종목을 PAPER_ACTIVE로 등록
+
+        Args:
+            kis: KISTrader 인스턴스 (시가 조회용, 없으면 entry_price 사용)
+        Returns:
+            등록된 종목명 리스트
+        """
+        from data.trade_object import load_trade_objects
+        trade_objs = load_trade_objects()
+        if not trade_objs:
+            return []
+
+        registered = []
+        for to in trade_objs:
+            if to.rr_verdict == "REJECT":
+                continue
+            if self.is_tracked(to.code):
+                continue
+
+            # 시가 조회 (장 시작 후)
+            entry = to.entry_price
+            if kis:
+                try:
+                    p = kis.fetch_price(to.code)
+                    if p.get("success"):
+                        open_p = p.get("open", 0)
+                        if open_p > 0:
+                            entry = open_p
+                except Exception:
+                    pass
+
+            self.register(to)
+            self.activate(to.code, entry)
+            self._active[to.code]["paper"] = True
+            registered.append(to.name)
+
+        if registered:
+            self._save()
+        return registered
+
+    def check_paper_prices(self, kis) -> list:
+        """장중 현재가 vs TP/SL 체크 → 도달 시 auto-close
+
+        Returns:
+            이벤트 메시지 리스트
+        """
+        events = []
+        to_close = []
+
+        for code, t in self._active.items():
+            if t.get("status") != "ACTIVE":
+                continue
+
+            try:
+                p = kis.fetch_price(code)
+                if not p.get("success"):
+                    continue
+
+                high = p.get("high", 0)
+                low = p.get("low", 0)
+                current = p.get("current_price", 0)
+                tp = t.get("target_price", 0)
+                sl = t.get("stop_loss", 0)
+
+                if tp > 0 and high >= tp:
+                    to_close.append((code, tp, "TARGET"))
+                    pnl = (tp - t.get("actual_entry", tp)) / t.get("actual_entry", tp) * 100
+                    events.append(
+                        f"[PAPER] {t['name']} 목표가 도달!\n"
+                        f"  {t.get('actual_entry', 0):,} → {tp:,} ({pnl:+.1f}%)"
+                    )
+                elif sl > 0 and low <= sl:
+                    to_close.append((code, sl, "STOP"))
+                    pnl = (sl - t.get("actual_entry", sl)) / t.get("actual_entry", sl) * 100
+                    events.append(
+                        f"[PAPER] {t['name']} 손절 도달!\n"
+                        f"  {t.get('actual_entry', 0):,} → {sl:,} ({pnl:+.1f}%)"
+                    )
+            except Exception as e:
+                logger.warning(f"PAPER 가격체크 실패 {code}: {e}")
+
+        for code, price, reason in to_close:
+            self.close(code, price, reason)
+
+        return events
+
+    def paper_close_eod(self, kis) -> list:
+        """장마감 시간손절 — time_stop_days 경과 종목 종가 기준 강제 클로즈
+
+        Returns:
+            이벤트 메시지 리스트
+        """
+        events = []
+        expired = self.check_time_stops()
+
+        for code in expired:
+            t = self._active.get(code)
+            if not t:
+                continue
+
+            # 종가(현재가) 조회
+            close_price = t.get("actual_entry", 0)
+            try:
+                p = kis.fetch_price(code)
+                if p.get("success") and p.get("current_price", 0) > 0:
+                    close_price = p["current_price"]
+            except Exception:
+                pass
+
+            entry = t.get("actual_entry", 0) or t.get("entry_price", 0)
+            pnl = (close_price - entry) / entry * 100 if entry > 0 else 0
+            name = t.get("name", code)
+            days = t.get("time_stop_days", 5)
+
+            result = self.close(code, close_price, "TIME_STOP")
+            if result:
+                events.append(
+                    f"[PAPER] {name} 시간손절 D+{days}\n"
+                    f"  {entry:,} → {close_price:,} ({pnl:+.1f}%)"
+                )
+
+        return events
+
+    def get_paper_dashboard(self, kis=None) -> str:
+        """PAPER 트레이딩 현황 텔레그램 메시지"""
+        if not self._active:
+            return "[PAPER] 추적 중인 종목 없음"
+
+        lines = ["━━ [PAPER] Trade Tracker ━━━"]
+        now = datetime.now()
+
+        for code, t in self._active.items():
+            name = t.get("name", code)
+            status = t.get("status", "?")
+            entry = t.get("actual_entry", 0) or t.get("entry_price", 0)
+            tp = t.get("target_price", 0)
+            sl = t.get("stop_loss", 0)
+            rr = t.get("rr_ratio", 0)
+            verdict = t.get("rr_verdict", "")
+
+            # 보유일수
+            days = 0
+            if t.get("hold_start"):
+                try:
+                    start = datetime.strptime(t["hold_start"], "%Y-%m-%d")
+                    days = (now - start).days
+                except Exception:
+                    pass
+            time_stop = t.get("time_stop_days", 5)
+
+            # 현재가 조회 (가능하면)
+            current = 0
+            if kis and status == "ACTIVE":
+                try:
+                    p = kis.fetch_price(code)
+                    if p.get("success"):
+                        current = p.get("current_price", 0)
+                except Exception:
+                    pass
+
+            pnl_str = ""
+            if current > 0 and entry > 0:
+                pnl = (current - entry) / entry * 100
+                pnl_str = f" 현재 {current:,}({pnl:+.1f}%)"
+
+            lines.append(f"  [{verdict}] {name} R:R {rr:.1f} D+{days}/{time_stop}")
+            lines.append(f"    진입 {entry:,} | TP {tp:,} | SL {sl:,}{pnl_str}")
+
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━━")
+
+        # 종료된 트레이드 통계
+        stats = self.get_paper_review_stats()
+        if stats.get("total", 0) > 0:
+            lines.append(f"\n━━ 2주 리뷰 ({stats['total']}건) ━━━")
+            lines.append(f"  승률: {stats['win_rate']:.0f}% (목표 50%+)")
+            lines.append(f"  평균R: {stats['avg_r_realized']:.2f} (목표 0.7+)")
+            lines.append(f"  TARGET_HIT: {stats['target_pct']:.0f}%")
+            lines.append(f"  STOP_HIT: {stats['stop_pct']:.0f}%")
+            lines.append(f"  TIME_STOP: {stats['time_pct']:.0f}%")
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def get_paper_review_stats() -> dict:
+        """2주 리뷰용 핵심 4 지표
+
+        Returns:
+            {total, win_rate, avg_r_realized, target_pct, stop_pct, time_pct}
+        """
+        try:
+            from data.trade_learner import load_trade_log
+            log = load_trade_log()
+        except Exception:
+            return {"total": 0}
+
+        if not log:
+            return {"total": 0}
+
+        total = len(log)
+        wins = sum(1 for t in log if t.get("actual_pnl", 0) > 0)
+
+        # 사유별 비율
+        target_hit = sum(1 for t in log if t.get("close_reason") == "TARGET")
+        stop_hit = sum(1 for t in log if t.get("close_reason") == "STOP")
+        time_stop = sum(1 for t in log if t.get("close_reason") == "TIME_STOP")
+
+        # 평균 R 실현 = 실제수익 / 기대수익
+        r_values = []
+        for t in log:
+            expected = t.get("expected_return", 0)
+            actual = t.get("actual_pnl", 0)
+            if expected > 0:
+                r_values.append(actual / expected)
+
+        return {
+            "total": total,
+            "win_rate": wins / total * 100 if total else 0,
+            "avg_r_realized": sum(r_values) / len(r_values) if r_values else 0,
+            "target_pct": target_hit / total * 100 if total else 0,
+            "stop_pct": stop_hit / total * 100 if total else 0,
+            "time_pct": time_stop / total * 100 if total else 0,
+        }
