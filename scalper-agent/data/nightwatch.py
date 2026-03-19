@@ -263,6 +263,49 @@ JARVIS_SECTORS = {
         ],
         "relay": "TSLA수주→LG에너지솔루션/삼성SDI→에코프로비엠/에코프로→LG화학",
     },
+    # ── 원자재 릴레이 섹터 ──
+    "natural_gas": {
+        "name": "🔥 천연가스·LNG",
+        "us": ["LNG", "AR", "EQT", "RRC", "SWN"],
+        "kr_tier1": [
+            {"code": "036460", "name": "한국가스공사"},
+            {"code": "018670", "name": "SK가스"},
+        ],
+        "kr_tier2": [
+            {"code": "017940", "name": "E1"},
+            {"code": "017390", "name": "서울가스"},
+            {"code": "267290", "name": "경동도시가스"},
+            {"code": "034590", "name": "인천도시가스"},
+        ],
+        "relay": "DC전력수요폭증→NG가격급등→한국가스공사/SK가스→도시가스유통",
+    },
+    "precious_metals": {
+        "name": "✨ 귀금속(금·은)",
+        "us": ["GLD", "SLV", "NEM", "AEM", "WPM"],
+        "kr_tier1": [
+            {"code": "010130", "name": "고려아연"},
+            {"code": "000670", "name": "영풍"},
+        ],
+        "kr_tier2": [
+            {"code": "005810", "name": "풍산홀딩스"},
+            {"code": "018470", "name": "조일알미늄"},
+        ],
+        "relay": "인플레+스태그→금급등→은2배추종→고려아연(은부산물)/영풍",
+    },
+    "industrial_metals": {
+        "name": "🏗 산업금속(구리·비철)",
+        "us": ["FCX", "SCCO", "TECK", "BHP"],
+        "kr_tier1": [
+            {"code": "103140", "name": "풍산"},
+            {"code": "010130", "name": "고려아연"},
+        ],
+        "kr_tier2": [
+            {"code": "005810", "name": "풍산홀딩스"},
+            {"code": "018470", "name": "조일알미늄"},
+            {"code": "008350", "name": "남선알미늄"},
+        ],
+        "relay": "전기화+재생에너지→구리수요폭증→풍산(구리가공)/고려아연→알미늄",
+    },
     # 특수 섹터
     "inverse": {
         "name": "📉 인버스(헤지)",
@@ -583,6 +626,38 @@ def collect_macro_conditions(
     # --- HG: 구리 선물 (지정학 감지용) ---
     hg = _fetch_ticker("HG=F")
     additional_raw["HG"] = asdict(hg) if hg else {}
+    if hg and hg.change_pct is not None:
+        conditions["copper_up"] = hg.change_pct > 1.0
+        conditions["copper_pct"] = hg.change_pct
+
+    # --- NG: 천연가스 선물 (DC전력 수요 바로미터) ---
+    ng = _fetch_ticker("NG=F")
+    additional_raw["NG"] = asdict(ng) if ng else {}
+    if ng and ng.change_pct is not None:
+        conditions["ng_up"] = ng.change_pct > 2.0
+        conditions["ng_down"] = ng.change_pct < -2.0
+        conditions["ng_pct"] = ng.change_pct
+        conditions["ng_price"] = ng.value  # 원가 대비 위치 판단용
+
+    # --- SI: 은 선물 (금 릴레이 추종) ---
+    si = _fetch_ticker("SI=F")
+    additional_raw["SI"] = asdict(si) if si else {}
+    if si and si.change_pct is not None:
+        conditions["silver_up"] = si.change_pct > 1.0
+        conditions["silver_pct"] = si.change_pct
+
+    # --- 원자재 릴레이 감지: 금→은→구리 순서 ---
+    gold_data = raw_indicators.get("GOLD", {})
+    gold_pct = gold_data.get("change_pct", 0) or 0
+    silver_pct = conditions.get("silver_pct", 0) or 0
+    copper_pct = conditions.get("copper_pct", 0) or 0
+    # 은이 금보다 더 많이 오르면 릴레이 진행 중
+    if silver_pct > 0.5 and silver_pct > gold_pct:
+        conditions["commodity_relay"] = "silver"  # 은 단계
+    elif copper_pct > 0.5 and copper_pct > gold_pct:
+        conditions["commodity_relay"] = "copper"  # 구리 단계
+    elif gold_pct > 0.5:
+        conditions["commodity_relay"] = "gold"    # 금 선행 단계
 
     # --- TNX: 금리 방향 (detect_divergence에서 이미 수집) ---
     tnx = raw_indicators.get("TNX", {})
@@ -623,6 +698,16 @@ def collect_macro_conditions(
         active.append("CNH강세")
     if conditions.get("geopolitical"):
         active.append("지정학 긴장")
+    if conditions.get("ng_up"):
+        active.append(f"천연가스↑ {conditions.get('ng_pct', 0):+.1f}%")
+    if conditions.get("silver_up"):
+        active.append(f"은↑ {conditions.get('silver_pct', 0):+.1f}%")
+    if conditions.get("copper_up"):
+        active.append(f"구리↑ {conditions.get('copper_pct', 0):+.1f}%")
+    relay = conditions.get("commodity_relay")
+    if relay:
+        relay_map = {"gold": "금선행", "silver": "금→은 릴레이", "copper": "금→은→구리 릴레이"}
+        active.append(f"원자재릴레이({relay_map.get(relay, relay)})")
     conditions["active_text"] = active
 
     return conditions, additional_raw
@@ -760,6 +845,20 @@ def select_sectors_and_targets(
     selected_keys = []
     reason = ""
 
+    # ── 원자재 릴레이 보조 섹터 (점수 무관, 조건 충족 시 추가) ──
+    commodity_addon = []
+    commodity_reason = ""
+    relay = macro.get("commodity_relay")
+    if relay == "silver":
+        commodity_addon = ["precious_metals"]
+        commodity_reason = " + 금→은릴레이"
+    elif relay == "copper":
+        commodity_addon = ["industrial_metals"]
+        commodity_reason = " + 금→은→구리릴레이"
+    if macro.get("ng_up"):
+        commodity_addon.append("natural_gas")
+        commodity_reason += " + 천연가스↑"
+
     # ── 강매수 (5+) ──
     if total_score >= 5:
         if macro.get("nasdaq_up"):
@@ -769,8 +868,11 @@ def select_sectors_and_targets(
             selected_keys = ["reits", "securities", "power_infra"]
             reason = "🟢🟢 + 금리↓"
         elif macro.get("oil_up"):
-            selected_keys = ["oil_resource", "shipbuilding"]
-            reason = "🟢🟢 + 유가↑"
+            selected_keys = ["oil_resource", "shipbuilding", "natural_gas"]
+            reason = "🟢🟢 + 유가↑ + LNG"
+        elif macro.get("ng_up"):
+            selected_keys = ["natural_gas", "oil_resource"]
+            reason = "🟢🟢 + 천연가스↑"
         else:
             selected_keys = ["semiconductor", "power_infra"]
             reason = "🟢🟢 기본"
@@ -786,6 +888,9 @@ def select_sectors_and_targets(
         elif macro.get("oil_up"):
             selected_keys = ["oil_resource", "shipbuilding"]
             reason = "🟢 + 유가↑"
+        elif macro.get("ng_up"):
+            selected_keys = ["natural_gas", "oil_resource"]
+            reason = "🟢 + 천연가스↑"
         elif macro.get("geopolitical"):
             selected_keys = ["space_defense", "shipbuilding"]
             reason = "🟢 + 지정학 긴장"
@@ -795,6 +900,13 @@ def select_sectors_and_targets(
         else:
             selected_keys = ["semiconductor", "power_infra"]
             reason = "🟢 기본"
+
+    # 원자재 릴레이 보조 섹터 병합 (중복 제거)
+    if commodity_addon and selected_keys:
+        for key in commodity_addon:
+            if key not in selected_keys:
+                selected_keys.append(key)
+        reason += commodity_reason
 
     # ── 극단 패닉만 인버스 (-5 이하) ──
     # 백테스트: score<-2 인버스 적중 41% → 대부분 손실
@@ -1088,6 +1200,15 @@ def format_nightwatch_report(report: NightwatchReport) -> str:
         lines.append(f"  나스닥(NQ): {_pct(nq_d)}")
     if cl_d:
         lines.append(f"  원유(CL): {_pct(cl_d)}")
+    ng_d = ri.get("NG", {})
+    si_d = ri.get("SI", {})
+    hg_d = ri.get("HG", {})
+    if ng_d:
+        lines.append(f"  천연가스(NG): {_pct(ng_d)} (${_val(ng_d)})")
+    if si_d:
+        lines.append(f"  은(SI): {_pct(si_d)}")
+    if hg_d:
+        lines.append(f"  구리(HG): {_pct(hg_d)}")
     active_text = mc.get("active_text", [])
     if active_text:
         lines.append(f"  활성: {' | '.join(active_text)}")
