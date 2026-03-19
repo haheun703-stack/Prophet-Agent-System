@@ -1828,6 +1828,16 @@ def run_evening_recommendation() -> RecommendationReport:
     except Exception as e:
         logger.warning(f"[Market Brain] 실패 (무시): {e}")
 
+    # Trade Object Layer — 트레이드 설계 자동 생성
+    try:
+        from data.trade_object import build_trade_objects_from_report, save_trade_objects
+        trade_objects = build_trade_objects_from_report(report)
+        save_trade_objects(trade_objects)
+        accepted = len([t for t in trade_objects if t.rr_verdict != "REJECT"])
+        logger.info(f"[TradeObject] {accepted}/{len(trade_objects)} ACCEPT (R:R 통과)")
+    except Exception as e:
+        logger.warning(f"[TradeObject] 실패 (무시): {e}")
+
     # FLOWX 업로드 (Supabase short_signals)
     try:
         from data.upload_short import run_flowx_upload
@@ -3041,6 +3051,16 @@ def run_war_mode_recommendation() -> RecommendationReport:
         logger.info(f"[Market Brain] 비중 {brain.position_size_pct}% | {brain.overall_verdict[:50]}")
     except Exception as e:
         logger.warning(f"[Market Brain] 실패 (무시): {e}")
+
+    # Trade Object Layer — 트레이드 설계 자동 생성
+    try:
+        from data.trade_object import build_trade_objects_from_report, save_trade_objects
+        trade_objects = build_trade_objects_from_report(report)
+        save_trade_objects(trade_objects)
+        accepted = len([t for t in trade_objects if t.rr_verdict != "REJECT"])
+        logger.info(f"[TradeObject] {accepted}/{len(trade_objects)} ACCEPT (R:R 통과)")
+    except Exception as e:
+        logger.warning(f"[TradeObject] 실패 (무시): {e}")
 
     # FLOWX 업로드 (Supabase short_signals)
     try:

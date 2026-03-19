@@ -1,30 +1,172 @@
 {
   "stage": "evening",
-  "timestamp": "2026-03-17 19:47",
+  "timestamp": "2026-03-19 16:45",
   "market_health": "NORMAL",
-  "market_change": 1.99,
+  "market_change": -2.93,
   "us_market_note": "",
-  "relay_summary": "HOT:IT/플랫폼 | HOT:건설 | HOT:화장품/뷰티",
+  "relay_summary": "HOT:건설 | HOT:금융 | HOT:삼성그룹 | HOT:LG그룹 | RELAY:SK그룹",
   "warning": "",
   "cross_regime": "",
   "cross_regime_detail": "",
   "stocks": [
     {
-      "code": "338840",
-      "name": "338840",
-      "close": 0,
-      "total_score": 86.7,
+      "code": "006360",
+      "name": "GS건설",
+      "close": 25950,
+      "total_score": 149.4,
+      "confidence": "HIGH",
+      "grade": "AAA",
+      "signal_type": "FORCE_BUY",
+      "entry": 25950,
+      "sl": 24652,
+      "tp": 28545,
+      "sl_source": "ATR",
+      "tech_detail": "정배열+EMA20>60+MACD++OBV++RS+4%",
+      "news_detail": "POSITIVE",
+      "sources": [
+        "sector_hot:건설",
+        "tv:QUIET_ACCUMULATION(82)",
+        "rotation:hot_mid(건설)",
+        "7SECRET(BUY:+12.7)",
+        "tv_cluster(+12)",
+        "brain(+9.7)"
+      ],
+      "cross_count": 4,
+      "relay_score": 15,
+      "premove_score": 0.0,
+      "tech_score": 20.0,
+      "news_score": 35,
+      "nationality_score": -10.0,
+      "nationality_detail": "외-10(3d) 기OK(4d)",
+      "flow_signal": "STRONG_BUY",
+      "flow_score": 44.3,
+      "flow_detail": "🏛기관매집 + 🐉아시아진입 + ⭐복합매수 | ⚠️🦈헤지이탈",
+      "nat_power": 12.72,
+      "nat_power_grade": "BUY",
+      "nat_power_detail": "BREADTH|COMBO+5.1|REV-3.1|급증:영국+케이맨 제도+싱가포르",
+      "news_penalty": 0.0,
+      "obv_penalty": 0.0,
+      "relative_penalty": 0.0,
+      "today_chg": 1.2,
+      "relative_str": 4.1,
+      "regime": "MOMENTUM",
+      "regime_score": 0.67,
+      "regime_detail": "VOL2.6x+TV3.0x+기관0D",
+      "tv_ratio": 2.998,
+      "tv_pattern": "QUIET_ACCUMULATION",
+      "tv_score": 82.0
+    },
+    {
+      "code": "199820",
+      "name": "제일일렉트릭",
+      "close": 11510,
+      "total_score": 131.7,
+      "confidence": "HIGH",
+      "grade": "AAA",
+      "signal_type": "FORCE_BUY",
+      "entry": 11830,
+      "sl": 11026,
+      "tp": 13437,
+      "sl_source": "ATR",
+      "tech_detail": "정배열+EMA20>60+RSI54+MACD++OBV++RS+0%",
+      "news_detail": "NEUTRAL",
+      "sources": [
+        "macd_zero(macd_zero_phase2)",
+        "tv:QUIET_ACCUMULATION(80)",
+        "7SECRET(BUY:+12.2)",
+        "tv_cluster(+12)",
+        "brain(+8.6)"
+      ],
+      "cross_count": 3,
+      "relay_score": 0,
+      "premove_score": 0.0,
+      "tech_score": 25.0,
+      "news_score": 0,
+      "nationality_score": -0.1,
+      "nationality_detail": "외OK(2d) 기-0(2d)",
+      "flow_signal": "STRONG_BUY",
+      "flow_score": 100.0,
+      "flow_detail": "🏛기관매집 + 🐉아시아진입 + 🦈헤지관심 + 🦅미국매수 + ⭐복합매수 | ⚠️🦈차익실현임박",
+      "nat_power": 12.21,
+      "nat_power_grade": "BUY",
+      "nat_power_detail": "BREADTH|COMBO+5.1|REV-3.1|급증:영국+케이맨 제도+싱가포르",
+      "news_penalty": 0.0,
+      "obv_penalty": 0.0,
+      "relative_penalty": 0.0,
+      "today_chg": -2.7,
+      "relative_str": 0.2,
+      "regime": "MOMENTUM",
+      "regime_score": 0.6,
+      "regime_detail": "VOL3.0x+TV3.2x+기관0D",
+      "tv_ratio": 3.185,
+      "tv_pattern": "QUIET_ACCUMULATION",
+      "tv_score": 80.0
+    },
+    {
+      "code": "375500",
+      "name": "DL이앤씨",
+      "close": 51900,
+      "total_score": 110.6,
+      "confidence": "HIGH",
+      "grade": "AA",
+      "signal_type": "FORCE_BUY",
+      "entry": 51900,
+      "sl": 49305,
+      "tp": 57090,
+      "sl_source": "ATR",
+      "tech_detail": "정배열+EMA20>60+RSI48+MACD++OBV++RS+4%",
+      "news_detail": "NEUTRAL",
+      "sources": [
+        "sector_hot:건설",
+        "tv:GRADUAL_BUILDUP(70)",
+        "7SECRET(NEUTRAL:+6.6)",
+        "tv_cluster(+12)",
+        "brain(+7.0)"
+      ],
+      "cross_count": 3,
+      "relay_score": 15,
+      "premove_score": 0.0,
+      "tech_score": 25.0,
+      "news_score": 0,
+      "nationality_score": -10.0,
+      "nationality_detail": "외-10(4d) 기OK(3d)",
+      "flow_signal": "STRONG_BUY",
+      "flow_score": 33.3,
+      "flow_detail": "🏛기관매집 + 🦅미국매수",
+      "nat_power": 6.63,
+      "nat_power_grade": "NEUTRAL",
+      "nat_power_detail": "BREADTH|급증:미국+싱가포르",
+      "news_penalty": 0.0,
+      "obv_penalty": 0.0,
+      "relative_penalty": 0.0,
+      "today_chg": 0.6,
+      "relative_str": 3.5,
+      "regime": "MOMENTUM",
+      "regime_score": 0.68,
+      "regime_detail": "VOL1.4x+TV1.5x+기관2D",
+      "tv_ratio": 1.515,
+      "tv_pattern": "GRADUAL_BUILDUP",
+      "tv_score": 70.0
+    },
+    {
+      "code": "217590",
+      "name": "티엠씨",
+      "close": 19580,
+      "total_score": 102.05,
       "confidence": "LOW",
-      "entry": 0,
-      "sl": 0,
-      "tp": 0,
+      "grade": "BBB",
+      "signal_type": "BUY",
+      "entry": 19580,
+      "sl": 18601,
+      "tp": 21538,
       "sl_source": "ATR",
       "tech_detail": "",
       "news_detail": "NEUTRAL",
       "sources": [
-        "tv:QUIET_ACCUMULATION(87)",
-        "7SECRET(BUY:+12.2)",
-        "tv_cluster(+12)"
+        "tv:QUIET_ACCUMULATION(82)",
+        "7SECRET(BUY:+18.9)",
+        "tv_cluster(+12)",
+        "brain(+6.4)"
       ],
       "cross_count": 2,
       "relay_score": 0,
@@ -34,39 +176,42 @@
       "nationality_score": 0,
       "nationality_detail": "",
       "flow_signal": "STRONG_BUY",
-      "flow_score": 28.0,
-      "flow_detail": "🏛기관매집",
-      "nat_power": 7.21,
-      "nat_power_grade": "NEUTRAL",
-      "nat_power_detail": "COMBO+5.1|REV-3.1|급증:영국+케이맨 제도+싱가포르",
+      "flow_score": 72.5,
+      "flow_detail": "🏛기관매집 + 🐉아시아진입 + 🦅미국매수 + ⭐복합매수",
+      "nat_power": 18.88,
+      "nat_power_grade": "BUY",
+      "nat_power_detail": "BREADTH|COMBO+5.1|급증:영국+미국+케이맨 제도",
       "news_penalty": 0.0,
       "obv_penalty": 0.0,
       "relative_penalty": 0.0,
-      "today_chg": 0,
-      "relative_str": 0,
+      "today_chg": 2.7,
+      "relative_str": 5.7,
       "regime": "MOMENTUM",
-      "regime_score": 0.5,
-      "regime_detail": "VOL2.0x+TV2.5x+기관4D",
-      "tv_ratio": 2.486,
+      "regime_score": 0.65,
+      "regime_detail": "VOL3.6x+TV4.2x+기관2D",
+      "tv_ratio": 4.163,
       "tv_pattern": "QUIET_ACCUMULATION",
-      "tv_score": 87.0
+      "tv_score": 82.0
     },
     {
-      "code": "007340",
-      "name": "007340",
-      "close": 0,
-      "total_score": 86.1,
+      "code": "226590",
+      "name": "엠디바이스",
+      "close": 36250,
+      "total_score": 97.4,
       "confidence": "LOW",
-      "entry": 0,
-      "sl": 0,
-      "tp": 0,
+      "grade": "BBB",
+      "signal_type": "BUY",
+      "entry": 36250,
+      "sl": 34437,
+      "tp": 39875,
       "sl_source": "ATR",
       "tech_detail": "",
       "news_detail": "NEUTRAL",
       "sources": [
         "tv:QUIET_ACCUMULATION(92)",
-        "7SECRET(BUY:+13.1)",
-        "tv_cluster(+12)"
+        "7SECRET(BUY:+14.3)",
+        "tv_cluster(+12)",
+        "brain(+6.1)"
       ],
       "cross_count": 2,
       "relay_score": 0,
@@ -76,125 +221,42 @@
       "nationality_score": 0,
       "nationality_detail": "",
       "flow_signal": "STRONG_BUY",
-      "flow_score": 25.6,
-      "flow_detail": "🐉아시아진입 + ⭐복합매수 | ⚠️🦈헤지이탈",
-      "nat_power": 8.11,
+      "flow_score": 35.9,
+      "flow_detail": "🦈헤지관심 + 🦅미국매수 | ⚠️🦈차익실현임박",
+      "nat_power": 14.34,
       "nat_power_grade": "BUY",
-      "nat_power_detail": "GHOST:프랑스|COMBO+5.1|REV-1.2|급증:영국+케이맨 제도+싱가포르",
+      "nat_power_detail": "BREADTH|COMBO+5.1|REV-1.2|급증:영국+미국+케이맨 제도",
       "news_penalty": 0.0,
       "obv_penalty": 0.0,
       "relative_penalty": 0.0,
-      "today_chg": -0.1,
-      "relative_str": -2.1,
+      "today_chg": 0.1,
+      "relative_str": 3.1,
       "regime": "MOMENTUM",
-      "regime_score": 0.4,
-      "regime_detail": "VOL2.7x+TV3.2x+기관0D",
-      "tv_ratio": 3.214,
+      "regime_score": 0.67,
+      "regime_detail": "VOL2.3x+TV3.0x+기관2D",
+      "tv_ratio": 3.022,
       "tv_pattern": "QUIET_ACCUMULATION",
       "tv_score": 92.0
     },
     {
-      "code": "036570",
-      "name": "엔씨소프트",
-      "close": 224500,
-      "total_score": 85.75,
-      "confidence": "HIGH",
-      "entry": 224500,
-      "sl": 213275,
-      "tp": 246950,
-      "sl_source": "ATR",
-      "tech_detail": "정배열+EMA20>60+RSI47+MACD++OBV++RS-3%",
-      "news_detail": "POSITIVE",
-      "sources": [
-        "sector_hot:IT/플랫폼",
-        "rotation:hot_early(IT/플랫폼)",
-        "eq_level:EQ Low 220,250 반등(x2)(+5)",
-        "7SECRET(NEUTRAL:+4.0)"
-      ],
-      "cross_count": 2,
-      "relay_score": 15,
-      "premove_score": 0.0,
-      "tech_score": 25.0,
-      "news_score": 15,
-      "nationality_score": 0.0,
-      "nationality_detail": "외OK(4d) 기OK(3d)",
-      "flow_signal": "NEUTRAL",
-      "flow_score": 4.8,
-      "flow_detail": "🐉아시아진입",
-      "nat_power": -1.0,
-      "nat_power_grade": "NEUTRAL",
-      "nat_power_detail": "GHOST:노르웨이,일본",
-      "news_penalty": 0.0,
-      "obv_penalty": 0.0,
-      "relative_penalty": -5.0,
-      "today_chg": -0.7,
-      "relative_str": -2.6,
-      "regime": "MOMENTUM",
-      "regime_score": 0.45,
-      "regime_detail": "VOL0.7x+TV0.7x+기관3D",
-      "tv_ratio": 1.0,
-      "tv_pattern": "NORMAL",
-      "tv_score": 0.0
-    },
-    {
-      "code": "251270",
-      "name": "넷마블",
-      "close": 54800,
-      "total_score": 79.5,
-      "confidence": "HIGH",
-      "entry": 54800,
-      "sl": 52060,
-      "tp": 60280,
-      "sl_source": "ATR",
-      "tech_detail": "정배열+EMA20>60+RSI46+OBV++RS+1%",
-      "news_detail": "POSITIVE",
-      "sources": [
-        "sector_hot:IT/플랫폼",
-        "rotation:hot_early(IT/플랫폼)",
-        "eq_level:EQ Low 54,200 반등(x2)(+5)",
-        "7SECRET(NEUTRAL:+4.5)"
-      ],
-      "cross_count": 2,
-      "relay_score": 15,
-      "premove_score": 0.0,
-      "tech_score": 20.0,
-      "news_score": 65,
-      "nationality_score": 0.0,
-      "nationality_detail": "외OK(3d) 기OK(3d)",
-      "flow_signal": "BUY",
-      "flow_score": 13.3,
-      "flow_detail": "🐉아시아진입",
-      "nat_power": -0.5,
-      "nat_power_grade": "NEUTRAL",
-      "nat_power_detail": "GHOST:일본",
-      "news_penalty": 0.0,
-      "obv_penalty": 0.0,
-      "relative_penalty": 0.0,
-      "today_chg": 3.0,
-      "relative_str": 1.0,
-      "regime": "NORMAL",
-      "regime_score": 0.2,
-      "regime_detail": "VOL0.9x+TV0.9x+기관0D",
-      "tv_ratio": 1.0,
-      "tv_pattern": "NORMAL",
-      "tv_score": 0.0
-    },
-    {
-      "code": "092730",
-      "name": "092730",
-      "close": 0,
-      "total_score": 79.0,
+      "code": "356860",
+      "name": "티엘비",
+      "close": 79800,
+      "total_score": 79.45,
       "confidence": "LOW",
-      "entry": 0,
-      "sl": 0,
-      "tp": 0,
+      "grade": "BBB",
+      "signal_type": "BUY",
+      "entry": 79800,
+      "sl": 75810,
+      "tp": 87780,
       "sl_source": "ATR",
       "tech_detail": "",
       "news_detail": "NEUTRAL",
       "sources": [
-        "tv:QUIET_ACCUMULATION(80)",
-        "7SECRET(NEUTRAL:+6.0)",
-        "tv_cluster(+12)"
+        "tv:EXPLOSION(75)",
+        "7SECRET(BUY:+14.0)",
+        "tv_cluster(+12)",
+        "brain(+4.9)"
       ],
       "cross_count": 2,
       "relay_score": 0,
@@ -203,40 +265,43 @@
       "news_score": 0,
       "nationality_score": 0,
       "nationality_detail": "",
-      "flow_signal": "BUY",
-      "flow_score": 19.3,
-      "flow_detail": "🏛기관매집",
-      "nat_power": 1.01,
-      "nat_power_grade": "NEUTRAL",
-      "nat_power_detail": "급증:싱가포르",
+      "flow_signal": "STRONG_BUY",
+      "flow_score": 49.4,
+      "flow_detail": "🐉아시아진입 + ⭐복합매수",
+      "nat_power": 13.96,
+      "nat_power_grade": "BUY",
+      "nat_power_detail": "BREADTH|COMBO+5.1|REV-1.2|급증:영국+케이맨 제도+싱가포르",
       "news_penalty": 0.0,
       "obv_penalty": 0.0,
       "relative_penalty": 0.0,
-      "today_chg": -0.4,
-      "relative_str": -2.4,
+      "today_chg": 12.2,
+      "relative_str": 15.2,
       "regime": "MOMENTUM",
-      "regime_score": 0.4,
-      "regime_detail": "VOL2.8x+TV2.6x+기관2D",
-      "tv_ratio": 2.598,
-      "tv_pattern": "QUIET_ACCUMULATION",
-      "tv_score": 80.0
+      "regime_score": 0.57,
+      "regime_detail": "VOL4.9x+TV6.3x+기관2D",
+      "tv_ratio": 6.338,
+      "tv_pattern": "EXPLOSION",
+      "tv_score": 75.0
     },
     {
-      "code": "417200",
-      "name": "417200",
-      "close": 0,
-      "total_score": 68.75,
+      "code": "000700",
+      "name": "유수홀딩스",
+      "close": 6770,
+      "total_score": 65.1,
       "confidence": "LOW",
-      "entry": 0,
-      "sl": 0,
-      "tp": 0,
+      "grade": "BBB",
+      "signal_type": "BUY",
+      "entry": 6770,
+      "sl": 6431,
+      "tp": 7447,
       "sl_source": "ATR",
       "tech_detail": "",
       "news_detail": "NEUTRAL",
       "sources": [
         "tv:QUIET_ACCUMULATION(75)",
-        "7SECRET(NEUTRAL:+5.0)",
-        "tv_cluster(+12)"
+        "7SECRET(NEUTRAL:+3.6)",
+        "tv_cluster(+12)",
+        "brain(+4.5)"
       ],
       "cross_count": 2,
       "relay_score": 0,
@@ -246,39 +311,42 @@
       "nationality_score": 0,
       "nationality_detail": "",
       "flow_signal": "NEUTRAL",
-      "flow_score": 5.1,
-      "flow_detail": "🐉아시아진입",
-      "nat_power": 0.0,
+      "flow_score": -3.0,
+      "flow_detail": "🏛기관매집 | ⚠️🦈헤지이탈",
+      "nat_power": 3.59,
       "nat_power_grade": "NEUTRAL",
-      "nat_power_detail": "",
+      "nat_power_detail": "GHOST:중국|BREADTH",
       "news_penalty": 0.0,
       "obv_penalty": 0.0,
       "relative_penalty": 0.0,
-      "today_chg": 2.1,
-      "relative_str": 0.1,
-      "regime": "MOMENTUM",
-      "regime_score": 0.45,
-      "regime_detail": "VOL3.9x+TV4.3x+기관0D",
-      "tv_ratio": 4.35,
+      "today_chg": 0.3,
+      "relative_str": 3.2,
+      "regime": "NORMAL",
+      "regime_score": 0.3,
+      "regime_detail": "VOL2.6x+TV2.8x+기관0D",
+      "tv_ratio": 2.781,
       "tv_pattern": "QUIET_ACCUMULATION",
       "tv_score": 75.0
     },
     {
-      "code": "178920",
-      "name": "178920",
-      "close": 0,
-      "total_score": 56.8,
+      "code": "008700",
+      "name": "아남전자",
+      "close": 1574,
+      "total_score": 61.3,
       "confidence": "LOW",
-      "entry": 0,
-      "sl": 0,
-      "tp": 0,
+      "grade": "BBB",
+      "signal_type": "BUY",
+      "entry": 1574,
+      "sl": 1495,
+      "tp": 1731,
       "sl_source": "ATR",
       "tech_detail": "",
       "news_detail": "NEUTRAL",
       "sources": [
         "tv:EXPLOSION(75)",
-        "7SECRET(NEUTRAL:+4.8)",
-        "tv_cluster(+12)"
+        "7SECRET(NEUTRAL:+5.0)",
+        "tv_cluster(+12)",
+        "brain(+4.3)"
       ],
       "cross_count": 2,
       "relay_score": 0,
@@ -287,85 +355,30 @@
       "news_score": 0,
       "nationality_score": 0,
       "nationality_detail": "",
-      "flow_signal": "NEUTRAL",
-      "flow_score": 7.5,
-      "flow_detail": "중립",
-      "nat_power": -0.17,
+      "flow_signal": "CAUTION",
+      "flow_score": -9.3,
+      "flow_detail": "⚠️🏛기관이탈",
+      "nat_power": 5.0,
       "nat_power_grade": "NEUTRAL",
-      "nat_power_detail": "REV-1.2|급증:중국",
-      "news_penalty": 0.0,
-      "obv_penalty": 0.0,
-      "relative_penalty": 0.0,
-      "today_chg": 25.8,
-      "relative_str": 23.8,
-      "regime": "NORMAL",
-      "regime_score": 0.25,
-      "regime_detail": "VOL9.4x+TV11.6x+기관0D",
-      "tv_ratio": 11.608,
-      "tv_pattern": "EXPLOSION",
-      "tv_score": 75.0
-    },
-    {
-      "code": "209640",
-      "name": "209640",
-      "close": 0,
-      "total_score": 55.9,
-      "confidence": "LOW",
-      "entry": 0,
-      "sl": 0,
-      "tp": 0,
-      "sl_source": "ATR",
-      "tech_detail": "",
-      "news_detail": "NEUTRAL",
-      "sources": [
-        "tv:EXPLOSION(75)",
-        "7SECRET(NEUTRAL:+3.9)",
-        "tv_cluster(+12)"
-      ],
-      "cross_count": 2,
-      "relay_score": 0,
-      "premove_score": 0.0,
-      "tech_score": 0,
-      "news_score": 0,
-      "nationality_score": 0,
-      "nationality_detail": "",
-      "flow_signal": "NEUTRAL",
-      "flow_score": -4.6,
-      "flow_detail": "중립",
-      "nat_power": -1.12,
-      "nat_power_grade": "NEUTRAL",
-      "nat_power_detail": "GHOST:미국,스위스",
+      "nat_power_detail": "BREADTH",
       "news_penalty": 0.0,
       "obv_penalty": 0.0,
       "relative_penalty": 0.0,
       "today_chg": 30.0,
-      "relative_str": 28.0,
+      "relative_str": 32.9,
       "regime": "NORMAL",
-      "regime_score": 0.35,
-      "regime_detail": "VOL10.4x+TV11.6x+기관1D",
-      "tv_ratio": 11.601,
+      "regime_score": 0.3,
+      "regime_detail": "VOL30.8x+TV38.9x+기관1D",
+      "tv_ratio": 38.938,
       "tv_pattern": "EXPLOSION",
       "tv_score": 75.0
     }
   ],
   "momentum_stocks": [
     {
-      "code": "043360",
-      "name": "디지아이",
-      "momentum_score": 65.7,
-      "theme": "반도체장비",
-      "theme_detail": "반도체장비(패키징)",
-      "volume_spike": 1.3,
-      "price_change_5d": -3.8,
-      "entry": 2525,
-      "sl": 2378,
-      "tp": 2963,
-      "cap_억": 227
-    },
-    {
       "code": "300120",
       "name": "라온피플",
-      "momentum_score": 64.5,
+      "momentum_score": 66.9,
       "theme": "AI_소프트웨어",
       "theme_detail": "AI_소프트웨어(AI)",
       "volume_spike": 11.9,
@@ -391,7 +404,7 @@
     {
       "code": "045510",
       "name": "정원엔시스",
-      "momentum_score": 61.5,
+      "momentum_score": 63.9,
       "theme": "AI_소프트웨어",
       "theme_detail": "AI_소프트웨어(AI)",
       "volume_spike": 4.8,
@@ -413,574 +426,292 @@
       "sl": 6508,
       "tp": 8514,
       "cap_억": 438
+    },
+    {
+      "code": "002690",
+      "name": "동일제강",
+      "momentum_score": 57.0,
+      "theme": "",
+      "theme_detail": "",
+      "volume_spike": 4.0,
+      "price_change_5d": -8.7,
+      "entry": 1505,
+      "sl": 1454,
+      "tp": 1656,
+      "cap_억": 306
     }
   ],
-  "war_relay_stocks": [
-    {
-      "code": "028670",
-      "name": "팬오션",
-      "tier": "T5_해운",
-      "priority": 1,
-      "entry": 5090,
-      "entry_aggressive": 5490,
-      "sl": 4670,
-      "tp1": 5920,
-      "tp2": 6600,
-      "rr": 2.0,
-      "reason": "해운 물자수송 수혜, R:R 최우수",
-      "close": 5130,
-      "last_date": "2026-03-17"
-    },
-    {
-      "code": "028050",
-      "name": "삼성E&A",
-      "tier": "T2_건설",
-      "priority": 2,
-      "entry": 32050,
-      "entry_aggressive": 34180,
-      "sl": 29780,
-      "tp1": 36320,
-      "tp2": 39800,
-      "rr": 1.9,
-      "reason": "중동 건설 핵심, 수주잔고 95조",
-      "close": 31650,
-      "last_date": "2026-03-17"
-    },
-    {
-      "code": "015760",
-      "name": "한국전력",
-      "tier": "T3_전력",
-      "priority": 3,
-      "entry": 49490,
-      "entry_aggressive": 52510,
-      "sl": 43260,
-      "tp1": 57390,
-      "tp2": 65300,
-      "rr": 1.3,
-      "reason": "RSI 27 극과매도, 재건 전력수혜",
-      "close": 48200,
-      "last_date": "2026-03-17"
-    },
-    {
-      "code": "003570",
-      "name": "SNT다이내믹스",
-      "tier": "T1_방산",
-      "priority": 4,
-      "entry": 48570,
-      "entry_aggressive": 50960,
-      "sl": 43360,
-      "tp1": 54840,
-      "tp2": 61100,
-      "rr": 1.2,
-      "reason": "방산 소형주, Fib 38.2% 근접",
-      "close": 49950,
-      "last_date": "2026-03-17"
-    },
-    {
-      "code": "375500",
-      "name": "DL이앤씨",
-      "tier": "T2_건설",
-      "priority": 5,
-      "entry": 44230,
-      "entry_aggressive": 46230,
-      "sl": 39770,
-      "tp1": 49470,
-      "tp2": 54700,
-      "rr": 1.2,
-      "reason": "건설 대형, 중동 비중 높음",
-      "close": 47250,
-      "last_date": "2026-03-17"
-    },
-    {
-      "code": "005490",
-      "name": "POSCO홀딩스",
-      "tier": "T4_철강",
-      "priority": 6,
-      "entry": 343840,
-      "entry_aggressive": 359830,
-      "sl": 308460,
-      "tp1": 385670,
-      "tp2": 427500,
-      "rr": 1.2,
-      "reason": "철강 대장, Fib 38.2% 근접",
-      "close": 342500,
-      "last_date": "2026-03-17"
-    },
-    {
-      "code": "051600",
-      "name": "한전KPS",
-      "tier": "T3_전력",
-      "priority": 7,
-      "entry": 53850,
-      "entry_aggressive": 56170,
-      "sl": 48600,
-      "tp1": 59930,
-      "tp2": 66000,
-      "rr": 1.2,
-      "reason": "전력장비 유지보수, 재건 수혜",
-      "close": 59300,
-      "last_date": "2026-03-17"
-    },
-    {
-      "code": "004020",
-      "name": "현대제철",
-      "tier": "T4_철강",
-      "priority": 8,
-      "entry": 36330,
-      "entry_aggressive": 37060,
-      "sl": 32590,
-      "tp1": 43980,
-      "tp2": 50400,
-      "rr": 2.0,
-      "reason": "EMA20 눌림 대기, R:R 우수",
-      "close": 35550,
-      "last_date": "2026-03-17"
-    },
-    {
-      "code": "006360",
-      "name": "GS건설",
-      "tier": "T2_건설",
-      "priority": 9,
-      "entry": 19910,
-      "entry_aggressive": 20750,
-      "sl": 17990,
-      "tp1": 22100,
-      "tp2": 24300,
-      "rr": 1.1,
-      "reason": "이라크 수주, 바닥권",
-      "close": 22000,
-      "last_date": "2026-03-17"
-    },
-    {
-      "code": "097950",
-      "name": "CJ제일제당",
-      "tier": "T6_식품",
-      "priority": 10,
-      "entry": 200470,
-      "entry_aggressive": 207070,
-      "sl": 184110,
-      "tp1": 217730,
-      "tp2": 235000,
-      "rr": 1.1,
-      "reason": "할랄 377품목, 해외매출 82%",
-      "close": 203000,
-      "last_date": "2026-03-17"
-    },
-    {
-      "code": "267260",
-      "name": "HD현대일렉트릭",
-      "tier": "T3_전력",
-      "priority": 11,
-      "entry": 941000,
-      "entry_aggressive": 953470,
-      "sl": 827410,
-      "tp1": 1015530,
-      "tp2": 1116000,
-      "rr": 0.7,
-      "reason": "전력수출 80%, 수주 14.7조",
-      "close": 931000,
-      "last_date": "2026-03-17"
-    },
-    {
-      "code": "004370",
-      "name": "농심",
-      "tier": "T6_식품",
-      "priority": 12,
-      "entry": 403350,
-      "entry_aggressive": 414080,
-      "sl": 374420,
-      "tp1": 431420,
-      "tp2": 459500,
-      "rr": 1.0,
-      "reason": "라면 중동시장, RSI 37 과매도",
-      "close": 372500,
-      "last_date": "2026-03-17"
-    },
-    {
-      "code": "047040",
-      "name": "대우건설",
-      "tier": "T2_건설",
-      "priority": 13,
-      "entry": 8810,
-      "entry_aggressive": 9200,
-      "sl": 7900,
-      "tp1": 10500,
-      "tp2": 12000,
-      "rr": 1.9,
-      "reason": "외국인 +540만주 폭매수, 이라크/중동 수주",
-      "close": 12110,
-      "last_date": "2026-03-17"
-    },
-    {
-      "code": "000720",
-      "name": "현대건설",
-      "tier": "T2_건설",
-      "priority": 14,
-      "entry": 146400,
-      "entry_aggressive": 152000,
-      "sl": 131000,
-      "tp1": 170000,
-      "tp2": 185000,
-      "rr": 1.5,
-      "reason": "건설 대장주, 외국인 +92만주 매집",
-      "close": 161000,
-      "last_date": "2026-03-17"
-    },
-    {
-      "code": "241560",
-      "name": "두산밥캣",
-      "tier": "T7_건설장비",
-      "priority": 15,
-      "entry": 58800,
-      "entry_aggressive": 60000,
-      "sl": 52900,
-      "tp1": 68000,
-      "tp2": 72000,
-      "rr": 1.6,
-      "reason": "PBR0.81+PER12.9+배당2.9% 기초분석 1위, 글로벌인프라 수혜",
-      "close": 59000,
-      "last_date": "2026-03-17"
-    },
-    {
-      "code": "010950",
-      "name": "S-OIL",
-      "tier": "VWAP_MONITOR",
-      "priority": 16,
-      "entry": 105000,
-      "entry_aggressive": 108000,
-      "sl": 99000,
-      "tp1": 118000,
-      "tp2": 128000,
-      "rr": 2.2,
-      "reason": "파라볼릭 급등후 투매(-40%), 105K 지지 테스트, VWAP 반전 확인 필요",
-      "close": 106500,
-      "last_date": "2026-03-17"
-    },
-    {
-      "code": "161390",
-      "name": "한국타이어앤테크놀로지",
-      "tier": "VWAP_MONITOR",
-      "priority": 17,
-      "entry": 54000,
-      "entry_aggressive": 55500,
-      "sl": 51000,
-      "tp1": 59000,
-      "tp2": 63000,
-      "rr": 1.7,
-      "reason": "급등후 조정(-26%), 54K 지지, VWAP 장중 추적",
-      "close": 56300,
-      "last_date": "2026-03-17"
-    },
-    {
-      "code": "033100",
-      "name": "제룡전기",
-      "tier": "HOLDING",
-      "priority": 18,
-      "entry": 49300,
-      "entry_aggressive": 50300,
-      "sl": 46800,
-      "tp1": 53200,
-      "tp2": 56700,
-      "rr": 1.6,
-      "reason": "보유종목 VWAP 추적",
-      "close": 48600,
-      "last_date": "2026-03-17"
-    },
-    {
-      "code": "138930",
-      "name": "BNK금융지주",
-      "tier": "HOLDING",
-      "priority": 19,
-      "entry": 18490,
-      "entry_aggressive": 18860,
-      "sl": 17570,
-      "tp1": 20000,
-      "tp2": 21300,
-      "rr": 1.6,
-      "reason": "보유종목 VWAP 추적",
-      "close": 18480,
-      "last_date": "2026-03-17"
-    },
-    {
-      "code": "105560",
-      "name": "KB금융",
-      "tier": "HOLDING",
-      "priority": 20,
-      "entry": 151900,
-      "entry_aggressive": 155000,
-      "sl": 144300,
-      "tp1": 164000,
-      "tp2": 174700,
-      "rr": 1.6,
-      "reason": "보유종목 VWAP 추적",
-      "close": 150700,
-      "last_date": "2026-03-17"
-    },
-    {
-      "code": "103590",
-      "name": "일진전기",
-      "tier": "HOLDING",
-      "priority": 21,
-      "entry": 79100,
-      "entry_aggressive": 80700,
-      "sl": 75100,
-      "tp1": 85400,
-      "tp2": 91000,
-      "rr": 1.6,
-      "reason": "보유종목 VWAP 추적",
-      "close": 78200,
-      "last_date": "2026-03-17"
-    },
-    {
-      "code": "005380",
-      "name": "현대차",
-      "tier": "HOLDING",
-      "priority": 22,
-      "entry": 528000,
-      "entry_aggressive": 538500,
-      "sl": 501600,
-      "tp1": 570000,
-      "tp2": 607000,
-      "rr": 1.6,
-      "reason": "보유종목 VWAP 추적",
-      "close": 522000,
-      "last_date": "2026-03-17"
-    },
-    {
-      "code": "042700",
-      "name": "한미반도체",
-      "tier": "HOLDING",
-      "priority": 23,
-      "entry": 313500,
-      "entry_aggressive": 319800,
-      "sl": 297800,
-      "tp1": 338600,
-      "tp2": 360500,
-      "rr": 1.6,
-      "reason": "보유종목 VWAP 추적",
-      "close": 301000,
-      "last_date": "2026-03-17"
-    },
-    {
-      "code": "064350",
-      "name": "현대로템",
-      "tier": "HOLDING",
-      "priority": 24,
-      "entry": 193600,
-      "entry_aggressive": 197500,
-      "sl": 183900,
-      "tp1": 209100,
-      "tp2": 222600,
-      "rr": 1.6,
-      "reason": "보유종목 VWAP 추적",
-      "close": 192900,
-      "last_date": "2026-03-17"
-    },
-    {
-      "code": "068270",
-      "name": "셀트리온",
-      "tier": "HOLDING",
-      "priority": 25,
-      "entry": 206000,
-      "entry_aggressive": 210100,
-      "sl": 195700,
-      "tp1": 222500,
-      "tp2": 236900,
-      "rr": 1.6,
-      "reason": "보유종목 VWAP 추적",
-      "close": 206000,
-      "last_date": "2026-03-17"
-    },
-    {
-      "code": "272210",
-      "name": "한화시스템",
-      "tier": "HOLDING",
-      "priority": 26,
-      "entry": 139300,
-      "entry_aggressive": 142100,
-      "sl": 132300,
-      "tp1": 150400,
-      "tp2": 160200,
-      "rr": 1.6,
-      "reason": "보유종목 VWAP 추적",
-      "close": 138900,
-      "last_date": "2026-03-17"
-    }
-  ],
-  "rotation_signal": "HOT: 건설(EARLY 1D) | HOT: 화장품/뷰티(EARLY 1D) | HOT: IT/플랫폼(EARLY 1D) | NEXT: 반도체/AI(스테이징) | NEXT: 바이오/제약(스테이징) | NEXT: 자동차(스테이징) | NEXT: 조선(스테이징)",
+  "war_relay_stocks": [],
+  "rotation_signal": "HOT: 건설(MID 3D) | HOT: 금융(EARLY 2D) | NEXT: 반도체/AI(스테이징) | NEXT: 2차전지/EV(스테이징) | NEXT: 자동차(스테이징) | NEXT: 정유/에너지(스테이징) | NEXT: 철강/소재(스테이징)",
   "rotation_detail": [
     {
-      "sector": "건설",
+      "sector": "금융",
       "phase": "EARLY",
-      "hot_days": 1,
-      "momentum": 1.27,
-      "breadth": 0.5,
-      "signal": "초기 진입(1일차) - 소부장 기회"
-    },
-    {
-      "sector": "화장품/뷰티",
-      "phase": "EARLY",
-      "hot_days": 1,
-      "momentum": 1.06,
-      "breadth": 1.0,
-      "signal": "초기 진입(1일차) - 소부장 기회"
-    },
-    {
-      "sector": "IT/플랫폼",
-      "phase": "EARLY",
-      "hot_days": 1,
-      "momentum": 3.15,
+      "hot_days": 2,
+      "momentum": 4.02,
       "breadth": 0.6,
-      "signal": "초기 진입(1일차) - 소부장 기회"
+      "signal": "초기 진입(2일차) - 소부장 기회"
+    },
+    {
+      "sector": "건설",
+      "phase": "MID",
+      "hot_days": 3,
+      "momentum": 4.92,
+      "breadth": 0.5,
+      "signal": "중기(3일차) - 확산 진행 중"
     },
     {
       "sector": "반도체/AI",
       "phase": "STAGING",
       "hot_days": 0,
-      "momentum": 1.98,
-      "breadth": 0.38,
-      "signal": "웜업 중 - 모멘텀 +0.0→+2.0% 개선"
-    },
-    {
-      "sector": "바이오/제약",
-      "phase": "STAGING",
-      "hot_days": 0,
-      "momentum": 0.34,
-      "breadth": 1.0,
-      "signal": "스테이징 - 모멘텀 +0.3%, 브레드쓰 100%"
-    },
-    {
-      "sector": "조선",
-      "phase": "STAGING",
-      "hot_days": 0,
-      "momentum": 0.01,
-      "breadth": 1.0,
-      "signal": "스테이징 - 모멘텀 +0.0%, 브레드쓰 100%"
+      "momentum": 8.74,
+      "breadth": 0.25,
+      "signal": "웜업 중 - 모멘텀 +2.0→+8.7% 개선"
     },
     {
       "sector": "자동차",
       "phase": "STAGING",
       "hot_days": 0,
-      "momentum": -0.37,
-      "breadth": 1.0,
-      "signal": "스테이징 - 모멘텀 -0.4%, 브레드쓰 100%"
+      "momentum": 2.05,
+      "breadth": 0.0,
+      "signal": "웜업 중 - 모멘텀 -0.4→+2.0% 개선"
+    },
+    {
+      "sector": "2차전지/EV",
+      "phase": "STAGING",
+      "hot_days": 0,
+      "momentum": 1.6,
+      "breadth": 0.0,
+      "signal": "웜업 중 - 모멘텀 -3.4→+1.6% 개선"
+    },
+    {
+      "sector": "정유/에너지",
+      "phase": "STAGING",
+      "hot_days": 0,
+      "momentum": 0.6,
+      "breadth": 0.2,
+      "signal": "웜업 중 - 모멘텀 -2.8→+0.6% 개선"
+    },
+    {
+      "sector": "철강/소재",
+      "phase": "STAGING",
+      "hot_days": 0,
+      "momentum": -1.26,
+      "breadth": 0.0,
+      "signal": "웜업 중 - 모멘텀 -3.0→-1.3% 개선"
     }
   ],
   "etf_signal": {},
   "tv_cluster_info": [
     {
-      "type": "group",
-      "name": "신세계",
-      "count": 2,
-      "bonus": 8,
+      "type": "sector",
+      "name": "전기전자",
+      "count": 19,
+      "bonus": 12,
       "members": [
         [
-          "신세계인터내셔날",
+          "엠디바이스",
           "QUIET_ACCUMULATION",
-          9.729
+          3.022
         ],
         [
-          "신세계 I&C",
+          "티엠씨",
+          "QUIET_ACCUMULATION",
+          4.163
+        ],
+        [
+          "더블유씨피",
+          "QUIET_ACCUMULATION",
+          4.524
+        ],
+        [
+          "제일일렉트릭",
+          "QUIET_ACCUMULATION",
+          3.185
+        ],
+        [
+          "티엘비",
           "EXPLOSION",
-          34.186
+          6.338
+        ],
+        [
+          "엠케이전자",
+          "EXPLOSION",
+          8.661
+        ],
+        [
+          "아남전자",
+          "EXPLOSION",
+          38.938
+        ],
+        [
+          "심텍",
+          "GRADUAL_BUILDUP",
+          1.542
+        ],
+        [
+          "코리아써키트",
+          "GRADUAL_BUILDUP",
+          2.057
+        ],
+        [
+          "비츠로셀",
+          "EXPLOSION",
+          4.246
+        ],
+        [
+          "메카로",
+          "GRADUAL_BUILDUP",
+          1.512
+        ],
+        [
+          "대덕전자",
+          "GRADUAL_BUILDUP",
+          2.053
+        ],
+        [
+          "웨이비스",
+          "GRADUAL_BUILDUP",
+          1.756
+        ],
+        [
+          "신성이엔지",
+          "EXPLOSION",
+          3.888
+        ],
+        [
+          "HLB이노베이션",
+          "EXPLOSION",
+          7.757
+        ],
+        [
+          "삼영전자",
+          "EXPLOSION",
+          3.709
+        ],
+        [
+          "소룩스",
+          "EXPLOSION",
+          36.181
+        ],
+        [
+          "오킨스전자",
+          "GRADUAL_BUILDUP",
+          2.116
+        ],
+        [
+          "이수페타시스",
+          "GRADUAL_BUILDUP",
+          1.622
         ]
       ]
     },
     {
       "type": "sector",
-      "name": "전기전자",
-      "count": 18,
+      "name": "IT서비스",
+      "count": 4,
+      "bonus": 8,
+      "members": [
+        [
+          "MDS테크",
+          "QUIET_ACCUMULATION",
+          8.506
+        ],
+        [
+          "아이스크림미디어",
+          "EXPLOSION",
+          6.739
+        ],
+        [
+          "케이아이엔엑스",
+          "QUIET_ACCUMULATION",
+          2.011
+        ],
+        [
+          "케이씨에스",
+          "QUIET_ACCUMULATION",
+          4.389
+        ]
+      ]
+    },
+    {
+      "type": "sector",
+      "name": "건설",
+      "count": 8,
       "bonus": 12,
       "members": [
         [
-          "DN오토모티브",
+          "GS건설",
           "QUIET_ACCUMULATION",
-          3.214
+          2.998
         ],
         [
-          "케이엔제이",
+          "금양그린파워",
           "QUIET_ACCUMULATION",
-          2.547
+          3.442
         ],
         [
-          "LS머트리얼즈",
+          "진흥기업",
+          "EXPLOSION",
+          75.308
+        ],
+        [
+          "KCC건설",
           "QUIET_ACCUMULATION",
-          4.35
+          2.009
         ],
         [
-          "신성이엔지",
-          "EXPLOSION",
-          7.508
-        ],
-        [
-          "서진시스템",
-          "QUIET_ACCUMULATION",
-          2.088
-        ],
-        [
-          "더블유씨피",
-          "EXPLOSION",
-          10.529
-        ],
-        [
-          "상신이디피",
-          "EXPLOSION",
-          5.215
-        ],
-        [
-          "티엠씨",
-          "EXPLOSION",
-          3.468
-        ],
-        [
-          "대덕전자",
+          "DL이앤씨",
           "GRADUAL_BUILDUP",
-          1.695
+          1.515
         ],
         [
-          "심텍",
-          "GRADUAL_BUILDUP",
-          1.573
-        ],
-        [
-          "HLB이노베이션",
+          "동부건설",
           "EXPLOSION",
-          4.246
+          4.66
         ],
         [
-          "에스엔시스",
-          "QUIET_ACCUMULATION",
-          2.824
-        ],
-        [
-          "제일일렉트릭",
-          "GRADUAL_BUILDUP",
-          2.124
-        ],
-        [
-          "라온텍",
-          "QUIET_ACCUMULATION",
-          2.092
-        ],
-        [
-          "에이디테크놀로지",
-          "QUIET_ACCUMULATION",
-          2.186
-        ],
-        [
-          "삼영전자",
+          "SK이터닉스",
           "EXPLOSION",
-          6.084
+          6.336
         ],
         [
-          "티에이치엔",
+          "동아지질",
           "GRADUAL_BUILDUP",
-          2.689
+          1.51
+        ]
+      ]
+    },
+    {
+      "type": "sector",
+      "name": "기계장비",
+      "count": 5,
+      "bonus": 8,
+      "members": [
+        [
+          "유니슨",
+          "QUIET_ACCUMULATION",
+          2.21
         ],
         [
-          "이엠텍",
+          "씨에스베어링",
           "EXPLOSION",
-          4.817
+          3.595
+        ],
+        [
+          "인텍플러스",
+          "EXPLOSION",
+          4.387
+        ],
+        [
+          "HPSP",
+          "GRADUAL_BUILDUP",
+          2.052
+        ],
+        [
+          "지아이에스",
+          "EXPLOSION",
+          3.22
         ]
       ]
     },
@@ -991,191 +722,90 @@
       "bonus": 12,
       "members": [
         [
-          "와이바이오로직스",
+          "유수홀딩스",
           "QUIET_ACCUMULATION",
-          2.486
-        ],
-        [
-          "파로스아이바이오",
-          "QUIET_ACCUMULATION",
-          2.925
-        ],
-        [
-          "두산테스나",
-          "EXPLOSION",
-          6.582
+          2.781
         ],
         [
           "메지온",
           "EXPLOSION",
-          7.269
+          6.477
         ],
         [
-          "에코아이",
+          "세미파이브",
           "EXPLOSION",
-          5.49
+          7.068
         ],
         [
-          "제이오",
+          "한미글로벌",
           "EXPLOSION",
-          23.168
+          10.987
+        ],
+        [
+          "그리드위즈",
+          "EXPLOSION",
+          5.91
+        ],
+        [
+          "HLB바이오스텝",
+          "QUIET_ACCUMULATION",
+          2.648
         ],
         [
           "웅진",
           "GRADUAL_BUILDUP",
-          2.913
-        ]
-      ]
-    },
-    {
-      "type": "sector",
-      "name": "금융",
-      "count": 4,
-      "bonus": 8,
-      "members": [
-        [
-          "미래에셋생명",
-          "QUIET_ACCUMULATION",
-          3.118
-        ],
-        [
-          "아주IB투자",
-          "EXPLOSION",
-          6.164
-        ],
-        [
-          "세아제강지주",
-          "GRADUAL_BUILDUP",
-          2.455
-        ],
-        [
-          "유비쿼스홀딩스",
-          "QUIET_ACCUMULATION",
-          2.606
+          2.41
         ]
       ]
     },
     {
       "type": "sector",
       "name": "화학",
-      "count": 8,
-      "bonus": 12,
-      "members": [
-        [
-          "네오팜",
-          "QUIET_ACCUMULATION",
-          2.598
-        ],
-        [
-          "PI첨단소재",
-          "EXPLOSION",
-          11.608
-        ],
-        [
-          "상아프론테크",
-          "EXPLOSION",
-          8.67
-        ],
-        [
-          "삼화페인트",
-          "EXPLOSION",
-          7.387
-        ],
-        [
-          "티이엠씨",
-          "EXPLOSION",
-          11.071
-        ],
-        [
-          "엘티씨",
-          "EXPLOSION",
-          3.363
-        ],
-        [
-          "제이아이테크",
-          "GRADUAL_BUILDUP",
-          2.828
-        ],
-        [
-          "에이블씨엔씨",
-          "GRADUAL_BUILDUP",
-          2.288
-        ]
-      ]
-    },
-    {
-      "type": "sector",
-      "name": "기계장비",
-      "count": 9,
-      "bonus": 12,
-      "members": [
-        [
-          "와이제이링크",
-          "EXPLOSION",
-          11.601
-        ],
-        [
-          "씨에스베어링",
-          "EXPLOSION",
-          5.595
-        ],
-        [
-          "지아이에스",
-          "EXPLOSION",
-          6.737
-        ],
-        [
-          "지앤비에스 에코",
-          "EXPLOSION",
-          4.557
-        ],
-        [
-          "휴림로봇",
-          "EXPLOSION",
-          3.873
-        ],
-        [
-          "티에스아이",
-          "EXPLOSION",
-          16.912
-        ],
-        [
-          "스맥",
-          "GRADUAL_BUILDUP",
-          1.978
-        ],
-        [
-          "앤로보틱스",
-          "GRADUAL_BUILDUP",
-          2.755
-        ],
-        [
-          "에프엔에스테크",
-          "EXPLOSION",
-          3.403
-        ]
-      ]
-    },
-    {
-      "type": "sector",
-      "name": "운송창고",
       "count": 3,
       "bonus": 5,
       "members": [
         [
-          "흥아해운",
-          "EXPLOSION",
-          7.361
+          "에이블씨엔씨",
+          "QUIET_ACCUMULATION",
+          2.613
         ],
         [
-          "동양고속",
+          "태경산업",
+          "QUIET_ACCUMULATION",
+          2.104
+        ],
+        [
+          "엘티씨",
           "GRADUAL_BUILDUP",
-          2.506
+          2.741
+        ]
+      ]
+    },
+    {
+      "type": "sector",
+      "name": "제약",
+      "count": 4,
+      "bonus": 8,
+      "members": [
+        [
+          "로킷헬스케어",
+          "GRADUAL_BUILDUP",
+          1.508
         ],
         [
-          "대한해운",
+          "녹십자웰빙",
           "EXPLOSION",
-          3.893
+          4.76
+        ],
+        [
+          "경보제약",
+          "EXPLOSION",
+          98.409
+        ],
+        [
+          "메디톡스",
+          "GRADUAL_BUILDUP",
+          2.426
         ]
       ]
     }

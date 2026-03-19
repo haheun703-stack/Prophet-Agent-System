@@ -573,6 +573,28 @@ class AutoTrader:
             + (f" (BRAIN {brain_alloc.get('effective_regime', '')})" if brain_cap else "")
         )
 
+        # ── Trade Object PAPER 로깅 ──
+        try:
+            from data.trade_object import load_trade_objects
+            trade_objs = load_trade_objects()
+            if trade_objs:
+                to_map = {t.code: t for t in trade_objs}
+                paper_lines = ["[PAPER] Trade Object R:R 분석:"]
+                for c in candidates[:slots]:
+                    to = to_map.get(c["code"])
+                    if to:
+                        tag = to.rr_verdict
+                        paper_lines.append(
+                            f"  {to.name} R:R {to.rr_ratio:.2f} [{tag}] "
+                            f"목표 {to.target_price:,} 손절 {to.stop_loss:,}"
+                        )
+                        # Trade Object의 SL/TP로 보강 (기존 값 유지하되 로그)
+                        if tag == "REJECT":
+                            paper_lines[-1] += " → PAPER REJECT (매수 진행)"
+                await _send("\n".join(paper_lines))
+        except Exception as e:
+            logger.warning(f"Trade Object PAPER 로드 실패: {e}")
+
         registered = 0
         skipped = 0
         for c in candidates[:slots]:

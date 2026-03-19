@@ -928,6 +928,14 @@ def run(quick: bool = False):
     logger.info("[Phase 5] 브레인 업데이트 — 인사이트 추출...")
     insights = generate_insights()
 
+    # 5.5 Trade Learner — score_bucket_returns 업데이트
+    try:
+        from data.trade_learner import update_bucket_returns
+        update_bucket_returns()
+        logger.info("[Phase 5.5] Trade Learner — score_bucket 업데이트 완료")
+    except Exception as e:
+        logger.warning(f"Trade Learner 업데이트 실패 (무시): {e}")
+
     # 6. 텔레그램 리포트
     logger.info("[Phase 6] 텔레그램 리포트 전송...")
     report = format_learning_report(today, verify, missed, rolling, insights,

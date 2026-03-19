@@ -1708,6 +1708,17 @@ class BodyHunterBot:
                             await update.message.reply_text(chunk)
                 except Exception as e:
                     logger.warning(f"Brain 리포트 전송 실패: {e}")
+                # Trade Objects R:R 분석 전송
+                try:
+                    from data.trade_object import load_trade_objects, format_trade_objects_telegram
+                    trade_objs = load_trade_objects()
+                    if trade_objs:
+                        to_msg = format_trade_objects_telegram(trade_objs, paper=True)
+                        if to_msg:
+                            for chunk in _split_message(to_msg):
+                                await update.message.reply_text(chunk)
+                except Exception as e:
+                    logger.warning(f"Trade Objects 전송 실패: {e}")
                 # 기존 상세 리포트 후속 전송
                 msg = format_recommendation(report)
                 for chunk in _split_message(msg):
@@ -1724,6 +1735,17 @@ class BodyHunterBot:
                         brain_msg = format_brain_telegram(brain)
                         for chunk in _split_message(brain_msg):
                             await update.message.reply_text(chunk)
+                except Exception:
+                    pass
+                # Trade Objects R:R 분석 전송
+                try:
+                    from data.trade_object import load_trade_objects, format_trade_objects_telegram
+                    trade_objs = load_trade_objects()
+                    if trade_objs:
+                        to_msg = format_trade_objects_telegram(trade_objs, paper=True)
+                        if to_msg:
+                            for chunk in _split_message(to_msg):
+                                await update.message.reply_text(chunk)
                 except Exception:
                     pass
                 msg = format_recommendation(report)
