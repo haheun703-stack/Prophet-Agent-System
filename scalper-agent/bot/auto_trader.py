@@ -1349,18 +1349,79 @@ class AutoTrader:
             if verdict.verdict != verdict.prev_verdict:
                 await self._send_eye_alert(verdict)
 
-            # DYING 2연속 → 자동 대응 (보유 종목만)
-            if verdict.verdict == "DYING" and verdict.prev_verdict == "DYING":
-                if code in self._positions:
+            # ── EYE-07: Guardian 연동 + 자동 대응 (보유 종목만) ──
+            if code in self._positions:
+                await self._eye_guardian_action(code, name, verdict, pos)
+
+    async def _eye_guardian_action(self, code: str, name: str, verdict, pos: dict):
+        """EYE-07: Eye 판정 → Guardian 재평가 → 자동 매도/SL 조정"""
+        # Eye→Guardian 리스크 보정: DYING +30, WEAKENING +10, ALIVE 0, BREAKING -10
+        EYE_RISK_MAP = {"DYING": 30, "WEAKENING": 10, "ALIVE": 0,
+                        "BREAKING": -10, "BOUNCING": 0, "WARMUP": 0}
+        eye_adj = EYE_RISK_MAP.get(verdict.verdict, 0)
+
+        # (1) DYING + HIGH confidence → Guardian 즉시 재평가
+        if verdict.verdict == "DYING" and verdict.confidence >= 0.70:
+            try:
+                from data.position_guardian import evaluate_position
+                # 현재가: Eye 버퍼의 최신 바 → 없으면 진입가 fallback
+                cp = 0
+                if self._eye and code in self._eye._buffers:
+                    latest = self._eye._buffers[code].latest
+                    if latest:
+                        cp = latest.price
+                if not cp:
+                    cp = pos.get("entry_price", 0)
+                gv = await asyncio.to_thread(
+                    evaluate_position,
+                    code, name,
+                    current_price=cp,
+                    entry=pos.get("entry_price", 0),
+                    tp1=pos.get("tp1", 0),
+                    sl=pos.get("stop_loss", 0),
+                    eye_risk_adj=eye_adj,
+                )
+                if gv.action == "EXIT":
+                    # 즉시 전량 매도
+                    pre_bal = self.trader.fetch_balance()
+                    actual_qty = 1
+                    for p_item in pre_bal.get("positions", []):
+                        if p_item["code"] == code:
+                            actual_qty = p_item.get("qty", 1)
+                            break
+                    result = self.trader.liquidate_one(code)
+                    if result and result.get("success"):
+                        cp = pos.get("current_price", pos.get("entry_price", 0))
+                        pnl = (cp - pos["entry_price"]) * actual_qty
+                        self.record_realized_loss(pnl)
+                        self._positions.pop(code, None)
+                        await self._alert(
+                            f"🛑 [Eye+Guardian] {name} EXIT 매도\n"
+                            f"   Eye: {verdict.summary}\n"
+                            f"   Guardian risk={gv.risk_score:.0f} → {gv.key_reason}"
+                        )
+                    else:
+                        logger.error(f"Eye+Guardian EXIT 매도 실패 {code}")
+                    return
+                elif gv.action == "REDUCE":
                     await self._alert(
-                        f"🚨 Eye DYING: {name}\n"
-                        f"   점수 {verdict.composite_score:.0f} "
-                        f"(L1:{verdict.l1_price_structure:.0f} "
-                        f"L2:{verdict.l2_volume_supply:.0f} "
-                        f"L3:{verdict.l3_momentum:.0f})\n"
-                        f"   {verdict.summary}\n"
-                        f"   수동 매도 검토 필요"
+                        f"⚠️ [Eye+Guardian] {name} REDUCE 권고\n"
+                        f"   Eye: {verdict.summary}\n"
+                        f"   Guardian risk={gv.risk_score:.0f}\n"
+                        f"   수동 반매도 검토"
                     )
+                    return
+            except Exception as e:
+                logger.warning(f"Eye+Guardian 연동 실패 {code}: {e}")
+
+        # (2) 트레일링 SL 동적 조정 (verdict별 차별화)
+        ap = verdict.action_params or {}
+        new_sl = ap.get("trailing_sl", 0)
+        if new_sl > 0 and new_sl > pos.get("trailing_sl", 0):
+            pos["trailing_sl"] = new_sl
+            ts = pos.get("target_state")
+            if ts:
+                ts.trailing_sl = max(ts.trailing_sl, new_sl)
 
     async def _send_eye_alert(self, verdict):
         """Eye 상태 전이 텔레그램 알림"""

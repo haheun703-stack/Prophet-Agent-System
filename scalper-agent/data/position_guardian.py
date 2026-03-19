@@ -443,9 +443,15 @@ def evaluate_position(
     code: str, name: str,
     current_price: int = 0, change_pct: float = 0.0,
     entry: int = 0, tp1: int = 0, sl: int = 0,
+    eye_risk_adj: float = 0.0,
 ) -> PositionVerdict:
-    """단일 종목 포지션 평가"""
-    logger.info(f"[Guardian] {name}({code}) 평가 시작...")
+    """단일 종목 포지션 평가
+
+    eye_risk_adj: AI Eye 장중 판정에 따른 리스크 보정
+      DYING→+30, WEAKENING→+10, ALIVE→0, BREAKING→-10
+    """
+    logger.info(f"[Guardian] {name}({code}) 평가 시작..." +
+                (f" (eye_adj={eye_risk_adj:+.0f})" if eye_risk_adj else ""))
 
     # 4개 시그널 수집
     sig1 = _check_supply_drain(code, name)
@@ -455,12 +461,13 @@ def evaluate_position(
 
     signals = [sig1, sig2, sig3, sig4]
 
-    # 가중 평균 위험도
+    # 가중 평균 위험도 + AI Eye 보정
     risk_score = sum(
         s.score * SIGNAL_WEIGHTS.get(s.name, 0.25)
         for s in signals
     )
-    risk_score = min(100, risk_score)
+    risk_score += eye_risk_adj
+    risk_score = max(0, min(100, risk_score))
 
     # PNL 계산
     pnl_pct = 0.0
@@ -748,8 +755,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.test:
-        global TG_TOKEN
-        TG_TOKEN = None
+        TG_TOKEN = None  # noqa: F841 — 모듈 전역 변수 재할당
         print("[TEST MODE] 텔레그램 전송 OFF")
 
     run()

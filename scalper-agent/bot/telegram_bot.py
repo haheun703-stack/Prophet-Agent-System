@@ -98,6 +98,7 @@ Body Hunter v5 명령어
   사전감지/이상거래/건전성
   이벤트/해외이벤트/종목선정
   뉴스AI/AI모니터
+  눈 (ㄴ)    — AI Eye 장중 현황
 
 🔍 개별 종목
   분석 삼성전자 / 스윙 삼성전자
@@ -2105,6 +2106,9 @@ class BodyHunterBot:
             r"^내일$": self.cmd_tomorrow,
             r"^내일취소$": self.cmd_tomorrow,
             r"^내일확인$": self.cmd_tomorrow,
+            # ── AI Eye ──
+            r"^눈$": self.cmd_eye_status,
+            r"^ㄴ$": self.cmd_eye_status,
             # ── 데이터 검증 ──
             r"^데이터$": self.cmd_data_status,
             # ── 시장 일지 ──
@@ -3427,6 +3431,44 @@ class BodyHunterBot:
                             f"+{top.get('pnl', 0):.1f}%"
                         )
 
+            # ── AI Eye 요약 (EYE-09) ──
+            try:
+                eye = getattr(self.auto_trader, '_eye', None) if self.auto_trader else None
+                if eye and eye._history:
+                    lines.append("")
+                    lines.append("👁 AI Eye:")
+                    for code in list(eye._history.keys()):
+                        timeline = eye.format_history_timeline(code)
+                        name = eye._names.get(code, code)
+                        if timeline:
+                            lines.append(f"  {name}: {timeline}")
+
+                    # eye_history.json 저장 (학습/검증용)
+                    try:
+                        import json as _json
+                        from datetime import date as _date
+                        hist_dir = Path(__file__).parent.parent / "data_store" / "learning"
+                        hist_dir.mkdir(parents=True, exist_ok=True)
+                        hist_path = hist_dir / "eye_history.json"
+                        existing = {}
+                        if hist_path.exists():
+                            existing = _json.loads(hist_path.read_text("utf-8"))
+                        today_key = _date.today().isoformat()
+                        existing[today_key] = {
+                            code: eye.get_history(code)
+                            for code in eye._history
+                        }
+                        # 최근 30일만 유지
+                        keys = sorted(existing.keys())
+                        if len(keys) > 30:
+                            for old_key in keys[:-30]:
+                                existing.pop(old_key, None)
+                        hist_path.write_text(_json.dumps(existing, ensure_ascii=False, indent=2), "utf-8")
+                    except Exception as eh:
+                        logger.warning(f"eye_history 저장 실패: {eh}")
+            except Exception:
+                pass
+
             lines.append("━━━━━━━━━━━━━━━━━━━")
 
             msg = "\n".join(lines)
@@ -3665,6 +3707,47 @@ class BodyHunterBot:
         await update.message.reply_text("\n".join(lines))
 
     # ── 데이터 검증 핸들러 ────────────────────────
+
+    async def cmd_eye_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """AI Eye 장중 현황 — 보유종목 실시간 판정"""
+        if not self._is_authorized(update):
+            return
+        try:
+            eye = getattr(self.auto_trader, '_eye', None) if self.auto_trader else None
+            if eye is None:
+                await update.message.reply_text("AI Eye 아직 미초기화 (장중 자동매매 시작 후 활성)")
+                return
+
+            status = eye.get_status()
+            if not status:
+                await update.message.reply_text("AI Eye 감시 종목 없음")
+                return
+
+            now = datetime.now().strftime("%H:%M")
+            lines = [f"👁 AI Eye 현황 ({now})", "━━━━━━━━━━━━━━━━━━━"]
+
+            verdict_icon = {
+                "ALIVE": "🟢", "BREAKING": "🚀", "BOUNCING": "🔵",
+                "WEAKENING": "🟡", "DYING": "🔴", "WARMUP": "⏳",
+            }
+            for code, info in status.items():
+                v = info.get("verdict", "WARMUP")
+                icon = verdict_icon.get(v, "⚪")
+                price = info.get("latest_price", 0)
+                bars = info.get("bars", 0)
+                name = info.get("name", code)
+
+                # 타임라인
+                timeline = eye.format_history_timeline(code)
+                line = f"{icon} {name}: {v} | {price:,}원 ({bars}봉)"
+                lines.append(line)
+                if timeline:
+                    lines.append(f"   {timeline}")
+
+            lines.append("━━━━━━━━━━━━━━━━━━━")
+            await update.message.reply_text("\n".join(lines))
+        except Exception as e:
+            await update.message.reply_text(f"AI Eye 조회 실패: {e}")
 
     async def cmd_data_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """데이터 수집 현황 조회"""
