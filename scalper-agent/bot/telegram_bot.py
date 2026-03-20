@@ -1514,6 +1514,22 @@ class BodyHunterBot:
             logger.error(f"DART 공시 실패: {e}", exc_info=True)
             await update.message.reply_text(f"❌ DART 공시 실패: {e}")
 
+    async def cmd_policy_tracker(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """정책 트래커 (대통령실/정부 정책 → 수혜 섹터)"""
+        if not self._is_authorized(update):
+            return
+        await update.message.reply_text("🏛 정책 수집중... (5~10초)")
+        try:
+            from data.policy_tracker import scan_policy, format_telegram_message
+            # 캐시 있으면 캐시 사용, 없으면 새로 스캔
+            result = await asyncio.to_thread(scan_policy)
+            msg = format_telegram_message(result)
+            for chunk in _split_message(msg):
+                await update.message.reply_text(chunk)
+        except Exception as e:
+            logger.error(f"정책 트래커 실패: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ 정책 트래커 실패: {e}")
+
     async def cmd_swing_pick(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """스윙 종목 선정 (6팩터 스코어링 TOP N)"""
         if not self._is_authorized(update):
@@ -2217,6 +2233,9 @@ class BodyHunterBot:
             r"^캘린더$": self.cmd_event_calendar,
             r"^주간캘린더$": self.cmd_weekly_calendar,
             r"^DART공시$": self.cmd_dart_governance,
+            # ── 정책 트래커 ──
+            r"^정책$": self.cmd_policy_tracker,
+            r"^대통령실$": self.cmd_policy_tracker,
         }
 
         for pattern, handler in exact_commands.items():
@@ -2369,6 +2388,10 @@ class BodyHunterBot:
         # 옵션 만기일 알림 (08:10 - D-2/D-1/D-day)
         jq.run_daily(self._job_options_expiry_alert, time=kst_time(8, 10))
         logger.info("옵션 만기일 알림 등록: 08:10 KST")
+
+        # 정책 트래커 (07:55 - 장 전 정부 정책 수집)
+        jq.run_daily(self._job_policy_scan, time=kst_time(7, 55))
+        logger.info("정책 트래커 등록: 07:55 KST")
 
         # 해외 이벤트 캘린더 스캔 (08:00 - 장 전 D-3 알림)
         jq.run_daily(self._job_global_event_scan, time=kst_time(8, 0))
@@ -3136,6 +3159,21 @@ class BodyHunterBot:
         log_event("OPTIONS", f"만기일 D-{d_day}: {q_tag}", {"d_day": d_day, "is_quarterly": is_quarterly})
         logger.info(f"옵션 만기일 D-{d_day}: {q_tag} (모닝브리프에 통합)")
 
+    async def _job_policy_scan(self, context):
+        """정책 트래커 (07:55) — Silent: _morning_data에 저장"""
+        from datetime import date
+        if date.today().weekday() >= 5:
+            return
+        try:
+            from data.policy_tracker import scan_policy
+            result = await asyncio.to_thread(scan_policy)
+            self._morning_data["policy"] = result
+            n_sectors = len(result.get("matched_sectors", []))
+            log_event("POLICY", f"정책 트래커 완료: {n_sectors}개 섹터", result.get("stats", {}))
+            logger.info(f"정책 트래커 완료: {n_sectors}개 섹터 (모닝브리프에 통합)")
+        except Exception as e:
+            logger.error(f"정책 트래커 실패: {e}", exc_info=True)
+
     async def _job_global_event_scan(self, context):
         """해외 이벤트 캘린더 스캔 (08:00) — Silent: _morning_data에 저장"""
         from datetime import date
@@ -3295,6 +3333,13 @@ class BodyHunterBot:
                     lines.append(f"📅 캘린더: {_ri}{risk_lvl} {' '.join(ev_names)}")
             except Exception:
                 pass
+
+            # ── 정책 트래커 ──
+            policy = self._morning_data.get("policy", {})
+            p_matched = policy.get("matched_sectors", [])
+            if p_matched:
+                p_names = [m["sector"] for m in p_matched[:3]]
+                lines.append(f"🏛 정책: {', '.join(p_names)}")
 
             # ── 보유종목 진단 (Guardian) ──
             verdicts = self._morning_data.get("guardian", [])
