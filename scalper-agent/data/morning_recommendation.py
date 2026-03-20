@@ -1705,6 +1705,7 @@ def run_evening_recommendation() -> RecommendationReport:
             active_sigs = commodity.get("active_signals", [])
             if "ng_up" in active_sigs or (commodity.get("ng", {}).get("direction") == "UP"):
                 _active_sectors.append(("natural_gas", "NG↑"))
+                _active_sectors.append(("shipbuilding", "NG↑LNG선"))  # LNG 공급차질 → 조선 수혜
             if "oil_up" in active_sigs or (commodity.get("oil", {}).get("direction") == "UP"):
                 _active_sectors.append(("oil_resource", "OIL↑"))
             if relay == "silver" or "silver_up" in active_sigs:

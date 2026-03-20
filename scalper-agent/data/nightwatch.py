@@ -245,17 +245,20 @@ JARVIS_SECTORS = {
         "relay": "금리인하→배당매력→EQIX/DLR AI DC→ESR켄달스퀘어",
     },
     "shipbuilding": {
-        "name": "🚢 조선",
+        "name": "🚢 조선·LNG선",
         "us": ["HII", "GD"],
         "kr_tier1": [
             {"code": "009540", "name": "HD한국조선해양"},
             {"code": "042660", "name": "한화오션"},
+            {"code": "010140", "name": "삼성중공업"},             # LNG선 수주잔고 최대
         ],
         "kr_tier2": [
             {"code": "010620", "name": "HD현대미포"},
             {"code": "329180", "name": "HD현대마린솔루션"},
+            {"code": "034020", "name": "두산에너빌리티"},          # 가스터빈+LNG 인프라 재건
+            {"code": "028050", "name": "삼성엔지니어링"},          # LNG 플랜트 EPC
         ],
-        "relay": "LNG발주/지정학→HD한국조선해양/한화오션→HD현대미포→마린솔루션",
+        "relay": "LNG공급차질/NG급등→LNG선발주→HD한국조선/한화오션/삼성중공업→미포→두산에너빌리티(터빈)→삼성엔지니어링(EPC)",
     },
     "battery_ev": {
         "name": "🔋 2차전지·EV",
@@ -887,7 +890,8 @@ def select_sectors_and_targets(
         commodity_reason = " + 금→은→구리릴레이"
     if macro.get("ng_up"):
         commodity_addon.append("natural_gas")
-        commodity_reason += " + 천연가스↑"
+        commodity_addon.append("shipbuilding")  # LNG 공급차질 → 조선 수혜
+        commodity_reason += " + 천연가스↑+LNG선"
 
     # ── 강매수 (5+) ──
     if total_score >= 5:
@@ -901,8 +905,8 @@ def select_sectors_and_targets(
             selected_keys = ["oil_resource", "shipbuilding", "natural_gas"]
             reason = "🟢🟢 + 유가↑ + LNG"
         elif macro.get("ng_up"):
-            selected_keys = ["natural_gas", "oil_resource"]
-            reason = "🟢🟢 + 천연가스↑"
+            selected_keys = ["natural_gas", "shipbuilding", "oil_resource"]
+            reason = "🟢🟢 + 천연가스↑+LNG선"
         else:
             selected_keys = ["semiconductor", "power_infra"]
             reason = "🟢🟢 기본"
@@ -919,8 +923,8 @@ def select_sectors_and_targets(
             selected_keys = ["oil_resource", "shipbuilding"]
             reason = "🟢 + 유가↑"
         elif macro.get("ng_up"):
-            selected_keys = ["natural_gas", "oil_resource"]
-            reason = "🟢 + 천연가스↑"
+            selected_keys = ["natural_gas", "shipbuilding", "oil_resource"]
+            reason = "🟢 + 천연가스↑+LNG선"
         elif macro.get("geopolitical"):
             selected_keys = ["space_defense", "shipbuilding"]
             reason = "🟢 + 지정학 긴장"
