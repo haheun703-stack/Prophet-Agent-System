@@ -1271,6 +1271,155 @@ def load_nightwatch_report() -> Optional[NightwatchReport]:
 
 
 # ═══════════════════════════════════════════════════
+#  시간외 선취매 (Pre-Dawn Buy)
+#  "추천 TOP picks → 장마감 시간외 종가매매 → 다음날 갭업 수익"
+# ═══════════════════════════════════════════════════
+PREDAWN_POSITIONS_PATH = DATA_DIR / "predawn_positions.json"
+
+
+def select_predawn_targets(
+    min_score: float = 100.0,
+    max_targets: int = 3,
+) -> List[Dict]:
+    """
+    recommendation.json에서 시간외 선취매 대상 선별
+
+    조건:
+    - grade: AAA 또는 AA (최상위 등급)
+    - signal_type: FORCE_BUY (강력 매수 시그널)
+    - total_score >= min_score
+    - confidence: HIGH
+
+    Returns: [{code, name, close, total_score, grade, signal_type,
+               entry, sl, tp, sources, tv_ratio, tv_pattern}]
+    """
+    rec_path = DATA_DIR / "recommendation.json"
+    if not rec_path.exists():
+        logger.warning("[PREDAWN] recommendation.json 없음")
+        return []
+
+    try:
+        with open(rec_path, "r", encoding="utf-8") as f:
+            rec = json.load(f)
+    except Exception as e:
+        logger.error(f"[PREDAWN] recommendation.json 로드 실패: {e}")
+        return []
+
+    # evening 분석 결과만 사용 (Stage 1)
+    stage = rec.get("stage", "")
+    if stage not in ("evening", "cross_checked", "us_check"):
+        logger.info(f"[PREDAWN] stage={stage} — 저녁분석 아님, 스킵")
+        return []
+
+    stocks = rec.get("stocks", [])
+    if not stocks:
+        logger.info("[PREDAWN] 추천 종목 없음")
+        return []
+
+    targets = []
+    for s in stocks:
+        grade = s.get("grade", "")
+        sig = s.get("signal_type", "")
+        score = s.get("total_score", 0)
+        conf = s.get("confidence", "")
+
+        # 필터: AAA/AA + FORCE_BUY + 점수 100+ + HIGH 신뢰도
+        if grade not in ("AAA", "AA"):
+            continue
+        if sig != "FORCE_BUY":
+            continue
+        if score < min_score:
+            continue
+        if conf != "HIGH":
+            continue
+
+        targets.append({
+            "code": s["code"],
+            "name": s["name"],
+            "close": s.get("close", 0),
+            "total_score": score,
+            "grade": grade,
+            "signal_type": sig,
+            "entry": s.get("entry", 0),
+            "sl": s.get("sl", 0),
+            "tp": s.get("tp", 0),
+            "sources": s.get("sources", []),
+            "tv_ratio": s.get("tv_ratio", 1.0),
+            "tv_pattern": s.get("tv_pattern", "NORMAL"),
+        })
+
+    # 점수 내림차순 정렬
+    targets.sort(key=lambda x: x["total_score"], reverse=True)
+    targets = targets[:max_targets]
+
+    if targets:
+        names = ", ".join(f"{t['name']}({t['total_score']:.0f}점)" for t in targets)
+        logger.info(f"[PREDAWN] 선취매 대상 {len(targets)}종목: {names}")
+    else:
+        logger.info("[PREDAWN] 조건 충족 종목 없음 (AAA/AA + FORCE_BUY + {min_score}+)")
+
+    return targets
+
+
+def save_predawn_positions(positions: Dict):
+    """선취매 포지션 저장"""
+    PREDAWN_POSITIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(PREDAWN_POSITIONS_PATH, "w", encoding="utf-8") as f:
+        json.dump(positions, f, ensure_ascii=False, indent=2)
+
+
+def load_predawn_positions() -> Dict:
+    """선취매 포지션 로드"""
+    if not PREDAWN_POSITIONS_PATH.exists():
+        return {}
+    try:
+        with open(PREDAWN_POSITIONS_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, IOError):
+        return {}
+
+
+def clear_predawn_positions():
+    """선취매 포지션 초기화 (정규장 진입 후)"""
+    if PREDAWN_POSITIONS_PATH.exists():
+        PREDAWN_POSITIONS_PATH.unlink()
+        logger.info("[PREDAWN] 선취매 포지션 파일 삭제 (정규 포지션 전환 완료)")
+
+
+def format_predawn_alert(targets: List[Dict], budget: int = 0, per_stock: int = 0) -> str:
+    """선취매 텔레그램 알림 메시지 포맷"""
+    lines = [
+        "=" * 34,
+        "시간외 선취매 추천",
+        "=" * 34,
+        "",
+    ]
+
+    for i, t in enumerate(targets, 1):
+        sl_pct = ((t["sl"] - t["close"]) / t["close"] * 100) if t["close"] > 0 and t["sl"] > 0 else 0
+        tp_pct = ((t["tp"] - t["close"]) / t["close"] * 100) if t["close"] > 0 and t["tp"] > 0 else 0
+        sources_str = ", ".join(t.get("sources", [])[:3])
+
+        lines.append(
+            f"[{i}] {t['name']}({t['code']}) {t['grade']}\n"
+            f"   종가: {t['close']:,}원 | 점수: {t['total_score']:.0f}\n"
+            f"   SL: {t['sl']:,}원({sl_pct:+.1f}%) → TP: {t['tp']:,}원({tp_pct:+.1f}%)\n"
+            f"   TV: {t['tv_ratio']:.1f}x ({t['tv_pattern']})\n"
+            f"   소스: {sources_str}"
+        )
+        lines.append("")
+
+    if budget > 0:
+        lines.append(f"예산: {budget:,}원 | 종목당: {per_stock:,}원")
+
+    lines.append("")
+    lines.append("시간외 종가매매: 18:00까지 매수 가능")
+    lines.append("=" * 34)
+
+    return "\n".join(lines)
+
+
+# ═══════════════════════════════════════════════════
 #  텔레그램 포맷
 # ═══════════════════════════════════════════════════
 def format_nightwatch_report(report: NightwatchReport) -> str:

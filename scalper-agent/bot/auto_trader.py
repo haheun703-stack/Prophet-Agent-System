@@ -77,6 +77,9 @@ class AutoTrader:
         self._nxt_positions = {}
         self._nightwatch_report = None
 
+        # ── 시간외 선취매 (Pre-Dawn) ──
+        self._predawn_positions = {}  # {code: {name, entry_price, sl, tp, score, ...}}
+
     def _get_rt_monitor(self):
         """RealtimeMonitor lazy init"""
         if self._rt_monitor is None:
@@ -2549,6 +2552,165 @@ class AutoTrader:
                 self._nxt_positions = {}
         else:
             self._nxt_positions = {}
+
+    # ═══════════════════════════════════════
+    #  시간외 선취매 (Pre-Dawn Buy)
+    #  "추천 TOP picks → 시간외 종가매매 → 다음날 갭업 수익"
+    # ═══════════════════════════════════════
+
+    async def job_predawn_buy(self, context):
+        """16:52 — 시간외 선취매 (추천 TOP → 시간외 종가매매)
+
+        morning_recommendation (16:45) 완료 후 실행.
+        recommendation.json에서 AAA/AA + FORCE_BUY + 100점+ 필터 →
+        시간외 종가매매(18:00까지)로 매수.
+
+        NXT와의 차이:
+        - NXT: 매크로 시그널 기반, 다음날 08:00 자동 매도 (overnight flip)
+        - 선취매: 추천 엔진 기반, 정규 포지션으로 전환 (Eye+Guardian 관리)
+        """
+        if date.today().weekday() >= 5:
+            return
+
+        nw_cfg = self.config.get("nightwatch", {})
+        if not nw_cfg.get("enabled", False):
+            return
+
+        chat_id = None
+        if not self._send_alert:
+            import os
+            chat_id = os.getenv("TELEGRAM_CHAT_ID")
+
+        async def _send(text):
+            if self._send_alert:
+                await self._send_alert(text)
+            elif chat_id:
+                await context.bot.send_message(chat_id=chat_id, text=text)
+
+        try:
+            from data.nightwatch import (
+                select_predawn_targets, save_predawn_positions,
+                format_predawn_alert,
+            )
+
+            min_score = nw_cfg.get("predawn_min_score", 100)
+            max_targets = nw_cfg.get("predawn_max_targets", 3)
+            targets = await asyncio.to_thread(
+                select_predawn_targets, min_score, max_targets
+            )
+
+            if not targets:
+                logger.info("[PREDAWN] 선취매 대상 없음")
+                return
+
+            # 예산 계산
+            bal = self.trader.fetch_balance()
+            if not bal.get("success"):
+                await _send("선취매: 잔고 조회 실패")
+                return
+
+            budget_pct = nw_cfg.get("predawn_budget_pct", 40) / 100.0
+            predawn_budget = int(bal["cash"] * budget_pct)
+            per_stock = predawn_budget // len(targets)
+
+            alert_only = nw_cfg.get("alert_only", True)
+
+            if alert_only:
+                # ── 알림만 모드 ──
+                msg = format_predawn_alert(targets, predawn_budget, per_stock)
+                await _send(msg)
+                await _send(
+                    "[알림만 모드] 수동으로 시간외 종가매매 필요\n"
+                    "자동매매 전환: NXT켜기"
+                )
+                return
+
+            # ── 자동매매 모드 — 시간외 종가매수 실행 ──
+            bought = {}
+            for t in targets:
+                code = t["code"]
+                name = t["name"]
+                close_price = t["close"]
+
+                if close_price <= 0:
+                    await _send(f"선취매: {name} 종가 0원 — 스킵")
+                    continue
+
+                qty = per_stock // close_price
+                if qty <= 0:
+                    await _send(f"선취매: {name} 수량 부족 (예산 {per_stock:,}원 / @{close_price:,}원)")
+                    continue
+
+                result = self.trader.afterhours_buy(code, qty, close_price)
+                if result.get("success"):
+                    bought[code] = {
+                        "name": name,
+                        "entry_price": close_price,
+                        "qty": qty,
+                        "sl": t["sl"],
+                        "tp": t["tp"],
+                        "score": t["total_score"],
+                        "grade": t["grade"],
+                        "sources": t.get("sources", []),
+                        "entry_date": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        "type": "predawn",
+                    }
+                    await _send(
+                        f"선취매 매수 완료: {name}({code})\n"
+                        f"  {qty}주 @ {close_price:,}원 (시간외 종가)\n"
+                        f"  SL: {t['sl']:,}원 | TP: {t['tp']:,}원\n"
+                        f"  점수: {t['total_score']:.0f} ({t['grade']})"
+                    )
+                else:
+                    await _send(f"선취매 매수 실패: {name} — {result.get('message', '')}")
+
+            if bought:
+                self._predawn_positions = bought
+                save_predawn_positions(bought)
+                logger.info(f"[PREDAWN] {len(bought)}종목 선취매 완료")
+
+        except Exception as e:
+            logger.error(f"[PREDAWN] 선취매 실패: {e}")
+            await _send(f"선취매 실패: {e}")
+
+    def merge_predawn_on_open(self):
+        """장 시작 시 선취매 포지션 → 정규 포지션으로 전환
+
+        08:55에 호출 (morning_recommendation 실행 전).
+        predawn_positions.json → self._positions에 주입.
+        이후 regular auto_trader가 Eye + Guardian으로 관리.
+        """
+        from data.nightwatch import load_predawn_positions, clear_predawn_positions
+
+        predawn = load_predawn_positions()
+        if not predawn:
+            return
+
+        merged = 0
+        for code, pos in predawn.items():
+            if code in self._positions:
+                logger.info(f"[PREDAWN] {pos['name']} 이미 정규 포지션 — 스킵")
+                continue
+
+            self._positions[code] = {
+                "entry_price": pos.get("entry_price", 0),
+                "stop_loss": pos.get("sl", 0),
+                "take_profit": pos.get("tp", 0),
+                "target_state": "HOLD",
+                "entry_date": pos.get("entry_date", ""),
+                "source": "predawn",
+                "score": pos.get("score", 0),
+                "trail_high": pos.get("entry_price", 0),
+            }
+            merged += 1
+            logger.info(
+                f"[PREDAWN] 정규 포지션 전환: {pos['name']}({code}) "
+                f"@{pos['entry_price']:,}원 SL={pos.get('sl', 0):,} TP={pos.get('tp', 0):,}"
+            )
+
+        if merged > 0:
+            clear_predawn_positions()
+            logger.info(f"[PREDAWN] {merged}종목 정규 포지션 전환 완료")
 
     # ═══════════════════════════════════════
     #  내부 로직

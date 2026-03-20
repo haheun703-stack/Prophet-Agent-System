@@ -114,6 +114,7 @@ Body Hunter v5 명령어
 
 🌙 NXT 야간
   NXT/NXT켜기/NXT끄기/NXT실행
+  선취매         — 시간외 선취매 현황
 
 📓 시장 일지
   시장일지 (ㅇ)  — 오늘 시장 일기
@@ -1961,6 +1962,55 @@ class BodyHunterBot:
         except Exception as e:
             await update.message.reply_text(f"NIGHTWATCH 실행 실패: {e}")
 
+    async def cmd_predawn(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """시간외 선취매 현황 조회"""
+        if not self._is_authorized(update):
+            return
+        try:
+            from data.nightwatch import (
+                select_predawn_targets, load_predawn_positions,
+                format_predawn_alert,
+            )
+
+            # 1. 현재 선취매 대상 (recommendation.json 기준)
+            nw_cfg = self.config.get("nightwatch", {})
+            min_score = nw_cfg.get("predawn_min_score", 100)
+            max_targets = nw_cfg.get("predawn_max_targets", 3)
+            targets = select_predawn_targets(min_score, max_targets)
+
+            # 2. 기 매수된 선취매 포지션
+            predawn_pos = load_predawn_positions()
+
+            msg_lines = []
+            if predawn_pos:
+                msg_lines.append("[ 선취매 보유 포지션 ]")
+                for code, pos in predawn_pos.items():
+                    pi = self.auto_trader.trader.fetch_price(code)
+                    curr = pi.get("current_price", 0) if pi.get("success") else 0
+                    entry = pos.get("entry_price", 0)
+                    pnl = ((curr - entry) / entry * 100) if entry > 0 and curr > 0 else 0
+                    msg_lines.append(
+                        f"  {pos['name']}({code})\n"
+                        f"  진입: {entry:,}원 → 현재: {curr:,}원 ({pnl:+.1f}%)\n"
+                        f"  SL: {pos.get('sl', 0):,} | TP: {pos.get('tp', 0):,}"
+                    )
+                msg_lines.append("")
+
+            if targets:
+                msg = format_predawn_alert(targets)
+                msg_lines.append(msg)
+            elif not predawn_pos:
+                msg_lines.append("선취매 대상 없음 (조건: AAA/AA + FORCE_BUY + 100점+)")
+
+            nw_enabled = nw_cfg.get("enabled", False)
+            alert_only = nw_cfg.get("alert_only", True)
+            msg_lines.append(f"\n상태: {'ON' if nw_enabled else 'OFF'} | {'알림만' if alert_only else '자동매수'}")
+
+            await update.message.reply_text("\n".join(msg_lines))
+
+        except Exception as e:
+            await update.message.reply_text(f"선취매 조회 실패: {e}")
+
     # ═══════════════════════════════════════
     #  봇 빌드 & 실행
     # ═══════════════════════════════════════
@@ -2092,6 +2142,7 @@ class BodyHunterBot:
             r"^NXT켜기$": self.cmd_nxt_on,
             r"^NXT끄기$": self.cmd_nxt_off,
             r"^NXT실행$": self.cmd_nxt_run,
+            r"^선취매$": self.cmd_predawn,
             r"^페이퍼$": self.cmd_paper,
             # ── 온디맨드 명령어 (하루 5~7개 체제) ──
             r"^포트$": self.cmd_port,
@@ -2371,6 +2422,12 @@ class BodyHunterBot:
             h_nw3, m_nw3 = map(int, sell_str.split(":"))
             jq.run_daily(self.auto_trader.job_nxt_morning_sell, time=kst_time(h_nw3, m_nw3))
             logger.info(f"NXT 아침 매도 등록: {sell_str} KST")
+
+            # ── 시간외 선취매 (16:52 — 추천 16:45 완료 후) ──
+            predawn_str = nw_cfg.get("predawn_time", "16:52")
+            h_pd, m_pd = map(int, predawn_str.split(":"))
+            jq.run_daily(self.auto_trader.job_predawn_buy, time=kst_time(h_pd, m_pd))
+            logger.info(f"시간외 선취매 등록: {predawn_str} KST")
 
     async def _job_start_tick_polling(self, context):
         """장 시작 시 체결 스냅샷 폴링 시작 (백그라운드 스레드)"""
@@ -3114,6 +3171,12 @@ class BodyHunterBot:
             return
 
         try:
+            # ── 선취매 포지션 → 정규 포지션 전환 (장 시작 전) ──
+            try:
+                self.auto_trader.merge_predawn_on_open()
+            except Exception as e_pd:
+                logger.warning(f"선취매 포지션 전환 실패: {e_pd}")
+
             now = datetime.now()
             dow = ["월", "화", "수", "목", "금", "토", "일"][now.weekday()]
             lines = [
