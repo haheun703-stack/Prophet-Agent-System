@@ -101,6 +101,8 @@ class RecommendationReport:
     tv_cluster_info: list = field(default_factory=list)
     # 원자재 릴레이 상황
     commodity_info: dict = field(default_factory=dict)
+    # 이벤트 캘린더 리스크
+    event_risk: dict = field(default_factory=dict)
 
 
 # ═══════════════════════════════════════
@@ -1752,6 +1754,27 @@ def run_evening_recommendation() -> RecommendationReport:
     except Exception as e:
         logger.warning(f"[원자재 부스트] 실패 (무시): {e}")
 
+    # ── 이벤트 캘린더 리스크 ──
+    try:
+        from data.event_calendar import get_event_risk_for_recommendation
+        event_risk = get_event_risk_for_recommendation()
+        report.event_risk = {
+            "confluence_score": event_risk["confluence_score"],
+            "risk_level": event_risk["risk_level"],
+            "warning": event_risk.get("warning", ""),
+            "event_count": len(event_risk.get("events", [])),
+            "events_summary": [
+                f"{e['name']}(D{e.get('days_to', 0):+d})"
+                for e in event_risk.get("events", [])
+                if e.get("impact") == "HIGH"
+            ][:5],
+            "seasonality": event_risk.get("seasonality", {}),
+        }
+        if event_risk["risk_level"] in ("HIGH", "EXTREME"):
+            logger.info(f"  [이벤트] {event_risk['risk_level']} — {event_risk.get('warning', '')}")
+    except Exception as e:
+        logger.warning(f"[이벤트 캘린더] 실패 (무시): {e}")
+
     # Step 6: KIS API 가격 교차검증
     t0 = time.time()
     logger.info("[Step 6/6] KIS API 가격 교차검증...")
@@ -2090,6 +2113,20 @@ def format_recommendation(report: RecommendationReport, max_budget: int = 0) -> 
                 combined += f" → {boosted}종목 부스트"
             lines.append(f"   {combined}")
 
+    # 이벤트 캘린더 리스크
+    if report.event_risk:
+        er = report.event_risk
+        risk_lvl = er.get("risk_level", "")
+        _risk_icon = {"EXTREME": "💀", "HIGH": "🔴", "MEDIUM": "🟡", "LOW": "🟢"}.get(risk_lvl, "")
+        confluence = er.get("confluence_score", 0)
+        events_summary = er.get("events_summary", [])
+        if events_summary or risk_lvl in ("HIGH", "EXTREME"):
+            lines.append(f"📅 이벤트: {_risk_icon}{risk_lvl} (c:{confluence:.0f}) {' '.join(events_summary)}")
+        season = er.get("seasonality", {})
+        if season and season.get("kr_bias"):
+            _bias_icon = {"bullish": "📈", "bearish": "📉", "volatile": "⚡", "neutral": "➡️"}.get(season["kr_bias"], "")
+            lines.append(f"   시즌: {_bias_icon}{season['kr_bias'].upper()} ({season.get('kr_avg', '')})")
+
     if report.warning:
         lines.append(f"\n⚠️ {report.warning}")
 
@@ -2390,6 +2427,7 @@ def save_recommendation(report: RecommendationReport):
         "etf_signal": report.etf_signal,  # 위기 ETF 시그널
         "tv_cluster_info": report.tv_cluster_info,  # TV 클러스터
         "commodity_info": report.commodity_info,  # 원자재 릴레이 상황
+        "event_risk": report.event_risk,  # 이벤트 캘린더 리스크
     }
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
@@ -2467,6 +2505,7 @@ def load_recommendation() -> Optional[RecommendationReport]:
         report.etf_signal = data.get("etf_signal", {})
         report.tv_cluster_info = data.get("tv_cluster_info", [])
         report.commodity_info = data.get("commodity_info", {})
+        report.event_risk = data.get("event_risk", {})
         return report
     except Exception as e:
         logger.error(f"추천 로드 실패: {e}")

@@ -654,6 +654,21 @@ def format_learning_report(
         if nr.get("worst"):
             lines.append(f"  최저: {nr['worst']['name']} {nr['worst']['return_pct']:+.1f}%")
 
+    # ── 내일 이벤트 리스크 ──
+    try:
+        from data.event_calendar import get_event_risk_for_recommendation
+        _today_dt = datetime.strptime(today, "%Y-%m-%d").date()
+        _tmr = _today_dt + timedelta(days=1)
+        while _tmr.weekday() >= 5:
+            _tmr += timedelta(days=1)
+        tmr_risk = get_event_risk_for_recommendation(_tmr)
+        if tmr_risk.get("events"):
+            _ri = {"EXTREME": "💀", "HIGH": "🔴", "MEDIUM": "🟡", "LOW": "🟢"}.get(tmr_risk["risk_level"], "")
+            ev_names = [e["name"] for e in tmr_risk["events"] if e.get("impact") == "HIGH"][:3]
+            lines.append(f"\n📅 내일({_tmr}) {_ri}{tmr_risk['risk_level']} {' '.join(ev_names)}")
+    except Exception:
+        pass
+
     lines.append("")
     lines.append("━━━━━━━━━━━━━━━━━━━━━━━━")
     lines.append("Body Hunter | Daily Learner")
@@ -956,6 +971,22 @@ def run(quick: bool = False):
         logger.info(f"[Phase 7] 시장 일지 기록 완료: {journal_entry.get('date', today)}")
     except Exception as e:
         logger.warning(f"[MarketJournal] 시장 일지 기록 실패 (무시): {e}")
+
+    # Phase 8: 이벤트 캘린더 내일 리스크 (다음날 이벤트 미리 확인)
+    try:
+        from data.event_calendar import get_event_risk_for_recommendation
+        tomorrow = (datetime.strptime(today, "%Y-%m-%d") + timedelta(days=1)).date()
+        # 주말이면 월요일
+        while tomorrow.weekday() >= 5:
+            tomorrow += timedelta(days=1)
+        tmr_risk = get_event_risk_for_recommendation(tomorrow)
+        if tmr_risk.get("events"):
+            logger.info(
+                f"[Phase 8] 내일({tomorrow}) 이벤트: {tmr_risk['risk_level']} "
+                f"({len(tmr_risk['events'])}건, confluence:{tmr_risk['confluence_score']:.0f})"
+            )
+    except Exception as e:
+        logger.warning(f"[EventCalendar] 실패 (무시): {e}")
 
     logger.info("=== Daily Learner 완료 ===")
     return {

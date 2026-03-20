@@ -122,6 +122,10 @@ Body Hunter v5 명령어
   월간          — 월간 보고 + 조정 제안
   적용 1 2     — 제안 적용
 
+📅 이벤트 캘린더
+  캘린더         — 오늘 이벤트 리스크
+  주간캘린더      — 이번 주 이벤트 브리핑
+
 📁 기타
   현재잔고/체결내역/일지/시그널
   워치리스트/시나리오/유니버스/로그
@@ -1468,6 +1472,32 @@ class BodyHunterBot:
             logger.error(f"해외 이벤트 실패: {e}", exc_info=True)
             await update.message.reply_text(f"❌ 해외 이벤트 실패: {e}")
 
+    async def cmd_event_calendar(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """오늘 이벤트 캘린더 (정적 캘린더 기반)"""
+        if not self._is_authorized(update):
+            return
+        try:
+            from data.event_calendar import format_daily_telegram
+            msg = format_daily_telegram()
+            await update.message.reply_text(msg)
+        except Exception as e:
+            logger.error(f"이벤트 캘린더 실패: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ 이벤트 캘린더 실패: {e}")
+
+    async def cmd_weekly_calendar(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """주간 이벤트 브리핑"""
+        if not self._is_authorized(update):
+            return
+        try:
+            from data.event_calendar import generate_weekly_briefing, format_weekly_telegram
+            briefing = generate_weekly_briefing()
+            msg = format_weekly_telegram(briefing)
+            for chunk in _split_message(msg):
+                await update.message.reply_text(chunk)
+        except Exception as e:
+            logger.error(f"주간 캘린더 실패: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ 주간 캘린더 실패: {e}")
+
     async def cmd_swing_pick(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """스윙 종목 선정 (6팩터 스코어링 TOP N)"""
         if not self._is_authorized(update):
@@ -2167,6 +2197,9 @@ class BodyHunterBot:
             r"^ㅇ$": self.cmd_market_journal,
             r"^주간$": self.cmd_weekly_report,
             r"^월간$": self.cmd_monthly_report,
+            # ── 이벤트 캘린더 ──
+            r"^캘린더$": self.cmd_event_calendar,
+            r"^주간캘린더$": self.cmd_weekly_calendar,
         }
 
         for pattern, handler in exact_commands.items():
@@ -3215,6 +3248,18 @@ class BodyHunterBot:
                         event_lines.append(ev[:40])
             if event_lines:
                 lines.append(f"⚠️ 이벤트: {' | '.join(event_lines)}")
+
+            # ── 이벤트 캘린더 (정적) ──
+            try:
+                from data.event_calendar import get_event_risk_for_recommendation
+                er = get_event_risk_for_recommendation()
+                if er.get("events"):
+                    risk_lvl = er.get("risk_level", "LOW")
+                    _ri = {"EXTREME": "💀", "HIGH": "🔴", "MEDIUM": "🟡", "LOW": "🟢"}.get(risk_lvl, "")
+                    ev_names = [f"{e['name']}" for e in er["events"] if e.get("impact") == "HIGH"][:3]
+                    lines.append(f"📅 캘린더: {_ri}{risk_lvl} {' '.join(ev_names)}")
+            except Exception:
+                pass
 
             # ── 보유종목 진단 (Guardian) ──
             verdicts = self._morning_data.get("guardian", [])
