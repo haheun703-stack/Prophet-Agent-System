@@ -1530,6 +1530,25 @@ class BodyHunterBot:
             logger.error(f"정책 트래커 실패: {e}", exc_info=True)
             await update.message.reply_text(f"❌ 정책 트래커 실패: {e}")
 
+    async def cmd_flowx_vip(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """FLOWX VIP 8-Panel 콘텐츠 생성 + 업로드"""
+        if not self._is_authorized(update):
+            return
+        await update.message.reply_text("📊 FLOWX VIP 8패널 생성중... (3~5초)")
+        try:
+            from data.flowx_content import generate_vip_content, format_telegram_vip, upload_vip_content
+            content = await asyncio.to_thread(generate_vip_content)
+            msg = format_telegram_vip(content)
+            for chunk in _split_message(msg):
+                await update.message.reply_text(chunk, parse_mode="HTML")
+            # Supabase 업로드
+            ok = await asyncio.to_thread(upload_vip_content, content)
+            status = "Supabase 업로드 완료" if ok else "Supabase 미연결"
+            await update.message.reply_text(f"✅ VIP 8패널 생성 완료 ({status})")
+        except Exception as e:
+            logger.error(f"FLOWX VIP 실패: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ FLOWX VIP 실패: {e}")
+
     async def cmd_swing_pick(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """스윙 종목 선정 (6팩터 스코어링 TOP N)"""
         if not self._is_authorized(update):
@@ -2236,6 +2255,11 @@ class BodyHunterBot:
             # ── 정책 트래커 ──
             r"^정책$": self.cmd_policy_tracker,
             r"^대통령실$": self.cmd_policy_tracker,
+            # ── FLOWX VIP 콘텐츠 ──
+            r"^VIP$": self.cmd_flowx_vip,
+            r"^vip$": self.cmd_flowx_vip,
+            r"^FLOWX$": self.cmd_flowx_vip,
+            r"^flowx$": self.cmd_flowx_vip,
         }
 
         for pattern, handler in exact_commands.items():
@@ -2417,6 +2441,10 @@ class BodyHunterBot:
         # ① 모닝 브리프 (08:55 - 추천 파이프라인 직후)
         jq.run_daily(self._send_morning_brief, time=kst_time(8, 55))
         logger.info("모닝 브리프 등록: 08:55 KST")
+        # FLOWX VIP 8패널 콘텐츠 (08:56 - 모닝 브리프 직후)
+        jq.run_daily(self._job_flowx_vip_content, time=kst_time(8, 56))
+        logger.info("FLOWX VIP 콘텐츠 등록: 08:56 KST")
+
         # ⑤ 프리클로즈 리포트 (14:50 — 기존 _job_preclose_report 대체)
         # → 이미 14:30 스캔 + 14:50 리포트 등록됨, _send_preclose_brief로 교체
         # ⑥ 일일 마감 리포트 (16:50 - 학습 완료 후)
@@ -3159,6 +3187,21 @@ class BodyHunterBot:
         log_event("OPTIONS", f"만기일 D-{d_day}: {q_tag}", {"d_day": d_day, "is_quarterly": is_quarterly})
         logger.info(f"옵션 만기일 D-{d_day}: {q_tag} (모닝브리프에 통합)")
 
+    async def _job_flowx_vip_content(self, context):
+        """FLOWX VIP 8패널 (08:56) — 모닝브리프 직후 자동 생성 + Supabase 업로드"""
+        from datetime import date
+        if date.today().weekday() >= 5:
+            return
+        try:
+            from data.flowx_content import run_vip_content
+            content = await asyncio.to_thread(run_vip_content, True)
+            n_stocks = len(content.get("panel_1_stocks", []))
+            n_accum = len(content.get("panel_5_accumulation", []))
+            log_event("FLOWX_VIP", f"8패널 생성+업로드: {n_stocks}종목, 매집{n_accum}건", content.get("summary", {}))
+            logger.info(f"FLOWX VIP 8패널 완료: {n_stocks}종목, 매집{n_accum}건")
+        except Exception as e:
+            logger.error(f"FLOWX VIP 실패: {e}", exc_info=True)
+
     async def _job_policy_scan(self, context):
         """정책 트래커 (07:55) — Silent: _morning_data에 저장"""
         from datetime import date
@@ -3340,6 +3383,19 @@ class BodyHunterBot:
             if p_matched:
                 p_names = [m["sector"] for m in p_matched[:3]]
                 lines.append(f"🏛 정책: {', '.join(p_names)}")
+
+            # ── FLOWX VIP 매집 감지 ──
+            try:
+                from data.flowx_content import _load_json as _fload
+                tv_data = _fload("tv_scanner.json")
+                tv_sigs = [s for s in tv_data.get("signals", [])
+                           if s.get("pattern", "NORMAL") != "NORMAL"]
+                if tv_sigs:
+                    top3 = sorted(tv_sigs, key=lambda x: x.get("score", 0), reverse=True)[:3]
+                    accum_names = [f"{s['name']}({s['pattern'][:5]})" for s in top3]
+                    lines.append(f"🔍 매집감지: {', '.join(accum_names)}")
+            except Exception:
+                pass
 
             # ── 보유종목 진단 (Guardian) ──
             verdicts = self._morning_data.get("guardian", [])
