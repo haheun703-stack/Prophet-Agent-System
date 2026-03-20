@@ -4,13 +4,17 @@
 =====================================================================
 D-3 사전 알림 → 한국 관련 섹터 종목 가중치 부여
 
-데이터 소스:
+데이터 소스 (6-Source):
   1. yfinance - 미국 빅테크 실적발표 일정
-  2. Perplexity API - 실시간 웹검색 (향후 1주 이벤트 + 한국 수혜 분석)
-  3. 하드코딩 경제 캘린더 - FOMC/CPI/고용 등 정기 일정
+  2. 한국은행 ECOS API - 기준금리/환율/소비자물가 (BOK_API_KEY)
+  3. Alpha Vantage - USD/KRW 실시간 + WTI + 천연가스 (ALPHA_VANTAGE_API_KEY)
+  4. Tavily - 실시간 뉴스/이벤트 웹검색 (TAVILY_API_KEY)
+  5. Perplexity API - AI 분석 + 경제 캘린더 (PERPLEXITY_API_KEY)
+  6. 하드코딩 경제 캘린더 - FOMC/CPI/고용 등 정기 일정
 
 사용법:
   python -m data.global_event_calendar              # 전체 스캔
+  python -m data.global_event_calendar --verify     # API 키 전체 검증
   python -m data.global_event_calendar --telegram   # 텔레그램 전송
 """
 
@@ -341,6 +345,323 @@ def _extract_json_from_text(text: str) -> List[Dict]:
 
 
 # ═══════════════════════════════════════════════════
+#  A-1. 한국은행 ECOS API — 매크로 경제지표
+# ═══════════════════════════════════════════════════
+
+_BOK_QUERIES = [
+    # (key, label, stat_code, freq, item_code, days_back)
+    ("base_rate", "기준금리(%)", "722Y001", "D", "0101000", 90),
+    ("usd_krw", "원/달러", "731Y003", "D", "0000001", 7),
+    ("cpi_yoy", "소비자물가(%YoY)", "901Y009", "M", "0", 180),
+]
+
+
+def fetch_bok_indicators() -> Dict:
+    """한국은행 ECOS API — 기준금리 / 환율 / 소비자물가"""
+    api_key = os.getenv("BOK_API_KEY", "").strip()
+    if not api_key:
+        logger.warning("BOK_API_KEY 미설정")
+        return {}
+
+    base_url = "https://ecos.bok.or.kr/api/StatisticSearch"
+    today = datetime.now()
+    indicators = {}
+
+    for key, label, stat_code, freq, item_code, days_back in _BOK_QUERIES:
+        try:
+            if freq == "M":
+                start = (today - timedelta(days=days_back)).strftime("%Y%m")
+                end = today.strftime("%Y%m")
+            else:
+                start = (today - timedelta(days=days_back)).strftime("%Y%m%d")
+                end = today.strftime("%Y%m%d")
+
+            url = (
+                f"{base_url}/{api_key}/json/kr/1/10"
+                f"/{stat_code}/{freq}/{start}/{end}/{item_code}"
+            )
+            resp = requests.get(url, timeout=10)
+            data = resp.json()
+            rows = data.get("StatisticSearch", {}).get("row", [])
+            if rows:
+                latest = rows[-1]  # 가장 최근 데이터
+                indicators[key] = {
+                    "value": float(latest.get("DATA_VALUE", 0)),
+                    "date": latest.get("TIME", ""),
+                    "label": label,
+                }
+        except Exception as e:
+            logger.warning(f"BOK {key} 조회 실패: {e}")
+
+    return indicators
+
+
+# ═══════════════════════════════════════════════════
+#  A-2. Tavily 웹검색 — 실시간 뉴스/이벤트
+# ═══════════════════════════════════════════════════
+
+
+def fetch_tavily_news(days_ahead: int = 7) -> Dict:
+    """Tavily 웹검색 — 한국 증시 영향 글로벌 뉴스/이벤트"""
+    api_key = os.getenv("TAVILY_API_KEY", "").strip()
+    if not api_key:
+        logger.warning("TAVILY_API_KEY 미설정")
+        return {"answer": "", "articles": []}
+
+    today_s = datetime.now().strftime("%Y-%m-%d")
+    end_s = (datetime.now() + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
+
+    payload = {
+        "api_key": api_key,
+        "query": (
+            f"한국 증시 영향 글로벌 경제 이벤트 {today_s}~{end_s} "
+            "FOMC CPI 실적발표 금리 환율 반도체 원자재"
+        ),
+        "search_depth": "advanced",
+        "max_results": 8,
+        "include_answer": True,
+    }
+
+    try:
+        resp = requests.post(
+            "https://api.tavily.com/search", json=payload, timeout=30
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        articles = []
+        for item in data.get("results", []):
+            articles.append({
+                "title": item.get("title", ""),
+                "url": item.get("url", ""),
+                "content": item.get("content", "")[:300],
+                "score": item.get("score", 0),
+            })
+
+        return {
+            "answer": data.get("answer", ""),
+            "articles": articles,
+        }
+    except Exception as e:
+        logger.warning(f"Tavily 검색 실패: {e}")
+        return {"answer": "", "articles": []}
+
+
+# ═══════════════════════════════════════════════════
+#  A-3. Alpha Vantage — 글로벌 시장 (환율 / 원자재)
+# ═══════════════════════════════════════════════════
+
+
+def fetch_alpha_vantage_global() -> Dict:
+    """Alpha Vantage — USD/KRW 실시간 + WTI + 천연가스"""
+    api_key = os.getenv("ALPHA_VANTAGE_API_KEY", "").strip()
+    if not api_key:
+        logger.warning("ALPHA_VANTAGE_API_KEY 미설정")
+        return {}
+
+    base = "https://www.alphavantage.co/query"
+    markets = {}
+
+    # ── USD/KRW 실시간 ──
+    try:
+        resp = requests.get(base, params={
+            "function": "CURRENCY_EXCHANGE_RATE",
+            "from_currency": "USD", "to_currency": "KRW",
+            "apikey": api_key,
+        }, timeout=10)
+        info = resp.json().get("Realtime Currency Exchange Rate", {})
+        if info:
+            markets["usd_krw"] = {
+                "value": float(info.get("5. Exchange Rate", 0)),
+                "date": info.get("6. Last Refreshed", ""),
+                "label": "원/달러(실시간)",
+            }
+    except Exception as e:
+        logger.warning(f"AV USD/KRW 실패: {e}")
+
+    time.sleep(1)
+
+    # ── WTI 원유 ──
+    try:
+        resp = requests.get(base, params={
+            "function": "WTI", "interval": "daily", "apikey": api_key,
+        }, timeout=10)
+        for d in resp.json().get("data", []):
+            if d.get("value", ".") != ".":
+                markets["wti"] = {
+                    "value": float(d["value"]),
+                    "date": d.get("date", ""),
+                    "label": "WTI유가($)",
+                }
+                break
+    except Exception as e:
+        logger.warning(f"AV WTI 실패: {e}")
+
+    time.sleep(1)
+
+    # ── 천연가스 ──
+    try:
+        resp = requests.get(base, params={
+            "function": "NATURAL_GAS", "interval": "daily", "apikey": api_key,
+        }, timeout=10)
+        for d in resp.json().get("data", []):
+            if d.get("value", ".") != ".":
+                markets["natural_gas"] = {
+                    "value": float(d["value"]),
+                    "date": d.get("date", ""),
+                    "label": "천연가스($)",
+                }
+                break
+    except Exception as e:
+        logger.warning(f"AV 천연가스 실패: {e}")
+
+    return markets
+
+
+# ═══════════════════════════════════════════════════
+#  A-4. 전체 API 연결 검증
+# ═══════════════════════════════════════════════════
+
+
+def verify_all_apis() -> Dict:
+    """모든 데이터 소스 API 키 연결 테스트"""
+    if not os.getenv("BOK_API_KEY"):
+        try:
+            from dotenv import load_dotenv
+            load_dotenv(BASE_DIR.parent / ".env")
+        except ImportError:
+            pass
+
+    results = {}
+    today_s = datetime.now().strftime("%Y%m%d")
+    start_s = (datetime.now() - timedelta(days=30)).strftime("%Y%m%d")
+
+    # ── A-1 한국은행 ──
+    k = os.getenv("BOK_API_KEY", "").strip()
+    if not k:
+        results["A-1 한국은행"] = ("NO_KEY", "BOK_API_KEY 미설정")
+    else:
+        try:
+            url = (
+                f"https://ecos.bok.or.kr/api/StatisticSearch/{k}/json/kr/1/1"
+                f"/722Y001/D/{start_s}/{today_s}/0101000"
+            )
+            data = requests.get(url, timeout=10).json()
+            rows = data.get("StatisticSearch", {}).get("row", [])
+            if rows:
+                results["A-1 한국은행"] = ("OK", f"기준금리 {rows[0]['DATA_VALUE']}%")
+            else:
+                msg = data.get("RESULT", {}).get("MESSAGE", str(data)[:60])
+                results["A-1 한국은행"] = ("FAIL", msg)
+        except Exception as e:
+            results["A-1 한국은행"] = ("ERROR", str(e)[:80])
+
+    # ── A-2 Tavily ──
+    k = os.getenv("TAVILY_API_KEY", "").strip()
+    if not k:
+        results["A-2 Tavily"] = ("NO_KEY", "TAVILY_API_KEY 미설정")
+    else:
+        try:
+            data = requests.post("https://api.tavily.com/search", json={
+                "api_key": k, "query": "한국 증시", "max_results": 1,
+            }, timeout=15).json()
+            if "results" in data:
+                results["A-2 Tavily"] = ("OK", f"{len(data['results'])}건 검색 성공")
+            else:
+                results["A-2 Tavily"] = ("FAIL", str(data)[:80])
+        except Exception as e:
+            results["A-2 Tavily"] = ("ERROR", str(e)[:80])
+
+    # ── A-3 Alpha Vantage ──
+    k = os.getenv("ALPHA_VANTAGE_API_KEY", "").strip()
+    if not k:
+        results["A-3 Alpha Vantage"] = ("NO_KEY", "ALPHA_VANTAGE_API_KEY 미설정")
+    else:
+        try:
+            data = requests.get("https://www.alphavantage.co/query", params={
+                "function": "CURRENCY_EXCHANGE_RATE",
+                "from_currency": "USD", "to_currency": "KRW",
+                "apikey": k,
+            }, timeout=10).json()
+            info = data.get("Realtime Currency Exchange Rate", {})
+            if info:
+                rate = float(info.get("5. Exchange Rate", 0))
+                results["A-3 Alpha Vantage"] = ("OK", f"USD/KRW {rate:,.2f}")
+            else:
+                results["A-3 Alpha Vantage"] = ("FAIL", str(data)[:80])
+        except Exception as e:
+            results["A-3 Alpha Vantage"] = ("ERROR", str(e)[:80])
+
+    # ── A-3 네이버 (스크래핑, 키 불필요) ──
+    try:
+        resp = requests.get(
+            "https://finance.naver.com/marketindex/",
+            headers={"User-Agent": "Mozilla/5.0"}, timeout=10,
+        )
+        if resp.status_code == 200:
+            results["A-3 네이버"] = ("OK", "환율 페이지 접근 성공")
+        else:
+            results["A-3 네이버"] = ("FAIL", f"HTTP {resp.status_code}")
+    except Exception as e:
+        results["A-3 네이버"] = ("ERROR", str(e)[:80])
+
+    # ── Perplexity ──
+    k = os.getenv("PERPLEXITY_API_KEY", "").strip()
+    if not k:
+        results["Perplexity"] = ("NO_KEY", "PERPLEXITY_API_KEY 미설정")
+    else:
+        try:
+            resp = requests.post(
+                "https://api.perplexity.ai/chat/completions",
+                headers={"Authorization": f"Bearer {k}", "Content-Type": "application/json"},
+                json={"model": "sonar", "messages": [{"role": "user", "content": "hello"}], "max_tokens": 5},
+                timeout=15,
+            )
+            if resp.status_code == 200:
+                results["Perplexity"] = ("OK", "연결 성공")
+            else:
+                results["Perplexity"] = ("FAIL", f"HTTP {resp.status_code}")
+        except Exception as e:
+            results["Perplexity"] = ("ERROR", str(e)[:80])
+
+    # ── Finnhub ──
+    k = os.getenv("FINNHUB_API_KEY", "").strip()
+    if not k:
+        results["Finnhub"] = ("NO_KEY", "FINNHUB_API_KEY 미설정")
+    else:
+        try:
+            data = requests.get("https://finnhub.io/api/v1/quote", params={
+                "symbol": "AAPL", "token": k,
+            }, timeout=10).json()
+            if "c" in data and data["c"] > 0:
+                results["Finnhub"] = ("OK", f"AAPL ${data['c']}")
+            else:
+                results["Finnhub"] = ("FAIL", str(data)[:80])
+        except Exception as e:
+            results["Finnhub"] = ("ERROR", str(e)[:80])
+
+    # ── DART ──
+    k = os.getenv("DART_API_KEY", "").strip()
+    if not k:
+        results["DART"] = ("NO_KEY", "DART_API_KEY 미설정")
+    else:
+        try:
+            data = requests.get("https://opendart.fss.or.kr/api/list.json", params={
+                "crtfc_key": k,
+                "bgn_de": (datetime.now() - timedelta(days=1)).strftime("%Y%m%d"),
+                "end_de": today_s, "page_count": 1,
+            }, timeout=10).json()
+            if data.get("status") == "000":
+                results["DART"] = ("OK", f"공시 {data.get('total_count', '?')}건")
+            else:
+                results["DART"] = ("FAIL", data.get("message", "?")[:80])
+        except Exception as e:
+            results["DART"] = ("ERROR", str(e)[:80])
+
+    return results
+
+
+# ═══════════════════════════════════════════════════
 #  4. 통합 스캔 + 저장
 # ═══════════════════════════════════════════════════
 
@@ -368,35 +689,77 @@ def scan_global_events(
             pass
 
     print("=" * 60)
-    print("  글로벌 이벤트 캘린더 스캔")
+    print("  글로벌 이벤트 캘린더 스캔 (6-Source)")
     print(f"  {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     print("=" * 60)
 
-    # 1. 실적 캘린더
-    print("\n[1/3] 미국 실적 캘린더 조회...")
+    # 1. 실적 캘린더 (yfinance)
+    print("\n[1/6] 미국 실적 캘린더 조회...")
     earnings = fetch_earnings_calendar(days_ahead=days_ahead)
     print(f"  → {len(earnings)}개 이벤트 감지")
     for e in earnings:
         print(f"    D-{e['days_until']} | {e['name']}({e['symbol']}) → {e['earnings_date']}")
 
-    # 2. Perplexity 분석 (D-3 이내)
+    # 2. 한국은행 매크로 지표 (BOK)
+    print("\n[2/6] 한국은행 매크로 지표...")
+    macro_indicators = {}
+    if os.getenv("BOK_API_KEY", "").strip():
+        macro_indicators = fetch_bok_indicators()
+        if macro_indicators:
+            for k, v in macro_indicators.items():
+                val = v["value"]
+                fmt = f"{val:,.2f}" if val > 100 else f"{val}"
+                print(f"  → {v['label']}: {fmt}")
+        else:
+            print("  → 데이터 없음")
+    else:
+        print("  → BOK_API_KEY 미설정 (스킵)")
+
+    # 3. 글로벌 시장 데이터 (Alpha Vantage)
+    print("\n[3/6] 글로벌 시장 데이터 (Alpha Vantage)...")
+    global_markets = {}
+    if os.getenv("ALPHA_VANTAGE_API_KEY", "").strip():
+        global_markets = fetch_alpha_vantage_global()
+        if global_markets:
+            for k, v in global_markets.items():
+                val = v["value"]
+                fmt = f"{val:,.2f}" if val > 100 else f"${val}"
+                print(f"  → {v['label']}: {fmt}")
+        else:
+            print("  → 데이터 없음")
+    else:
+        print("  → ALPHA_VANTAGE_API_KEY 미설정 (스킵)")
+
+    # 4. 실시간 뉴스 검색 (Tavily)
+    print("\n[4/6] 실시간 뉴스 검색 (Tavily)...")
+    news = {"answer": "", "articles": []}
+    if os.getenv("TAVILY_API_KEY", "").strip():
+        news = fetch_tavily_news(days_ahead=days_ahead)
+        n_articles = len(news.get("articles", []))
+        print(f"  → {n_articles}건 뉴스 수집")
+        if news.get("answer"):
+            print(f"  → AI 요약: {news['answer'][:100]}...")
+    else:
+        print("  → TAVILY_API_KEY 미설정 (스킵)")
+
+    # 5. Perplexity AI 분석 (D-3 이내)
     if use_perplexity and earnings:
-        print("\n[2/3] Perplexity AI 분석...")
+        print("\n[5/6] Perplexity AI 분석...")
         earnings = analyze_upcoming_events(earnings)
         print("  → 분석 완료")
     else:
-        print("\n[2/3] Perplexity 분석 스킵")
+        print("\n[5/6] Perplexity 분석 스킵")
 
-    # 3. 경제 캘린더
+    # 6. 경제 캘린더 (Perplexity)
     economic = []
     if use_perplexity:
-        print("\n[3/3] 경제 캘린더 조회 (Perplexity)...")
+        print("\n[6/6] 경제 캘린더 조회 (Perplexity)...")
         economic = fetch_economic_calendar(days_ahead)
         print(f"  → {len(economic)}개 이벤트")
     else:
-        print("\n[3/3] 경제 캘린더 스킵")
+        print("\n[6/6] 경제 캘린더 스킵")
 
-    # 4. D-3 알림 생성
+    # 7. D-3 알림 생성
     alerts = [e for e in earnings if e["days_until"] <= 3]
 
     # 5. 한국 수혜주 통합
@@ -454,6 +817,9 @@ def scan_global_events(
         "economic": economic,
         "alerts": alerts,
         "kr_beneficiaries": beneficiaries,
+        "macro_indicators": macro_indicators,
+        "global_markets": global_markets,
+        "news": news,
     }
 
     # 저장
@@ -501,9 +867,37 @@ def format_telegram_message(result: Dict) -> str:
     """스캔 결과 → 텔레그램 메시지 (지역별 그룹핑)"""
     lines = [
         "━" * 24,
-        "🌍 글로벌 이벤트 캘린더",
+        "🌍 글로벌 이벤트 캘린더 (6-Source)",
         "━" * 24,
     ]
+
+    # ── 매크로 지표 (BOK + Alpha Vantage) ──
+    macro = result.get("macro_indicators", {})
+    gm = result.get("global_markets", {})
+    if macro or gm:
+        lines.append("")
+        lines.append("📊 매크로 지표")
+        lines.append("─" * 24)
+        parts = []
+        # BOK 데이터
+        if "base_rate" in macro:
+            parts.append(f"기준금리 {macro['base_rate']['value']}%")
+        if "usd_krw" in macro:
+            parts.append(f"원/달러 {macro['usd_krw']['value']:,.0f}")
+        elif "usd_krw" in gm:
+            parts.append(f"원/달러 {gm['usd_krw']['value']:,.0f}")
+        if "cpi_yoy" in macro:
+            parts.append(f"CPI {macro['cpi_yoy']['value']}%")
+        if parts:
+            lines.append(f"  {' | '.join(parts)}")
+        # Alpha Vantage 원자재
+        parts2 = []
+        if "wti" in gm:
+            parts2.append(f"WTI ${gm['wti']['value']:.2f}")
+        if "natural_gas" in gm:
+            parts2.append(f"NG ${gm['natural_gas']['value']:.2f}")
+        if parts2:
+            lines.append(f"  {' | '.join(parts2)}")
 
     # ── 경제 이벤트를 지역별로 분류 ──
     economic = result.get("economic", [])
@@ -572,6 +966,23 @@ def format_telegram_message(result: Dict) -> str:
         lines.append("🤖 AI 분석 (Perplexity)")
         lines.append("─" * 24)
         lines.append(analysis)
+
+    # ── 실시간 뉴스 (Tavily) ──
+    news = result.get("news", {})
+    articles = news.get("articles", [])[:5]
+    if articles:
+        lines.append("")
+        lines.append("📰 실시간 뉴스 (Tavily)")
+        lines.append("─" * 24)
+        if news.get("answer"):
+            answer = news["answer"]
+            if len(answer) > 300:
+                answer = answer[:297] + "..."
+            lines.append(f"  {answer}")
+            lines.append("")
+        for a in articles:
+            title = a.get("title", "")[:50]
+            lines.append(f"  • {title}")
 
     # ── 한국 수혜주 종합 TOP 5 ──
     bene = result.get("kr_beneficiaries", [])[:5]
@@ -644,6 +1055,20 @@ if __name__ == "__main__":
 
     logging.basicConfig(level=logging.WARNING)
 
+    # ── --verify: API 키 전체 검증 ──
+    if "--verify" in sys.argv:
+        print("=" * 60)
+        print("  API 연결 검증 (A-4 풀스캔)")
+        print("=" * 60)
+        results = verify_all_apis()
+        for name, (status, detail) in results.items():
+            icon = {"OK": "✅", "FAIL": "❌", "ERROR": "⚠️", "NO_KEY": "⬜"}.get(status, "?")
+            print(f"  {icon} {name:20s} {status:7s} {detail}")
+        ok = sum(1 for s, _ in results.values() if s == "OK")
+        total = len(results)
+        print(f"\n  결과: {ok}/{total} 정상")
+        sys.exit(0)
+
     use_tg = "--telegram" in sys.argv
 
     result = scan_global_events(days_ahead=7, use_perplexity=True)
@@ -652,6 +1077,9 @@ if __name__ == "__main__":
     print(f"\n{'='*60}")
     print(f"  실적 이벤트: {len(result['earnings'])}개")
     print(f"  경제 이벤트: {len(result['economic'])}개")
+    print(f"  매크로 지표: {len(result.get('macro_indicators', {}))}개")
+    print(f"  글로벌 시장: {len(result.get('global_markets', {}))}개")
+    print(f"  뉴스 기사: {len(result.get('news', {}).get('articles', []))}개")
     print(f"  D-3 알림: {len(result['alerts'])}개")
     print(f"  한국 수혜주: {len(result['kr_beneficiaries'])}개")
     print(f"{'='*60}")
