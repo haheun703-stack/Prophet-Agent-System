@@ -659,6 +659,20 @@ class AutoTrader:
                 f"  가용자금 {old_usable:,}원 → {usable_cash:,}원"
             )
 
+        # ── 이벤트 리스크 → 스윙 예산 축소 ──
+        try:
+            from data.event_calendar import get_event_risk_for_recommendation
+            ev_risk = get_event_risk_for_recommendation(date.today())
+            _rl = ev_risk.get("risk_level", "LOW")
+            if _rl == "EXTREME":
+                usable_cash = int(usable_cash * 0.5)
+                await _send("💀 EXTREME 이벤트 → 스윙 예산 50% 축소")
+            elif _rl == "HIGH":
+                usable_cash = int(usable_cash * 0.7)
+                await _send("🔴 HIGH 이벤트 → 스윙 예산 30% 축소")
+        except Exception:
+            pass
+
         buy_amount = usable_cash // num_targets if num_targets > 0 else 0
 
         if buy_amount < 50000:
@@ -1140,6 +1154,17 @@ class AutoTrader:
         bot_conf = self.config.get("bot", {})
         max_pos = bot_conf.get("max_auto_positions", 2)
         buy_amount = bot_conf.get("auto_buy_amount", 500000)
+        # ── 이벤트 리스크 → 데이 예산 축소 ──
+        try:
+            from data.event_calendar import get_event_risk_for_recommendation
+            ev_risk = get_event_risk_for_recommendation(date.today())
+            _rl = ev_risk.get("risk_level", "LOW")
+            if _rl == "EXTREME":
+                buy_amount = int(buy_amount * 0.5)
+            elif _rl == "HIGH":
+                buy_amount = int(buy_amount * 0.7)
+        except Exception:
+            pass
 
         # FIX-02: BRAIN 교차 신호 — 관망 차단 + 포지션 캡
         brain_alloc = self._load_brain_allocation()
@@ -1792,14 +1817,15 @@ class AutoTrader:
             return
 
         if self.mode == "day":
-            # 데이 모드: 전량 청산 (preclose 태그 포지션은 제외)
+            # 데이 모드: 전량 청산 (preclose/predawn 태그 포지션은 제외)
+            keep_sources = ("preclose", "predawn")
             preclose_codes = {c for c, p in self._positions.items()
-                              if p.get("source") == "preclose"}
+                              if p.get("source") in keep_sources}
             if preclose_codes:
-                logger.info(f"장마감 청산 (preclose {len(preclose_codes)}종목 제외)")
+                logger.info(f"장마감 청산 ({len(preclose_codes)}종목 제외: preclose/predawn)")
                 await self._alert(
                     f"🏁 장마감 청산 시작...\n"
-                    f"  (preclose {len(preclose_codes)}종목 제외 — 내일용)"
+                    f"  ({len(preclose_codes)}종목 제외 — 내일용)"
                 )
                 # preclose 제외하고 개별 청산
                 for code, pos in list(self._positions.items()):

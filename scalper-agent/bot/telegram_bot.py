@@ -2421,9 +2421,11 @@ class BodyHunterBot:
         jq.run_daily(self._job_global_event_scan, time=kst_time(8, 0))
         logger.info("해외 이벤트 스캔 등록: 08:00 KST")
 
-        # DART 거버넌스 공시 자동 크롤링 (08:05 - 장 전)
+        # DART 거버넌스 공시 크롤링 (08:05 1차 / 13:00 2차 / 16:22 3차)
         jq.run_daily(self._job_dart_refresh, time=kst_time(8, 5))
-        logger.info("DART 거버넌스 크롤링 등록: 08:05 KST")
+        jq.run_daily(self._job_dart_refresh, time=kst_time(13, 0))
+        jq.run_daily(self._job_dart_refresh, time=kst_time(16, 22))
+        logger.info("DART 크롤링 등록: 08:05 / 13:00 / 16:22 KST")
 
         # 스윙 종목 선정 (16:35 - 시그널 기록 후)
         jq.run_daily(self._job_swing_picker, time=kst_time(16, 35))
