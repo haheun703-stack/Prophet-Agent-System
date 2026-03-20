@@ -2499,6 +2499,12 @@ class BodyHunterBot:
         jq.run_repeating(self._job_intraday_tv_scan, interval=1800, first=3600)
         logger.info("장중 TV 스캔 등록: 10:00 초기화 + 30분 유니버스 스캔")
 
+        # ── 장중 뉴스 감성 스캔 (09:30 / 11:00 / 13:30) ──
+        jq.run_daily(self._job_news_sentiment, time=kst_time(9, 30))
+        jq.run_daily(self._job_news_sentiment, time=kst_time(11, 0))
+        jq.run_daily(self._job_news_sentiment, time=kst_time(13, 30))
+        logger.info("장중 뉴스 감성 등록: 09:30 / 11:00 / 13:30 KST")
+
         # ── 프리클로즈 스캔 (14:30 스캔 + 14:50 리포트) ──
         jq.run_daily(self._job_preclose_scan, time=kst_time(14, 30))
         jq.run_daily(self._send_preclose_brief, time=kst_time(14, 50))
@@ -3002,6 +3008,77 @@ class BodyHunterBot:
     _tv_avgs: dict = None
     _tv_history = None
     _tv_prev_codes: set = None
+
+    # ── 장중 뉴스 감성 스캔 ──
+    async def _job_news_sentiment(self, context):
+        """09:30/11:00/13:30 — 보유종목 뉴스 감성 스캔 + Kill-Switch"""
+        from datetime import date
+        if date.today().weekday() >= 5:
+            return
+        try:
+            from data.news_sentiment import (
+                scan_intraday_news, format_kill_switch_alert,
+                format_scan_summary,
+            )
+
+            # 보유종목 + 매수 후보 수집
+            positions = []
+            if hasattr(self, "auto_trader") and self.auto_trader:
+                for code, pos in self.auto_trader._positions.items():
+                    positions.append({
+                        "code": code,
+                        "name": pos.get("name", code),
+                    })
+
+            # 매수 후보 (프리무브/추천)
+            watchlist = []
+            pm_path = Path(__file__).resolve().parent.parent / "data_store" / "premove_candidates.json"
+            if pm_path.exists():
+                try:
+                    import json as _json
+                    cands = _json.loads(pm_path.read_text(encoding="utf-8"))
+                    for c in (cands if isinstance(cands, list) else []):
+                        watchlist.append({
+                            "code": c.get("code", ""),
+                            "name": c.get("name", ""),
+                        })
+                except Exception:
+                    pass
+
+            if not positions and not watchlist:
+                return
+
+            report = await asyncio.to_thread(
+                scan_intraday_news, positions, watchlist
+            )
+
+            # 로그 출력
+            logger.info(format_scan_summary(report))
+
+            # Kill-Switch → 텔레그램 긴급 알림
+            chat_id = int(self.chat_id) if self.chat_id else None
+            for ks in report.kill_switches:
+                alert_text = format_kill_switch_alert(ks)
+                if chat_id:
+                    await context.bot.send_message(
+                        chat_id=chat_id, text=alert_text
+                    )
+
+            # morning_data에 저장 (프리클로즈 등에서 활용)
+            self._morning_data["news_sentiment"] = {
+                "scanned_at": report.scanned_at,
+                "kill_switches": [
+                    {"code": r.code, "name": r.name, "sentiment": r.sentiment}
+                    for r in report.kill_switches
+                ],
+                "warnings": [
+                    {"code": r.code, "name": r.name, "sentiment": r.sentiment}
+                    for r in report.warnings
+                ],
+            }
+
+        except Exception as e:
+            logger.error(f"[NEWS_SENTIMENT] 장중 스캔 실패: {e}")
 
     async def _job_intraday_tv_init(self, context):
         """10:00 장중 TV 스캔 초기화 — 20일 평균 거래대금 사전계산"""
@@ -3519,10 +3596,26 @@ class BodyHunterBot:
                         f" (TV {sig.get('estimated_tv_ratio', 0):.1f}x)"
                     )
 
-            # 프리클로즈 후보
+            # 프리클로즈 후보 (뉴스 부정 종목 필터)
             raw = load_preclose_results()
+            news_rejected = []
+            try:
+                from data.news_sentiment import get_news_sentiment_for_scoring
+                filtered = []
+                for r in (raw or []):
+                    ns = get_news_sentiment_for_scoring(r.get("code", ""))
+                    if ns.get("action") in ("KILL_SWITCH", "WARNING"):
+                        news_rejected.append(r.get("name", ""))
+                    else:
+                        filtered.append(r)
+                raw = filtered
+            except Exception:
+                pass
+
             if raw:
                 lines.append("")
+                if news_rejected:
+                    lines.append(f"📰 뉴스 악재 제외: {', '.join(news_rejected)}")
                 lines.append(f"📊 내일 후보 ({len(raw)}종목):")
                 for i, r in enumerate(raw[:3], 1):
                     to = r.get("trade_object", {})

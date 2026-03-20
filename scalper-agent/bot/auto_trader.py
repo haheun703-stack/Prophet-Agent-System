@@ -1388,8 +1388,20 @@ class AutoTrader:
                         "BREAKING": -10, "BOUNCING": 0, "WARMUP": 0}
         eye_adj = EYE_RISK_MAP.get(verdict.verdict, 0)
 
+        # ── 뉴스 감성 Kill-Switch → Guardian 가산 ──
+        try:
+            from data.news_sentiment import get_news_risk_adjustment
+            news_adj = get_news_risk_adjustment(code)
+            if news_adj > 0:
+                eye_adj += news_adj
+                logger.info(f"[NEWS→GUARDIAN] {name} 뉴스 리스크 +{news_adj:.0f} → 합산 {eye_adj}")
+        except Exception:
+            pass
+
         # (1) DYING + HIGH confidence → Guardian 즉시 재평가
-        if verdict.verdict == "DYING" and verdict.confidence >= 0.70:
+        #     뉴스 Kill-Switch → WEAKENING에서도 Guardian 재평가
+        news_triggered = eye_adj > EYE_RISK_MAP.get(verdict.verdict, 0)
+        if (verdict.verdict == "DYING" and verdict.confidence >= 0.70) or news_triggered:
             try:
                 from data.position_guardian import evaluate_position
                 # 현재가: Eye 버퍼의 최신 바 → 없으면 진입가 fallback
