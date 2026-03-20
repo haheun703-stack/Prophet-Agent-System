@@ -99,6 +99,7 @@ class MacroAssessment:
     gold_chg: float = 0.0
     hyg_chg: float = 0.0
     es_chg: float = 0.0
+    korea_strength: float = 0.0  # NXT-06: 한국장 강도
     contradictions: list = field(default_factory=list)
     narrative: str = ""
 
@@ -198,15 +199,18 @@ def _phase1_macro(nw: dict) -> MacroAssessment:
     m.hyg_chg = ri.get("HYG_div", {}).get("change_pct", 0) or ri.get("HYG", {}).get("change_pct", 0) or 0
     m.es_chg = ri.get("ES", {}).get("change_pct", 0) or 0
 
-    # Step 1A: 기본 방향
+    # NXT-06: 한국장 강도 추출 (NXT 캘리브레이션 v2)
+    m.korea_strength = nw.get("korea_strength", 0)
+
+    # Step 1A: 기본 방향 (NXT-06: 한국장 강도 포함된 total 기준)
     t = m.nxt_total
-    if t >= 6:
+    if t >= 7:
         m.direction = "STRONG_BULL"
-    elif t >= 2:
+    elif t >= 3:
         m.direction = "BULL"
-    elif t >= -2:
+    elif t >= -1:
         m.direction = "NEUTRAL"
-    elif t >= -6:
+    elif t >= -4:
         m.direction = "BEAR"
     else:
         m.direction = "STRONG_BEAR"
@@ -1180,7 +1184,9 @@ def format_brain_telegram(report: BrainReport) -> str:
     # Phase 1: 매크로
     d_emoji = DIR_EMOJI.get(m.direction, "⚪")
     d_kr = DIR_KR.get(m.direction, m.direction)
-    lines.append(f"📊 매크로: {d_emoji} {d_kr} (NXT {m.nxt_total:+.0f}점)")
+    kr_str = m.korea_strength
+    kr_tag = f" | 한국장{kr_str:+.1f}" if kr_str else ""
+    lines.append(f"📊 매크로: {d_emoji} {d_kr} (NXT {m.nxt_total:+.0f}점{kr_tag})")
     if m.narrative:
         lines.append(f"  {m.narrative}")
 

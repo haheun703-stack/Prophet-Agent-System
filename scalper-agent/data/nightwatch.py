@@ -86,6 +86,9 @@ class NightwatchReport:
     # 3단: 괴리 감지
     divergence_score: float = 0.0
     divergences: List[str] = field(default_factory=list)
+    # 4.5단: 한국장 강도 (NXT 캘리브레이션 v2)
+    korea_strength: float = 0.0
+    korea_detail: Dict = field(default_factory=dict)
     # 최종
     total_score: float = 0.0
     signal: str = "🟡"
@@ -561,11 +564,11 @@ def detect_divergence() -> Tuple[float, List[str], Dict]:
         raw["VIX"] = asdict(vix)
         if vix.value >= 30:
             vix.signal = "💀"
-            penalty -= 3.0
+            penalty -= 2.5  # NXT-03: was -3.0 → -2.5
             divergences.append(f"💀 VIX {vix.value:.1f} - 패닉 구간")
         elif vix.value >= 25:
             vix.signal = "🔴"
-            penalty -= 2.0
+            penalty -= 1.5  # NXT-03: was -2.0 → -1.5 (25는 "불안"이지 "공포"가 아님)
             divergences.append(f"🔴 VIX {vix.value:.1f} - 공포 구간")
         elif vix.value >= 20:
             vix.signal = "🟡"
@@ -584,7 +587,7 @@ def detect_divergence() -> Tuple[float, List[str], Dict]:
     if (hyg and hyg.change_pct is not None and
             es and es.change_pct is not None):
         if hyg.change_pct < -0.3 and es.change_pct > -0.2:
-            penalty -= 2.0
+            penalty -= 1.5  # NXT-03: was -2.0 → -1.5
             divergences.append(
                 f"⚠️ HYG {hyg.change_pct:+.2f}% vs ES {es.change_pct:+.2f}%"
                 f" - 숨은 크레딧 스트레스"
@@ -604,7 +607,7 @@ def detect_divergence() -> Tuple[float, List[str], Dict]:
                 f" - 스마트머니 위험선호 전환"
             )
         elif tnx.change_abs > 0.05 and gold.change_pct > 0.3:
-            penalty -= 1.5
+            penalty -= 1.0  # NXT-03: was -1.5 → -1.0
             divergences.append(
                 f"🔴 TNX {tnx.change_abs:+.3f} + Gold {gold.change_pct:+.2f}%"
                 f" - 안전자산 쏠림"
@@ -615,7 +618,7 @@ def detect_divergence() -> Tuple[float, List[str], Dict]:
     raw["USDKRW"] = asdict(usdkrw) if usdkrw else {}
     if usdkrw and usdkrw.change_pct is not None:
         if usdkrw.change_pct > 0.5:  # 원화 약세 급등
-            penalty -= 1.0
+            penalty -= 0.7  # NXT-03: was -1.0 → -0.7
             divergences.append(
                 f"🔴 원/달러 {usdkrw.change_pct:+.2f}% - 원화 급락"
             )
@@ -623,6 +626,136 @@ def detect_divergence() -> Tuple[float, List[str], Dict]:
             penalty += 0.5
 
     return round(penalty, 1), divergences, raw
+
+
+# ═══════════════════════════════════════════════════
+#  [4.5단] 한국장 강도 (NXT 캘리브레이션 v2)
+#  매크로 공포만으로 판단하지 않고, 한국 시장 실제 상태 반영
+#  "시장이 안 좋아도 오를 놈은 올라" — 이걸 수치화
+# ═══════════════════════════════════════════════════
+def _calc_korea_strength() -> Tuple[float, Dict]:
+    """
+    한국장 자체 강도 판단
+    범위: -3.0 ~ +5.0
+
+    매크로가 무서워도 한국이 강하면 양수 → 공포 상쇄
+    매크로가 좋아도 한국이 약하면 음수 → 낙관 견제
+    """
+    score = 0.0
+    detail = {}
+
+    # ── (1) 기관/외인 순매수 (pykrx) ──
+    try:
+        from pykrx import stock as pykrx_stock
+        from datetime import date, timedelta as td
+
+        today = date.today()
+        week_ago = (today - td(days=10)).strftime("%Y%m%d")
+        today_str = today.strftime("%Y%m%d")
+
+        # 기관/외인 매매동향 (KOSPI)
+        tv_df = pykrx_stock.get_market_trading_value_by_date(
+            week_ago, today_str, "KOSPI"
+        )
+        if tv_df is not None and len(tv_df) >= 1:
+            latest = tv_df.iloc[-1]
+
+            # 기관 순매수 (원 → 억원)
+            inst_raw = latest.get("기관합계", 0)
+            inst_buy = inst_raw / 1_0000_0000 if abs(inst_raw) > 1000 else inst_raw
+            if inst_buy >= 3000:
+                score += 1.5
+            elif inst_buy >= 1000:
+                score += 0.8
+            elif inst_buy <= -3000:
+                score -= 1.0
+            elif inst_buy <= -1000:
+                score -= 0.5
+            detail["기관순매수"] = f"{inst_buy:+,.0f}억"
+
+            # 외인 순매수
+            for_raw = latest.get("외국인합계", 0)
+            for_buy = for_raw / 1_0000_0000 if abs(for_raw) > 1000 else for_raw
+            if for_buy >= 2000:
+                score += 1.0
+            elif for_buy >= 500:
+                score += 0.5
+            elif for_buy <= -2000:
+                score -= 0.7
+            elif for_buy <= -500:
+                score -= 0.3
+            detail["외인순매수"] = f"{for_buy:+,.0f}억"
+
+    except Exception as e:
+        logger.warning(f"[KR 강도] 기관/외인 데이터 실패: {e}")
+
+    # ── (3) 코스피 기술적 위치 + (5) 거래대금 활력 ──
+    try:
+        from pykrx import stock as pykrx_stock
+        from datetime import date, timedelta as td
+
+        today = date.today()
+        start_90 = (today - td(days=120)).strftime("%Y%m%d")
+        today_str = today.strftime("%Y%m%d")
+
+        idx_df = pykrx_stock.get_index_ohlcv(start_90, today_str, "1001")
+        if idx_df is not None and len(idx_df) >= 60:
+            closes = idx_df["종가"]
+            current = closes.iloc[-1]
+            ma5 = closes.iloc[-5:].mean()
+            ma20 = closes.iloc[-20:].mean()
+            ma60 = closes.iloc[-60:].mean()
+
+            if current > ma20 and current > ma5:
+                score += 1.0
+                detail["기술적위치"] = "5+20일선 위 (상승추세)"
+            elif current > ma20:
+                score += 0.5
+                detail["기술적위치"] = "20일선 위"
+            elif current < ma60:
+                score -= 1.0
+                detail["기술적위치"] = "60일선 아래 (약세)"
+            elif current < ma20:
+                score -= 0.5
+                detail["기술적위치"] = "20일선 아래"
+            else:
+                detail["기술적위치"] = "중립"
+
+            # 거래대금 활력
+            if "거래대금" in idx_df.columns and len(idx_df) >= 20:
+                tv_today = idx_df["거래대금"].iloc[-1]
+                tv_avg20 = idx_df["거래대금"].iloc[-20:].mean()
+                if tv_avg20 > 0:
+                    tv_ratio = tv_today / tv_avg20
+                    if tv_ratio >= 1.5:
+                        score += 1.0
+                    elif tv_ratio >= 1.0:
+                        score += 0.3
+                    elif tv_ratio < 0.7:
+                        score -= 0.5
+                    detail["거래대금활력"] = f"{tv_ratio:.2f}x"
+
+    except Exception as e:
+        logger.warning(f"[KR 강도] 코스피 기술적 데이터 실패: {e}")
+
+    # ── (4) 전일 추천 적중률 (봇 성과 기반) ──
+    try:
+        insights_path = DATA_DIR / "learning" / "insights.json"
+        if insights_path.exists():
+            insights = json.loads(insights_path.read_text("utf-8"))
+            hit_rate = insights.get("overall_hit_rate", 50)
+            if hit_rate >= 70:
+                score += 0.5
+            elif hit_rate < 50:
+                score -= 0.3
+            detail["봇적중률"] = f"{hit_rate:.0f}%"
+    except Exception:
+        pass
+
+    final = max(-3.0, min(5.0, round(score, 1)))
+    detail["score"] = final
+    logger.info(f"[KR 강도] 한국장 강도: {final:+.1f} | {detail}")
+    return final, detail
 
 
 # ═══════════════════════════════════════════════════
@@ -868,6 +1001,7 @@ def select_sectors_and_targets(
     total_score: float,
     macro: Dict,
     max_tier: int = 1,
+    korea_strength: float = 0.0,  # NXT-02: 한국장 강도 전달
 ) -> Tuple[List[str], List[Dict], str]:
     """
     NIGHTWATCH 점수 + 매크로 조건 → 섹터 우선순위 → NXT 대상 종목
@@ -962,12 +1096,20 @@ def select_sectors_and_targets(
                 selected_keys.append(key)
         reason += commodity_reason
 
-    # ── 극단 패닉만 인버스 (-5 이하) ──
-    # 백테스트: score<-2 인버스 적중 41% → 대부분 손실
-    # 수정: -5 이하 극단적일 때만 인버스 (그 외는 관망=미진입)
+    # ── NXT-02: 인버스 추천 강화 — "진짜 패닉"만 인버스 ──
+    # 매크로만 나빠도 한국장이 강하면 인버스 안 함
+    # VIX 30+ AND 한국 약세일 때만 인버스 (VIX 25~30은 관망)
     elif total_score < -5:
+        # 한국장 강도가 +1.0 이상이면 → 인버스 안 함 (한국은 강함)
+        if korea_strength >= 1.0:
+            return [], [], f"🟡 매크로 불안하나 한국장 강세({korea_strength:+.1f}) → 관망"
+        # raw VIX 확인: 30 미만이면서 한국이 약하지 않으면 → 진입금지(관망)
+        vix_val = macro.get("raw_vix", 0)
+        if vix_val < 30 and korea_strength > -1.0:
+            return [], [], f"🔴 VIX {vix_val:.0f} + 한국({korea_strength:+.1f}) → 인버스 아닌 관망"
+        # 진짜 패닉: VIX 30+ OR 한국도 약세(-1.0 이하)
         selected_keys = ["inverse"]
-        reason = "💀 극단 하락 → 인버스 헤지"
+        reason = f"💀 극단 하락 + 한국 약세({korea_strength:+.1f}) → 인버스 헤지"
 
     # ── 관망 (-1.9 ~ 1.9) ──
     else:
@@ -1024,29 +1166,40 @@ def calculate_nightwatch_score(
     divergences: List[str],
     raw_indicators: Dict,
     macro_conditions: Optional[Dict] = None,
+    korea_strength: float = 0.0,       # NXT-01: 한국장 강도
+    korea_detail: Optional[Dict] = None,  # NXT-01: 한국장 상세
 ) -> NightwatchReport:
-    """3단 체인 + 매크로 조건 종합 → JARVIS 섹터 매핑 → 최종 리포트"""
-    total = asian_score + europe_score + div_score
+    """4단 체인 + 한국장 강도 + 매크로 조건 종합 → JARVIS 섹터 매핑 → 최종 리포트"""
+    # NXT-01: 4단 공식 — 매크로 공포 + 한국 실제 강도
+    total = asian_score + europe_score + div_score + korea_strength
     total = max(-10.0, min(10.0, total))
 
-    # 신호 변환 (v2: 관망 확대, 금지/패닉 축소 - 백테스트 44%→개선)
-    if total >= 5:
+    # NXT-04: 시그널 구간 재조정 (한국장 강도 반영)
+    if total >= 6:
         signal, text = "🟢🟢", "강한 매수"
-    elif total >= 2:
+    elif total >= 3:
         signal, text = "🟢", "매수 고려"
-    elif total >= -2:
-        signal, text = "🟡", "관망"       # was -1 → -2 (하방 관망 확대)
-    elif total >= -5:
-        signal, text = "🔴", "진입 금지"  # was -4 → -5
-    else:
+    elif total >= -1:
+        signal, text = "🟡", "관망"
+    elif total >= -4:
+        signal, text = "🔴", "진입 금지"
+    elif total >= -7:
         signal, text = "💀", "전체 포지션 점검"
+    else:
+        signal, text = "☠️", "인버스 강력"
 
-    # JARVIS 섹터 매핑 (매크로 조건 기반)
+    # JARVIS 섹터 매핑 (매크로 조건 기반 + 한국장 강도)
     macro = macro_conditions or {}
+    # raw VIX를 macro에 전달 (NXT-02 인버스 판정용)
+    vix_raw = raw_indicators.get("VIX", {})
+    if isinstance(vix_raw, dict) and "value" in vix_raw:
+        macro["raw_vix"] = vix_raw["value"]
+
     sector_names, nxt_targets, selection_reason = select_sectors_and_targets(
         total_score=total,
         macro=macro,
-        max_tier=2,  # 리포트에 Tier2까지 포함 (매수 시 auto_trader에서 Tier1 필터)
+        max_tier=2,
+        korea_strength=korea_strength,  # NXT-02: 인버스 판정에 활용
     )
 
     return NightwatchReport(
@@ -1057,6 +1210,8 @@ def calculate_nightwatch_score(
         europe_detail=europe_detail,
         divergence_score=div_score,
         divergences=divergences,
+        korea_strength=korea_strength,
+        korea_detail=korea_detail or {},
         total_score=round(total, 1),
         signal=signal,
         signal_text=text,
@@ -1097,17 +1252,24 @@ def run_nightwatch() -> NightwatchReport:
     active = macro_conditions.get("active_text", [])
     logger.info(f"[NIGHTWATCH] 매크로: {', '.join(active) if active else '특이사항 없음'}")
 
+    # 4.5단: 한국장 강도 (NXT 캘리브레이션 v2)
+    logger.info("[NIGHTWATCH] [4.5단] 한국장 강도 측정...")
+    kr_strength, kr_detail = _calc_korea_strength()
+    logger.info(f"[NIGHTWATCH] 한국장 강도: {kr_strength:+.1f}")
+
     # 5단: 진입 재개 시그널 감시 (WAR GATE)
     logger.info("[NIGHTWATCH] [5단] 진입 재개 시그널 감시 (WTI/VIX/KOSPI)...")
     reentry = check_reentry_signals(raw, macro_conditions)
     logger.info(f"[NIGHTWATCH] 재개시그널: {reentry['summary']}")
 
-    # 종합 (JARVIS 섹터 매핑 포함)
+    # 종합 (JARVIS 섹터 매핑 포함 + 한국장 강도)
     report = calculate_nightwatch_score(
         asian_score, asian_detail,
         europe_score, europe_detail,
         div_score, divergences, raw,
         macro_conditions=macro_conditions,
+        korea_strength=kr_strength,
+        korea_detail=kr_detail,
     )
     report.reentry_signals = reentry
 

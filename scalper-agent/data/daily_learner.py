@@ -456,18 +456,47 @@ def verify_nxt_signals(today: str) -> Optional[dict]:
     avg_ret = round(sum(r["return_pct"] for r in results) / total, 2)
     hit_rate = round(hits / total * 100, 1)
 
+    # NXT-07: korea_strength + 정규추천 수익률 비교
+    korea_str = yesterday_report.get("korea_strength", 0)
+
+    # 정규 추천 당일 평균 수익률 (signal_log에서)
+    rec_avg = 0.0
+    try:
+        sl_path = STORE_DIR / "learning" / "signal_log.json"
+        if sl_path.exists():
+            sl = json.loads(sl_path.read_text("utf-8"))
+            for entry in reversed(sl):
+                if entry.get("verify_date") == today:
+                    rec_avg = entry.get("avg_return", 0)
+                    break
+    except Exception:
+        pass
+
+    # 더 나은 행동 판정
+    signal_text = yesterday_report.get("signal_text", "")
+    is_inverse = "인버스" in signal_text or "포지션 점검" in signal_text
+    if is_inverse and rec_avg > avg_ret:
+        better_action = "정규추천"
+    elif not is_inverse and avg_ret > rec_avg:
+        better_action = "NXT"
+    else:
+        better_action = "NXT" if avg_ret > 0 else "관망"
+
     record = {
         "signal_date": yesterday,
         "verify_date": today,
         "signal": yesterday_report.get("signal", ""),
-        "signal_text": yesterday_report.get("signal_text", ""),
+        "signal_text": signal_text,
         "total_score": yesterday_report.get("total_score", 0),
+        "korea_strength": korea_str,
         "recommended_sectors": yesterday_report.get("recommended_sectors", []),
         "targets": results,
         "total": total,
         "hit_count": hits,
         "hit_rate": hit_rate,
         "avg_return": avg_ret,
+        "rec_avg_return": rec_avg,
+        "better_action": better_action,
     }
 
     # NXT 로그에 누적
@@ -528,6 +557,14 @@ def calc_nxt_rolling(days: int = 30) -> dict:
     best = max(all_targets, key=lambda t: t["return_pct"]) if all_targets else None
     worst = min(all_targets, key=lambda t: t["return_pct"]) if all_targets else None
 
+    # NXT-07: 인버스 적중률 + better_action 통계
+    inverse_days = [r for r in recent if "인버스" in r.get("signal_text", "") or "점검" in r.get("signal_text", "")]
+    inverse_correct = sum(1 for r in inverse_days if r.get("avg_return", 0) > 0)
+    inverse_hit_rate = round(inverse_correct / len(inverse_days) * 100, 1) if inverse_days else 0
+
+    better_nxt = sum(1 for r in recent if r.get("better_action") == "NXT")
+    better_rec = sum(1 for r in recent if r.get("better_action") == "정규추천")
+
     return {
         "period": len(recent),
         "total_days": len(recent),
@@ -538,6 +575,10 @@ def calc_nxt_rolling(days: int = 30) -> dict:
         "by_signal": by_signal_out,
         "best": best,
         "worst": worst,
+        "inverse_days": len(inverse_days),
+        "inverse_hit_rate": inverse_hit_rate,
+        "better_nxt": better_nxt,
+        "better_rec": better_rec,
     }
 
 
@@ -635,13 +676,20 @@ def format_learning_report(
     if nxt_verify and nxt_verify.get("total", 0) > 0:
         nv = nxt_verify
         sig_icon = nv.get("signal", "🟡")
+        kr_str = nv.get("korea_strength", 0)
+        kr_tag = f" | 한국장{kr_str:+.1f}" if kr_str else ""
         lines.append(f"\n{sig_icon} NXT 시그널 검증 ({nv['signal_date']})")
         lines.append("────────────────────────")
-        lines.append(f"  신호: {nv.get('signal_text', '')} (점수 {nv.get('total_score', 0):+.1f})")
+        lines.append(f"  신호: {nv.get('signal_text', '')} (점수 {nv.get('total_score', 0):+.1f}{kr_tag})")
         for t in nv.get("targets", []):
             icon = "✅" if t["hit"] else "❌"
             lines.append(f"  {icon} {t['name']}({t['code']}) {t['return_pct']:+.1f}%")
         lines.append(f"  적중: {nv['hit_count']}/{nv['total']} ({nv['hit_rate']}%) | 평균 {nv['avg_return']:+.2f}%")
+        # NXT-07: NXT vs 정규추천 비교
+        rec_avg = nv.get("rec_avg_return", 0)
+        better = nv.get("better_action", "")
+        if rec_avg:
+            lines.append(f"  정규추천 평균: {rec_avg:+.1f}% | 더 나은 선택: {better}")
 
     if nxt_rolling and nxt_rolling.get("total_days", 0) > 0:
         nr = nxt_rolling
@@ -649,6 +697,14 @@ def format_learning_report(
         if nr.get("by_signal"):
             for sig, stats in sorted(nr["by_signal"].items(), key=lambda x: x[1]["avg_return"], reverse=True):
                 lines.append(f"    {sig}: {stats['hit_rate']}% (n={stats['count']}) 평균{stats['avg_return']:+.1f}%")
+        # NXT-07: 인버스 적중률 + NXT vs 정규추천 비교
+        inv_days = nr.get("inverse_days", 0)
+        if inv_days > 0:
+            lines.append(f"  인버스 추천: {inv_days}일, 적중률 {nr.get('inverse_hit_rate', 0)}%")
+        better_nxt = nr.get("better_nxt", 0)
+        better_rec = nr.get("better_rec", 0)
+        if better_nxt + better_rec > 0:
+            lines.append(f"  NXT승 {better_nxt}일 vs 정규추천승 {better_rec}일")
         if nr.get("best"):
             lines.append(f"  최고: {nr['best']['name']} {nr['best']['return_pct']:+.1f}%")
         if nr.get("worst"):
