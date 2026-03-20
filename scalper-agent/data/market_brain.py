@@ -100,6 +100,8 @@ class MacroAssessment:
     hyg_chg: float = 0.0
     es_chg: float = 0.0
     korea_strength: float = 0.0  # NXT-06: 한국장 강도
+    options_pc_level: str = ""   # OPT-03: 옵션 심리 (FEAR/NEUTRAL/GREED)
+    options_adj: float = 0.0     # OPT-03: 옵션 심리 보정값
     contradictions: list = field(default_factory=list)
     narrative: str = ""
 
@@ -201,6 +203,18 @@ def _phase1_macro(nw: dict) -> MacroAssessment:
 
     # NXT-06: 한국장 강도 추출 (NXT 캘리브레이션 v2)
     m.korea_strength = nw.get("korea_strength", 0)
+
+    # OPT-03: 옵션/선물 심리 반영
+    try:
+        from data.options_signal import get_brain_options_adjustment
+        opt_adj, opt_detail = get_brain_options_adjustment()
+        if abs(opt_adj) > 0:
+            m.options_adj = opt_adj
+            m.options_pc_level = opt_detail
+            m.nxt_total += opt_adj  # BRAIN score에 직접 반영
+            logger.info(f"[BRAIN] 옵션심리: {opt_adj:+.1f} ({opt_detail})")
+    except Exception:
+        pass
 
     # Step 1A: 기본 방향 (NXT-06: 한국장 강도 포함된 total 기준)
     t = m.nxt_total

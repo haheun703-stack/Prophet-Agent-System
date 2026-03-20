@@ -1172,6 +1172,18 @@ def calculate_nightwatch_score(
     """4단 체인 + 한국장 강도 + 매크로 조건 종합 → JARVIS 섹터 매핑 → 최종 리포트"""
     # NXT-01: 4단 공식 — 매크로 공포 + 한국 실제 강도
     total = asian_score + europe_score + div_score + korea_strength
+
+    # OPT-02: 옵션 심리 보정 (VIX 의존도 감소)
+    opt_adj = 0.0
+    try:
+        from data.options_signal import get_nxt_options_adjustment
+        opt_adj, opt_detail = get_nxt_options_adjustment()
+        if abs(opt_adj) > 0:
+            total += opt_adj
+            logger.info(f"[NXT] 옵션심리 보정: {opt_adj:+.1f} ({opt_detail})")
+    except Exception:
+        pass
+
     total = max(-10.0, min(10.0, total))
 
     # NXT-04: 시그널 구간 재조정 (한국장 강도 반영)

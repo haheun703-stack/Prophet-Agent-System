@@ -2542,6 +2542,22 @@ class BodyHunterBot:
             jq.run_daily(self.auto_trader.job_predawn_buy, time=kst_time(h_pd, m_pd))
             logger.info(f"시간외 선취매 등록: {predawn_str} KST")
 
+        # ── OPT-01: 옵션/ETF 심리 시그널 수집 (16:05 — NXT 수집 직후) ──
+        jq.run_daily(self._job_collect_options_signal, time=kst_time(16, 5))
+        logger.info("옵션 심리 시그널 수집 등록: 16:05 KST")
+
+    async def _job_collect_options_signal(self, context):
+        """OPT-01: ETF 기반 Fear/Greed 시그널 수집"""
+        from datetime import date
+        if date.today().weekday() >= 5:
+            return
+        try:
+            from data.options_signal import collect_options_signal
+            result = collect_options_signal()
+            logger.info(f"[OPT] {result.pc_level} ratio={result.fear_greed_ratio:.2f}x nxt_adj={result.nxt_adj:+.1f}")
+        except Exception as e:
+            logger.error(f"[OPT] 수집 실패: {e}")
+
     async def _job_start_tick_polling(self, context):
         """장 시작 시 체결 스냅샷 폴링 시작 (백그라운드 스레드)"""
         from datetime import date
