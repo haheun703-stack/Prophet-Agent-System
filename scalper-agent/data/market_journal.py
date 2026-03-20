@@ -499,6 +499,16 @@ def record_daily(today: str, verify_result: dict = None) -> dict:
         patterns = update_patterns(verify_result, patterns)
         save_patterns(patterns)
 
+    # 10. 공매도 잔고 섹션
+    short_selling = {}
+    try:
+        from data.short_analyzer import get_short_journal_data
+        short_selling = get_short_journal_data(
+            [s.get("code", "") for s in all_stocks[:500]] if all_stocks else None
+        )
+    except Exception as e:
+        logger.debug(f"[MarketJournal] 공매도 데이터 수집 실패 (무시): {e}")
+
     journal_entry = {
         "date": today,
         "regime": brain.get("regime", "NORMAL"),
@@ -513,6 +523,7 @@ def record_daily(today: str, verify_result: dict = None) -> dict:
         "rec_hit_rate": rec_hit_rate,
         "rec_results": verify_result.get("details", []) if verify_result else [],
         "missed_analysis": missed,
+        "short_selling": short_selling,
     }
 
     # 저장

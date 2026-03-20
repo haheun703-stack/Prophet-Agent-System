@@ -1164,13 +1164,28 @@ def _step5_cross_validate(
                 tv_direct += cluster_bonus
                 sources.append(f"tv_cluster(+{cluster_bonus})")
 
+        # ── 공매도 잔고 스코어 ──────────────
+        short_sc = 0.0
+        try:
+            from data.short_analyzer import get_short_score, is_short_building_danger
+            if is_short_building_danger(code):
+                # 숏빌딩 + HIGH 잔고 → Hard Filter (추천 제외)
+                logger.info(f"  [SHORT] {name}: 숏빌딩+HIGH → 제외")
+                continue
+            short_sc, short_detail = get_short_score(code, name)
+            if abs(short_sc) >= 1.0:
+                sources.append(f"short:{short_detail}")
+        except Exception:
+            pass
+
         # ── 합산 ──────────────────────────────
         raw_total = (relay_sc + premove_sc + tech_sc + bargain_sc + cross_bonus
                      + nat_sc + news_pen + obv_pen + rel_pen
                      + shock_pen + opp_bonus + rotation_bonus + or_bias_adj
                      + eq_adj + gap_adj
                      + nat_power_sc   # 7 SECRET 파워
-                     + tv_direct)     # TV 강신호 직접 점수
+                     + tv_direct      # TV 강신호 직접 점수
+                     + short_sc)      # 공매도 잔고 점수
 
         # ── 브레인 학습 가중치 적용 ──────────────
         brain_adj = _apply_brain_adjustment(
