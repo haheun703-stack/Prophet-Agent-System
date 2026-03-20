@@ -240,7 +240,7 @@ class AutoTrader:
                 # 포지션 최초 1회만 생성 (분할매수 시 덮어쓰기 방지)
                 if code not in self._positions:
                     price_info = self.trader.fetch_price(code)
-                    cp = price_info.get("current_price", 0)
+                    cp = price_info.get("current_price", 0) if price_info and price_info.get("success") else 0
                     if cp <= 0:
                         # 매수 완료됐으나 가격 조회 실패 → SL 기반 포지션 등록
                         logger.error(f"가격 조회 실패 {code} — SL/TP 기반 포지션 등록")

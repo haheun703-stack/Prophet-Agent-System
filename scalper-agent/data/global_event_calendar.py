@@ -250,7 +250,11 @@ def query_perplexity(prompt: str, model: str = "sonar") -> Optional[str]:
         resp = requests.post(url, json=payload, headers=headers, timeout=30)
         resp.raise_for_status()
         data = resp.json()
-        return data["choices"][0]["message"]["content"]
+        choices = data.get("choices", [])
+        if not choices:
+            logger.warning("Perplexity API 빈 응답")
+            return None
+        return choices[0]["message"]["content"]
     except Exception as e:
         logger.error(f"Perplexity API 실패: {e}")
         return None

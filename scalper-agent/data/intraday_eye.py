@@ -835,7 +835,7 @@ class IntradayEye:
         # 점수 (auto_trader 호환: l1, l2, l3 = EMA, VWAP+Flow, Momentum)
         l1 = ma.get("score", 50)
         l2 = (vwap_pos.get("score", 50) + flow.get("score", 50)) / 2
-        l3 = momentum.get("score", 50) if False else mom.get("score", 50)
+        l3 = mom.get("score", 50)
         composite = l1 * 0.30 + l2 * 0.35 + l3 * 0.35
 
         name = self._names.get(code, code)

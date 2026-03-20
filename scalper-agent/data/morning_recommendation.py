@@ -1002,7 +1002,8 @@ def _step5_cross_validate(
                 cross += 2  # 강신호 = 2소스 취급
             else:
                 cross += 1
-            sources.append(f"tv:{_tv_sig.pattern}({_tv_sc_cross:.0f})")
+            _tv_pat = _tv_sig.get("pattern", "") if isinstance(_tv_sig, dict) else getattr(_tv_sig, "pattern", "")
+            sources.append(f"tv:{_tv_pat}({_tv_sc_cross:.0f})")
 
         # 로테이션 소스 (다음 섹터 종목)
         rot_info = rotation_stocks.get(code, {})

@@ -1014,10 +1014,10 @@ def brain_performance_check() -> dict:
       - 공격 + 코스피 -2% 이상 → bad_call
       - 관망 + 코스피 +2% 이상 → missed_opportunity
     """
-    PERF_PATH = DATA_DIR / "learning" / "brain_performance.json"
+    PERF_PATH = STORE_DIR / "learning" / "brain_performance.json"
 
     # 현재 brain_report 로드
-    brain_path = DATA_DIR / "brain_report.json"
+    brain_path = STORE_DIR / "brain_report.json"
     if not brain_path.exists():
         logger.info("[BRAIN Perf] brain_report.json 없음 — 스킵")
         return {}
@@ -1054,7 +1054,7 @@ def brain_performance_check() -> dict:
         latest = log[-1]
         details = latest.get("details", [])
         if details:
-            pnls = [d.get("pnl_pct", 0) for d in details]
+            pnls = [d.get("pnl", 0) for d in details]
             rec_avg = sum(pnls) / len(pnls) if pnls else 0.0
 
     # 적중 판정

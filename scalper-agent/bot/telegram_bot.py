@@ -1409,8 +1409,8 @@ class BodyHunterBot:
             logger.error(f"스윙 분석 실패: {e}", exc_info=True)
             await update.message.reply_text(f"❌ 스윙 분석 실패: {e}")
 
-    async def cmd_watchlist(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """워치리스트 조회"""
+    async def cmd_swing_watchlist(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """스윙 워치리스트 조회"""
         if not self._is_authorized(update):
             return
         import json
@@ -2200,7 +2200,7 @@ class BodyHunterBot:
             r"^스윙스캔$": self.cmd_swing_scan,
             r"^이상거래$": self.cmd_volume_scan,
             r"^이벤트$": self.cmd_event_scan,
-            r"^워치리스트$": self.cmd_watchlist,
+            r"^워치리스트$": self.cmd_swing_watchlist,
             r"^건전성$": self.cmd_market_health,
             r"^해외이벤트$": self.cmd_global_event,
             r"^종목선정$": self.cmd_swing_pick,
@@ -2229,9 +2229,9 @@ class BodyHunterBot:
             r"^포트$": self.cmd_port,
             r"^ㅍ$": self.cmd_port,
             r"^뇌$": self.cmd_brain_status,
-            r"^감시$": self.cmd_watchlist,
+            r"^감시$": self.cmd_entry_watch,
             r"^ㅂ$": self.cmd_brain_status,
-            r"^ㄱ$": self.cmd_watchlist,
+            r"^ㄱ$": self.cmd_entry_watch,
             r"^ㅌ$": self.cmd_paper,
             r"^ㄹ$": self.cmd_event_log,
             r"^이벤트로그$": self.cmd_event_log,
@@ -2429,9 +2429,9 @@ class BodyHunterBot:
         jq.run_daily(self._job_swing_picker, time=kst_time(16, 35))
         logger.info("스윙 종목 선정 등록: 16:35 KST")
 
-        # MACD 제로선 크로스 스캔 (16:50 - 학습 리포트 후)
-        jq.run_daily(self._job_macd_scan, time=kst_time(16, 50))
-        logger.info("MACD 크로스 스캔 등록: 16:50 KST")
+        # MACD 제로선 크로스 스캔 (16:52 - 마감 리포트 16:50 이후)
+        jq.run_daily(self._job_macd_scan, time=kst_time(16, 52))
+        logger.info("MACD 크로스 스캔 등록: 16:52 KST")
 
         # 사전감지 스캔 (08:50 - 장 시작 전)
         jq.run_daily(self._job_premove_scan, time=kst_time(8, 50))
@@ -3773,7 +3773,7 @@ class BodyHunterBot:
         except Exception as e:
             await update.message.reply_text(f"Brain 조회 실패: {e}")
 
-    async def cmd_watchlist(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def cmd_entry_watch(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """현재 진입 감시 중인 종목 목록"""
         if not self._is_authorized(update):
             return
