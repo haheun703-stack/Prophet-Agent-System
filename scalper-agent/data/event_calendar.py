@@ -1,31 +1,38 @@
 # -*- coding: utf-8 -*-
 """
-Event Calendar — 정적 이벤트 캘린더 + Confluence 스코어링
-==========================================================
+Event Calendar — 정적 이벤트 캘린더 + Dynamic DART + Confluence 스코어링
+=======================================================================
 Layer 1: 정적 캘린더 (EVENT_CALENDAR_2026.json)
+Layer 2: Dynamic DART — 주총소집공고/주주제안/정관변경/배당결정 실시간 크롤링
 Layer 3: Impact Scoring — 이벤트 겹침 정도 → 변동성 예측
 Layer 4: Confluence Detection — 동시 이벤트 → 리스크 레벨
 
 기존 global_event_calendar.py (Perplexity 실시간)와 별개.
-이 모듈은 사전 등록된 정기 이벤트를 빠르게 조회하는 역할.
+이 모듈은 사전 등록된 정기 이벤트 + DART 실시간 공시를 조회하는 역할.
 
 사용:
     python -m data.event_calendar                # 오늘 이벤트
     python -m data.event_calendar --week         # 이번 주 브리핑
+    python -m data.event_calendar --dart         # DART 주총/주주제안 크롤링
     python -m data.event_calendar --date 2026-04-29  # 특정 날짜
 """
 
 import json
 import logging
+import os
 import sys
+import time
 from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+import requests
 
 logger = logging.getLogger("BH.EventCalendar")
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 CALENDAR_JSON = BASE_DIR.parent / "EVENT_CALENDAR_2026.json"
+DART_CACHE_PATH = BASE_DIR / "data_store" / "dart_agm_cache.json"
 
 # ═══════════════════════════════════════════════════
 #  1. JSON 로드 + 캐시
@@ -51,9 +58,16 @@ def _load_calendar() -> Dict:
 
 
 def _parse_date(s: str) -> Optional[date]:
-    """YYYY-MM-DD 문자열 → date"""
+    """YYYY-MM-DD 또는 YYYYMMDD 문자열 → date"""
+    if not s:
+        return None
     try:
-        return datetime.strptime(s[:10], "%Y-%m-%d").date()
+        s = s.strip()[:10]
+        if "-" in s:
+            return datetime.strptime(s, "%Y-%m-%d").date()
+        elif len(s) == 8 and s.isdigit():
+            return datetime.strptime(s, "%Y%m%d").date()
+        return None
     except (ValueError, TypeError):
         return None
 
@@ -323,7 +337,241 @@ def get_events_for_date(target: date = None) -> List[Dict]:
                     "notes": conf.get("notes", ""),
                 })
 
+    # ── Layer 2: Dynamic DART 이벤트 병합 ──
+    dart_events = _load_dart_events_for_date(target)
+    events.extend(dart_events)
+
     return events
+
+
+# ═══════════════════════════════════════════════════
+#  2.5. Layer 2 — DART 주총/주주제안/배당 Dynamic 크롤러
+# ═══════════════════════════════════════════════════
+
+# DART 주총/거버넌스 관련 키워드
+_AGM_KEYWORDS = [
+    ("주주총회소집공고", "AGM_NOTICE", "HIGH", "주총소집공고"),
+    ("주주총회소집결의", "AGM_NOTICE", "MEDIUM", "주총소집결의"),
+    ("주주제안서", "SHAREHOLDER_PROPOSAL", "HIGH", "주주제안 (행동주의)"),
+    ("주주제안", "SHAREHOLDER_PROPOSAL", "HIGH", "주주제안 (행동주의)"),
+    ("정관변경", "CHARTER_CHANGE", "HIGH", "정관변경 (거버넌스)"),
+    ("감사위원", "AUDIT_COMMITTEE", "MEDIUM", "감사위원 선임"),
+    ("사외이사", "INDEPENDENT_DIRECTOR", "MEDIUM", "사외이사 선임"),
+    ("배당결정", "DIVIDEND_DECISION", "MEDIUM", "배당 결정"),
+    ("현금배당", "DIVIDEND_DECISION", "MEDIUM", "현금배당 결정"),
+    ("자기주식취득", "TREASURY_BUY", "HIGH", "자사주 매입 (호재)"),
+    ("자기주식소각", "TREASURY_CANCEL", "HIGH", "자사주 소각 (강호재)"),
+    ("임원선임", "EXECUTIVE_APPOINTMENT", "LOW", "임원 선임"),
+    ("대표이사변경", "CEO_CHANGE", "HIGH", "대표이사 변경"),
+]
+
+
+def fetch_dart_agm_events(days_back: int = 7) -> List[Dict]:
+    """DART OpenAPI에서 주총/주주제안/배당/거버넌스 공시 크롤링
+
+    Returns:
+        [{corp_name, ticker, report_nm, rcept_dt, event_type, impact, tag, source}]
+    """
+    from dotenv import load_dotenv
+    load_dotenv(BASE_DIR.parent / ".env")
+
+    api_key = os.getenv("DART_API_KEY", "")
+    if not api_key:
+        logger.info("DART_API_KEY 미설정 — DART 크롤링 스킵")
+        return []
+
+    end_date = datetime.now().strftime("%Y%m%d")
+    start_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y%m%d")
+
+    url = "https://opendart.fss.or.kr/api/list.json"
+    all_events = []
+
+    for page in range(1, 6):  # 최대 5페이지
+        params = {
+            "crtfc_key": api_key,
+            "bgn_de": start_date,
+            "end_de": end_date,
+            "page_no": page,
+            "page_count": 100,
+            "sort": "date",
+            "sort_mth": "desc",
+        }
+
+        try:
+            resp = requests.get(url, params=params, timeout=10)
+            data = resp.json()
+            if data.get("status") != "000":
+                break
+
+            items = data.get("list", [])
+            if not items:
+                break
+
+            for item in items:
+                report_nm = item.get("report_nm", "")
+                classified = _classify_agm_event(report_nm)
+                if classified:
+                    ticker = item.get("stock_code", "")
+                    if not ticker:
+                        continue
+                    all_events.append({
+                        "corp_name": item.get("corp_name", ""),
+                        "ticker": ticker,
+                        "report_nm": report_nm,
+                        "rcept_dt": item.get("rcept_dt", ""),
+                        "event_type": classified["event_type"],
+                        "impact": classified["impact"],
+                        "tag": classified["tag"],
+                        "source": "DART",
+                    })
+
+            time.sleep(0.3)
+
+        except Exception as e:
+            logger.error(f"DART API 오류: {e}")
+            break
+
+    logger.info(f"DART 거버넌스 공시: {len(all_events)}건 감지 (최근 {days_back}일)")
+    return all_events
+
+
+def _classify_agm_event(report_title: str) -> Optional[Dict]:
+    """공시 제목 → 주총/거버넌스 분류"""
+    for keyword, event_type, impact, tag in _AGM_KEYWORDS:
+        if keyword in report_title:
+            return {"event_type": event_type, "impact": impact, "tag": tag}
+    return None
+
+
+def save_dart_cache(events: List[Dict]):
+    """DART 크롤링 결과 캐시 저장 (1일 1회)"""
+    cache = {
+        "fetched_at": datetime.now().isoformat(),
+        "events": events,
+    }
+    DART_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = DART_CACHE_PATH.with_suffix(".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(cache, f, ensure_ascii=False, indent=2)
+    tmp.replace(DART_CACHE_PATH)
+    logger.info(f"DART 캐시 저장: {len(events)}건 → {DART_CACHE_PATH}")
+
+
+def load_dart_cache() -> List[Dict]:
+    """DART 캐시 로드 (6시간 이내면 유효)"""
+    if not DART_CACHE_PATH.exists():
+        return []
+    try:
+        with open(DART_CACHE_PATH, "r", encoding="utf-8") as f:
+            cache = json.load(f)
+        fetched_at = datetime.fromisoformat(cache["fetched_at"])
+        if (datetime.now() - fetched_at).total_seconds() > 6 * 3600:
+            return []  # 6시간 초과 → 만료
+        return cache.get("events", [])
+    except Exception:
+        return []
+
+
+def refresh_dart_events(days_back: int = 7) -> List[Dict]:
+    """DART 크롤링 + 캐시 저장 (텔레그램/스케줄러에서 호출)"""
+    events = fetch_dart_agm_events(days_back)
+    if events:
+        save_dart_cache(events)
+    return events
+
+
+def _load_dart_events_for_date(target: date) -> List[Dict]:
+    """캐시된 DART 이벤트 중 target 날짜 관련 이벤트 반환
+
+    주총소집공고 → 주총일 전후 5일 이내면 반환
+    기타 공시 → 공시일 ±3일 이내면 반환
+    """
+    cached = load_dart_cache()
+    if not cached:
+        return []
+
+    events = []
+    for ev in cached:
+        rcept = _parse_date(ev.get("rcept_dt", ""))
+        if not rcept:
+            continue
+
+        # 공시일 ±3일 이내
+        diff = abs((target - rcept).days)
+        if diff > 5:
+            continue
+
+        impact = ev.get("impact", "MEDIUM")
+        event_type = ev.get("event_type", "")
+
+        # 주주제안/자사주소각은 HIGH 유지, 나머지는 기간에 따라
+        if event_type in ("SHAREHOLDER_PROPOSAL", "TREASURY_CANCEL", "TREASURY_BUY",
+                          "CEO_CHANGE", "CHARTER_CHANGE") or diff <= 1:
+            pass  # 원래 impact 유지
+        elif diff <= 3:
+            impact = "MEDIUM" if impact == "HIGH" else impact
+        else:
+            impact = "LOW"
+
+        events.append({
+            "category": "dart_governance",
+            "name": f"{ev['corp_name']} {ev['tag']}",
+            "date": ev.get("rcept_dt", ""),
+            "days_to": (rcept - target).days,
+            "impact": impact,
+            "volatility_multiplier": 1.5 if event_type == "SHAREHOLDER_PROPOSAL" else 1.2,
+            "ticker": ev.get("ticker", ""),
+            "event_type": event_type,
+            "notes": ev.get("report_nm", ""),
+        })
+
+    return events
+
+
+def format_dart_telegram(events: List[Dict] = None) -> str:
+    """DART 거버넌스 공시 → 텔레그램 메시지"""
+    if events is None:
+        events = load_dart_cache()
+
+    if not events:
+        return "📋 DART 거버넌스 공시: 데이터 없음\n(캘린더 DART로 크롤링 필요)"
+
+    lines = [
+        "━" * 24,
+        "📋 DART 거버넌스 공시 (실시간)",
+        "━" * 24,
+    ]
+
+    # 유형별 그룹핑
+    by_type: Dict[str, List] = {}
+    for ev in events:
+        tag = ev.get("tag", ev.get("event_type", "기타"))
+        by_type.setdefault(tag, []).append(ev)
+
+    _type_emoji = {
+        "주총소집공고": "🏢", "주총소집결의": "🏢",
+        "주주제안 (행동주의)": "✊", "정관변경 (거버넌스)": "📜",
+        "자사주 매입 (호재)": "💰", "자사주 소각 (강호재)": "🔥",
+        "배당 결정": "💵", "현금배당 결정": "💵",
+        "대표이사 변경": "👤", "감사위원 선임": "🔍",
+        "사외이사 선임": "🔍", "임원 선임": "👔",
+    }
+
+    for tag, evts in sorted(by_type.items(), key=lambda x: -len(x[1])):
+        emoji = _type_emoji.get(tag, "📌")
+        lines.append(f"\n{emoji} {tag} ({len(evts)}건)")
+        lines.append("─" * 24)
+        for ev in evts[:10]:
+            imp = {"HIGH": "🔴", "MEDIUM": "🟡", "LOW": "⚪"}.get(ev.get("impact", ""), "⚪")
+            lines.append(f"  {imp} {ev['corp_name']}({ev.get('ticker', '')})")
+            lines.append(f"     {ev.get('rcept_dt', '')[:10]} {ev.get('report_nm', '')[:30]}")
+        if len(evts) > 10:
+            lines.append(f"  ... 외 {len(evts)-10}건")
+
+    lines.append("")
+    lines.append("━" * 24)
+    lines.append("Prophet | DART Dynamic Layer")
+    return "\n".join(lines)
 
 
 # ═══════════════════════════════════════════════════
@@ -467,6 +715,8 @@ def generate_weekly_briefing(target: date = None) -> Dict:
                 sectors.add("2차전지")
         elif cat == "options_expiration":
             sectors.add("선물옵션")
+        elif cat == "dart_governance":
+            sectors.add("지배구조")
 
     # 핵심 메시지
     if risk == "EXTREME":
@@ -576,6 +826,7 @@ _CAT_EMOJI = {
     "korea_agm": "🏢",
     "korea_dividend": "💰",
     "conference": "🎤",
+    "dart_governance": "📋",
 }
 
 
@@ -692,7 +943,13 @@ if __name__ == "__main__":
         if idx + 1 < len(args):
             target = _parse_date(args[idx + 1]) or target
 
-    if "--week" in args:
+    if "--dart" in args:
+        # DART 크롤링 실행
+        print("DART 거버넌스 공시 크롤링 시작...")
+        events = refresh_dart_events(days_back=14)
+        print(format_dart_telegram(events))
+        print(f"\n총 {len(events)}건 감지")
+    elif "--week" in args:
         briefing = generate_weekly_briefing(target)
         print(format_weekly_telegram(briefing))
         print(f"\n총 이벤트: {len(briefing['all_events'])}건")

@@ -2610,6 +2610,33 @@ class AutoTrader:
                 return
 
             budget_pct = nw_cfg.get("predawn_budget_pct", 40) / 100.0
+
+            # ── 이벤트 리스크 체크 → HIGH/EXTREME이면 예산 축소 ──
+            event_warning = ""
+            try:
+                from data.event_calendar import get_event_risk_for_recommendation
+                from datetime import timedelta as _td
+                # 내일 이벤트 체크 (선취매는 내일 장에서 보유)
+                tomorrow = date.today() + _td(days=1)
+                while tomorrow.weekday() >= 5:
+                    tomorrow += _td(days=1)
+                ev_risk = get_event_risk_for_recommendation(tomorrow)
+                risk_level = ev_risk.get("risk_level", "LOW")
+
+                if risk_level == "EXTREME":
+                    budget_pct *= 0.3  # 40% → 12%
+                    event_warning = f"💀 EXTREME 이벤트 → 예산 70% 축소"
+                elif risk_level == "HIGH":
+                    budget_pct *= 0.5  # 40% → 20%
+                    event_warning = f"🔴 HIGH 이벤트 → 예산 50% 축소"
+
+                if event_warning:
+                    ev_names = [e["name"] for e in ev_risk.get("events", []) if e.get("impact") == "HIGH"][:3]
+                    event_warning += f" ({', '.join(ev_names)})"
+                    logger.info(f"[PREDAWN] {event_warning}")
+            except Exception as e_ev:
+                logger.debug(f"[PREDAWN] 이벤트 리스크 체크 실패 (무시): {e_ev}")
+
             predawn_budget = int(bal["cash"] * budget_pct)
             per_stock = predawn_budget // len(targets)
 
@@ -2618,6 +2645,8 @@ class AutoTrader:
             if alert_only:
                 # ── 알림만 모드 ──
                 msg = format_predawn_alert(targets, predawn_budget, per_stock)
+                if event_warning:
+                    msg += f"\n\n⚠️ {event_warning}"
                 await _send(msg)
                 await _send(
                     "[알림만 모드] 수동으로 시간외 종가매매 필요\n"

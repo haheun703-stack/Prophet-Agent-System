@@ -125,6 +125,7 @@ Body Hunter v5 명령어
 📅 이벤트 캘린더
   캘린더         — 오늘 이벤트 리스크
   주간캘린더      — 이번 주 이벤트 브리핑
+  DART공시       — DART 주총/주주제안 실시간
 
 📁 기타
   현재잔고/체결내역/일지/시그널
@@ -1498,6 +1499,21 @@ class BodyHunterBot:
             logger.error(f"주간 캘린더 실패: {e}", exc_info=True)
             await update.message.reply_text(f"❌ 주간 캘린더 실패: {e}")
 
+    async def cmd_dart_governance(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """DART 거버넌스 공시 (주총/주주제안/배당/정관변경)"""
+        if not self._is_authorized(update):
+            return
+        await update.message.reply_text("📋 DART 거버넌스 공시 크롤링... (10초)")
+        try:
+            from data.event_calendar import refresh_dart_events, format_dart_telegram
+            events = await asyncio.to_thread(refresh_dart_events, 14)
+            msg = format_dart_telegram(events)
+            for chunk in _split_message(msg):
+                await update.message.reply_text(chunk)
+        except Exception as e:
+            logger.error(f"DART 공시 실패: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ DART 공시 실패: {e}")
+
     async def cmd_swing_pick(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """스윙 종목 선정 (6팩터 스코어링 TOP N)"""
         if not self._is_authorized(update):
@@ -2200,6 +2216,7 @@ class BodyHunterBot:
             # ── 이벤트 캘린더 ──
             r"^캘린더$": self.cmd_event_calendar,
             r"^주간캘린더$": self.cmd_weekly_calendar,
+            r"^DART공시$": self.cmd_dart_governance,
         }
 
         for pattern, handler in exact_commands.items():
@@ -2356,6 +2373,10 @@ class BodyHunterBot:
         # 해외 이벤트 캘린더 스캔 (08:00 - 장 전 D-3 알림)
         jq.run_daily(self._job_global_event_scan, time=kst_time(8, 0))
         logger.info("해외 이벤트 스캔 등록: 08:00 KST")
+
+        # DART 거버넌스 공시 자동 크롤링 (08:05 - 장 전)
+        jq.run_daily(self._job_dart_refresh, time=kst_time(8, 5))
+        logger.info("DART 거버넌스 크롤링 등록: 08:05 KST")
 
         # 스윙 종목 선정 (16:35 - 시그널 기록 후)
         jq.run_daily(self._job_swing_picker, time=kst_time(16, 35))
@@ -3130,6 +3151,20 @@ class BodyHunterBot:
             logger.info("해외 이벤트 스캔 완료 (모닝브리프에 통합)")
         except Exception as e:
             logger.error(f"해외 이벤트 스캔 실패: {e}", exc_info=True)
+
+    async def _job_dart_refresh(self, context):
+        """DART 거버넌스 공시 크롤링 (08:05) — Silent: 캐시 저장"""
+        from datetime import date
+        if date.today().weekday() >= 5:
+            return
+
+        try:
+            from data.event_calendar import refresh_dart_events
+            events = await asyncio.to_thread(refresh_dart_events, 14)
+            log_event("DART_REFRESH", f"DART 거버넌스 {len(events)}건 크롤링", {"count": len(events)})
+            logger.info(f"DART 거버넌스 크롤링 완료: {len(events)}건")
+        except Exception as e:
+            logger.error(f"DART 거버넌스 크롤링 실패: {e}", exc_info=True)
 
     async def _job_swing_picker(self, context):
         """스윙 종목 선정 (16:35) — Silent: _closing_data에 저장"""
