@@ -632,7 +632,7 @@ def synthesize(buf: IntradayBuffer, ma: dict, vwap_pos: dict,
                prev_verdict: str, entry_price: int = 0) -> Tuple[str, float, str, str, dict]:
     """5-Layer 종합 → (verdict, confidence, summary, action, action_params)"""
 
-    if buf.count < 5:
+    if buf.count < 5 or buf.latest is None:
         return "WARMUP", 0.3, f"워밍업 중 ({buf.count}/5봉)", "HOLD", {}
 
     price = buf.latest.price

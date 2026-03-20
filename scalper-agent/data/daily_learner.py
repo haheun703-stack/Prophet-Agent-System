@@ -946,10 +946,17 @@ def generate_insights() -> dict:
     insights["pattern_insights"] = pattern_insights
     insights["score_adj_applied"] = len(log)  # 몇 일치 데이터로 생성했는지
 
-    # ── 저장 ──
-    INSIGHTS_PATH.write_text(
-        json.dumps(insights, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    # ── 저장 (atomic write) ──
+    tmp_path = INSIGHTS_PATH.with_suffix(".tmp")
+    try:
+        tmp_path.write_text(
+            json.dumps(insights, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        tmp_path.replace(INSIGHTS_PATH)
+    except Exception as e:
+        logger.error(f"[Brain] insights.json 저장 실패: {e}")
+        if tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
     logger.info(f"[Brain] insights.json 저장 완료 ({len(pattern_insights)}개 패턴)")
     return insights
 

@@ -834,7 +834,7 @@ class AutoTrader:
             # KIS API로 실시간 조회
             try:
                 price_info = self.trader.fetch_price(code)
-                if not price_info.get("success"):
+                if not price_info or not price_info.get("success"):
                     continue
 
                 cp = price_info["current_price"]
@@ -1197,7 +1197,7 @@ class AutoTrader:
             if result.get("success"):
                 bought += 1
                 price_info = self.trader.fetch_price(code)
-                cp = price_info.get("current_price", 0) if price_info.get("success") else 0
+                cp = price_info.get("current_price", 0) if price_info and price_info.get("success") else 0
                 if cp <= 0:
                     # 매수 성공 후 가격 조회 실패 → 근사치 사용
                     cp = int(buy_amount / max(1, result.get("qty", 1)))
@@ -1482,7 +1482,7 @@ class AutoTrader:
         for code, pos in list(self._positions.items()):
             try:
                 price_info = self.trader.fetch_price(code)
-                if not price_info.get("success"):
+                if not price_info or not price_info.get("success"):
                     continue
 
                 cp = price_info["current_price"]
@@ -1593,7 +1593,7 @@ class AutoTrader:
         momentum_exit_codes = set()
         try:
             from data.regime_detector import check_supply_withdrawal
-            for code, pos in self._positions.items():
+            for code, pos in list(self._positions.items()):
                 if pos.get("regime") == "MOMENTUM":
                     if check_supply_withdrawal(code):
                         momentum_exit_codes.add(code)
@@ -1604,7 +1604,7 @@ class AutoTrader:
         for code, pos in list(self._positions.items()):
             try:
                 price_info = self.trader.fetch_price(code)
-                if not price_info.get("success"):
+                if not price_info or not price_info.get("success"):
                     continue
 
                 cp = price_info["current_price"]
@@ -1847,9 +1847,11 @@ class AutoTrader:
                     if qty > 0:
                         try:
                             self.trader.liquidate_one(code, qty)
+                            self._positions.pop(code, None)
                         except Exception as e:
-                            logger.warning(f"EOD 청산 실패 {code}: {e}")
-                    self._positions.pop(code, None)
+                            logger.warning(f"EOD 청산 실패 {code}: {e} — 포지션 유지")
+                    else:
+                        self._positions.pop(code, None)
                 result = {"success": True, "message": "preclose 제외 청산 완료"}
             else:
                 logger.info("장마감 전량 청산")
@@ -2759,15 +2761,22 @@ class AutoTrader:
                 logger.info(f"[PREDAWN] {pos['name']} 이미 정규 포지션 — 스킵")
                 continue
 
+            ep = pos.get("entry_price", 0)
             self._positions[code] = {
-                "entry_price": pos.get("entry_price", 0),
+                "entry_price": ep,
                 "stop_loss": pos.get("sl", 0),
                 "take_profit": pos.get("tp", 0),
-                "target_state": "HOLD",
+                "target_state": None,
                 "entry_date": pos.get("entry_date", ""),
                 "source": "predawn",
                 "score": pos.get("score", 0),
-                "trail_high": pos.get("entry_price", 0),
+                "name": pos.get("name", code),
+                "regime": "NORMAL",
+                "high_watermark": ep,
+                "trailing_activated": False,
+                "trailing_sl": 0,
+                "partial_sold": False,
+                "qty": pos.get("qty", 0),
             }
             merged += 1
             logger.info(

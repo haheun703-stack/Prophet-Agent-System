@@ -89,15 +89,27 @@ def analyze_short_interest(code: str, name: str = "") -> ShortAnalysis:
     diffs = recent.diff().dropna()
 
     if len(diffs) >= 3:
-        consec_decrease = sum(1 for d in diffs if d < 0)
-        consec_increase = sum(1 for d in diffs if d > 0)
+        # 연속 감소/증가 일수 (끝에서부터 역산)
+        neg_streak = 0
+        pos_streak = 0
+        for d in reversed(list(diffs)):
+            if d < 0:
+                if pos_streak > 0:
+                    break
+                neg_streak += 1
+            elif d > 0:
+                if neg_streak > 0:
+                    break
+                pos_streak += 1
+            else:
+                break
 
-        if consec_decrease >= 3:
+        if neg_streak >= 3:
             result.short_trend = "COVERING"
-            result.trend_days = consec_decrease
-        elif consec_increase >= 3:
+            result.trend_days = neg_streak
+        elif pos_streak >= 3:
             result.short_trend = "BUILDING"
-            result.trend_days = consec_increase
+            result.trend_days = pos_streak
         else:
             result.short_trend = "NEUTRAL"
 
