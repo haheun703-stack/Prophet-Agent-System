@@ -888,18 +888,35 @@ def select_sectors_and_targets(
     elif relay == "copper":
         commodity_addon = ["industrial_metals"]
         commodity_reason = " + 금→은→구리릴레이"
+    # [G2] 은↑/구리↑ 독립 addon (릴레이 아니어도 단독 급등 시)
+    if macro.get("silver_up") and "precious_metals" not in commodity_addon:
+        commodity_addon.append("precious_metals")
+        commodity_reason += " + 은↑"
+    if macro.get("copper_up") and "industrial_metals" not in commodity_addon:
+        commodity_addon.append("industrial_metals")
+        commodity_reason += " + 구리↑"
+    # [G10] 구리↑ → 2차전지 (EV 배터리 = 구리 대량 소비)
+    if macro.get("copper_up") and "battery_ev" not in commodity_addon:
+        commodity_addon.append("battery_ev")
     if macro.get("ng_up"):
         commodity_addon.append("natural_gas")
         commodity_addon.append("shipbuilding")  # LNG 공급차질 → 조선 수혜
         commodity_reason += " + 천연가스↑+LNG선"
+    # [G5] 유가↑ commodity_addon (NG처럼 점수 무관 추가)
+    if macro.get("oil_up"):
+        if "oil_resource" not in commodity_addon:
+            commodity_addon.append("oil_resource")
+        if "shipbuilding" not in commodity_addon:
+            commodity_addon.append("shipbuilding")  # 탱커 수요
+        commodity_reason += " + 유가↑"
 
     # ── 강매수 (5+) ──
     if total_score >= 5:
         if macro.get("nasdaq_up"):
-            selected_keys = ["semiconductor", "software_ai"]
+            selected_keys = ["semiconductor", "software_ai", "power_infra"]  # [G9] AI DC 전력수요
             reason = "🟢🟢 + 나스닥↑"
         elif macro.get("rate_down"):
-            selected_keys = ["reits", "securities", "power_infra"]
+            selected_keys = ["reits", "securities", "power_infra", "bio"]  # [G1] 바이오=금리인하 수혜
             reason = "🟢🟢 + 금리↓"
         elif macro.get("oil_up"):
             selected_keys = ["oil_resource", "shipbuilding", "natural_gas"]
@@ -907,6 +924,9 @@ def select_sectors_and_targets(
         elif macro.get("ng_up"):
             selected_keys = ["natural_gas", "shipbuilding", "oil_resource"]
             reason = "🟢🟢 + 천연가스↑+LNG선"
+        elif macro.get("geopolitical"):
+            selected_keys = ["space_defense", "shipbuilding", "oil_resource", "natural_gas"]  # [G4] 지정학→에너지
+            reason = "🟢🟢 + 지정학 긴장"
         else:
             selected_keys = ["semiconductor", "power_infra"]
             reason = "🟢🟢 기본"
@@ -914,10 +934,10 @@ def select_sectors_and_targets(
     # ── 매수 (2~4.9) ──
     elif total_score >= 2:
         if macro.get("nasdaq_up"):
-            selected_keys = ["semiconductor", "battery_ev"]
+            selected_keys = ["semiconductor", "battery_ev", "power_infra"]  # [G9] AI DC 전력
             reason = "🟢 + 나스닥↑"
         elif macro.get("cnh_strong"):
-            selected_keys = ["semiconductor", "entertainment"]
+            selected_keys = ["semiconductor", "entertainment", "battery_ev"]  # CNH강세→EV수출
             reason = "🟢 + CNH강세"
         elif macro.get("oil_up"):
             selected_keys = ["oil_resource", "shipbuilding"]
@@ -926,10 +946,10 @@ def select_sectors_and_targets(
             selected_keys = ["natural_gas", "shipbuilding", "oil_resource"]
             reason = "🟢 + 천연가스↑+LNG선"
         elif macro.get("geopolitical"):
-            selected_keys = ["space_defense", "shipbuilding"]
+            selected_keys = ["space_defense", "shipbuilding", "oil_resource"]  # [G4] 지정학→에너지
             reason = "🟢 + 지정학 긴장"
         elif macro.get("rate_down"):
-            selected_keys = ["reits", "securities"]
+            selected_keys = ["reits", "securities", "bio"]  # [G1] 바이오=금리인하 수혜
             reason = "🟢 + 금리↓"
         else:
             selected_keys = ["semiconductor", "power_infra"]

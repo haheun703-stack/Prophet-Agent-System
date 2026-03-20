@@ -1708,10 +1708,12 @@ def run_evening_recommendation() -> RecommendationReport:
                 _active_sectors.append(("shipbuilding", "NG↑LNG선"))  # LNG 공급차질 → 조선 수혜
             if "oil_up" in active_sigs or (commodity.get("oil", {}).get("direction") == "UP"):
                 _active_sectors.append(("oil_resource", "OIL↑"))
+                _active_sectors.append(("shipbuilding", "OIL↑탱커"))  # [G11] 유가↑ → 조선(탱커) 수혜
             if relay == "silver" or "silver_up" in active_sigs:
                 _active_sectors.append(("precious_metals", "은릴레이"))
             if relay == "copper" or "copper_up" in active_sigs:
                 _active_sectors.append(("industrial_metals", "구리릴레이"))
+                _active_sectors.append(("battery_ev", "구리↑EV"))  # [G10] 구리↑ → 2차전지 수혜
 
             for sector_key, reason in _active_sectors:
                 sector = JARVIS_SECTORS.get(sector_key, {})
