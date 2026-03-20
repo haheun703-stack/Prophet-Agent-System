@@ -249,8 +249,50 @@ def _extract_raw_indicators(nw: dict) -> dict:
 #  메인: 브리핑 생성
 # ══════════════════════════════════════════
 
+def _extract_policy_content(policy: dict) -> dict:
+    """policy_latest.json → 정책 콘텐츠"""
+    matched = policy.get("matched_sectors", [])
+    if not matched:
+        return {}
+    sectors = []
+    for ms in matched[:5]:
+        stocks = [s[1] for s in ms.get("kr_stocks", [])[:3]]
+        sectors.append({
+            "sector": ms["sector"],
+            "keywords": ms.get("keywords_found", [])[:3],
+            "article_count": ms.get("article_count", 0),
+            "relevance": ms.get("relevance", 0),
+            "top_stocks": stocks,
+        })
+    return {
+        "summary": policy.get("summary", ""),
+        "sectors": sectors,
+        "total_articles": len(policy.get("articles", [])),
+    }
+
+
+def _extract_macro_indicators(events: dict) -> dict:
+    """global_events.json → 매크로 지표 (BOK + Alpha Vantage)"""
+    macro = events.get("macro_indicators", {})
+    gm = events.get("global_markets", {})
+    result = {}
+    if "base_rate" in macro:
+        result["base_rate"] = macro["base_rate"]["value"]
+    if "usd_krw" in macro:
+        result["usd_krw"] = macro["usd_krw"]["value"]
+    elif "usd_krw" in gm:
+        result["usd_krw"] = gm["usd_krw"]["value"]
+    if "cpi_yoy" in macro:
+        result["cpi_yoy"] = macro["cpi_yoy"]["value"]
+    if "wti" in gm:
+        result["wti"] = gm["wti"]["value"]
+    if "natural_gas" in gm:
+        result["natural_gas"] = gm["natural_gas"]["value"]
+    return result
+
+
 def generate_morning_briefing() -> dict:
-    """기존 data_store 파일에서 8레이어 브리핑 데이터 수집 → dict 반환
+    """기존 data_store 파일에서 10레이어 브리핑 데이터 수집 → dict 반환
 
     Layer 1: 시장 체제 (market_health.json + recommendation.json)
     Layer 2: 해외 지표 (nightwatch_report.json)
@@ -260,11 +302,14 @@ def generate_morning_briefing() -> dict:
     Layer 6: 뉴스 시그널 (recommendation.json news_detail)
     Layer 7: 포지션 가디언 (guardian_latest.json)
     Layer 8: 원시 지표 (nightwatch raw_indicators)
+    Layer 9: 정책 트래커 (policy_latest.json)
+    Layer 10: 매크로 경제지표 (global_events → BOK/AV)
     """
     rec = _load_json("recommendation.json")
     nw = _load_json("nightwatch_report.json")
     events = _load_json("global_events.json")
     guardian = _load_json("learning/guardian_latest.json")
+    policy = _load_json("policy_latest.json")
 
     market_status = _map_market_status(
         rec.get("market_health", "NORMAL"),
@@ -301,13 +346,19 @@ def generate_morning_briefing() -> dict:
         "top_stocks": _extract_top_stocks(rec),
         "guardian_alerts": _extract_guardian_alerts(guardian),
         "raw_indicators": raw_ind,
+        # Layer 9-10: 정책 + 매크로
+        "policy_content": _extract_policy_content(policy),
+        "macro_indicators": _extract_macro_indicators(events),
     }
 
+    n_policy = len(briefing.get("policy_content", {}).get("sectors", []))
+    n_macro = len(briefing.get("macro_indicators", {}))
     logger.info(
         f"[FLOWX] 브리핑 생성: {briefing['date']} | "
         f"상태={market_status} | 종목={len(briefing['top_stocks'])} | "
         f"이벤트={len(briefing['global_events'])} | "
-        f"가디언={len(briefing['guardian_alerts'])}"
+        f"가디언={len(briefing['guardian_alerts'])} | "
+        f"정책={n_policy}섹터 | 매크로={n_macro}지표"
     )
     return briefing
 
@@ -342,6 +393,8 @@ def upload_morning_briefing(briefing: dict) -> bool:
             "top_stocks": json.dumps(briefing.get("top_stocks", []), ensure_ascii=False),
             "guardian_alerts": json.dumps(briefing.get("guardian_alerts", []), ensure_ascii=False),
             "raw_indicators": json.dumps(briefing.get("raw_indicators", {}), ensure_ascii=False),
+            "policy_content": json.dumps(briefing.get("policy_content", {}), ensure_ascii=False),
+            "macro_indicators": json.dumps(briefing.get("macro_indicators", {}), ensure_ascii=False),
             "full_report": full_report,
         }
 
@@ -456,6 +509,37 @@ def _format_full_briefing(b: dict) -> str:
             icon = "🚨" if a["action"] == "EXIT" else "⚠️"
             lines.append(f"  {icon} {a['name']} → {a['action']} (리스크 {a['risk_score']:.0f})")
 
+    # 매크로 지표 (BOK + Alpha Vantage)
+    macro = b.get("macro_indicators", {})
+    if macro:
+        lines.append("")
+        lines.append("<b>매크로 지표</b>")
+        parts = []
+        if "base_rate" in macro:
+            parts.append(f"기준금리 {macro['base_rate']}%")
+        if "usd_krw" in macro:
+            parts.append(f"원/달러 {macro['usd_krw']:,.0f}")
+        if "cpi_yoy" in macro:
+            parts.append(f"CPI {macro['cpi_yoy']}%")
+        if parts:
+            lines.append(f"  {' | '.join(parts)}")
+        parts2 = []
+        if "wti" in macro:
+            parts2.append(f"WTI ${macro['wti']:.2f}")
+        if "natural_gas" in macro:
+            parts2.append(f"NG ${macro['natural_gas']:.2f}")
+        if parts2:
+            lines.append(f"  {' | '.join(parts2)}")
+
+    # 정책 트래커
+    pc = b.get("policy_content", {})
+    if pc and pc.get("sectors"):
+        lines.append("")
+        lines.append("<b>정책 수혜 섹터</b>")
+        for ps in pc["sectors"][:3]:
+            stocks = ", ".join(ps.get("top_stocks", [])[:3])
+            lines.append(f"  🏛 {ps['sector']}: {stocks}")
+
     return "\n".join(lines)
 
 
@@ -482,6 +566,12 @@ def _format_summary_briefing(b: dict) -> str:
         lines.append("")
         for ev in evts[:3]:
             lines.append(f"📌 {ev.get('date', '')} {ev.get('event', '')}")
+
+    # 정책 수혜 (공개용 — 섹터명만)
+    pc = b.get("policy_content", {})
+    if pc and pc.get("sectors"):
+        sector_names = [ps["sector"] for ps in pc["sectors"][:3]]
+        lines.append(f"🏛 정책: {', '.join(sector_names)}")
 
     # 추천 종목 — 블러 처리 (종목명만, 상세 없음)
     stocks = b.get("top_stocks", [])
