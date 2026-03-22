@@ -1,0 +1,19 @@
+[Unit]
+Description=Body Hunter v5 - Telegram Trading Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/Prophet-Agent-System/scalper-agent
+Environment=PYTHONIOENCODING=utf-8
+EnvironmentFile=/home/ubuntu/Prophet-Agent-System/.env
+ExecStart=/home/ubuntu/Prophet-Agent-System/scalper-agent/venv/bin/python -u bot/telegram_bot.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
