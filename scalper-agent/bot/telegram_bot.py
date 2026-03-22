@@ -2514,6 +2514,10 @@ class BodyHunterBot:
         jq.run_daily(self._job_flowx_close_daytrading, time=kst_time(15, 20))
         logger.info("FLOWX DAYTRADING 일괄 청산 등록: 15:20 KST")
 
+        # ── FLOWX sector_universe 수급/거래량 UPDATE (15:40 — 정보봇 15:35 후) ──
+        jq.run_daily(self._job_flowx_universe_update, time=kst_time(15, 40))
+        logger.info("FLOWX sector_universe UPDATE 등록: 15:40 KST")
+
         # ── JARVIS BRAIN 자본 배분 (백업용 - NIGHTWATCH 미실행 대비) ──
         jq.run_daily(self.auto_trader.job_brain_allocation, time=kst_time(16, 36))
         logger.info("BRAIN 배분 백업 등록: 16:36 KST")
@@ -2545,6 +2549,22 @@ class BodyHunterBot:
         # ── OPT-01: 옵션/ETF 심리 시그널 수집 (16:05 — NXT 수집 직후) ──
         jq.run_daily(self._job_collect_options_signal, time=kst_time(16, 5))
         logger.info("옵션 심리 시그널 수집 등록: 16:05 KST")
+
+    async def _job_flowx_universe_update(self, context):
+        """FLOWX sector_universe 수급/거래량 UPDATE (15:40 — 정보봇 15:35 후)"""
+        from datetime import date
+        if date.today().weekday() >= 5:
+            return
+        try:
+            from data.flowx_universe_updater import update_sector_universe
+            import asyncio
+            result = await asyncio.to_thread(update_sector_universe)
+            kr = result.get("updated_kr", 0)
+            us = result.get("updated_us", 0)
+            err = result.get("errors", 0)
+            logger.info(f"[FLOWX] sector_universe UPDATE: KR={kr} US={us} err={err}")
+        except Exception as e:
+            logger.error(f"[FLOWX] sector_universe UPDATE 실패: {e}")
 
     async def _job_collect_options_signal(self, context):
         """OPT-01: ETF 기반 Fear/Greed 시그널 수집"""
