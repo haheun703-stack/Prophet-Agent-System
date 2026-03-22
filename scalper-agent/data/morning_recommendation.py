@@ -1319,7 +1319,7 @@ def _step6_kis_verify(stocks: list[RecommendedStock], market_chg: float = 0.0) -
     for s in stocks:
         try:
             r = trader.fetch_price(s.code)
-            if not r.get("success"):
+            if not r or not r.get("success"):
                 verified.append(s)
                 continue
 
@@ -2448,8 +2448,10 @@ def save_recommendation(report: RecommendationReport):
         "commodity_info": report.commodity_info,  # 원자재 릴레이 상황
         "event_risk": report.event_risk,  # 이벤트 캘린더 리스크
     }
-    with open(path, "w", encoding="utf-8") as f:
+    tmp = path.with_suffix(".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+    tmp.replace(path)
     logger.info(
         f"추천 저장: {path} ({report.stage}, {len(report.stocks)}종목, "
         f"모멘텀 {len(report.momentum_stocks)}종목, "

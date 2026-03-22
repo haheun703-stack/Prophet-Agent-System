@@ -166,7 +166,7 @@ JARVIS_SECTORS = {
         "kr_tier2": [
             {"code": "229640", "name": "LS전선아시아"},
             {"code": "006260", "name": "LS"},
-            {"code": "042670", "name": "두산에너빌리티"},
+            {"code": "034020", "name": "두산에너빌리티"},
         ],
         "relay": "AI DC착공→GEV/ETN/VRT→HD현대일렉/효성중공업→LS전선→두산에너빌리티",
     },
@@ -1303,9 +1303,11 @@ def save_nightwatch_report(report: NightwatchReport):
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     report_dict = asdict(report)
 
-    # 최신 리포트 저장 (덮어쓰기)
-    with open(REPORT_PATH, "w", encoding="utf-8") as f:
+    # 최신 리포트 저장 (atomic write)
+    tmp = REPORT_PATH.with_suffix(".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(report_dict, f, ensure_ascii=False, indent=2)
+    tmp.replace(REPORT_PATH)
 
     # 히스토리 누적 (90일 보관)
     _append_history(report_dict)
@@ -1354,8 +1356,10 @@ def _append_history(report_dict: dict):
     if len(history) > 90:
         history = history[-90:]
 
-    with open(HISTORY_PATH, "w", encoding="utf-8") as f:
+    tmp = HISTORY_PATH.with_suffix(".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(history, f, ensure_ascii=False, indent=2)
+    tmp.replace(HISTORY_PATH)
 
 
 def _append_commodity_history(report_dict: dict):
@@ -1400,8 +1404,10 @@ def _append_commodity_history(report_dict: dict):
     if len(history) > 90:
         history = history[-90:]
 
-    with open(COMMODITY_HISTORY_PATH, "w", encoding="utf-8") as f:
+    tmp = COMMODITY_HISTORY_PATH.with_suffix(".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(history, f, ensure_ascii=False, indent=2)
+    tmp.replace(COMMODITY_HISTORY_PATH)
 
 
 def load_commodity_history(days: int = 30) -> list:
@@ -1554,7 +1560,7 @@ def select_predawn_targets(
         names = ", ".join(f"{t['name']}({t['total_score']:.0f}점)" for t in targets)
         logger.info(f"[PREDAWN] 선취매 대상 {len(targets)}종목: {names}")
     else:
-        logger.info("[PREDAWN] 조건 충족 종목 없음 (AAA/AA + FORCE_BUY + {min_score}+)")
+        logger.info(f"[PREDAWN] 조건 충족 종목 없음 (AAA/AA + FORCE_BUY + {min_score}+)")
 
     return targets
 

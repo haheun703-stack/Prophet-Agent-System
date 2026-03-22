@@ -240,9 +240,11 @@ def load_signal_log() -> list:
 
 
 def save_signal_log(log: list):
-    SIGNAL_LOG_PATH.write_text(
+    tmp = SIGNAL_LOG_PATH.with_suffix(".tmp")
+    tmp.write_text(
         json.dumps(log, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+    tmp.replace(SIGNAL_LOG_PATH)
 
 
 def append_daily_record(today: str, verify_result: dict, missed: list):
@@ -365,9 +367,11 @@ def _load_nxt_log() -> list:
 
 
 def _save_nxt_log(log: list):
-    NXT_LOG_PATH.write_text(
+    tmp = NXT_LOG_PATH.with_suffix(".tmp")
+    tmp.write_text(
         json.dumps(log, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+    tmp.replace(NXT_LOG_PATH)
 
 
 def verify_nxt_signals(today: str) -> Optional[dict]:

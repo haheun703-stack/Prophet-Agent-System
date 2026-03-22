@@ -438,7 +438,7 @@ def calc_support_resistance(buf: IntradayBuffer) -> dict:
     range_total = nearest_res - nearest_sup
     if range_total > 0:
         position_ratio = (price - nearest_sup) / range_total  # 0=지지선, 1=저항선
-        score = _clamp(position_ratio * 60 + 20)  # 지지선 근처면 높은 점수
+        score = _clamp((1 - position_ratio) * 60 + 20)  # 지지선(0) 근처 → 높은 점수, 저항선(1) 근처 → 낮은 점수
     else:
         score = 50
 
@@ -832,11 +832,17 @@ class IntradayEye:
         # 최근 78개만 유지
         self._history[code] = self._history[code][-78:]
 
-        # 점수 (auto_trader 호환: l1, l2, l3 = EMA, VWAP+Flow, Momentum)
+        # 점수 (5-weight composite — synthesize()와 동일)
         l1 = ma.get("score", 50)
         l2 = (vwap_pos.get("score", 50) + flow.get("score", 50)) / 2
         l3 = mom.get("score", 50)
-        composite = l1 * 0.30 + l2 * 0.35 + l3 * 0.35
+        composite = (
+            ma.get("score", 50) * 0.20
+            + vwap_pos.get("score", 50) * 0.20
+            + sr.get("score", 50) * 0.10
+            + flow.get("score", 50) * 0.25
+            + mom.get("score", 50) * 0.25
+        )
 
         name = self._names.get(code, code)
         details = {

@@ -96,7 +96,7 @@ def update_sector_universe() -> dict:
 
                     update_data = {}
 
-                    if inv and inv.get("success") and inv.get("data"):
+                    if inv and inv.get("success") and inv.get("data") and len(inv["data"]) > 0:
                         today_data = inv["data"][0]  # 최신일 = 첫 행
                         update_data["foreign_net"] = today_data.get("foreign_net_qty", 0)
                         update_data["institution_net"] = today_data.get("inst_net_qty", 0)

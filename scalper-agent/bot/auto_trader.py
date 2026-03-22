@@ -423,7 +423,7 @@ class AutoTrader:
                         if not entry:
                             try:
                                 cp_data = await asyncio.to_thread(
-                                    self.trader.fetch_current_price, code
+                                    self.trader.fetch_price, code
                                 )
                                 entry = cp_data.get("price", 0) if cp_data else 0
                             except Exception:
@@ -1315,17 +1315,21 @@ class AutoTrader:
                     await self._alert(rtm.format_decision_alert(snap))
 
                 elif snap.decision == "PARTIAL_SELL":
-                    logger.info(f"AI 부분매도: {code} @ {snap.price:,} ({snap.decision_reason})")
-                    bal = self.trader.fetch_balance()
-                    for p in bal.get("positions", []):
-                        if p["code"] == code:
-                            half = max(1, p["qty"] // 2)
-                            sell_r = self.trader.smart_sell(code, half)
-                            if sell_r and sell_r.get("success"):
-                                await self._alert(rtm.format_decision_alert(snap))
-                            else:
-                                logger.error(f"AI 부분매도 실패 {code}: {sell_r}")
-                            break
+                    if pos.get("partial_sold"):
+                        logger.info(f"AI 부분매도 이미 완료: {code} — 스킵")
+                    else:
+                        logger.info(f"AI 부분매도: {code} @ {snap.price:,} ({snap.decision_reason})")
+                        bal = self.trader.fetch_balance()
+                        for p in bal.get("positions", []):
+                            if p["code"] == code:
+                                half = max(1, p["qty"] // 2)
+                                sell_r = self.trader.smart_sell(code, half)
+                                if sell_r and sell_r.get("success"):
+                                    pos["partial_sold"] = True
+                                    await self._alert(rtm.format_decision_alert(snap))
+                                else:
+                                    logger.error(f"AI 부분매도 실패 {code}: {sell_r}")
+                                break
 
                 # 10분마다 전체 리포트 (매 20회차)
                 # (30초 * 20 = 10분)
@@ -1431,7 +1435,10 @@ class AutoTrader:
                             break
                     result = self.trader.liquidate_one(code)
                     if result and result.get("success"):
-                        cp = pos.get("current_price", pos.get("entry_price", 0))
+                        pi_exit = self.trader.fetch_price(code)
+                        cp = pi_exit.get("current_price", 0) if pi_exit and pi_exit.get("success") else 0
+                        if cp == 0:
+                            cp = pos.get("entry_price", 0)
                         pnl = (cp - pos["entry_price"]) * actual_qty
                         self.record_realized_loss(pnl)
                         self._positions.pop(code, None)
@@ -1613,7 +1620,11 @@ class AutoTrader:
                 # 보유일 계산
                 entry_date = pos.get("entry_date", "")
                 if entry_date:
-                    hold_days = (datetime.now() - datetime.strptime(entry_date, "%Y-%m-%d")).days
+                    try:
+                        dt = datetime.strptime(entry_date, "%Y-%m-%d %H:%M")
+                    except ValueError:
+                        dt = datetime.strptime(entry_date, "%Y-%m-%d")
+                    hold_days = (datetime.now() - dt).days
                 else:
                     hold_days = 0
 
@@ -1843,15 +1854,14 @@ class AutoTrader:
                 for code, pos in list(self._positions.items()):
                     if code in preclose_codes:
                         continue
-                    qty = pos.get("qty", 0)
-                    if qty > 0:
-                        try:
-                            self.trader.liquidate_one(code, qty)
+                    try:
+                        result_one = self.trader.liquidate_one(code)
+                        if result_one and result_one.get("success"):
                             self._positions.pop(code, None)
-                        except Exception as e:
-                            logger.warning(f"EOD 청산 실패 {code}: {e} — 포지션 유지")
-                    else:
-                        self._positions.pop(code, None)
+                        else:
+                            logger.warning(f"EOD 청산 실패 {code}: {result_one} — 포지션 유지")
+                    except Exception as e:
+                        logger.warning(f"EOD 청산 예외 {code}: {e} — 포지션 유지")
                 result = {"success": True, "message": "preclose 제외 청산 완료"}
             else:
                 logger.info("장마감 전량 청산")
@@ -2543,7 +2553,7 @@ class AutoTrader:
 
                 # 수익률 계산
                 pi = self.trader.fetch_price(code)
-                curr_price = pi.get("current_price", 0) if pi.get("success") else 0
+                curr_price = pi.get("current_price", 0) if pi and pi.get("success") else 0
                 entry = pos.get("entry_price", 0)
                 pnl_pct = ((curr_price - entry) / entry * 100) if entry > 0 else 0
 

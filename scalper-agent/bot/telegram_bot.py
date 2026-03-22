@@ -2431,9 +2431,9 @@ class BodyHunterBot:
         jq.run_daily(self._job_swing_picker, time=kst_time(16, 35))
         logger.info("스윙 종목 선정 등록: 16:35 KST")
 
-        # MACD 제로선 크로스 스캔 (16:52 - 마감 리포트 16:50 이후)
-        jq.run_daily(self._job_macd_scan, time=kst_time(16, 52))
-        logger.info("MACD 크로스 스캔 등록: 16:52 KST")
+        # MACD 제로선 크로스 스캔 (16:55 - 마감 리포트 16:50 이후, 선취매 16:52 충돌방지)
+        jq.run_daily(self._job_macd_scan, time=kst_time(16, 55))
+        logger.info("MACD 크로스 스캔 등록: 16:55 KST")
 
         # 사전감지 스캔 (08:50 - 장 시작 전)
         jq.run_daily(self._job_premove_scan, time=kst_time(8, 50))
@@ -2525,7 +2525,7 @@ class BodyHunterBot:
         # ── NIGHTWATCH NXT 야간매매 ──
         nw_cfg = self.config.get("nightwatch", {})
         if nw_cfg.get("enabled", False):
-            collect_str = nw_cfg.get("collect_time", "16:00")
+            collect_str = nw_cfg.get("collect_time", "16:02")
             h_nw1, m_nw1 = map(int, collect_str.split(":"))
             jq.run_daily(self.auto_trader.job_nightwatch_collect, time=kst_time(h_nw1, m_nw1))
             logger.info(f"NIGHTWATCH 수집 등록: {collect_str} KST")
@@ -2573,7 +2573,7 @@ class BodyHunterBot:
             return
         try:
             from data.options_signal import collect_options_signal
-            result = collect_options_signal()
+            result = await asyncio.to_thread(collect_options_signal)
             logger.info(f"[OPT] {result.pc_level} ratio={result.fear_greed_ratio:.2f}x nxt_adj={result.nxt_adj:+.1f}")
         except Exception as e:
             logger.error(f"[OPT] 수집 실패: {e}")
@@ -2744,8 +2744,8 @@ class BodyHunterBot:
 
         # 보유 종목 (자동매매 포지션)
         try:
-            if self.auto_trader and hasattr(self.auto_trader, "positions"):
-                for code in self.auto_trader.positions.keys():
+            if self.auto_trader and hasattr(self.auto_trader, "_positions"):
+                for code in self.auto_trader._positions.keys():
                     codes.add(code)
         except Exception:
             pass
@@ -3589,7 +3589,8 @@ class BodyHunterBot:
             lines.append("━━━━━━━━━━━━━━━━━━━")
 
             msg = "\n".join(lines)
-            await context.bot.send_message(chat_id=chat_id, text=msg)
+            for chunk in _split_message(msg):
+                await context.bot.send_message(chat_id=chat_id, text=chunk)
             logger.info("[모닝 브리프] 전송 완료")
 
             # 다음날을 위해 _morning_data 초기화
@@ -3681,7 +3682,8 @@ class BodyHunterBot:
             lines.append("━━━━━━━━━━━━━━━━━━━")
 
             msg = "\n".join(lines)
-            await context.bot.send_message(chat_id=chat_id, text=msg)
+            for chunk in _split_message(msg):
+                await context.bot.send_message(chat_id=chat_id, text=chunk)
             logger.info("[프리클로즈 리포트] 전송 완료")
 
         except Exception as e:
@@ -3847,7 +3849,8 @@ class BodyHunterBot:
             lines.append("━━━━━━━━━━━━━━━━━━━")
 
             msg = "\n".join(lines)
-            await context.bot.send_message(chat_id=chat_id, text=msg)
+            for chunk in _split_message(msg):
+                await context.bot.send_message(chat_id=chat_id, text=chunk)
             logger.info("[일일 마감 리포트] 전송 완료")
 
             # 다음날을 위해 초기화
