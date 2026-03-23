@@ -2496,9 +2496,9 @@ class BodyHunterBot:
         logger.info("PAPER 트레이딩 등록: 09:05 등록 + 5분 체크 + 15:25 EOD")
 
         # ── 장중 TV 실시간 스캔 (30분마다 유니버스 전체) ──
-        jq.run_daily(self._job_intraday_tv_init, time=kst_time(10, 0))
-        jq.run_repeating(self._job_intraday_tv_scan, interval=1800, first=3600)
-        logger.info("장중 TV 스캔 등록: 10:00 초기화 + 30분 유니버스 스캔")
+        jq.run_daily(self._job_intraday_tv_init, time=kst_time(9, 30))
+        jq.run_repeating(self._job_intraday_tv_scan, interval=1800, first=1800)
+        logger.info("장중 TV 스캔 등록: 09:30 초기화 + 30분 유니버스 스캔")
 
         # ── 장중 뉴스 감성 스캔 (09:30 / 11:00 / 13:30) ──
         jq.run_daily(self._job_news_sentiment, time=kst_time(9, 30))
@@ -3118,7 +3118,7 @@ class BodyHunterBot:
             logger.error(f"[NEWS_SENTIMENT] 장중 스캔 실패: {e}")
 
     async def _job_intraday_tv_init(self, context):
-        """10:00 장중 TV 스캔 초기화 — 20일 평균 거래대금 사전계산"""
+        """09:30 장중 TV 스캔 초기화 — 20일 평균 거래대금 사전계산"""
         from datetime import date
         if not is_trading_day():
             return
