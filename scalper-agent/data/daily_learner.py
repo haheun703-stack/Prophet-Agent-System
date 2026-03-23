@@ -20,6 +20,7 @@ import logging
 import requests
 from pathlib import Path
 from datetime import datetime, date, timedelta
+from data.trading_calendar import is_trading_day, next_trading_day, last_trading_day
 from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
 from dotenv import load_dotenv
@@ -397,15 +398,10 @@ def verify_nxt_signals(today: str) -> Optional[dict]:
     # 어제 날짜 계산
     from datetime import timedelta
     today_dt = datetime.strptime(today, "%Y-%m-%d").date()
-    # 주말 고려: 월요일이면 금요일 리포트
-    if today_dt.weekday() == 0:  # 월요일
-        yesterday = (today_dt - timedelta(days=3)).strftime("%Y-%m-%d")
-    elif today_dt.weekday() == 6:  # 일요일
+    # 주말/공휴일 고려: 직전 거래일 리포트
+    if not is_trading_day(today_dt):
         return None
-    elif today_dt.weekday() == 5:  # 토요일
-        return None
-    else:
-        yesterday = (today_dt - timedelta(days=1)).strftime("%Y-%m-%d")
+    yesterday = last_trading_day(today_dt).strftime("%Y-%m-%d")
 
     # 어제 리포트 찾기
     yesterday_report = None
@@ -718,9 +714,7 @@ def format_learning_report(
     try:
         from data.event_calendar import get_event_risk_for_recommendation
         _today_dt = datetime.strptime(today, "%Y-%m-%d").date()
-        _tmr = _today_dt + timedelta(days=1)
-        while _tmr.weekday() >= 5:
-            _tmr += timedelta(days=1)
+        _tmr = next_trading_day(_today_dt)
         tmr_risk = get_event_risk_for_recommendation(_tmr)
         if tmr_risk.get("events"):
             _ri = {"EXTREME": "💀", "HIGH": "🔴", "MEDIUM": "🟡", "LOW": "🟢"}.get(tmr_risk["risk_level"], "")
@@ -1042,10 +1036,7 @@ def run(quick: bool = False):
     # Phase 8: 이벤트 캘린더 내일 리스크 (다음날 이벤트 미리 확인)
     try:
         from data.event_calendar import get_event_risk_for_recommendation
-        tomorrow = (datetime.strptime(today, "%Y-%m-%d") + timedelta(days=1)).date()
-        # 주말이면 월요일
-        while tomorrow.weekday() >= 5:
-            tomorrow += timedelta(days=1)
+        tomorrow = next_trading_day(datetime.strptime(today, "%Y-%m-%d").date())
         tmr_risk = get_event_risk_for_recommendation(tomorrow)
         if tmr_risk.get("events"):
             logger.info(

@@ -25,6 +25,7 @@ import logging
 import argparse
 from pathlib import Path
 from datetime import datetime, date
+from data.trading_calendar import is_trading_day
 
 # 프로젝트 루트 설정
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -345,9 +346,9 @@ def main():
     # logs 디렉토리 보장
     (SCRIPT_DIR / "logs").mkdir(exist_ok=True)
 
-    # 주말 체크
-    if date.today().weekday() >= 5:
-        logger.info("주말 - 수집 스킵")
+    # 주말/공휴일 체크
+    if not is_trading_day():
+        logger.info("휴장일 - 수집 스킵")
         return
 
     logger.info(f"{'='*60}")

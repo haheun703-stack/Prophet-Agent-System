@@ -26,6 +26,7 @@ import logging
 import time
 from pathlib import Path
 from datetime import datetime, timedelta
+from data.trading_calendar import last_trading_day
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -158,16 +159,9 @@ def _get_latest_data_date() -> str:
     - 안전하게 전 영업일 기준
     """
     now = datetime.now()
-    # 주말 처리
-    if now.weekday() == 5:  # 토
-        return (now - timedelta(days=1)).strftime("%Y%m%d")
-    elif now.weekday() == 6:  # 일
-        return (now - timedelta(days=2)).strftime("%Y%m%d")
-    elif now.hour < 18:
-        # 장중/장마감 직후 → 전일
-        if now.weekday() == 0:  # 월요일
-            return (now - timedelta(days=3)).strftime("%Y%m%d")
-        return (now - timedelta(days=1)).strftime("%Y%m%d")
+    if now.hour < 18:
+        # 장중/장마감 직후 → 직전 거래일
+        return last_trading_day(now.date()).strftime("%Y%m%d")
     else:
         # 18시 이후 → 당일 가능 (시도)
         return now.strftime("%Y%m%d")

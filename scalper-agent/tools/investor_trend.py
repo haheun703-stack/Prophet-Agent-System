@@ -6,14 +6,14 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
 from pykrx import stock
 from datetime import datetime, timedelta
+from data.trading_calendar import last_trading_day
 import pandas as pd
 
-today_str = datetime.now().strftime("%Y%m%d")
-# 최근 영업일 기준 (주말 보정)
+# 최근 거래일 기준 (주말+공휴일 보정)
 dt = datetime.now()
-if dt.weekday() >= 5:
-    dt -= timedelta(days=(dt.weekday() - 4))
-    today_str = dt.strftime("%Y%m%d")
+_ltd = last_trading_day(dt.date())
+today_str = _ltd.strftime("%Y%m%d")
+dt = datetime.combine(_ltd, dt.time())
 
 from5d = (dt - timedelta(days=10)).strftime("%Y%m%d")
 from20d = (dt - timedelta(days=35)).strftime("%Y%m%d")

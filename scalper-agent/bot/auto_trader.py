@@ -28,6 +28,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime, date
+from data.trading_calendar import is_trading_day, next_trading_day
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -289,7 +290,7 @@ class AutoTrader:
 
     def _is_market_hours(self) -> bool:
         now = datetime.now()
-        if now.weekday() >= 5:
+        if not is_trading_day(now.date()):
             return False
         h = now.hour * 100 + now.minute
         return 900 <= h <= 1520
@@ -325,7 +326,7 @@ class AutoTrader:
         스윙 모드: swing_candidates.json에서 ATR SL/TP + 매집원가 SL 적용
         데이 모드: 기존 5D 스캔 + 고정 SL/TP
         """
-        if date.today().weekday() >= 5:
+        if not is_trading_day():
             return
 
         chat_id = None
@@ -1898,7 +1899,7 @@ class AutoTrader:
         한국장 마감 + 데이터 수집 완료 후 실행
         릴레이 → 사전감지 → 기술필터 → 뉴스AI → 교차검증
         """
-        if date.today().weekday() >= 5:
+        if not is_trading_day():
             return
 
         chat_id = None
@@ -2045,7 +2046,7 @@ class AutoTrader:
 
         미국 S&P500/나스닥/VIX 체크 → 추천 조정/유지
         """
-        if date.today().weekday() >= 5:
+        if not is_trading_day():
             return
 
         chat_id = None
@@ -2167,7 +2168,7 @@ class AutoTrader:
 
     async def job_brain_allocation(self, context):
         """16:36 - BRAIN 자본 배분 백업 스케줄 (NIGHTWATCH 실패 대비)"""
-        if date.today().weekday() >= 5:
+        if not is_trading_day():
             return
 
         # NIGHTWATCH에서 이미 실행했으면 스킵
@@ -2207,7 +2208,7 @@ class AutoTrader:
 
     async def job_premium_levels(self, context):
         """08:30 - 전일/전주/전월 프리미엄 레벨 계산"""
-        if date.today().weekday() >= 5:
+        if not is_trading_day():
             return
 
         chat_id = None
@@ -2252,7 +2253,7 @@ class AutoTrader:
 
     async def job_gap_support(self, context):
         """09:05 - 갭 지지/저항 탐지 + PL 머지"""
-        if date.today().weekday() >= 5:
+        if not is_trading_day():
             return
 
         chat_id = None
@@ -2296,7 +2297,7 @@ class AutoTrader:
 
     async def job_opening_range(self, context):
         """10:05 - OR/IR 확정 + daily_bias 계산"""
-        if date.today().weekday() >= 5:
+        if not is_trading_day():
             return
 
         chat_id = None
@@ -2347,7 +2348,7 @@ class AutoTrader:
 
     async def job_nightwatch_collect(self, context):
         """16:00 - 유럽장 개장, NIGHTWATCH 데이터 수집 시작"""
-        if date.today().weekday() >= 5:
+        if not is_trading_day():
             return
 
         nw_cfg = self.config.get("nightwatch", {})
@@ -2377,7 +2378,7 @@ class AutoTrader:
 
     async def job_nightwatch_decide(self, context):
         """16:35 - NIGHTWATCH 최종 판단 + NXT 매수 결정"""
-        if date.today().weekday() >= 5:
+        if not is_trading_day():
             return
 
         nw_cfg = self.config.get("nightwatch", {})
@@ -2504,7 +2505,7 @@ class AutoTrader:
 
     async def job_nxt_morning_sell(self, context):
         """08:00 - NXT 포지션 매도 (장전 시간외)"""
-        if date.today().weekday() >= 5:
+        if not is_trading_day():
             return
 
         nw_cfg = self.config.get("nightwatch", {})
@@ -2619,7 +2620,7 @@ class AutoTrader:
         - NXT: 매크로 시그널 기반, 다음날 08:00 자동 매도 (overnight flip)
         - 선취매: 추천 엔진 기반, 정규 포지션으로 전환 (Eye+Guardian 관리)
         """
-        if date.today().weekday() >= 5:
+        if not is_trading_day():
             return
 
         nw_cfg = self.config.get("nightwatch", {})
@@ -2665,11 +2666,8 @@ class AutoTrader:
             event_warning = ""
             try:
                 from data.event_calendar import get_event_risk_for_recommendation
-                from datetime import timedelta as _td
                 # 내일 이벤트 체크 (선취매는 내일 장에서 보유)
-                tomorrow = date.today() + _td(days=1)
-                while tomorrow.weekday() >= 5:
-                    tomorrow += _td(days=1)
+                tomorrow = next_trading_day()
                 ev_risk = get_event_risk_for_recommendation(tomorrow)
                 risk_level = ev_risk.get("risk_level", "LOW")
 

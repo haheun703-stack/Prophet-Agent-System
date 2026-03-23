@@ -28,6 +28,7 @@ from telegram.ext import (
 from bot.kis_trader import KISTrader, resolve_stock, CODE_TO_NAME
 from bot.auto_trader import AutoTrader
 from bot.bot_logger import log_event, read_today_log, cleanup_old_logs
+from data.trading_calendar import is_trading_day, next_trading_day
 
 logger = logging.getLogger("BH.Bot")
 
@@ -189,7 +190,7 @@ class BodyHunterBot:
 
         market_open = now.replace(hour=9, minute=0, second=0)
         market_close = now.replace(hour=15, minute=20, second=0)
-        is_market = market_open <= now <= market_close and now.weekday() < 5
+        is_market = market_open <= now <= market_close and is_trading_day(now.date())
 
         auto_status = "ON 🟢" if self.auto_trader.is_running else "OFF 🔴"
 
@@ -499,7 +500,7 @@ class BodyHunterBot:
     async def _job_portfolio_alert(self, context):
         """보유종목 긴급 알림 (60초) — 급락(-5%) 시에만 전송"""
         now = datetime.now(KST)
-        if now.weekday() >= 5:
+        if not is_trading_day(now.date()):
             return
         now_min = now.hour * 60 + now.minute
         if now_min < 540 or now_min >= 930:
@@ -555,7 +556,7 @@ class BodyHunterBot:
     async def _job_war_startup(self, context):
         """09:00 전쟁모드 시작 — Silent: log_event만 (모닝브리프에 포함됨)"""
         from datetime import date as _date
-        if _date.today().weekday() >= 5:
+        if not is_trading_day():
             return
         targets = self._load_war_targets()
         if not targets:
@@ -569,7 +570,7 @@ class BodyHunterBot:
         """전쟁모드 추적 — 60초 간격, 급등/급락/SL 알림"""
         from datetime import date as _date
         now = datetime.now(KST)
-        if _date.today().weekday() >= 5:
+        if not is_trading_day():
             return
         now_min = now.hour * 60 + now.minute
         if now_min < 540 or now_min >= 935:  # 09:00~15:35 (15:35=935분)
@@ -669,7 +670,7 @@ class BodyHunterBot:
     async def _job_war_summary(self, context):
         """전쟁모드 30분 요약 — Silent: log_event만 (/ㅍ로 수동 조회)"""
         from datetime import date as _date
-        if _date.today().weekday() >= 5:
+        if not is_trading_day():
             return
 
         targets = self._load_war_targets()
@@ -2553,7 +2554,7 @@ class BodyHunterBot:
     async def _job_flowx_universe_update(self, context):
         """FLOWX sector_universe 수급/거래량 UPDATE (15:40 — 정보봇 15:35 후)"""
         from datetime import date
-        if date.today().weekday() >= 5:
+        if not is_trading_day():
             return
         try:
             from data.flowx_universe_updater import update_sector_universe
@@ -2569,7 +2570,7 @@ class BodyHunterBot:
     async def _job_collect_options_signal(self, context):
         """OPT-01: ETF 기반 Fear/Greed 시그널 수집"""
         from datetime import date
-        if date.today().weekday() >= 5:
+        if not is_trading_day():
             return
         try:
             from data.options_signal import collect_options_signal
@@ -2581,7 +2582,7 @@ class BodyHunterBot:
     async def _job_start_tick_polling(self, context):
         """장 시작 시 체결 스냅샷 폴링 시작 (백그라운드 스레드)"""
         from datetime import date
-        if date.today().weekday() >= 5:
+        if not is_trading_day():
             return
 
         chat_id = os.getenv("TELEGRAM_CHAT_ID")
@@ -2612,7 +2613,7 @@ class BodyHunterBot:
     async def _job_collect_minutes(self, context):
         """장마감 후 분봉 수집 + 수급 분석 (15:40) — Silent: 로그만"""
         from datetime import date
-        if date.today().weekday() >= 5:
+        if not is_trading_day():
             return
         logger.info("분봉 자동 수집 시작...")
         try:
@@ -2635,7 +2636,7 @@ class BodyHunterBot:
     async def _job_collect_daily(self, context):
         """장마감 후 일봉+수급 데이터 수집 (16:00) — Silent: 로그만"""
         from datetime import date
-        if date.today().weekday() >= 5:
+        if not is_trading_day():
             return
         logger.info("일봉+수급 자동 수집 시작...")
         t0 = time.time()
@@ -2820,7 +2821,7 @@ class BodyHunterBot:
     async def _job_rebuild_universe(self, context):
         """장전 유니버스 리빌드 (08:35) — Silent: 로그만"""
         from datetime import date
-        if date.today().weekday() >= 5:
+        if not is_trading_day():
             return
 
         logger.info("유니버스 자동 리빌드 시작...")
@@ -2835,7 +2836,7 @@ class BodyHunterBot:
     async def _job_verify_data(self, context):
         """16:25 데이터 파이프라인 검증 — 수집 완료 확인 후 분석 진행"""
         from datetime import date as _date
-        if _date.today().weekday() >= 5:
+        if not is_trading_day():
             return
         logger.info("[VER] 데이터 파이프라인 검증 시작...")
         try:
@@ -2921,7 +2922,7 @@ class BodyHunterBot:
     async def _job_record_signals(self, context):
         """일간 시그널 기록 (16:30) — Silent: 로그만"""
         from datetime import date
-        if date.today().weekday() >= 5:
+        if not is_trading_day():
             return
         if not self._data_verified:
             log_event("SKIP", "시그널 기록 — 데이터 미검증")
@@ -2946,7 +2947,7 @@ class BodyHunterBot:
     async def _job_position_guardian(self, context):
         """보유종목 수급 변곡점 진단 (08:20) — Silent: _morning_data에 저장"""
         from datetime import date
-        if date.today().weekday() >= 5:
+        if not is_trading_day():
             return
 
         logger.info("Position Guardian 시작...")
@@ -2967,7 +2968,7 @@ class BodyHunterBot:
     async def _job_daily_learning(self, context):
         """일간 학습 (16:40) — Silent: 결과를 _closing_data에 저장"""
         from datetime import date
-        if date.today().weekday() >= 5:
+        if not is_trading_day():
             return
         logger.info("일간 학습 리포트 시작...")
         try:
@@ -2991,7 +2992,7 @@ class BodyHunterBot:
     async def _job_paper_register(self, context):
         """09:05 PAPER 종목 자동 등록 — Silent: 로그만"""
         from datetime import date
-        if date.today().weekday() >= 5:
+        if not is_trading_day():
             return
         try:
             from data.trade_tracker import TradeTracker
@@ -3006,7 +3007,7 @@ class BodyHunterBot:
     async def _job_paper_check(self, context):
         """장중 5분 — PAPER TP/SL 체크 — Silent: 이벤트를 _closing_data에 저장"""
         now = datetime.now(KST)
-        if now.weekday() >= 5:
+        if not is_trading_day(now.date()):
             return
         now_min = now.hour * 60 + now.minute
         if now_min < 545 or now_min >= 920:
@@ -3025,7 +3026,7 @@ class BodyHunterBot:
     async def _job_paper_eod(self, context):
         """15:25 PAPER 시간손절 — Silent: _closing_data에 저장"""
         from datetime import date
-        if date.today().weekday() >= 5:
+        if not is_trading_day():
             return
         try:
             from data.trade_tracker import TradeTracker
@@ -3049,7 +3050,7 @@ class BodyHunterBot:
     async def _job_news_sentiment(self, context):
         """09:30/11:00/13:30 — 보유종목 뉴스 감성 스캔 + Kill-Switch"""
         from datetime import date
-        if date.today().weekday() >= 5:
+        if not is_trading_day():
             return
         try:
             from data.news_sentiment import (
@@ -3119,7 +3120,7 @@ class BodyHunterBot:
     async def _job_intraday_tv_init(self, context):
         """10:00 장중 TV 스캔 초기화 — 20일 평균 거래대금 사전계산"""
         from datetime import date
-        if date.today().weekday() >= 5:
+        if not is_trading_day():
             return
         try:
             from data.trading_value_scanner import (
@@ -3145,7 +3146,7 @@ class BodyHunterBot:
         """30분 반복 — 장중 TV 스캔 — Silent: 저장만 (프리클로즈에 통합)"""
         from datetime import date
         now = datetime.now()
-        if date.today().weekday() >= 5:
+        if not is_trading_day():
             return
         now_min = now.hour * 60 + now.minute
         if now_min < 600 or now_min > 920:
@@ -3195,7 +3196,7 @@ class BodyHunterBot:
     async def _job_preclose_scan(self, context):
         """14:30 프리클로즈 스캔 — 장중 데이터 기반 내일 후보 도출"""
         from datetime import date
-        if date.today().weekday() >= 5:
+        if not is_trading_day():
             return
         try:
             from data.preclose_scanner import scan_preclose, save_preclose_results
@@ -3218,7 +3219,7 @@ class BodyHunterBot:
         # _send_preclose_brief(14:50)가 동일 시각에 통합 메시지 전송
         # 여기서는 log_event만 기록
         from datetime import date
-        if date.today().weekday() >= 5:
+        if not is_trading_day():
             return
         try:
             from data.preclose_scanner import load_preclose_results
@@ -3234,7 +3235,7 @@ class BodyHunterBot:
     async def _job_flowx_close_daytrading(self, context):
         """15:20 KST - DAYTRADING OPEN 시그널 전량 CLOSED"""
         from datetime import date
-        if date.today().weekday() >= 5:
+        if not is_trading_day():
             return
         try:
             from data.flowx_signals import close_daytrading
@@ -3286,7 +3287,7 @@ class BodyHunterBot:
         """08:10 옵션 만기일 (D-7~D-day) — Silent: _morning_data에 저장"""
         from datetime import date
         today = date.today()
-        if today.weekday() >= 5:
+        if not is_trading_day(today):
             return
 
         exp_date, d_day, is_quarterly = self._upcoming_expiry_info(today)
@@ -3305,7 +3306,7 @@ class BodyHunterBot:
     async def _job_flowx_vip_content(self, context):
         """FLOWX VIP 8패널 (08:56) — 모닝브리프 직후 자동 생성 + Supabase 업로드"""
         from datetime import date
-        if date.today().weekday() >= 5:
+        if not is_trading_day():
             return
         try:
             from data.flowx_content import run_vip_content
@@ -3320,7 +3321,7 @@ class BodyHunterBot:
     async def _job_policy_scan(self, context):
         """정책 트래커 (07:55) — Silent: _morning_data에 저장"""
         from datetime import date
-        if date.today().weekday() >= 5:
+        if not is_trading_day():
             return
         try:
             from data.policy_tracker import scan_policy
@@ -3335,7 +3336,7 @@ class BodyHunterBot:
     async def _job_global_event_scan(self, context):
         """해외 이벤트 캘린더 스캔 (08:00) — Silent: _morning_data에 저장"""
         from datetime import date
-        if date.today().weekday() >= 5:
+        if not is_trading_day():
             return
 
         logger.info("해외 이벤트 캘린더 스캔 시작...")
@@ -3351,7 +3352,7 @@ class BodyHunterBot:
     async def _job_dart_refresh(self, context):
         """DART 거버넌스 공시 크롤링 (08:05) — Silent: 캐시 저장"""
         from datetime import date
-        if date.today().weekday() >= 5:
+        if not is_trading_day():
             return
 
         try:
@@ -3365,7 +3366,7 @@ class BodyHunterBot:
     async def _job_swing_picker(self, context):
         """스윙 종목 선정 (16:35) — Silent: _closing_data에 저장"""
         from datetime import date
-        if date.today().weekday() >= 5:
+        if not is_trading_day():
             return
         logger.info("스윙 종목 선정 시작...")
         try:
@@ -3381,7 +3382,7 @@ class BodyHunterBot:
     async def _job_macd_scan(self, context):
         """MACD 크로스 스캔 (16:50) — Silent: 로그만"""
         from datetime import date
-        if date.today().weekday() >= 5:
+        if not is_trading_day():
             return
         logger.info("MACD 크로스 스캔 시작...")
         try:
@@ -3397,7 +3398,7 @@ class BodyHunterBot:
     async def _job_premove_scan(self, context):
         """사전감지 스캔 (08:50) — Silent: 저장만 (모닝브리프에 반영됨)"""
         from datetime import date
-        if date.today().weekday() >= 5:
+        if not is_trading_day():
             return
 
         logger.info("사전감지 스캔 시작...")
@@ -3428,7 +3429,7 @@ class BodyHunterBot:
         - 08:55 morning_recommendation → recommendation.json
         """
         from datetime import date
-        if date.today().weekday() >= 5:
+        if not is_trading_day():
             return
         chat_id = os.getenv("TELEGRAM_CHAT_ID")
         if not chat_id:
@@ -3602,7 +3603,7 @@ class BodyHunterBot:
     async def _send_preclose_brief(self, context):
         """14:50 프리클로즈 리포트 — 장중 감지 + 내일 후보"""
         from datetime import date
-        if date.today().weekday() >= 5:
+        if not is_trading_day():
             return
         chat_id = os.getenv("TELEGRAM_CHAT_ID")
         if not chat_id:
@@ -3700,7 +3701,7 @@ class BodyHunterBot:
         - 16:45 job_evening_analysis → recommendation.json
         """
         from datetime import date
-        if date.today().weekday() >= 5:
+        if not is_trading_day():
             return
         chat_id = os.getenv("TELEGRAM_CHAT_ID")
         if not chat_id:
@@ -4012,10 +4013,8 @@ class BodyHunterBot:
         now = datetime.now()
         target_date = date.today()
         if now.hour >= 15:
-            target_date += timedelta(days=1)
-            # 주말 건너뛰기
-            while target_date.weekday() >= 5:
-                target_date += timedelta(days=1)
+            # 주말+공휴일 건너뛰기
+            target_date = next_trading_day(target_date)
 
         data = {
             "date": target_date.strftime("%Y-%m-%d"),

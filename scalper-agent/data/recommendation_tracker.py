@@ -15,6 +15,7 @@ import json
 import logging
 from pathlib import Path
 from datetime import datetime, timedelta
+from data.trading_calendar import is_trading_day, next_trading_day
 
 logger = logging.getLogger("BH.Tracker")
 
@@ -144,8 +145,8 @@ def update_returns() -> dict:
                     continue  # 아직 해당 날짜 안 됨
 
                 target_date = rec_dt + timedelta(days=t_days)
-                # 주말 건너뛰기 (단순 보정)
-                while target_date.weekday() >= 5:
+                # 주말/공휴일 건너뛰기
+                while not is_trading_day(target_date):
                     target_date += timedelta(days=1)
 
                 target_s = target_date.strftime("%Y%m%d")

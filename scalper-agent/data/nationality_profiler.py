@@ -39,6 +39,7 @@ import time
 from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from data.trading_calendar import is_trading_day
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -137,7 +138,7 @@ def _get_trading_days(n_days: int = 5) -> List[str]:
     if dt.hour < 18:
         dt -= timedelta(days=1)
     while len(days) < n_days:
-        if dt.weekday() < 5:  # 평일
+        if is_trading_day(dt.date() if hasattr(dt, 'date') else dt):  # 거래일
             days.append(dt.strftime("%Y%m%d"))
         dt -= timedelta(days=1)
     return list(reversed(days))
