@@ -1198,6 +1198,26 @@ def _step5_cross_validate(
         # CORTEX 체제 배수 적용
         total = raw_total * regime_mult
 
+        # ── TV 강매집 최소 점수 보장 ──────────────
+        # PANIC/SHOCK에서도 기관 매집 시그널(QUIET_ACC 80+, EXPLOSION 80+)은
+        # regime_mult로 점수가 0 이하로 내려가지 않도록 최소 점수 보장
+        # → TV 전용 슬롯(3개)에서 후보 유지 + 기관 수급 시그널 보존
+        if _tv_pattern == "QUIET_ACCUMULATION" and _tv_score >= 80:
+            tv_floor = max(20.0, tv_direct * 0.6)  # 최소 20점 (강매집)
+            if total < tv_floor:
+                logger.info(f"  [TV Floor] {name}: {total:.1f}→{tv_floor:.1f} (QUIET_ACC {_tv_score:.0f})")
+                total = tv_floor
+        elif _tv_pattern == "EXPLOSION" and _tv_score >= 80:
+            tv_floor = max(15.0, tv_direct * 0.5)  # 최소 15점 (폭발)
+            if total < tv_floor:
+                logger.info(f"  [TV Floor] {name}: {total:.1f}→{tv_floor:.1f} (EXPLOSION {_tv_score:.0f})")
+                total = tv_floor
+        elif _tv_pattern in ("QUIET_ACCUMULATION", "EXPLOSION") and _tv_score >= 70:
+            tv_floor = 8.0  # 최소 8점 (중간 강도)
+            if total < tv_floor:
+                logger.info(f"  [TV Floor] {name}: {total:.1f}→{tv_floor:.1f} ({_tv_pattern} {_tv_score:.0f})")
+                total = tv_floor
+
         # 진입/SL/TP: premove → MACD Phase2 → bargain(고점80%복구) → 간단 계산
         # 줍줍 종목은 고점의 80% 복구를 TP로 설정
         bargain_tp = int(b_info["pre_war_high"] * 0.8) if b_info.get("pre_war_high") else 0
@@ -3045,8 +3065,61 @@ def run_war_mode_recommendation() -> RecommendationReport:
     except Exception as e:
         logger.warning(f"[전쟁모드] 레짐 감지 실패 (무시): {e}")
 
-    # ── 전쟁모드 TV 전용 슬롯: 최대 2개 (TV 스탬핑 완료 후 실행) ──
+    # ── 전쟁모드 TV 전용 슬롯: 최대 2개 ──
+    # v2: TOP 50 밖 TV 강신호도 후보 풀에 주입 (삼성E&A 같은 중형주 커버)
     war_normal_top = report.stocks[:8]
+    existing_codes = {c.code for c in candidates}
+
+    # TOP 50 밖 TV 강신호 주입 (QUIET_ACC 75+ / EXPLOSION 75+)
+    try:
+        if not war_tv_signals:
+            from data.trading_value_scanner import load_tv_results
+            tv_data = load_tv_results()
+            war_tv_signals = {s["code"]: s for s in tv_data if s.get("score", 0) > 0}
+    except Exception:
+        pass
+
+    tv_injected = 0
+    for tv_code, tv_info in war_tv_signals.items():
+        if tv_code in existing_codes:
+            continue
+        tv_pat = tv_info.get("pattern", "NORMAL") if isinstance(tv_info, dict) else getattr(tv_info, "pattern", "NORMAL")
+        tv_sc = tv_info.get("score", 0) if isinstance(tv_info, dict) else getattr(tv_info, "score", 0)
+        tv_r = tv_info.get("tv_ratio", 1.0) if isinstance(tv_info, dict) else getattr(tv_info, "tv_ratio", 1.0)
+        tv_nm = tv_info.get("name", tv_code) if isinstance(tv_info, dict) else getattr(tv_info, "name", tv_code)
+        tv_close = tv_info.get("close", 0) if isinstance(tv_info, dict) else getattr(tv_info, "close", 0)
+
+        if tv_pat not in ("QUIET_ACCUMULATION", "EXPLOSION") or tv_sc < 75:
+            continue
+
+        # TV 강신호 직접 점수 생성
+        tv_direct_sc = 35 if tv_pat == "QUIET_ACCUMULATION" and tv_sc >= 80 else (
+            30 if tv_pat == "EXPLOSION" and tv_sc >= 80 else 20)
+        cross_sc = 20  # tv_sc >= 75 → cross=2 → bonus 20
+
+        injected_rec = RecommendedStock(
+            code=tv_code,
+            name=tv_nm,
+            close=tv_close,
+            total_score=round(tv_direct_sc + cross_sc, 1),
+            confidence="MED",
+            entry=tv_close,
+            sl=int(tv_close * 0.95) if tv_close else 0,
+            tp=int(tv_close * 1.10) if tv_close else 0,
+            sl_source="5%",
+            sources=[f"tv_inject:{tv_pat}({tv_sc:.0f})"],
+            tech_detail=f"TV{tv_sc:.0f}|ratio{tv_r:.1f}x",
+            news_detail="TV_INJECT",
+            tv_ratio=tv_r,
+            tv_pattern=tv_pat,
+            tv_score=tv_sc,
+        )
+        candidates.append(injected_rec)
+        tv_injected += 1
+
+    if tv_injected > 0:
+        logger.info(f"[전쟁모드 TV 주입] TOP50 밖 {tv_injected}종목 후보 풀 추가")
+
     war_tv_only = []
     for c in candidates[8:]:
         if c.tv_score >= 70 and c.tv_pattern in ("QUIET_ACCUMULATION", "EXPLOSION"):
