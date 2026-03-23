@@ -2261,6 +2261,8 @@ class BodyHunterBot:
             r"^vip$": self.cmd_flowx_vip,
             r"^FLOWX$": self.cmd_flowx_vip,
             r"^flowx$": self.cmd_flowx_vip,
+            # ── 국적 차트 ──
+            r"^국적차트$": self.cmd_nationality_chart,
         }
 
         for pattern, handler in exact_commands.items():
@@ -2298,6 +2300,9 @@ class BodyHunterBot:
 
         app.add_handler(
             MessageHandler(filters.Regex(r"^국적수급\s+.+"), self.cmd_nationality)
+        )
+        app.add_handler(
+            MessageHandler(filters.Regex(r"^국적차트\s+.+"), self.cmd_nationality_chart)
         )
         app.add_handler(
             MessageHandler(filters.Regex(r"^내일\s+.+"), self.cmd_tomorrow)
@@ -2550,6 +2555,10 @@ class BodyHunterBot:
         # ── OPT-01: 옵션/ETF 심리 시그널 수집 (16:05 — NXT 수집 직후) ──
         jq.run_daily(self._job_collect_options_signal, time=kst_time(16, 5))
         logger.info("옵션 심리 시그널 수집 등록: 16:05 KST")
+
+        # ── 국적 픽토그램 차트 자동 생성 (17:00 — 국적 수집 16:00 + MACD 16:55 후) ──
+        jq.run_daily(self._job_nationality_charts, time=kst_time(17, 0))
+        logger.info("국적 차트 자동 생성 등록: 17:00 KST")
 
     async def _job_flowx_universe_update(self, context):
         """FLOWX sector_universe 수급/거래량 UPDATE (15:40 — 정보봇 15:35 후)"""
@@ -2817,6 +2826,110 @@ class BodyHunterBot:
 
         except Exception as e:
             await update.message.reply_text(f"국적수급 실패: {str(e)[:300]}")
+
+    async def cmd_nationality_chart(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """국적차트 - 외국인 국적별 수급 픽토그램 차트 이미지 전송"""
+        if not self._is_authorized(update):
+            return
+        text = update.message.text.strip()
+        parts = text.split()
+
+        if len(parts) >= 2:
+            target = parts[1]
+            code, name = resolve_stock(target)
+            if not code:
+                await update.message.reply_text(f"종목 '{target}' 을 찾을 수 없습니다")
+                return
+            codes = [code]
+            code_names = {code: name}
+        else:
+            codes = self._get_nationality_targets()
+            if not codes:
+                await update.message.reply_text("추천/보유 종목 없음")
+                return
+            code_names = {c: CODE_TO_NAME.get(c, c) for c in codes}
+
+        await update.message.reply_text(
+            f"📊 국적 차트 생성 중... ({len(codes)}종목)"
+        )
+
+        try:
+            from data.nationality_pictogram import generate_charts_batch
+            charts = await asyncio.to_thread(generate_charts_batch, codes, code_names)
+
+            sent = 0
+            for code, buf in charts.items():
+                name = code_names.get(code, code)
+                try:
+                    buf.seek(0)
+                    await update.message.reply_photo(
+                        photo=buf,
+                        caption=f"🌍 {name}({code}) 외국인 국적별 수급",
+                    )
+                    sent += 1
+                except Exception as e:
+                    logger.warning(f"[NatChart] {name} 전송 실패: {e}")
+                    await update.message.reply_text(f"{name} 차트 전송 실패: {str(e)[:200]}")
+
+            if sent == 0:
+                await update.message.reply_text("차트 생성 가능한 종목이 없습니다 (국적 데이터 부족)")
+            else:
+                await update.message.reply_text(f"✅ {sent}개 종목 차트 전송 완료")
+        except Exception as e:
+            await update.message.reply_text(f"국적차트 실패: {str(e)[:300]}")
+
+    async def _job_nationality_charts(self, context):
+        """17:00 국적 픽토그램 차트 자동 생성 + Telegram 전송 + Supabase 업로드"""
+        if not is_trading_day():
+            return
+        logger.info("[NatChart] 국적 차트 자동 생성 시작...")
+        try:
+            codes = self._get_nationality_targets()
+            if not codes:
+                return
+            code_names = {c: CODE_TO_NAME.get(c, c) for c in codes}
+
+            from data.nationality_pictogram import generate_charts_batch, upload_chart_to_supabase
+            from data.nationality_signal import _get_latest_data_date, score_nationality_batch
+            charts = await asyncio.to_thread(generate_charts_batch, codes, code_names)
+            date_str = _get_latest_data_date()
+
+            # 점수 일괄 조회 (Supabase 메타데이터용)
+            scores = {}
+            try:
+                scores = await asyncio.to_thread(score_nationality_batch, codes, date_str)
+            except Exception:
+                pass
+
+            sent = 0
+            for code, buf in charts.items():
+                name = code_names.get(code, code)
+                try:
+                    buf.seek(0)
+                    await context.bot.send_photo(
+                        chat_id=self.chat_id,
+                        photo=buf,
+                        caption=f"🌍 {name}({code}) 외국인 국적별 수급",
+                    )
+                    sent += 1
+                except Exception as e:
+                    logger.warning(f"[NatChart] {name} 자동전송 실패: {e}")
+
+                # Supabase 업로드 (별도 try)
+                try:
+                    sc, reason = scores.get(code, (0, ""))
+                    buf.seek(0)
+                    await asyncio.to_thread(
+                        upload_chart_to_supabase,
+                        code, name, date_str, buf,
+                        {"nat_score": sc, "nat_grade": reason},
+                    )
+                except Exception as e:
+                    logger.debug(f"[NatChart] Supabase 업로드 스킵: {e}")
+
+            logger.info(f"[NatChart] 자동 전송 완료: {sent}/{len(charts)}종목")
+        except Exception as e:
+            logger.error(f"[NatChart] 자동 생성 실패: {e}")
 
     async def _job_rebuild_universe(self, context):
         """장전 유니버스 리빌드 (08:35) — Silent: 로그만"""

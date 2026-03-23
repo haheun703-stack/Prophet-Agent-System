@@ -274,6 +274,7 @@ class KISTrader:
                         "low": _safe_int(output.get("stck_lwpr", 0)),
                         "open": _safe_int(output.get("stck_oprc", 0)),
                         "strength": _safe_float(output.get("tday_rltv", 0) or 0),
+                        "listed_shares": _safe_int(output.get("lstn_stcn", 0)),
                     }
                 # cp == 0: API 응답은 왔지만 가격 없음 (장외시간/정지 등)
                 if attempt == 0:
