@@ -92,3 +92,4 @@ jarvis/tests/cot_2024_cache.json
 
 # Windows 빈 파일 (nul 리다이렉트 잔재)
 nul
+*.pem
