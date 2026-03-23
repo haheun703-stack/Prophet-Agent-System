@@ -2736,7 +2736,7 @@ class BodyHunterBot:
         logger.info(f"데이터 수집 완료 ({total_elapsed}초): 일봉={pykrx_cnt}, 수급={len(r1) if r1 else 0}, parquet={ok}")
 
     def _get_nationality_targets(self) -> list:
-        """국적별 수급 수집 대상 종목 = 추천 + 보유 (중복 제거)"""
+        """국적별 수급 수집 대상 = 추천 + 보유 + 시총 TOP200 (중복 제거)"""
         codes = set()
 
         # 추천 종목
@@ -2756,6 +2756,23 @@ class BodyHunterBot:
         try:
             if self.auto_trader and hasattr(self.auto_trader, "_positions"):
                 for code in self.auto_trader._positions.keys():
+                    codes.add(code)
+        except Exception:
+            pass
+
+        # 시총 TOP200 자동 포함 (대형주 국적수급 필수 수집)
+        try:
+            import json
+            uni_path = Path(__file__).parent.parent / "data_store" / "universe.json"
+            if uni_path.exists():
+                with open(uni_path, "r", encoding="utf-8") as f:
+                    universe = json.load(f)
+                top200 = sorted(
+                    universe.items(),
+                    key=lambda x: x[1].get("cap_억", 0),
+                    reverse=True,
+                )[:200]
+                for code, _ in top200:
                     codes.add(code)
         except Exception:
             pass
