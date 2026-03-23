@@ -6,6 +6,8 @@ Market State - 시장 상태 관리
 
 from datetime import datetime, time, date
 
+from data.trading_calendar import is_trading_day as _is_trading_day
+
 
 class MarketState:
     """한국 주식시장 상태 관리"""
@@ -27,8 +29,8 @@ class MarketState:
         return datetime.now()
 
     def is_trading_day(self) -> bool:
-        """오늘이 거래일인지 (주말 제외, 공휴일은 미포함)"""
-        return self.now().weekday() < 5
+        """오늘이 거래일인지 (주말 + 공휴일 포함)"""
+        return _is_trading_day(self.now().date())
 
     def is_pre_market(self) -> bool:
         """동시호가 시간 (08:30~09:00)"""
