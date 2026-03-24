@@ -2584,7 +2584,7 @@ class BodyHunterBot:
         try:
             from data.options_signal import collect_options_signal
             result = await asyncio.to_thread(collect_options_signal)
-            logger.info(f"[OPT] {result.pc_level} ratio={result.fear_greed_ratio:.2f}x nxt_adj={result.nxt_adj:+.1f}")
+            logger.info(f"[OPT] {result.pc_level} ratio={result.fear_greed_ratio:.2f}x nxt_adj={result.nxt_score_adj:+.1f}")
         except Exception as e:
             logger.error(f"[OPT] 수집 실패: {e}")
 

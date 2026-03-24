@@ -1888,9 +1888,11 @@ def run_evening_recommendation() -> RecommendationReport:
         save_brain_report(brain)
         logger.info(f"[Market Brain] 비중 {brain.position_size_pct}% | {brain.overall_verdict[:50]}")
 
-        # FIX-01: BRAIN 비중 → 추천 종목 수 캡
-        _BRAIN_STOCK_CAP = {100: 8, 70: 5, 50: 3, 30: 1, 0: 0}
+        # FIX-01: BRAIN 비중 → 추천 종목 수 캡 (최소 2종목 보장)
+        _BRAIN_STOCK_CAP = {100: 8, 70: 5, 50: 3, 30: 2, 0: 2}
         cap = _BRAIN_STOCK_CAP.get(brain.position_size_pct, 5)
+        if cap < 2:
+            cap = 2  # 안전장치: 어떤 상황에서도 최소 2종목 유지
         if len(report.stocks) > cap:
             logger.info(
                 f"[BRAIN CAP] {len(report.stocks)}종목 → {cap}종목 "
@@ -3194,9 +3196,11 @@ def run_war_mode_recommendation() -> RecommendationReport:
         save_brain_report(brain)
         logger.info(f"[Market Brain] 비중 {brain.position_size_pct}% | {brain.overall_verdict[:50]}")
 
-        # FIX-01: BRAIN 비중 → 추천 종목 수 캡
-        _BRAIN_STOCK_CAP = {100: 8, 70: 5, 50: 3, 30: 1, 0: 0}
+        # FIX-01: BRAIN 비중 → 추천 종목 수 캡 (최소 2종목 보장)
+        _BRAIN_STOCK_CAP = {100: 8, 70: 5, 50: 3, 30: 2, 0: 2}
         cap = _BRAIN_STOCK_CAP.get(brain.position_size_pct, 5)
+        if cap < 2:
+            cap = 2  # 안전장치: 어떤 상황에서도 최소 2종목 유지
         if len(report.stocks) > cap:
             logger.info(
                 f"[BRAIN CAP] {len(report.stocks)}종목 → {cap}종목 "
