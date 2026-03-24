@@ -2494,6 +2494,15 @@ class BodyHunterBot:
         jq.run_daily(self._job_war_summary, time=kst_time(15, 15))
         logger.info("전쟁모드 추적 등록: 09:00 시작알림 + 60초 감시 + 30분 요약")
 
+        # ── 포지션 감시 (position_watch.json) ──
+        for _pw_h, _pw_m in [
+            (9, 10), (9, 30), (10, 0), (10, 30), (11, 0), (11, 30),
+            (13, 0), (13, 30), (14, 0), (14, 30), (15, 0), (15, 20),
+        ]:
+            jq.run_daily(self._job_position_watch, time=kst_time(_pw_h, _pw_m))
+        jq.run_repeating(self._job_position_watch_rapid, interval=300, first=120)
+        logger.info("포지션 감시 등록: 30분 보고 12회 + 5분 SL/TP 체크")
+
         # ── PAPER 트레이딩 자동 추적 ──
         jq.run_daily(self._job_paper_register, time=kst_time(9, 5))
         jq.run_repeating(self._job_paper_check, interval=300, first=600)  # 5분마다
@@ -3608,6 +3617,239 @@ class BodyHunterBot:
             logger.info(f"사전감지 완료: {len(candidates or [])}개 후보 (모닝브리프에 통합)")
         except Exception as e:
             logger.error(f"사전감지 실패: {e}", exc_info=True)
+
+    # ── 포지션 감시 (position_watch.json) ──────────────────
+
+    def _load_position_watch(self):
+        """position_watch.json 로드"""
+        watch_path = Path(__file__).resolve().parent.parent / "data_store" / "position_watch.json"
+        if not watch_path.exists():
+            return []
+        try:
+            import json
+            with open(watch_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data.get("stocks", [])
+        except Exception as e:
+            logger.warning(f"position_watch.json 로드 실패: {e}")
+            return []
+
+    async def _job_position_watch(self, context):
+        """포지션 감시 — 30분마다 텔레그램 상태보고 + SL/TP 긴급알림
+
+        schedule: 09:10, 09:30, 10:00, 10:30, 11:00, 11:30, 13:00, 13:30, 14:00, 14:30, 15:00, 15:20
+        """
+        if not is_trading_day():
+            return
+
+        stocks = self._load_position_watch()
+        if not stocks:
+            return
+
+        chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        if not chat_id:
+            return
+
+        now = datetime.now(KST)
+        now_str = now.strftime("%H:%M")
+        watch_state = context.bot_data.setdefault("position_watch", {})
+        alerts_sent = watch_state.setdefault("alerts", {})
+
+        lines = [f"[포지션 감시] {now_str}"]
+        has_data = False
+        has_urgent = False
+
+        for idx, s in enumerate(stocks):
+            code = s.get("code", "")
+            name = s.get("name", code)
+            entry = s.get("entry", 0)
+            sl = s.get("sl", 0)
+            tp1 = s.get("tp1", 0)
+            tp2 = s.get("tp2", 0)
+            warn = s.get("warn", 0)
+
+            if idx > 0:
+                await asyncio.sleep(0.3)
+
+            try:
+                p = await asyncio.to_thread(self.trader.fetch_price, code)
+                if not p or not p.get("success"):
+                    lines.append(f"  {name}: 조회실패")
+                    continue
+
+                has_data = True
+                cp = p["current_price"]
+                vol = p.get("volume", 0)
+                high = p.get("high", 0)
+                low = p.get("low", 0)
+                open_p = p.get("open", 0)
+                strength = p.get("strength", 0)
+
+                # 수익률 계산
+                pnl_pct = (cp / entry - 1) * 100 if entry > 0 else 0
+                day_chg = (cp / open_p - 1) * 100 if open_p > 0 else 0
+
+                # SL/TP까지 거리
+                to_sl = (cp / sl - 1) * 100 if sl > 0 else 999
+                to_tp1 = (tp1 / cp - 1) * 100 if tp1 > 0 and cp > 0 else 0
+
+                # 아이콘
+                if pnl_pct >= 3:
+                    icon = "🟢"
+                elif pnl_pct >= 0:
+                    icon = "🔵"
+                elif pnl_pct > -3:
+                    icon = "🟡"
+                else:
+                    icon = "🔴"
+
+                lines.append(f"\n{icon} {name} ({code})")
+                lines.append(f"  현재 {cp:,}원 (진입比 {pnl_pct:+.1f}%)")
+                lines.append(f"  당일 {day_chg:+.1f}% | 고 {high:,} / 저 {low:,}")
+                lines.append(f"  거래량 {vol:,} | 체결강도 {strength:.0f}")
+                lines.append(f"  SL {sl:,}({to_sl:+.1f}%) | TP {tp1:,}({to_tp1:+.1f}%)")
+
+                code_alerts = alerts_sent.setdefault(code, [])
+
+                # 긴급: SL 이탈
+                if sl > 0 and cp <= sl and "SL_BREAK" not in code_alerts:
+                    urgent_msg = (
+                        f"🚨🚨 [긴급] {name} 손절선 이탈!\n"
+                        f"  현재 {cp:,}원 ≤ SL {sl:,}원\n"
+                        f"  진입가 {entry:,} → 손실 {pnl_pct:+.1f}%\n"
+                        f"  즉시 매도 검토!"
+                    )
+                    await context.bot.send_message(chat_id=chat_id, text=urgent_msg)
+                    code_alerts.append("SL_BREAK")
+                    has_urgent = True
+
+                # 경고: warn 라인 근접
+                elif warn > 0 and cp <= warn and "WARN" not in code_alerts:
+                    lines.append(f"  ⚠️ 경고선 {warn:,} 이탈 — 주시 필요")
+                    code_alerts.append("WARN")
+
+                # TP1 도달
+                if tp1 > 0 and cp >= tp1 and "TP1" not in code_alerts:
+                    urgent_msg = (
+                        f"🎯 {name} 1차 목표 도달!\n"
+                        f"  현재 {cp:,}원 ≥ TP1 {tp1:,}원\n"
+                        f"  수익 {pnl_pct:+.1f}% — 반익절 검토"
+                    )
+                    await context.bot.send_message(chat_id=chat_id, text=urgent_msg)
+                    code_alerts.append("TP1")
+                    has_urgent = True
+
+                # TP2 도달
+                if tp2 > 0 and cp >= tp2 and "TP2" not in code_alerts:
+                    urgent_msg = (
+                        f"🎯🎯 {name} 2차 목표 도달!\n"
+                        f"  현재 {cp:,}원 ≥ TP2 {tp2:,}원\n"
+                        f"  수익 {pnl_pct:+.1f}% — 전량 익절 검토"
+                    )
+                    await context.bot.send_message(chat_id=chat_id, text=urgent_msg)
+                    code_alerts.append("TP2")
+                    has_urgent = True
+
+            except Exception as e:
+                lines.append(f"  {name}: 에러 {e}")
+
+        # 30분 정기 보고 전송 (긴급 알림과 별도)
+        if has_data:
+            await context.bot.send_message(chat_id=chat_id, text="\n".join(lines))
+            logger.info(f"포지션 감시 보고: {len(stocks)}종목")
+
+    async def _job_position_watch_rapid(self, context):
+        """포지션 감시 — 5분 간격 가격 체크 (SL/TP 긴급알림 전용, 텔레그램 보고 없음)"""
+        if not is_trading_day():
+            return
+        now = datetime.now(KST)
+        now_min = now.hour * 60 + now.minute
+        if now_min < 545 or now_min >= 930:  # 09:05~15:30
+            return
+
+        stocks = self._load_position_watch()
+        if not stocks:
+            return
+
+        chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        if not chat_id:
+            return
+
+        watch_state = context.bot_data.setdefault("position_watch", {})
+        alerts_sent = watch_state.setdefault("alerts", {})
+
+        for idx, s in enumerate(stocks):
+            code = s.get("code", "")
+            name = s.get("name", code)
+            entry = s.get("entry", 0)
+            sl = s.get("sl", 0)
+            tp1 = s.get("tp1", 0)
+            tp2 = s.get("tp2", 0)
+            warn = s.get("warn", 0)
+
+            if idx > 0:
+                await asyncio.sleep(0.3)
+
+            try:
+                p = await asyncio.to_thread(self.trader.fetch_price, code)
+                if not p or not p.get("success"):
+                    continue
+
+                cp = p["current_price"]
+                pnl_pct = (cp / entry - 1) * 100 if entry > 0 else 0
+                code_alerts = alerts_sent.setdefault(code, [])
+
+                # SL 이탈 긴급
+                if sl > 0 and cp <= sl and "SL_BREAK" not in code_alerts:
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=(
+                            f"🚨🚨 [긴급] {name} 손절선 이탈!\n"
+                            f"  현재 {cp:,}원 ≤ SL {sl:,}원\n"
+                            f"  진입가 {entry:,} → 손실 {pnl_pct:+.1f}%\n"
+                            f"  즉시 매도 검토!"
+                        ),
+                    )
+                    code_alerts.append("SL_BREAK")
+
+                # warn 근접 긴급
+                if warn > 0 and cp <= warn and "WARN" not in code_alerts:
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=(
+                            f"⚠️ {name} 경고선 이탈\n"
+                            f"  현재 {cp:,}원 ≤ WARN {warn:,}원\n"
+                            f"  SL {sl:,}원까지 {(cp/sl-1)*100:+.1f}%"
+                        ),
+                    )
+                    code_alerts.append("WARN")
+
+                # TP1
+                if tp1 > 0 and cp >= tp1 and "TP1" not in code_alerts:
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=(
+                            f"🎯 {name} 1차 목표 도달!\n"
+                            f"  현재 {cp:,}원 ≥ TP1 {tp1:,}원\n"
+                            f"  수익 {pnl_pct:+.1f}% — 반익절 검토"
+                        ),
+                    )
+                    code_alerts.append("TP1")
+
+                # TP2
+                if tp2 > 0 and cp >= tp2 and "TP2" not in code_alerts:
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=(
+                            f"🎯🎯 {name} 2차 목표 도달!\n"
+                            f"  현재 {cp:,}원 ≥ TP2 {tp2:,}원\n"
+                            f"  수익 {pnl_pct:+.1f}% — 전량 익절 검토"
+                        ),
+                    )
+                    code_alerts.append("TP2")
+
+            except Exception:
+                pass
 
     # ═══════════════════════════════════════════
     #  통합 메시지 시스템 (하루 5~7개)
