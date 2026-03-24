@@ -971,10 +971,17 @@ def _step5_cross_validate(
         name = (r_info.get("name") or p_info.get("name")
                 or m_info.get("name") or b_info.get("name")
                 or _tv_name or code)
+        # TV-only 종목도 close 확보 (SL=0, TP=0 방지)
+        _tv_close = 0
+        if tv_signals and code in tv_signals:
+            _tv_c = tv_signals[code]
+            _tv_close = (_tv_c.get("close", 0) if isinstance(_tv_c, dict)
+                         else getattr(_tv_c, "close", 0))
         close = (t_info.get("close")
                  or r_info.get("close")
                  or p_info.get("close")
-                 or b_info.get("close", 0))
+                 or b_info.get("close", 0)
+                 or _tv_close)
 
         # ── 양의 점수 (가산) ──────────────────
         # 교차 등장 횟수

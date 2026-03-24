@@ -122,16 +122,45 @@ def _get_etf_trading_value(date_str: str = None) -> Tuple[int, int]:
 
 
 def _get_5d_ratios() -> list:
-    """최근 5거래일 인버스/레버리지 비율"""
+    """최근 5거래일 인버스/레버리지 비율 (batch 조회 — API 6회로 최적화)"""
     try:
         from pykrx import stock
 
-        ratios = []
         end = datetime.now()
+        start = (end - timedelta(days=14)).strftime("%Y%m%d")
+        end_str = end.strftime("%Y%m%d")
 
-        for i in range(10):  # 최대 10일 탐색 (주말/공휴일 건너뛰기)
-            d = (end - timedelta(days=i)).strftime("%Y%m%d")
-            inv, lev = _get_etf_trading_value(d)
+        # 6 ETF를 기간 범위로 한번에 조회 (60회 → 6회)
+        inv_daily = {}  # {date_str: total_억}
+        for code in INVERSE_ETFS:
+            try:
+                df = stock.get_market_ohlcv(start, end_str, code)
+                if not df.empty:
+                    for dt, row in df.iterrows():
+                        ds = dt.strftime("%Y%m%d")
+                        val = int(row.get("거래대금", row["종가"] * row["거래량"]))
+                        inv_daily[ds] = inv_daily.get(ds, 0) + val
+            except Exception:
+                pass
+
+        lev_daily = {}
+        for code in LEVERAGE_ETFS:
+            try:
+                df = stock.get_market_ohlcv(start, end_str, code)
+                if not df.empty:
+                    for dt, row in df.iterrows():
+                        ds = dt.strftime("%Y%m%d")
+                        val = int(row.get("거래대금", row["종가"] * row["거래량"]))
+                        lev_daily[ds] = lev_daily.get(ds, 0) + val
+            except Exception:
+                pass
+
+        # 날짜 내림차순 → 최근 5거래일 비율
+        all_dates = sorted(set(inv_daily.keys()) & set(lev_daily.keys()), reverse=True)
+        ratios = []
+        for ds in all_dates:
+            inv = inv_daily[ds] // 100_000_000
+            lev = lev_daily[ds] // 100_000_000
             if inv > 0 and lev > 0:
                 ratios.append(inv / lev)
                 if len(ratios) >= 5:

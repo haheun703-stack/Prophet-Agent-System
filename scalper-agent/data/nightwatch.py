@@ -1346,6 +1346,7 @@ def _append_history(report_dict: dict):
             for t in report_dict.get("nxt_targets", [])
         ],
         "selection_reason": report_dict.get("selection_reason", ""),
+        "korea_strength": report_dict.get("korea_strength", 0),
     }
 
     # 같은 날짜 중복 교체
@@ -1566,10 +1567,12 @@ def select_predawn_targets(
 
 
 def save_predawn_positions(positions: Dict):
-    """선취매 포지션 저장"""
+    """선취매 포지션 저장 (atomic write)"""
     PREDAWN_POSITIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(PREDAWN_POSITIONS_PATH, "w", encoding="utf-8") as f:
+    tmp = PREDAWN_POSITIONS_PATH.with_suffix(".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(positions, f, ensure_ascii=False, indent=2)
+    tmp.replace(PREDAWN_POSITIONS_PATH)
 
 
 def load_predawn_positions() -> Dict:

@@ -1311,14 +1311,16 @@ def generate_brain_report() -> BrainReport:
 
 
 def save_brain_report(report: BrainReport) -> None:
-    """brain_report.json 저장"""
+    """brain_report.json 저장 (atomic write)"""
     BRAIN_REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     # dataclass → dict (중첩 dataclass도 처리)
     data = asdict(report)
 
-    with open(BRAIN_REPORT_PATH, "w", encoding="utf-8") as f:
+    tmp = BRAIN_REPORT_PATH.with_suffix(".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+    tmp.replace(BRAIN_REPORT_PATH)
     logger.info(f"[Market Brain] 저장: {BRAIN_REPORT_PATH}")
 
     # FIX-02: brain_allocation.json도 같이 갱신 (auto_trader 연동)
@@ -1354,8 +1356,10 @@ def _save_brain_allocation(report: BrainReport) -> None:
     }
 
     alloc_path = DATA_DIR / "brain_allocation.json"
-    with open(alloc_path, "w", encoding="utf-8") as f:
+    tmp = alloc_path.with_suffix(".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(alloc, f, ensure_ascii=False, indent=2)
+    tmp.replace(alloc_path)
     logger.info(f"[Market Brain] allocation 저장: {alloc_path} ({label} {pct}%)")
 
 

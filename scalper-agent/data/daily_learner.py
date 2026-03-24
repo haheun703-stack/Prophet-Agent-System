@@ -1159,8 +1159,10 @@ def brain_performance_check() -> dict:
     perf_list = perf_list[-30:]
 
     PERF_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(PERF_PATH, "w", encoding="utf-8") as f:
+    tmp = PERF_PATH.with_suffix(".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(perf_list, f, ensure_ascii=False, indent=2)
+    tmp.replace(PERF_PATH)
 
     # 적중률 계산
     recent_10 = perf_list[-10:]

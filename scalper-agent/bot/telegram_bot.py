@@ -584,6 +584,11 @@ class BodyHunterBot:
         if not chat_id:
             return
         war_state = context.bot_data.setdefault("war_tracker", {})
+        # 일간 리셋: 날짜가 바뀌면 alert/open/price 초기화
+        today_str = now.strftime("%Y-%m-%d")
+        if war_state.get("_date") != today_str:
+            war_state.clear()
+            war_state["_date"] = today_str
         alert_sent = war_state.setdefault("alerts", {})
         open_prices = war_state.setdefault("opens", {})
         last_prices = war_state.setdefault("prices", {})
@@ -2917,6 +2922,7 @@ class BodyHunterBot:
         logger.info("[NatChart] 국적 차트 자동 생성 시작...")
 
         import time as _time
+        import json as _json
         t0 = _time.time()
         summary = {"total": 0, "generated": 0, "tg_sent": 0, "supa": 0, "fail": 0}
 
@@ -2929,8 +2935,8 @@ class BodyHunterBot:
             # 추천+보유 = 텔레그램 전송 대상
             tg_codes = set()
             try:
-                rec_path = DATA_STORE / "recommendation.json"
-                rec = json.loads(rec_path.read_text(encoding="utf-8"))
+                rec_path = Path(__file__).resolve().parent.parent / "data_store" / "recommendation.json"
+                rec = _json.loads(rec_path.read_text(encoding="utf-8"))
                 for s in rec.get("stocks", []):
                     tg_codes.add(s.get("code", ""))
             except Exception:
@@ -3653,6 +3659,11 @@ class BodyHunterBot:
         now = datetime.now(KST)
         now_str = now.strftime("%H:%M")
         watch_state = context.bot_data.setdefault("position_watch", {})
+        # 일간 리셋: 날짜가 바뀌면 alert 초기화
+        today_str = now.strftime("%Y-%m-%d")
+        if watch_state.get("_date") != today_str:
+            watch_state.clear()
+            watch_state["_date"] = today_str
         alerts_sent = watch_state.setdefault("alerts", {})
 
         lines = [f"[포지션 감시] {now_str}"]
@@ -3776,6 +3787,11 @@ class BodyHunterBot:
             return
 
         watch_state = context.bot_data.setdefault("position_watch", {})
+        # 일간 리셋
+        _today = now.strftime("%Y-%m-%d")
+        if watch_state.get("_date") != _today:
+            watch_state.clear()
+            watch_state["_date"] = _today
         alerts_sent = watch_state.setdefault("alerts", {})
 
         for idx, s in enumerate(stocks):
@@ -3819,7 +3835,9 @@ class BodyHunterBot:
                         text=(
                             f"⚠️ {name} 경고선 이탈\n"
                             f"  현재 {cp:,}원 ≤ WARN {warn:,}원\n"
-                            f"  SL {sl:,}원까지 {(cp/sl-1)*100:+.1f}%"
+                            f"  SL {sl:,}원까지 {(cp/sl-1)*100:+.1f}%" if sl > 0 else
+                            f"⚠️ {name} 경고선 이탈\n"
+                            f"  현재 {cp:,}원 ≤ WARN {warn:,}원"
                         ),
                     )
                     code_alerts.append("WARN")

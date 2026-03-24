@@ -37,6 +37,7 @@ logger = logging.getLogger("BH.AutoTrader")
 BASE_DIR = Path(__file__).resolve().parent.parent
 CANDIDATES_PATH = BASE_DIR / "data_store" / "swing_candidates.json"
 RISK_STATE_PATH = BASE_DIR / "data_store" / "risk_state.json"
+POSITIONS_PATH = BASE_DIR / "data_store" / "positions.json"
 
 
 class AutoTrader:
@@ -48,6 +49,7 @@ class AutoTrader:
         self.is_running = False
         self._send_alert: Optional[Callable] = None
         self._positions = {}  # {code: {entry_price, stop_loss, take_profit, target_state, ...}}
+        self._load_positions()  # VPS 재시작 후 복원
 
         # 진입 감시 대기열: 장 시작 후 실시간으로 관찰 → 조건 충족 시 매수
         # {code: {name, buy_amount, sl, tp, score, prev_close, checks, ...}}
@@ -265,6 +267,7 @@ class AutoTrader:
                         "regime": item.get("regime", "NORMAL"),
                         "source": item.get("source", ""),
                     }
+                    self._save_positions()
                     try:
                         rtm = self._get_rt_monitor()
                         rtm.register_position(code, name, cp, sl, tp)
@@ -426,7 +429,7 @@ class AutoTrader:
                                 cp_data = await asyncio.to_thread(
                                     self.trader.fetch_price, code
                                 )
-                                entry = cp_data.get("price", 0) if cp_data else 0
+                                entry = cp_data.get("current_price", 0) if cp_data else 0
                             except Exception:
                                 entry = 0
                         if entry and not sl:
@@ -1069,6 +1072,7 @@ class AutoTrader:
                                 if watch.get("regime") == "MOMENTUM":
                                     mtm_sl = int(cp * 0.965)
                                     self._positions[code]["stop_loss"] = max(mtm_sl, watch["sl"])
+                                self._save_positions()
                                 try:
                                     rtm = self._get_rt_monitor()
                                     rtm.register_position(code, watch["name"], cp, sl, tp)
@@ -1218,6 +1222,7 @@ class AutoTrader:
                     "regime": "NORMAL",
                     "source": "day_scan",
                 }
+                self._save_positions()
                 await _send(f"✅ 자동 매수: {result.get('message')}")
             else:
                 await _send(f"❌ 매수 실패 {code}: {result.get('message')}")
@@ -1312,6 +1317,7 @@ class AutoTrader:
                     pnl_amount = (snap.price - pos["entry_price"]) * actual_qty
                     self.record_realized_loss(pnl_amount)
                     self._positions.pop(code, None)
+                    self._save_positions()
                     rtm.unregister_position(code)
                     await self._alert(rtm.format_decision_alert(snap))
 
@@ -1443,6 +1449,7 @@ class AutoTrader:
                         pnl = (cp - pos["entry_price"]) * actual_qty
                         self.record_realized_loss(pnl)
                         self._positions.pop(code, None)
+                        self._save_positions()
                         await self._alert(
                             f"🛑 [Eye+Guardian] {name} EXIT 매도\n"
                             f"   Eye: {verdict.summary}\n"
@@ -1537,6 +1544,7 @@ class AutoTrader:
                     pnl = (cp - entry) * actual_qty
                     self.record_realized_loss(pnl)
                     self._positions.pop(code, None)
+                    self._save_positions()
 
                     if pos.get("trailing_activated"):
                         drop_pct = (1 - cp / hwm) * 100 if hwm > 0 else 0
@@ -1557,6 +1565,7 @@ class AutoTrader:
                         logger.error(f"TP 매도 실패 {code}: {result} — 포지션 유지")
                         continue
                     self._positions.pop(code, None)
+                    self._save_positions()
                     gain = cp - entry
                     await self._alert(
                         f"익절\n{name}({code}) @ {cp:,}원\n"
@@ -1737,6 +1746,7 @@ class AutoTrader:
                     result = self.trader.liquidate_one(code)
                     if result and result.get("success"):
                         self._positions.pop(code, None)
+                        self._save_positions()
                         await self._alert(f"⛔ 동적 손절: {name}({code}) @ {cp:,}")
                     else:
                         logger.error(f"동적 손절 매도 실패 {code}: {result}")
@@ -1767,6 +1777,7 @@ class AutoTrader:
                             logger.error(f"동적 전량매도 실패 {code}: {result} — 포지션 유지")
                             continue
                         self._positions.pop(code, None)
+                        self._save_positions()
                         await self._alert(f"🔴 동적 전량매도: {name}({code}) @ {cp:,} ({reason})")
                 elif action == ACTION_ADD:
                     # ── 추매: 업사이드 8%+ → 추가 매수 실행 ──
@@ -1863,12 +1874,14 @@ class AutoTrader:
                             logger.warning(f"EOD 청산 실패 {code}: {result_one} — 포지션 유지")
                     except Exception as e:
                         logger.warning(f"EOD 청산 예외 {code}: {e} — 포지션 유지")
+                self._save_positions()
                 result = {"success": True, "message": "preclose 제외 청산 완료"}
             else:
                 logger.info("장마감 전량 청산")
                 await self._alert("🏁 장마감 전량 청산 시작...")
                 result = self.trader.liquidate_all()
                 self._positions.clear()
+                self._save_positions()
             await self._alert(f"{'✅' if result.get('success') else '❌'} {result.get('message')}")
         else:
             # 스윙 모드: 요약만
@@ -2585,12 +2598,33 @@ class AutoTrader:
 
         self._save_nxt_positions()
 
+    def _save_positions(self):
+        """정규 포지션 JSON 영속화 (VPS 재시작 대비)"""
+        tmp = POSITIONS_PATH.with_suffix(".tmp")
+        POSITIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(self._positions, f, ensure_ascii=False, indent=2)
+        tmp.replace(POSITIONS_PATH)
+
+    def _load_positions(self):
+        """정규 포지션 JSON 복원"""
+        if POSITIONS_PATH.exists():
+            try:
+                with open(POSITIONS_PATH, "r", encoding="utf-8") as f:
+                    self._positions = json.load(f)
+                if self._positions:
+                    logger.info(f"[POSITIONS] 복원: {len(self._positions)}종목")
+            except (json.JSONDecodeError, IOError):
+                self._positions = {}
+
     def _save_nxt_positions(self):
         """NXT 포지션 JSON 저장"""
         path = Path(__file__).resolve().parent.parent / "data_store" / "nxt_positions.json"
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
+        tmp = path.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(self._nxt_positions, f, ensure_ascii=False, indent=2)
+        tmp.replace(path)
 
     def _load_nxt_positions(self):
         """NXT 포지션 JSON 로드"""
@@ -2793,6 +2827,7 @@ class AutoTrader:
             )
 
         if merged > 0:
+            self._save_positions()
             clear_predawn_positions()
             logger.info(f"[PREDAWN] {merged}종목 정규 포지션 전환 완료")
 
