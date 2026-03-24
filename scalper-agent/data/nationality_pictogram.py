@@ -433,13 +433,36 @@ def generate_charts_batch(
     from data.nationality_signal import compare_nationality
 
     # ── 프로파일러로 국가별 행동 패턴 일괄 분석 ──
+    # 캐시된 CSV 우선 사용 → KRX API 최소화
+    # 200종목 5일치 CSV가 있으면 ~10초, 없으면 KRX API 호출 → 타임아웃 300초
     all_profiles = {}
     try:
+        import signal as _sig
         from data.nationality_profiler import analyze_nationality_behavior
-        all_profiles = analyze_nationality_behavior(
-            codes, n_days=5, code_names=code_names,
-        )
-        logger.info(f"[NatChart] 프로파일 분석 완료: {len(all_profiles)}종목")
+
+        import threading
+        result_box = [{}]
+        error_box = [None]
+
+        def _run_profile():
+            try:
+                result_box[0] = analyze_nationality_behavior(
+                    codes, n_days=5, code_names=code_names,
+                )
+            except Exception as e:
+                error_box[0] = e
+
+        t = threading.Thread(target=_run_profile, daemon=True)
+        t.start()
+        t.join(timeout=300)  # 5분 타임아웃
+
+        if t.is_alive():
+            logger.warning("[NatChart] 프로파일 분석 타임아웃(300초) — 기본모드로 진행")
+        elif error_box[0]:
+            raise error_box[0]
+        else:
+            all_profiles = result_box[0]
+            logger.info(f"[NatChart] 프로파일 분석 완료: {len(all_profiles)}종목")
     except Exception as e:
         logger.warning(f"[NatChart] 프로파일 분석 실패 (차트는 기본모드): {e}")
 

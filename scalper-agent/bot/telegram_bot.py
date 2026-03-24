@@ -2896,57 +2896,123 @@ class BodyHunterBot:
             await update.message.reply_text(f"국적차트 실패: {str(e)[:300]}")
 
     async def _job_nationality_charts(self, context):
-        """17:00 국적 픽토그램 차트 자동 생성 + Telegram 전송 + Supabase 업로드"""
+        """17:00 국적 픽토그램 차트 자동 생성
+
+        전략:
+        - 텔레그램 전송: 추천+보유 종목만 (5~10개) → rate limit 안전
+        - Supabase 업로드: 전체 TOP200 → FLOWX 웹 제공용
+        - 완료/실패 요약 알림: 반드시 발송 → 조용한 실패 방지
+        """
         if not is_trading_day():
             return
         logger.info("[NatChart] 국적 차트 자동 생성 시작...")
+
+        import time as _time
+        t0 = _time.time()
+        summary = {"total": 0, "generated": 0, "tg_sent": 0, "supa": 0, "fail": 0}
+
         try:
-            codes = self._get_nationality_targets()
-            if not codes:
+            # ── 대상 분리: 텔레그램용 vs Supabase-only ──
+            all_codes = self._get_nationality_targets()
+            if not all_codes:
                 return
-            code_names = {c: CODE_TO_NAME.get(c, c) for c in codes}
+
+            # 추천+보유 = 텔레그램 전송 대상
+            tg_codes = set()
+            try:
+                rec_path = DATA_STORE / "recommendation.json"
+                rec = json.loads(rec_path.read_text(encoding="utf-8"))
+                for s in rec.get("stocks", []):
+                    tg_codes.add(s.get("code", ""))
+            except Exception:
+                pass
+            if hasattr(self, "auto_trader") and self.auto_trader:
+                try:
+                    for code in self.auto_trader.active_positions:
+                        tg_codes.add(code)
+                except Exception:
+                    pass
+            tg_codes.discard("")
+
+            code_names = {c: CODE_TO_NAME.get(c, c) for c in all_codes}
+            summary["total"] = len(all_codes)
 
             from data.nationality_pictogram import generate_charts_batch, upload_chart_to_supabase
             from data.nationality_signal import _get_latest_data_date, score_nationality_batch
-            charts = await asyncio.to_thread(generate_charts_batch, codes, code_names)
+
+            # ── 차트 일괄 생성 (프로파일 포함) ──
+            charts = await asyncio.to_thread(generate_charts_batch, all_codes, code_names)
+            summary["generated"] = len(charts)
             date_str = _get_latest_data_date()
 
             # 점수 일괄 조회 (Supabase 메타데이터용)
             scores = {}
             try:
-                scores = await asyncio.to_thread(score_nationality_batch, codes, date_str)
+                scores = await asyncio.to_thread(score_nationality_batch, all_codes, date_str)
             except Exception:
                 pass
 
-            sent = 0
+            # ── 전송: 추천+보유만 텔레그램, 전체는 Supabase ──
             for code, buf in charts.items():
                 name = code_names.get(code, code)
-                try:
-                    buf.seek(0)
-                    await context.bot.send_photo(
-                        chat_id=self.chat_id,
-                        photo=buf,
-                        caption=f"🌍 {name}({code}) 외국인 국적별 수급",
-                    )
-                    sent += 1
-                except Exception as e:
-                    logger.warning(f"[NatChart] {name} 자동전송 실패: {e}")
 
-                # Supabase 업로드 (별도 try)
+                # 텔레그램: 추천+보유 종목만 (rate limit 방지)
+                if code in tg_codes:
+                    try:
+                        buf.seek(0)
+                        await context.bot.send_photo(
+                            chat_id=self.chat_id,
+                            photo=buf,
+                            caption=f"🌍 {name}({code}) 외국인 국적별 수급",
+                        )
+                        summary["tg_sent"] += 1
+                        await asyncio.sleep(1.5)  # rate limit 방지
+                    except Exception as e:
+                        logger.warning(f"[NatChart] {name} 텔레그램 전송 실패: {e}")
+
+                # Supabase: 전체 업로드
                 try:
                     sc, reason = scores.get(code, (0, ""))
                     buf.seek(0)
                     await asyncio.to_thread(
                         upload_chart_to_supabase,
-                        code, name, date_str, buf,
+                        code, name, date_str or "", buf,
                         {"nat_score": sc, "nat_grade": reason},
                     )
+                    summary["supa"] += 1
                 except Exception as e:
                     logger.debug(f"[NatChart] Supabase 업로드 스킵: {e}")
 
-            logger.info(f"[NatChart] 자동 전송 완료: {sent}/{len(charts)}종목")
+            summary["fail"] = summary["total"] - summary["generated"]
+
         except Exception as e:
             logger.error(f"[NatChart] 자동 생성 실패: {e}")
+            summary["fail"] = summary["total"] or -1
+
+        # ── 완료 요약 알림 (반드시 발송) ──
+        elapsed = _time.time() - t0
+        try:
+            status = "✅" if summary["fail"] == 0 else "⚠️"
+            msg = (
+                f"{status} 국적차트 자동생성 완료\n"
+                f"대상: {summary['total']}종목\n"
+                f"생성: {summary['generated']} | "
+                f"텔레그램: {summary['tg_sent']} | "
+                f"Supabase: {summary['supa']}\n"
+                f"실패: {summary['fail']} | "
+                f"소요: {elapsed:.0f}초"
+            )
+            if summary["fail"] > 0:
+                msg += f"\n⚠️ {summary['fail']}종목 차트 생성 실패 — 국적데이터 확인 필요"
+            await context.bot.send_message(chat_id=self.chat_id, text=msg)
+        except Exception as e:
+            logger.error(f"[NatChart] 요약 알림 발송 실패: {e}")
+
+        logger.info(
+            f"[NatChart] 완료: {summary['generated']}/{summary['total']}생성, "
+            f"TG:{summary['tg_sent']}, Supa:{summary['supa']}, "
+            f"실패:{summary['fail']}, {elapsed:.0f}초"
+        )
 
     async def _job_rebuild_universe(self, context):
         """장전 유니버스 리빌드 (08:35) — Silent: 로그만"""
