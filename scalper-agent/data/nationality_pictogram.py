@@ -40,13 +40,13 @@ CATEGORY_LABEL = {
     "기타":    "[기타]",
 }
 
-# ── 일반인용 투자 타입 설명 ──
+# ── 일반인용 투자 타입 설명 (차트 서브텍스트용 — 짧게) ──
 TYPE_DESC = {
-    "기관":    "장기 패시브 | 방향 잡으면 오래감",
-    "헤지펀드": "단기 차익 | 1~5일 빠른 매매",
-    "아시아":  "추세 추종 | 진입 느리지만 강함",
-    "북미":    "글로벌 방향 | ETF 리밸런싱",
-    "기타":    "기타 투자자",
+    "기관":    "장기 패시브",
+    "헤지펀드": "단기 차익",
+    "아시아":  "추세 추종",
+    "북미":    "글로벌 방향",
+    "기타":    "기타",
 }
 
 # ── 행동 패턴 표시 ──
@@ -316,19 +316,26 @@ def generate_pictogram_chart(
             type_desc = TYPE_DESC.get(cat, "")
             if prof:
                 pattern = prof.get("패턴", "")
-                trend = prof.get("추세", 0)
                 pred_score = prof.get("예측점수", 0)
                 pat_display, pat_color = PATTERN_DISPLAY.get(pattern, (pattern, COLOR_GRAY))
-                # "장기 패시브 | 매집중 ↗ (내일 +8.5)"
-                trait_text = f"{type_desc}"
-                draw.text((MARGIN + 8, y + 22), trait_text, fill=COLOR_SUB, font=font_trait)
-                # 패턴 + 예측
-                pat_x = MARGIN + 8 + len(trait_text) * 6 + 10
+                # 타입 설명
+                draw.text((MARGIN + 8, y + 22), type_desc, fill=COLOR_SUB, font=font_trait)
+                # 패턴 (정확한 텍스트 너비 계산)
+                try:
+                    tw = font_trait.getlength(type_desc)
+                except AttributeError:
+                    tw = len(type_desc) * 7  # PIL 구버전 fallback
+                pat_x = MARGIN + 8 + int(tw) + 8
                 draw.text((pat_x, y + 22), pat_display, fill=pat_color, font=font_trait)
+                # 예측 점수
                 if abs(pred_score) >= 1:
+                    try:
+                        pw = font_trait.getlength(pat_display)
+                    except AttributeError:
+                        pw = len(pat_display) * 7
                     score_color = COLOR_BUY if pred_score > 0 else COLOR_SELL
                     draw.text(
-                        (pat_x + len(pat_display) * 7 + 6, y + 22),
+                        (pat_x + int(pw) + 4, y + 22),
                         f"({pred_score:+.0f})",
                         fill=score_color, font=font_trait,
                     )
