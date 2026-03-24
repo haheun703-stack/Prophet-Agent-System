@@ -36,7 +36,7 @@ MIN1_DIR = STORE_DIR / "1min"
 MIN5_DIR = STORE_DIR / "5min"
 NATIONALITY_DIR = STORE_DIR / "nationality"
 SHORT_DIR = STORE_DIR / "short"
-NEWS_DIR = STORE_DIR / "news"
+NEWS_DIR = STORE_DIR / "news_sentiment"
 SIGNALS_DIR = STORE_DIR / "signals"
 LEARNING_DIR = STORE_DIR / "learning"
 
@@ -212,6 +212,22 @@ def _verify_news_sentiment(today: str) -> dict:
     return {"status": "SKIP", "reason": "오늘 뉴스 분석 미실행 (온디맨드)"}
 
 
+def _verify_options_signal(today: str) -> dict:
+    """옵션 심리 (P/C Ratio) — brain_allocation에 연동 확인"""
+    alloc_path = STORE_DIR / "brain_allocation.json"
+    if not alloc_path.exists():
+        return {"status": "SKIP", "reason": "brain_allocation 미생성"}
+    try:
+        import json
+        alloc = json.loads(alloc_path.read_text("utf-8"))
+        ts = alloc.get("timestamp", "")
+        if today in ts:
+            return {"status": "PASS", "detail": f"timestamp={ts}"}
+        return {"status": "SKIP", "reason": f"오늘 데이터 아님 ({ts[:10]})"}
+    except Exception as e:
+        return {"status": "FAIL", "reason": str(e)}
+
+
 def _verify_dart_disclosure() -> dict:
     """DART 공시 — 주기적 배치라 날짜 체크 불필요"""
     # DART는 야간 배치 / 주 1회 — 존재 여부만 확인
@@ -374,6 +390,7 @@ CHECKLIST = {
     "insights":       {"description": "학습 인사이트",          "priority": PRIORITY_HIGH},
     "short_selling":  {"description": "공매도 잔고",            "priority": PRIORITY_MEDIUM},
     "news_sentiment": {"description": "뉴스 AI 감성분석",      "priority": PRIORITY_MEDIUM},
+    "options_signal": {"description": "옵션 심리 (P/C Ratio)", "priority": PRIORITY_MEDIUM},
     "dart_disclosure":{"description": "DART 공시",             "priority": PRIORITY_LOW},
     "consensus":      {"description": "컨센서스 목표가",        "priority": PRIORITY_LOW},
 }
@@ -419,6 +436,7 @@ class DataVerifier:
         details["insights"] = _verify_insights(t)
         details["short_selling"] = _verify_short_selling(t)
         details["news_sentiment"] = _verify_news_sentiment(t)
+        details["options_signal"] = _verify_options_signal(t)
         details["dart_disclosure"] = _verify_dart_disclosure()
         details["consensus"] = _verify_consensus()
 

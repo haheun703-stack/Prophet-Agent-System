@@ -1075,7 +1075,8 @@ class AutoTrader:
                                 self._save_positions()
                                 try:
                                     rtm = self._get_rt_monitor()
-                                    rtm.register_position(code, watch["name"], cp, sl, tp)
+                                    final_sl = self._positions[code]["stop_loss"]
+                                    rtm.register_position(code, watch["name"], cp, final_sl, tp)
                                 except Exception:
                                     pass
 

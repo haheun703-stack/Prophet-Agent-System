@@ -214,6 +214,14 @@ def run_monitor(targets: list[dict], interval: int = 30):
     - 급등(+3%) / 급락(-3%) / SL 근접 알림
     - 09:00~15:30 장중만 활성
     """
+    # ── 거래일 체크 ──
+    from data.trading_calendar import is_trading_day
+    if not is_trading_day():
+        msg = f"📡 오늘은 휴장일 — 모니터 스킵 ({datetime.now():%Y-%m-%d %a})"
+        print(msg)
+        send_telegram(msg)
+        return
+
     trader = KISTrader()
 
     # 상태 저장 (알림 중복 방지)

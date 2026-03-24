@@ -28,7 +28,7 @@ TRADE_OBJECTS_PATH = _STORE / "trade_objects.json"
 #  상수
 # ═══════════════════════════════════════════════════════
 
-CASH_RESERVE = 0.25           # 현금 25% 철칙 — 절대 불가침
+CASH_RESERVE = 0.10           # 현금 10% 유보 — auto_trader min_cash_ratio와 동일
 MAX_RISK_PER_TRADE = 0.02     # 트레이드당 최대 리스크 = 총자산 2%
 MAX_POSITIONS = 2             # 최대 동시 포지션 수
 MAX_SINGLE_PCT = 0.15         # 단일 종목 최대 비중 15%

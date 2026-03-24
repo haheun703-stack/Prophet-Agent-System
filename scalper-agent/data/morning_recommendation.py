@@ -591,6 +591,20 @@ def _step4_news_filter(codes_names: list[tuple[str, str]],
 _BRAIN_CACHE = {}  # 세션 내 1회만 로드
 
 
+def _brain_stock_cap(pct: int) -> int:
+    """BRAIN 비중(%) → 추천 종목 수 캡 (비표준 pct도 안전 처리, 최소 2)"""
+    _CAP = {100: 8, 70: 5, 50: 3, 30: 2, 0: 2}
+    cap = _CAP.get(pct)
+    if cap is None:
+        for k in sorted(_CAP.keys(), reverse=True):
+            if pct >= k:
+                cap = _CAP[k]
+                break
+        else:
+            cap = 2
+    return max(cap, 2)
+
+
 def _load_brain_insights() -> dict:
     """daily_learner가 생성한 insights.json 로드
 
@@ -1896,10 +1910,7 @@ def run_evening_recommendation() -> RecommendationReport:
         logger.info(f"[Market Brain] 비중 {brain.position_size_pct}% | {brain.overall_verdict[:50]}")
 
         # FIX-01: BRAIN 비중 → 추천 종목 수 캡 (최소 2종목 보장)
-        _BRAIN_STOCK_CAP = {100: 8, 70: 5, 50: 3, 30: 2, 0: 2}
-        cap = _BRAIN_STOCK_CAP.get(brain.position_size_pct, 5)
-        if cap < 2:
-            cap = 2  # 안전장치: 어떤 상황에서도 최소 2종목 유지
+        cap = _brain_stock_cap(brain.position_size_pct)
         if len(report.stocks) > cap:
             logger.info(
                 f"[BRAIN CAP] {len(report.stocks)}종목 → {cap}종목 "
@@ -1926,7 +1937,16 @@ def run_evening_recommendation() -> RecommendationReport:
         import json
         rec_path = Path(__file__).resolve().parent.parent / "data_store" / "recommendation.json"
         rec_data = json.loads(rec_path.read_text("utf-8"))
-        run_flowx_upload(rec_data, nat_daily_all=None)
+        # 국적 데이터 수집 시도
+        _nat_daily = None
+        try:
+            from data.nationality_profiler import collect_daily_series as _cds
+            _top_codes = [s.get("code") for s in rec_data.get("stocks", [])[:10]]
+            if _top_codes:
+                _nat_daily = _cds(_top_codes, n_days=5)
+        except Exception:
+            pass
+        run_flowx_upload(rec_data, nat_daily_all=_nat_daily)
         logger.info("[FLOWX] 업로드 완료")
     except Exception as e:
         logger.warning(f"[FLOWX] 업로드 실패 (무시): {e}")
@@ -3204,10 +3224,7 @@ def run_war_mode_recommendation() -> RecommendationReport:
         logger.info(f"[Market Brain] 비중 {brain.position_size_pct}% | {brain.overall_verdict[:50]}")
 
         # FIX-01: BRAIN 비중 → 추천 종목 수 캡 (최소 2종목 보장)
-        _BRAIN_STOCK_CAP = {100: 8, 70: 5, 50: 3, 30: 2, 0: 2}
-        cap = _BRAIN_STOCK_CAP.get(brain.position_size_pct, 5)
-        if cap < 2:
-            cap = 2  # 안전장치: 어떤 상황에서도 최소 2종목 유지
+        cap = _brain_stock_cap(brain.position_size_pct)
         if len(report.stocks) > cap:
             logger.info(
                 f"[BRAIN CAP] {len(report.stocks)}종목 → {cap}종목 "

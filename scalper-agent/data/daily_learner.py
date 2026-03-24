@@ -466,8 +466,10 @@ def verify_nxt_signals(today: str) -> Optional[dict]:
         if sl_path.exists():
             sl = json.loads(sl_path.read_text("utf-8"))
             for entry in reversed(sl):
-                if entry.get("verify_date") == today:
-                    rec_avg = entry.get("avg_return", 0)
+                if entry.get("date") == today:
+                    details = entry.get("details", [])
+                    if details:
+                        rec_avg = sum(d.get("return_pct", 0) for d in details) / len(details)
                     break
     except Exception:
         pass
@@ -746,6 +748,7 @@ def load_insights() -> dict:
         "sector_boost": {},
         "pattern_insights": [],
         "score_adj_applied": 0,
+        "overall_hit_rate": 50.0,
     }
 
 

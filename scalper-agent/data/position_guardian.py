@@ -521,21 +521,41 @@ def evaluate_position(
 #  전체 보유종목 평가
 # ═══════════════════════════════════════════
 def evaluate_all_holdings() -> List[PositionVerdict]:
-    """war_relay_watchlist에서 HOLDING 종목 전체 평가"""
+    """war_relay_watchlist + auto-traded positions 전체 평가"""
     import time
 
+    holdings = []
+    seen_codes = set()
+
+    # 1) war_relay_watchlist
     wl_path = STORE_DIR / "war_relay_watchlist.json"
-    if not wl_path.exists():
-        logger.warning("watchlist 없음")
-        return []
+    if wl_path.exists():
+        wl = json.loads(wl_path.read_text("utf-8"))
+        for s in wl.get("stocks", []):
+            if s.get("tier") == "HOLDING" and s["code"] not in seen_codes:
+                holdings.append(s)
+                seen_codes.add(s["code"])
 
-    wl = json.loads(wl_path.read_text("utf-8"))
-    stocks = wl.get("stocks", [])
+    # 2) auto_trader positions.json (자동매매 포지션)
+    pos_path = STORE_DIR / "positions.json"
+    if pos_path.exists():
+        try:
+            positions = json.loads(pos_path.read_text("utf-8"))
+            for code, info in positions.items():
+                if code not in seen_codes:
+                    holdings.append({
+                        "code": code,
+                        "name": info.get("name", code),
+                        "entry": info.get("entry_price", info.get("entry", 0)),
+                        "tp1": info.get("target_price", info.get("tp1", 0)),
+                        "sl": info.get("stop_loss", info.get("sl", 0)),
+                    })
+                    seen_codes.add(code)
+        except Exception as e:
+            logger.warning(f"positions.json 로드 실패: {e}")
 
-    # HOLDING 티어 종목만
-    holdings = [s for s in stocks if s.get("tier") == "HOLDING"]
     if not holdings:
-        logger.warning("HOLDING 종목 없음")
+        logger.warning("HOLDING/자동매매 포지션 없음")
         return []
 
     # 현재가 조회

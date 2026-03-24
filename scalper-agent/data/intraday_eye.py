@@ -150,7 +150,7 @@ class IntradayBuffer:
     def add_bar(self, price_data: dict) -> Optional[IntradayBar]:
         """fetch_price 결과 → IntradayBar 생성"""
         cum_vol = price_data.get("volume", 0)
-        delta_vol = max(0, cum_vol - self._prev_cum_volume) if self._prev_cum_volume > 0 else 0
+        delta_vol = max(0, cum_vol - self._prev_cum_volume) if self._prev_cum_volume > 0 else cum_vol
         self._prev_cum_volume = cum_vol
 
         bar = IntradayBar(
@@ -746,7 +746,7 @@ def synthesize(buf: IntradayBuffer, ma: dict, vwap_pos: dict,
         weak_signals += 1
         weak_reasons.append(f"체결강도 {flow.get('strength', 0):.0f}")
 
-    if composite >= 35 or weak_signals >= 2:
+    if composite >= 55 or weak_signals >= 2:
         summary = ", ".join(weak_reasons) if weak_reasons else f"약화 (점수 {composite:.0f})"
         today_high = sr.get("today_high", price)
         trailing_sl = int(today_high * 0.975)

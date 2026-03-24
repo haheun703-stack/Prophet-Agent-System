@@ -1089,8 +1089,8 @@ def select_sectors_and_targets(
             selected_keys = ["semiconductor", "power_infra"]
             reason = "🟢 기본"
 
-    # 원자재 릴레이 보조 섹터 병합 (중복 제거)
-    if commodity_addon and selected_keys:
+    # 원자재 릴레이 보조 섹터 병합 (중복 제거, 점수 무관)
+    if commodity_addon:
         for key in commodity_addon:
             if key not in selected_keys:
                 selected_keys.append(key)

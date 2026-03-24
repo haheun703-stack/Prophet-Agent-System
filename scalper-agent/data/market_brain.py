@@ -208,6 +208,7 @@ def _phase1_macro(nw: dict) -> MacroAssessment:
     try:
         from data.options_signal import get_brain_options_adjustment
         opt_adj, opt_detail = get_brain_options_adjustment()
+        opt_adj = max(-3.0, min(3.0, opt_adj))  # ±3.0 클램핑 (매크로 1단계 이내)
         if abs(opt_adj) > 0:
             m.options_adj = opt_adj
             m.options_pc_level = opt_detail
@@ -1460,10 +1461,22 @@ def emergency_reassess() -> dict | None:
     old_pts = old_risk_adj.get(report.risk.risk_level, 0)
     new_pts = old_risk_adj.get(new_risk.risk_level, 0)
 
-    # 원래 score 역산 (size_reason에서 score 추출)
-    pct_to_min_score = {100: 20, 70: 0, 50: -20, 30: -40, 0: -41}
-    # 보수적 추정: 원래 score의 하한값 사용
-    estimated_old_score = pct_to_min_score.get(original_pct, 0)
+    # 원래 score 역산 — 비표준 pct도 보간 지원
+    _boundaries = [(100, 20), (70, 0), (50, -20), (30, -40), (0, -41)]
+    estimated_old_score = 0
+    for i, (pct_hi, sc_hi) in enumerate(_boundaries):
+        if original_pct >= pct_hi:
+            estimated_old_score = sc_hi
+            break
+        if i + 1 < len(_boundaries):
+            pct_lo, sc_lo = _boundaries[i + 1]
+            if original_pct >= pct_lo:
+                # 선형 보간
+                ratio = (original_pct - pct_lo) / max(1, pct_hi - pct_lo)
+                estimated_old_score = sc_lo + (sc_hi - sc_lo) * ratio
+                break
+    else:
+        estimated_old_score = -41
     new_score = estimated_old_score - old_pts + new_pts
 
     # 새 비중 결정
