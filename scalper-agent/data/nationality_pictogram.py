@@ -40,6 +40,26 @@ CATEGORY_LABEL = {
     "기타":    "[기타]",
 }
 
+# ── 일반인용 투자 타입 설명 ──
+TYPE_DESC = {
+    "기관":    "장기 패시브 | 방향 잡으면 오래감",
+    "헤지펀드": "단기 차익 | 1~5일 빠른 매매",
+    "아시아":  "추세 추종 | 진입 느리지만 강함",
+    "북미":    "글로벌 방향 | ETF 리밸런싱",
+    "기타":    "기타 투자자",
+}
+
+# ── 행동 패턴 표시 ──
+PATTERN_DISPLAY = {
+    "매집중":   ("매집중 ↗", COLOR_BUY),
+    "이탈중":   ("이탈중 ↘", COLOR_SELL),
+    "꾸준유지": ("꾸준유지 →", (0, 150, 80)),
+    "단타형":   ("단타형 ⟷", (200, 120, 0)),
+    "관망":     ("관망 ●", (150, 150, 150)),
+    "신규진입": ("신규진입 ★", (180, 0, 180)),
+    "일반매매": ("일반매매", (120, 120, 120)),
+}
+
 # ── 폰트 로더 ──
 _font_cache = {}
 
@@ -176,6 +196,7 @@ def generate_pictogram_chart(
     total_shares: int,
     date_new: str,
     date_old: str,
+    profiles: Optional[List[dict]] = None,
 ) -> BytesIO:
     """PIL 기반 픽토그램 차트 생성
 
@@ -186,6 +207,7 @@ def generate_pictogram_chart(
         total_shares: 상장주식수
         date_new: 금일 YYYYMMDD
         date_old: 전일 YYYYMMDD
+        profiles: analyze_nationality_behavior() 결과 (투자성향+패턴 표시용)
 
     Returns:
         BytesIO: PNG 이미지
@@ -208,10 +230,16 @@ def generate_pictogram_chart(
         buf.seek(0)
         return buf
 
+    # 프로파일 국가→패턴 매핑
+    profile_map = {}
+    if profiles:
+        for p in profiles:
+            profile_map[p["국가"]] = p
+
     # ── 레이아웃 계산 ──
     MARGIN = 30
     HEADER_H = 80
-    ROW_H = 52
+    ROW_H = 68 if profiles else 52  # 성향 표시 시 행 높이 증가
     LEGEND_H = 70
     PERSON_SIZE = 28
     PERSON_GAP = 4
@@ -233,6 +261,7 @@ def generate_pictogram_chart(
     font_row_b = _get_font(15, bold=True)
     font_legend = _get_font(13)
     font_pct = _get_font(12)
+    font_trait = _get_font(11)  # 투자성향 서브텍스트
 
     dn = f"{date_new[:4]}/{date_new[4:6]}/{date_new[6:]}" if len(date_new) == 8 else date_new
     do = f"{date_old[4:6]}/{date_old[6:]}" if len(date_old) == 8 else date_old
@@ -268,34 +297,55 @@ def generate_pictogram_chart(
         delta = c["변화"]
         cat = c["분류"]
         pct = c["변화율"]
-        vol_new = c["금일"]
 
         # 색상
         color = COLOR_BUY if delta > 0 else COLOR_SELL
         cat_color = CATEGORY_COLORS.get(cat, COLOR_GRAY)
 
         # 사람 수 계산 (총 주식수 비례)
-        if total_shares > 0:
-            # 거래량이 총 주식수의 몇 %인지 계산
-            pct_of_total = abs(delta) / total_shares * 100
-            # MAX_PERSONS = 0.5% 이상일 때 20명, 나머지 비례
-            # 기준: 가장 큰 변화 = MAX_PERSONS명
-            n_persons = max(1, round(abs(delta) / max_abs_change * MAX_PERSONS))
-        else:
-            n_persons = max(1, round(abs(delta) / max_abs_change * MAX_PERSONS))
+        n_persons = max(1, round(abs(delta) / max_abs_change * MAX_PERSONS))
 
-        # 국가 라벨
+        # 국가 라벨 (1행)
         cat_label = CATEGORY_LABEL.get(cat, "")
         label_text = f"{cat_label} {country}"
-        draw.text((MARGIN, y + 8), label_text, fill=cat_color, font=font_row_b)
+        draw.text((MARGIN, y + 4), label_text, fill=cat_color, font=font_row_b)
+
+        # 투자 성향 + 패턴 서브텍스트 (2행)
+        if profiles:
+            prof = profile_map.get(country)
+            type_desc = TYPE_DESC.get(cat, "")
+            if prof:
+                pattern = prof.get("패턴", "")
+                trend = prof.get("추세", 0)
+                pred_score = prof.get("예측점수", 0)
+                pat_display, pat_color = PATTERN_DISPLAY.get(pattern, (pattern, COLOR_GRAY))
+                # "장기 패시브 | 매집중 ↗ (내일 +8.5)"
+                trait_text = f"{type_desc}"
+                draw.text((MARGIN + 8, y + 22), trait_text, fill=COLOR_SUB, font=font_trait)
+                # 패턴 + 예측
+                pat_x = MARGIN + 8 + len(trait_text) * 6 + 10
+                draw.text((pat_x, y + 22), pat_display, fill=pat_color, font=font_trait)
+                if abs(pred_score) >= 1:
+                    score_color = COLOR_BUY if pred_score > 0 else COLOR_SELL
+                    draw.text(
+                        (pat_x + len(pat_display) * 7 + 6, y + 22),
+                        f"({pred_score:+.0f})",
+                        fill=score_color, font=font_trait,
+                    )
+            else:
+                # 프로파일 없는 국가 → 타입만 표시
+                type_desc = TYPE_DESC.get(cat, "")
+                if type_desc:
+                    draw.text((MARGIN + 8, y + 22), type_desc, fill=COLOR_SUB, font=font_trait)
 
         # 사람 아이콘 그리기
+        icon_y_offset = 2 if not profiles else 8
         icon_x = MARGIN + LABEL_W
         for i in range(n_persons):
             px = icon_x + i * (PERSON_SIZE + PERSON_GAP)
             if px + PERSON_SIZE > img_w - STATS_W - MARGIN:
                 break  # 넘치면 중단
-            _draw_person(draw, px, y + 6, PERSON_SIZE, color)
+            _draw_person(draw, px, y + icon_y_offset, PERSON_SIZE, color)
 
         # 수치 표시
         stats_x = img_w - STATS_W - MARGIN + 10
@@ -316,6 +366,18 @@ def generate_pictogram_chart(
             pct_total = abs(delta) / total_shares * 100
             if pct_total >= 0.01:
                 draw.text((stats_x + 110, y + 5), f"{pct_total:.2f}%", fill=COLOR_SUB, font=font_pct)
+
+        # 예측 점수 표시 (수치 영역 하단)
+        if profiles:
+            prof = profile_map.get(country)
+            if prof and abs(prof.get("예측점수", 0)) >= 1:
+                pred = prof["예측점수"]
+                pred_color = COLOR_BUY if pred > 0 else COLOR_SELL
+                draw.text(
+                    (stats_x, y + 45),
+                    f"내일예측: {pred:+.0f}점",
+                    fill=pred_color, font=font_trait,
+                )
 
         # 행 구분선
         draw.line(
@@ -367,8 +429,19 @@ def generate_charts_batch(
     codes: List[str],
     code_names: Dict[str, str],
 ) -> Dict[str, BytesIO]:
-    """여러 종목 차트 일괄 생성"""
+    """여러 종목 차트 일괄 생성 (투자성향+패턴 포함)"""
     from data.nationality_signal import compare_nationality
+
+    # ── 프로파일러로 국가별 행동 패턴 일괄 분석 ──
+    all_profiles = {}
+    try:
+        from data.nationality_profiler import analyze_nationality_behavior
+        all_profiles = analyze_nationality_behavior(
+            codes, n_days=5, code_names=code_names,
+        )
+        logger.info(f"[NatChart] 프로파일 분석 완료: {len(all_profiles)}종목")
+    except Exception as e:
+        logger.warning(f"[NatChart] 프로파일 분석 실패 (차트는 기본모드): {e}")
 
     results = {}
     for code in codes:
@@ -402,9 +475,10 @@ def generate_charts_batch(
             chart = generate_pictogram_chart(
                 code, name, changes, total_shares,
                 date_new or "", date_old or "",
+                profiles=all_profiles.get(code),
             )
             results[code] = chart
-            logger.info(f"[NatChart] {name}: 차트 생성 완료")
+            logger.info(f"[NatChart] {name}: 차트 생성 완료 (프로파일 {'O' if code in all_profiles else 'X'})")
         except Exception as e:
             logger.warning(f"[NatChart] {name}: 차트 생성 실패 - {e}")
 
@@ -509,9 +583,23 @@ if __name__ == "__main__":
     print(f"상장주식수: {total_shares:,}")
     print(f"국가 수: {len(changes)}, 변화 국가: {sum(1 for c in changes if c['변화'] != 0)}")
 
+    # 프로파일 분석 (투자성향+패턴)
+    profiles = None
+    try:
+        from data.nationality_profiler import analyze_nationality_behavior
+        all_profiles = analyze_nationality_behavior([code], n_days=5)
+        profiles = all_profiles.get(code)
+        if profiles:
+            print(f"프로파일: {len(profiles)}개국 분석 완료")
+            for p in profiles[:5]:
+                print(f"  {p['이모지']}{p['국가']}: {p['패턴']} (예측{p['예측점수']:+.0f})")
+    except Exception as e:
+        print(f"프로파일 분석 스킵: {e}")
+
     chart = generate_pictogram_chart(
         code, name, changes, total_shares,
         date_new or "", date_old or "",
+        profiles=profiles,
     )
 
     # 파일 저장
