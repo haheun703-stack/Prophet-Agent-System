@@ -390,8 +390,17 @@ def main():
     with ThreadPoolExecutor(max_workers=2) as executor:
         f1 = executor.submit(step1_daily_ohlcv, codes, args.force)
         f2 = executor.submit(step2_supply_demand, codes, args.force)
-        results["daily"] = f1.result()
-        results["flow"] = f2.result()
+        # C3: 개별 try/except — 한쪽 실패해도 다른 쪽 결과 보존
+        try:
+            results["daily"] = f1.result()
+        except Exception as e:
+            logger.error(f"[C3] Step1 일봉 스레드 실패: {e}")
+            results["daily"] = 0
+        try:
+            results["flow"] = f2.result()
+        except Exception as e:
+            logger.error(f"[C3] Step2 수급 스레드 실패: {e}")
+            results["flow"] = {}
     timings["step1_2"] = int(time.time() - t12)
     logger.info(f"[1+2/5] 일봉+수급 동시 완료: {timings['step1_2']}초")
 

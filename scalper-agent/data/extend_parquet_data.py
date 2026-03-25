@@ -359,13 +359,27 @@ def _build_single_parquet(
             df = fill_supply_from_kis(df, code, base_url, headers)
             time.sleep(0.12)
 
-        df.to_parquet(RAW_DIR / f"{code}.parquet")
+        # ── C2: 원자적 쓰기 (tmp → rename) ──
+        raw_path = RAW_DIR / f"{code}.parquet"
+        raw_tmp = RAW_DIR / f"{code}.parquet.tmp"
+        df.to_parquet(raw_tmp)
+        raw_tmp.rename(raw_path)
 
         proc = build_processed(df.copy())
-        proc.to_parquet(PROCESSED_DIR / f"{code}.parquet")
+        proc_path = PROCESSED_DIR / f"{code}.parquet"
+        proc_tmp = PROCESSED_DIR / f"{code}.parquet.tmp"
+        proc.to_parquet(proc_tmp)
+        proc_tmp.rename(proc_path)
 
         return "ok"
     except Exception as e:
+        # C2: 크래시 시 .tmp 잔여 파일 정리
+        for tmp in [RAW_DIR / f"{code}.parquet.tmp",
+                    PROCESSED_DIR / f"{code}.parquet.tmp"]:
+            try:
+                tmp.unlink(missing_ok=True)
+            except Exception:
+                pass
         logger.warning(f"parquet 빌드 실패 {code}: {e}")
         return "fail"
 
@@ -387,9 +401,18 @@ def extend_parquet_all(
             flow_collector 직후 호출 시 True → 98분→5분
         n_workers: 병렬 워커 수 (skip_kis_fill=True일 때만 적용)
     """
-    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import ThreadPoolExecutor, as_completed
 
     _ensure_dirs()
+
+    # ── C2: 이전 크래시에서 남은 .tmp 파일 정리 ──
+    for d in [RAW_DIR, PROCESSED_DIR]:
+        for tmp_file in d.glob("*.parquet.tmp"):
+            try:
+                tmp_file.unlink()
+                logger.info(f"[C2] 잔여 tmp 삭제: {tmp_file.name}")
+            except Exception:
+                pass
 
     if codes is None:
         from data.kis_collector import UNIVERSE
@@ -451,8 +474,14 @@ def extend_parquet_all(
                 for code in need_update
             }
             done_count = 0
-            for future in futures:
-                result = future.result()
+            # C3: as_completed + 개별 try/except — 하나 실패해도 나머지 계속
+            for future in as_completed(futures):
+                code = futures[future]
+                try:
+                    result = future.result()
+                except Exception as e:
+                    logger.warning(f"[C3] parquet 스레드 실패 {code}: {e}")
+                    result = "fail"
                 done_count += 1
                 if result == "ok":
                     built += 1
@@ -476,13 +505,16 @@ def extend_parquet_all(
                 failed += 1
 
     elapsed = int(time.time() - t0)
+    total = built + failed
+    fail_pct = f"{failed/total*100:.1f}%" if total > 0 else "0%"
     print(f"\n[3/3] 완료! ({elapsed}초)")
     print(f"={'='*60}")
     print(f"  빌드 성공: {built}종목")
     print(f"  캐시 유지: {cached}종목")
-    print(f"  실패:      {failed}종목")
+    print(f"  실패:      {failed}종목 ({fail_pct})")
     print(f"  합계:      {built + cached}종목")
     print(f"={'='*60}")
+    logger.info(f"Parquet 빌드: {built} 성공, {failed} 실패 ({fail_pct})")
 
     return built + cached, failed
 

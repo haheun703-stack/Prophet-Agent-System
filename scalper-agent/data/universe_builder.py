@@ -530,13 +530,28 @@ def collect_smallcap_daily(months: int = 6, force: bool = False):
 
 def collect_daily_pykrx(codes: list, months: int = 24, force: bool = False,
                         n_workers: int = 4):
-    """pykrx로 일봉 데이터 수집 (DC-06: 병렬화)"""
+    """pykrx로 일봉 데이터 수집 (DC-06: 병렬화 + C1: 스레드 안전)"""
+    import threading
     from concurrent.futures import ThreadPoolExecutor
     from pykrx import stock
 
     _ensure_dirs()
     end_date = datetime.now().strftime("%Y%m%d")
     start_date = (datetime.now() - timedelta(days=months * 30)).strftime("%Y%m%d")
+
+    # ── C1: pykrx 싱글톤 사전 초기화 (메인 스레드에서 1회) ──
+    # pykrx 내부 @singleton StockTicker에 Lock이 없어 스레드 경합 발생
+    # → 스레딩 시작 전 메인 스레드에서 강제 초기화
+    try:
+        stock.get_market_ticker_list(end_date, market="ALL")
+        logger.info("[C1] pykrx 싱글톤 초기화 완료 (메인 스레드)")
+    except Exception as e:
+        logger.warning(f"[C1] pykrx 사전 초기화 실패: {e}")
+
+    # ── C1: pykrx API 호출 직렬화 Lock ──
+    # pykrx 내부 캐시(DataFrame)가 thread-safe하지 않으므로
+    # API 호출 자체를 Lock으로 보호 (I/O 대기 중 다른 스레드는 CSV 저장 등 수행)
+    _pykrx_lock = threading.Lock()
 
     # 캐시 필터링
     need_fetch = []
@@ -560,20 +575,48 @@ def collect_daily_pykrx(codes: list, months: int = 24, force: bool = False,
         print(f"  일봉: 전체 캐시 히트 ({len(codes)}종목)")
         return 0
 
-    print(f"  일봉 수집: {len(need_fetch)}종목 (병렬 {n_workers} workers)...")
+    print(f"  일봉 수집: {len(need_fetch)}종목 (Lock 직렬 + {n_workers} workers)...")
+
+    # ── C2: 이전 크래시에서 남은 .csv.tmp 파일 정리 ──
+    for tmp_file in DAILY_DIR.glob("*.csv.tmp"):
+        try:
+            tmp_file.unlink()
+            logger.info(f"[C2] 잔여 tmp 삭제: {tmp_file.name}")
+        except Exception:
+            pass
 
     def _fetch_single(code):
-        """단일 종목 일봉 (스레드 내 개별 pykrx 호출)"""
-        try:
-            df = stock.get_market_ohlcv_by_date(start_date, end_date, code)
-            if df is not None and len(df) > 20:
-                if len(df.columns) == 6:
-                    df.columns = ["시가", "고가", "저가", "종가", "거래량", "등락률"]
-                df.to_csv(DAILY_DIR / f"{code}.csv")
-                return True
-            time.sleep(0.15)
-        except Exception as e:
-            logger.warning(f"일봉 수집 실패 {code}: {e}")
+        """단일 종목 일봉 — C1: Lock + 지수 백오프 / C2: 원자적 쓰기"""
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                # pykrx 호출은 Lock으로 직렬화 (내부 싱글톤 캐시 보호)
+                with _pykrx_lock:
+                    df = stock.get_market_ohlcv_by_date(start_date, end_date, code)
+                if df is not None and len(df) > 20:
+                    if len(df.columns) == 6:
+                        df.columns = ["시가", "고가", "저가", "종가", "거래량", "등락률"]
+                    # C2: 원자적 쓰기 (tmp → rename)
+                    csv_tmp = DAILY_DIR / f"{code}.csv.tmp"
+                    csv_path = DAILY_DIR / f"{code}.csv"
+                    df.to_csv(csv_tmp)
+                    csv_tmp.rename(csv_path)
+                    return True
+                time.sleep(0.15)
+                return False
+            except Exception as e:
+                # C2: 실패 시 .tmp 정리
+                tmp = DAILY_DIR / f"{code}.csv.tmp"
+                try:
+                    tmp.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                backoff = (2 ** attempt)  # 1초 → 2초 → 4초
+                if attempt < max_retries - 1:
+                    logger.warning(f"일봉 {code} 실패({attempt+1}차): {e} — {backoff}초 후 재시도")
+                    time.sleep(backoff)
+                else:
+                    logger.warning(f"일봉 {code} 최종 실패: {e}")
         return False
 
     collected = 0

@@ -450,10 +450,21 @@ def collect_all_flow(
     with ThreadPoolExecutor(max_workers=2) as executor:
         f_inv = executor.submit(collect_investor_flow, codes, months, force)
         f_fex = executor.submit(collect_foreign_exhaustion, codes, months, force)
-        investor = f_inv.result()
-        foreign_exh = f_fex.result()
+        # C3: 개별 try/except — 한쪽 실패해도 다른 쪽 결과 보존
+        try:
+            investor = f_inv.result()
+        except Exception as e:
+            logger.error(f"[C3] 투자자 수급 스레드 실패: {e}")
+            investor = {}
+        try:
+            foreign_exh = f_fex.result()
+        except Exception as e:
+            logger.error(f"[C3] 외국인 소진율 스레드 실패: {e}")
+            foreign_exh = {}
 
-    print(f"  → 투자자+소진율 병렬 완료: {int(time.time()-t0)}초")
+    inv_status = f"{len(investor)}종목" if investor else "실패"
+    fex_status = f"{len(foreign_exh)}종목" if foreign_exh else "실패"
+    print(f"  → 투자자({inv_status}) + 소진율({fex_status}) 병렬 완료: {int(time.time()-t0)}초")
 
     # 3. 공매도 잔고
     print(f"\n[3/4] 공매도 잔고...")
