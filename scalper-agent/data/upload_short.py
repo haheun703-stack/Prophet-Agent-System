@@ -395,13 +395,17 @@ def upload_nationality_flows() -> bool:
     rows = []
     for code, pred in predictions.items():
         countries, date_new, date_old = _build_countries_detail(code)
+        # countries JSONB에 비교 기준일 포함
+        countries_obj = {
+            "date_new": date_new,
+            "date_old": date_old,
+            "items": countries or [],
+        }
         rows.append({
             "date": today_str,
             "code": code,
             "name": pred.get("name", ""),
-            "countries": countries,
-            "date_new": date_new,
-            "date_old": date_old,
+            "countries": countries_obj,
             "arch_scores": pred.get("arch_scores", {}),
             "signal": pred.get("signal", ""),
             "score": round(pred.get("score", 0), 1),
