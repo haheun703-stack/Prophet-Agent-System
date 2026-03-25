@@ -185,7 +185,10 @@ def _verify_nationality(today: str) -> dict:
 
 
 def _verify_short_selling(today: str) -> dict:
-    """공매도 잔고 — 랜덤 5종목 마지막 행 날짜"""
+    """공매도 잔고 — DC-04: 0개면 SKIP (pykrx 깨짐 인지)"""
+    # DC-04: SHORT_DIR에 파일이 0개면 pykrx 깨짐으로 인한 미배포
+    if not SHORT_DIR.exists() or len(list(SHORT_DIR.glob("*_short_bal.csv"))) == 0:
+        return {"status": "SKIP", "reason": "공매도 데이터 미배포 (pykrx API 깨짐)"}
     codes = _load_universe_codes(5)
     if not codes:
         return {"status": "FAIL", "reason": "유니버스 로드 실패"}
@@ -200,30 +203,40 @@ def _verify_short_selling(today: str) -> dict:
 
 
 def _verify_news_sentiment(today: str) -> dict:
-    """뉴스 AI 감성분석 — 오늘 날짜 JSON 존재"""
+    """뉴스 AI 감성분석 — DC-05: 경로+패턴 수정"""
     if not NEWS_DIR.exists():
-        return {"status": "FAIL", "reason": "news 디렉터리 없음"}
+        return {"status": "FAIL", "reason": "news_sentiment 디렉터리 없음"}
     today_short = today.replace("-", "")
-    # {code}_{YYYYMMDD}.json 패턴 검색
-    today_files = list(NEWS_DIR.glob(f"*_{today_short}.json"))
-    if today_files:
-        return {"status": "PASS", "count": len(today_files)}
-    # 뉴스는 필요할 때만 수집 — 없어도 MEDIUM이라 허용
+    # 정확한 파일명: sentiment_{YYYYMMDD}.json
+    today_file = NEWS_DIR / f"sentiment_{today_short}.json"
+    if today_file.exists():
+        return {"status": "PASS", "file": today_file.name}
+    # sentiment_latest.json 신선도 체크
+    latest = NEWS_DIR / "sentiment_latest.json"
+    if latest.exists():
+        try:
+            import json as _json
+            data = _json.loads(latest.read_text("utf-8"))
+            if data.get("date") == today:
+                return {"status": "PASS", "source": "latest"}
+        except Exception:
+            pass
     return {"status": "SKIP", "reason": "오늘 뉴스 분석 미실행 (온디맨드)"}
 
 
 def _verify_options_signal(today: str) -> dict:
-    """옵션 심리 (P/C Ratio) — brain_allocation에 연동 확인"""
-    alloc_path = STORE_DIR / "brain_allocation.json"
-    if not alloc_path.exists():
-        return {"status": "SKIP", "reason": "brain_allocation 미생성"}
+    """옵션 심리 (P/C Ratio) — DC-05: options_signal_latest.json 직접 체크"""
+    sig_path = STORE_DIR / "options_signal_latest.json"
+    if not sig_path.exists():
+        return {"status": "FAIL", "reason": "options_signal_latest.json 없음"}
     try:
         import json
-        alloc = json.loads(alloc_path.read_text("utf-8"))
-        ts = alloc.get("timestamp", "")
-        if today in ts:
-            return {"status": "PASS", "detail": f"timestamp={ts}"}
-        return {"status": "SKIP", "reason": f"오늘 데이터 아님 ({ts[:10]})"}
+        sig = json.loads(sig_path.read_text("utf-8"))
+        sig_date = sig.get("date", "")
+        if sig_date == today:
+            ratio = sig.get("pc_ratio", "?")
+            return {"status": "PASS", "date": sig_date, "pc_ratio": ratio}
+        return {"status": "PARTIAL", "reason": f"오늘 데이터 아님 ({sig_date})"}
     except Exception as e:
         return {"status": "FAIL", "reason": str(e)}
 

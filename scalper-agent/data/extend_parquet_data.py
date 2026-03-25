@@ -53,31 +53,40 @@ def _ensure_dirs():
 #  KIS API 세션 (싱글톤 - 전 종목 재사용)
 # ============================================================
 
-def _get_kis_session() -> Tuple[str, dict]:
-    """KIS API 토큰+헤더 1회 생성"""
-    from dotenv import load_dotenv
-    load_dotenv()
-    import mojito
+def _get_kis_session() -> Optional[Tuple[str, dict]]:
+    """KIS API 토큰+헤더 1회 생성 (실패 시 None)"""
+    for attempt in range(2):
+        try:
+            from dotenv import load_dotenv
+            load_dotenv()
+            import mojito
 
-    broker = mojito.KoreaInvestment(
-        api_key=os.getenv("KIS_APP_KEY"),
-        api_secret=os.getenv("KIS_APP_SECRET"),
-        acc_no=os.getenv("KIS_ACC_NO"),
-        mock=False,
-    )
-    token = broker.access_token
-    if token.startswith("Bearer "):
-        token = token.replace("Bearer ", "")
+            broker = mojito.KoreaInvestment(
+                api_key=os.getenv("KIS_APP_KEY"),
+                api_secret=os.getenv("KIS_APP_SECRET"),
+                acc_no=os.getenv("KIS_ACC_NO"),
+                mock=False,
+            )
+            token = broker.access_token
+            if token.startswith("Bearer "):
+                token = token.replace("Bearer ", "")
 
-    base_url = "https://openapi.koreainvestment.com:9443"
-    headers = {
-        "content-type": "application/json; charset=utf-8",
-        "authorization": f"Bearer {token}",
-        "appkey": os.getenv("KIS_APP_KEY"),
-        "appsecret": os.getenv("KIS_APP_SECRET"),
-        "custtype": "P",
-    }
-    return base_url, headers
+            base_url = "https://openapi.koreainvestment.com:9443"
+            headers = {
+                "content-type": "application/json; charset=utf-8",
+                "authorization": f"Bearer {token}",
+                "appkey": os.getenv("KIS_APP_KEY"),
+                "appsecret": os.getenv("KIS_APP_SECRET"),
+                "custtype": "P",
+            }
+            return base_url, headers
+        except Exception as e:
+            if attempt == 0:
+                logger.warning(f"[KIS] 세션 생성 실패: {e} — 재시도")
+                time.sleep(2)
+            else:
+                logger.critical(f"[KIS] 세션 재생성도 실패: {e}")
+    return None
 
 
 # ============================================================
@@ -331,16 +340,55 @@ def build_processed(df: pd.DataFrame) -> pd.DataFrame:
 #  메인: 전체 유니버스 parquet 빌드
 # ============================================================
 
+def _build_single_parquet(
+    code: str,
+    base_url: Optional[str] = None,
+    headers: Optional[dict] = None,
+    skip_kis_fill: bool = False,
+) -> str:
+    """단일 종목 parquet 빌드 (병렬 실행용)
+
+    Returns: 'ok' | 'fail' | 'skip'
+    """
+    try:
+        df = migrate_csv_to_parquet(code)
+        if df is None or len(df) < 20:
+            return "fail"
+
+        if not skip_kis_fill and base_url and headers:
+            df = fill_supply_from_kis(df, code, base_url, headers)
+            time.sleep(0.12)
+
+        df.to_parquet(RAW_DIR / f"{code}.parquet")
+
+        proc = build_processed(df.copy())
+        proc.to_parquet(PROCESSED_DIR / f"{code}.parquet")
+
+        return "ok"
+    except Exception as e:
+        logger.warning(f"parquet 빌드 실패 {code}: {e}")
+        return "fail"
+
+
 def extend_parquet_all(
     codes: List[str] = None,
     force: bool = False,
+    skip_kis_fill: bool = False,
+    n_workers: int = 4,
 ):
-    """전체 유니버스 parquet 빌드/갱신
+    """전체 유니버스 parquet 빌드/갱신 (DC-03: 병렬화)
 
     1) 기존 CSV → raw parquet 마이그레이션
-    2) KIS API로 수급 0값 채우기
+    2) KIS API로 수급 0값 채우기 (skip_kis_fill=True면 스킵)
     3) processed parquet 생성 (기술지표 추가)
+
+    Args:
+        skip_kis_fill: True면 KIS API 재호출 안 함
+            flow_collector 직후 호출 시 True → 98분→5분
+        n_workers: 병렬 워커 수 (skip_kis_fill=True일 때만 적용)
     """
+    from concurrent.futures import ThreadPoolExecutor
+
     _ensure_dirs()
 
     if codes is None:
@@ -348,7 +396,8 @@ def extend_parquet_all(
         codes = list(UNIVERSE.keys())
 
     print("=" * 60)
-    print(f"  Parquet 통합 빌드 - {len(codes)}종목")
+    mode = "로컬전용" if skip_kis_fill else "KIS수급포함"
+    print(f"  Parquet 통합 빌드 - {len(codes)}종목 ({mode})")
     print("=" * 60)
 
     # 캐시 확인: 이미 최신 parquet이면 skip
@@ -377,44 +426,57 @@ def extend_parquet_all(
 
     print(f"  갱신 필요: {len(need_update)}종목 (캐시: {cached}종목)")
 
-    # KIS 세션 1회 생성
-    print(f"\n[1/3] KIS API 세션 생성...")
-    base_url, headers = _get_kis_session()
-    print(f"  세션 OK")
+    base_url, headers = None, None
+    if not skip_kis_fill:
+        print(f"\n[1/3] KIS API 세션 생성...")
+        session = _get_kis_session()
+        if session is None:
+            logger.warning("[PARQUET] KIS 세션 실패 — 로컬전용 모드 전환")
+            skip_kis_fill = True
+        else:
+            base_url, headers = session
+            print(f"  세션 OK")
 
-    # 빌드
-    built = 0
-    failed = 0
-    print(f"\n[2/3] Raw parquet 빌드 + KIS 수급 주입...")
-    for i, code in enumerate(need_update):
-        if (i + 1) % 50 == 0 or i == 0:
-            print(f"    [{i+1}/{len(need_update)}] {code}...")
+    t0 = time.time()
 
-        try:
-            # 1) CSV → DataFrame
-            df = migrate_csv_to_parquet(code)
-            if df is None or len(df) < 20:
+    if skip_kis_fill:
+        # 병렬 빌드 (KIS 호출 없으므로 rate limit 걱정 없음)
+        print(f"\n[2/3] Raw parquet 병렬 빌드 ({n_workers} workers)...")
+        built = 0
+        failed = 0
+
+        with ThreadPoolExecutor(max_workers=n_workers) as executor:
+            futures = {
+                executor.submit(_build_single_parquet, code, None, None, True): code
+                for code in need_update
+            }
+            done_count = 0
+            for future in futures:
+                result = future.result()
+                done_count += 1
+                if result == "ok":
+                    built += 1
+                else:
+                    failed += 1
+                if done_count % 200 == 0:
+                    print(f"    [{done_count}/{len(need_update)}] 진행중...")
+    else:
+        # 순차 빌드 (KIS API rate limit 존재)
+        built = 0
+        failed = 0
+        print(f"\n[2/3] Raw parquet 빌드 + KIS 수급 주입...")
+        for i, code in enumerate(need_update):
+            if (i + 1) % 50 == 0 or i == 0:
+                print(f"    [{i+1}/{len(need_update)}] {code}...")
+
+            result = _build_single_parquet(code, base_url, headers, False)
+            if result == "ok":
+                built += 1
+            else:
                 failed += 1
-                continue
 
-            # 2) KIS API로 수급 0값 채우기
-            df = fill_supply_from_kis(df, code, base_url, headers)
-
-            # 3) raw parquet 저장
-            df.to_parquet(RAW_DIR / f"{code}.parquet")
-
-            # 4) processed parquet (기술지표 추가)
-            proc = build_processed(df.copy())
-            proc.to_parquet(PROCESSED_DIR / f"{code}.parquet")
-
-            built += 1
-            time.sleep(0.12)  # KIS API rate limit
-
-        except Exception as e:
-            logger.warning(f"parquet 빌드 실패 {code}: {e}")
-            failed += 1
-
-    print(f"\n[3/3] 완료!")
+    elapsed = int(time.time() - t0)
+    print(f"\n[3/3] 완료! ({elapsed}초)")
     print(f"={'='*60}")
     print(f"  빌드 성공: {built}종목")
     print(f"  캐시 유지: {cached}종목")

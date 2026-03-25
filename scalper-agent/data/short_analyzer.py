@@ -71,6 +71,18 @@ def analyze_short_interest(code: str, name: str = "") -> ShortAnalysis:
         result.detail = "데이터부족"
         return result
 
+    # DC-04: 데이터 만료 체크 (14일 이상 오래되면 중립 반환)
+    try:
+        last_date = df.index[-1]
+        if hasattr(last_date, 'to_pydatetime'):
+            last_date = last_date.to_pydatetime().replace(tzinfo=None)
+        days_stale = (datetime.now() - last_date).days
+        if days_stale > 14:
+            result.detail = f"데이터만료({days_stale}일전)"
+            return result
+    except Exception:
+        pass
+
     ratios = df["비중"].astype(float)
 
     # (1) 최신 잔고율

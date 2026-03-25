@@ -43,36 +43,47 @@ def _ensure_dirs():
 #  KIS API 싱글톤 세션 (346종목 수집 최적화)
 # ============================================================
 
-def _get_kis_session() -> Tuple[str, dict]:
+def _get_kis_session() -> Optional[Tuple[str, dict]]:
     """KIS API 토큰+헤더 1회 생성, 전 종목에 재사용
 
-    Returns: (base_url, headers_template)
+    Returns: (base_url, headers_template) 또는 None (실패 시)
     """
-    from dotenv import load_dotenv
-    load_dotenv()
-    import mojito
+    for attempt in range(2):
+        try:
+            from dotenv import load_dotenv
+            load_dotenv()
+            import mojito
 
-    broker = mojito.KoreaInvestment(
-        api_key=os.getenv("KIS_APP_KEY"),
-        api_secret=os.getenv("KIS_APP_SECRET"),
-        acc_no=os.getenv("KIS_ACC_NO"),
-        mock=False,
-    )
+            broker = mojito.KoreaInvestment(
+                api_key=os.getenv("KIS_APP_KEY"),
+                api_secret=os.getenv("KIS_APP_SECRET"),
+                acc_no=os.getenv("KIS_ACC_NO"),
+                mock=False,
+            )
 
-    token = broker.access_token
-    if token.startswith("Bearer "):
-        token = token.replace("Bearer ", "")
+            token = broker.access_token
+            if token.startswith("Bearer "):
+                token = token.replace("Bearer ", "")
 
-    base_url = "https://openapi.koreainvestment.com:9443"
-    headers = {
-        "content-type": "application/json; charset=utf-8",
-        "authorization": f"Bearer {token}",
-        "appkey": os.getenv("KIS_APP_KEY"),
-        "appsecret": os.getenv("KIS_APP_SECRET"),
-        "custtype": "P",
-    }
+            base_url = "https://openapi.koreainvestment.com:9443"
+            headers = {
+                "content-type": "application/json; charset=utf-8",
+                "authorization": f"Bearer {token}",
+                "appkey": os.getenv("KIS_APP_KEY"),
+                "appsecret": os.getenv("KIS_APP_SECRET"),
+                "custtype": "P",
+            }
 
-    return base_url, headers
+            return base_url, headers
+
+        except Exception as e:
+            if attempt == 0:
+                logger.warning(f"[KIS] 세션 생성 실패 (1차): {e} — 2초 후 재시도")
+                time.sleep(2)
+            else:
+                logger.critical(f"[KIS] 세션 생성 재시도도 실패: {e}")
+
+    return None
 
 
 # ============================================================
@@ -113,7 +124,11 @@ def collect_investor_flow(
 
     # KIS 세션 1회 생성
     print(f"  투자자 수급: {len(need_fetch)}종목 KIS API 수집 시작...")
-    base_url, headers = _get_kis_session()
+    session = _get_kis_session()
+    if session is None:
+        logger.error("[FLOW] KIS 세션 없음 — 투자자 수급 수집 스킵")
+        return results
+    base_url, headers = session
     headers["tr_id"] = "FHKST01010900"
 
     fetched = 0
@@ -246,7 +261,11 @@ def collect_foreign_exhaustion(
 
     # KIS 세션 1회 생성
     print(f"  외국인 소진율: {len(need_fetch)}종목 KIS API 수집 시작...")
-    base_url, headers = _get_kis_session()
+    session = _get_kis_session()
+    if session is None:
+        logger.error("[FLOW] KIS 세션 없음 — 외국인 소진율 수집 스킵")
+        return results
+    base_url, headers = session
     headers["tr_id"] = "FHKST01010100"
 
     fetched = 0
@@ -409,7 +428,9 @@ def collect_all_flow(
     months: int = 24,
     force: bool = False,
 ):
-    """전체 수급 데이터 수집"""
+    """전체 수급 데이터 수집 (DC-02: 투자자+소진율 병렬)"""
+    from concurrent.futures import ThreadPoolExecutor
+
     if codes is None:
         from data.kis_collector import UNIVERSE
         codes = list(UNIVERSE.keys())
@@ -419,13 +440,20 @@ def collect_all_flow(
     print(f"  종목: {len(codes)}개 | 기간: {months}개월")
     print("=" * 60)
 
-    # 1. 투자자별 순매수
-    print(f"\n[1/4] 투자자별 순매수 (외국인/기관)...")
-    investor = collect_investor_flow(codes, months, force)
+    # 1+2. 투자자별 순매수 + 외국인 소진율 (동시 실행)
+    # 서로 다른 KIS API tr_id 사용 → 독립적 세션으로 병렬 안전
+    print(f"\n[1+2/4] 투자자 수급 + 외국인 소진율 (병렬)...")
+    t0 = time.time()
+    investor = {}
+    foreign_exh = {}
 
-    # 2. 외국인 소진율
-    print(f"\n[2/4] 외국인 소진율...")
-    foreign_exh = collect_foreign_exhaustion(codes, months, force)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        f_inv = executor.submit(collect_investor_flow, codes, months, force)
+        f_fex = executor.submit(collect_foreign_exhaustion, codes, months, force)
+        investor = f_inv.result()
+        foreign_exh = f_fex.result()
+
+    print(f"  → 투자자+소진율 병렬 완료: {int(time.time()-t0)}초")
 
     # 3. 공매도 잔고
     print(f"\n[3/4] 공매도 잔고...")

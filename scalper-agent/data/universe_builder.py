@@ -528,43 +528,58 @@ def collect_smallcap_daily(months: int = 6, force: bool = False):
     return collect_daily_pykrx(codes, months, force)
 
 
-def collect_daily_pykrx(codes: list, months: int = 24, force: bool = False):
-    """pykrx로 일봉 데이터 수집"""
+def collect_daily_pykrx(codes: list, months: int = 24, force: bool = False,
+                        n_workers: int = 4):
+    """pykrx로 일봉 데이터 수집 (DC-06: 병렬화)"""
+    from concurrent.futures import ThreadPoolExecutor
     from pykrx import stock
 
     _ensure_dirs()
     end_date = datetime.now().strftime("%Y%m%d")
     start_date = (datetime.now() - timedelta(days=months * 30)).strftime("%Y%m%d")
 
-    collected = 0
-    for i, code in enumerate(codes):
+    # 캐시 필터링
+    need_fetch = []
+    for code in codes:
         cache_file = DAILY_DIR / f"{code}.csv"
-
         if not force and cache_file.exists():
-            cached = pd.read_csv(cache_file, index_col=0, parse_dates=True)
-            if len(cached) > 0:
-                last = cached.index[-1]
-                if hasattr(last, 'to_pydatetime'):
-                    last = last.to_pydatetime().replace(tzinfo=None)
-                days_old = (datetime.now() - last).days
-                if days_old <= 3:
-                    continue
+            try:
+                cached = pd.read_csv(cache_file, index_col=0, parse_dates=True)
+                if len(cached) > 0:
+                    last = cached.index[-1]
+                    if hasattr(last, 'to_pydatetime'):
+                        last = last.to_pydatetime().replace(tzinfo=None)
+                    days_old = (datetime.now() - last).days
+                    if days_old <= 3:
+                        continue
+            except Exception:
+                pass
+        need_fetch.append(code)
 
-        if (i + 1) % 50 == 0 or i == 0:
-            print(f"  일봉 [{i+1}/{len(codes)}] {code}...")
+    if not need_fetch:
+        print(f"  일봉: 전체 캐시 히트 ({len(codes)}종목)")
+        return 0
 
+    print(f"  일봉 수집: {len(need_fetch)}종목 (병렬 {n_workers} workers)...")
+
+    def _fetch_single(code):
+        """단일 종목 일봉 (스레드 내 개별 pykrx 호출)"""
         try:
             df = stock.get_market_ohlcv_by_date(start_date, end_date, code)
             if df is not None and len(df) > 20:
-                # 컬럼 표준화 (pykrx: 시가,고가,저가,종가,거래량,등락률)
                 if len(df.columns) == 6:
                     df.columns = ["시가", "고가", "저가", "종가", "거래량", "등락률"]
-                # 기존 7컬럼 형태면 그대로
-                df.to_csv(cache_file)
-                collected += 1
+                df.to_csv(DAILY_DIR / f"{code}.csv")
+                return True
             time.sleep(0.15)
         except Exception as e:
             logger.warning(f"일봉 수집 실패 {code}: {e}")
+        return False
+
+    collected = 0
+    with ThreadPoolExecutor(max_workers=n_workers) as executor:
+        results = list(executor.map(_fetch_single, need_fetch))
+        collected = sum(1 for r in results if r)
 
     print(f"  일봉 수집 완료: {collected}개 신규/갱신")
     return collected

@@ -2695,41 +2695,36 @@ class BodyHunterBot:
             logger.error(f"분봉 수집 실패: {e}")
 
     async def _job_collect_daily(self, context):
-        """장마감 후 일봉+수급 데이터 수집 (16:00) — Silent: 로그만"""
+        """장마감 후 일봉+수급 데이터 수집 (16:00) — DC-07: 동시 실행"""
         from datetime import date
         if not is_trading_day():
             return
-        logger.info("일봉+수급 자동 수집 시작...")
+        logger.info("일봉+수급 자동 수집 시작 (DC-07: 동시실행)...")
         t0 = time.time()
         pykrx_cnt = 0
         r1 = []
         ok, fail, sync_cnt = 0, 0, 0
 
-        # 1. 일봉 pykrx
+        # DC-07: Step1(일봉) + Step2(수급) 동시 실행
         try:
             from data.universe_builder import collect_daily_pykrx
             from data.kis_collector import UNIVERSE
+            from data.flow_collector import collect_all_flow
             codes = list(UNIVERSE.keys())
-            pykrx_cnt = await asyncio.to_thread(collect_daily_pykrx, codes, 24, True)
-            logger.info(f"pykrx 일봉 수집 완료: {pykrx_cnt}종목")
-        except Exception as e:
-            logger.error(f"pykrx 일봉 수집 실패: {e}")
 
-        # 2. 수급 데이터
-        try:
-            from data.kis_collector import UNIVERSE
-            from data.flow_collector import (
-                collect_investor_flow, collect_foreign_exhaustion,
-                collect_short_balance, collect_short_volume,
-            )
-            codes = list(UNIVERSE.keys())
-            r1 = await asyncio.to_thread(collect_investor_flow, codes, 24, True)
-            r2 = await asyncio.to_thread(collect_foreign_exhaustion, codes, 24, True)
-            r3 = await asyncio.to_thread(collect_short_balance, codes, 24, True)
-            r4 = await asyncio.to_thread(collect_short_volume, codes, 24, True)
-            logger.info(f"수급 수집 완료: {len(r1)}/{len(r2)}/{len(r3)}/{len(r4)}")
+            # 일봉(pykrx)과 수급(KIS)을 동시에 → 긴 쪽 시간만 소요
+            loop = asyncio.get_event_loop()
+            task_daily = loop.run_in_executor(
+                None, collect_daily_pykrx, codes, 24, True)
+            task_flow = loop.run_in_executor(
+                None, collect_all_flow, codes, 24, True)
+
+            pykrx_cnt, flow_result = await asyncio.gather(task_daily, task_flow)
+            r1 = flow_result.get("investor", {}) if isinstance(flow_result, dict) else {}
+            t_step12 = int(time.time() - t0)
+            logger.info(f"일봉+수급 동시 완료: 일봉={pykrx_cnt}, 수급={len(r1)} ({t_step12}초)")
         except Exception as e:
-            logger.error(f"수급 수집 실패: {e}")
+            logger.error(f"일봉+수급 수집 실패: {e}")
 
         # 3. 외국인 국적별 수급
         try:
@@ -2759,10 +2754,13 @@ class BodyHunterBot:
         except Exception as e:
             logger.error(f"수집 기록 저장 실패: {e}")
 
-        # 5. Parquet 빌드
+        # 5. Parquet 빌드 (DC-03: flow_collector 직후 → KIS 스킵 + 병렬)
         try:
             from data.extend_parquet_data import extend_parquet_all
-            ok, fail = await asyncio.to_thread(lambda: extend_parquet_all(codes=None, force=True))
+            ok, fail = await asyncio.to_thread(
+                lambda: extend_parquet_all(codes=None, force=True,
+                                            skip_kis_fill=True, n_workers=4)
+            )
             logger.info(f"Parquet 빌드 완료: ok={ok}, fail={fail}")
         except Exception as e:
             logger.error(f"Parquet 빌드 실패: {e}")
@@ -2775,17 +2773,20 @@ class BodyHunterBot:
         except Exception as e:
             logger.error(f"stock_data_daily 동기화 실패: {e}")
 
-        # 7. 최종 기록 업데이트
+        # 7. DC-08: 수집 시간 로깅 + 최종 기록 업데이트
+        total_elapsed = int(time.time() - t0)
         try:
             collect_info["steps"]["parquet"] = ok
             collect_info["steps"]["sync"] = sync_cnt
+            collect_info["elapsed_sec"] = total_elapsed
+            collect_info["elapsed_min"] = total_elapsed // 60
             with open(lc_path, "w", encoding="utf-8") as f:
                 _json.dump(collect_info, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
 
-        total_elapsed = int(time.time() - t0)
-        logger.info(f"데이터 수집 완료 ({total_elapsed}초): 일봉={pykrx_cnt}, 수급={len(r1) if r1 else 0}, parquet={ok}")
+        logger.info(f"데이터 수집 완료 ({total_elapsed}초 = {total_elapsed//60}분): "
+                     f"일봉={pykrx_cnt}, 수급={len(r1) if r1 else 0}, parquet={ok}")
 
     def _get_nationality_targets(self) -> list:
         """국적별 수급 수집 대상 = 추천 + 보유 + 시총 TOP200 (중복 제거)"""

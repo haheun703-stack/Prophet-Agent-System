@@ -186,12 +186,14 @@ def step3_nationality(force: bool = False):
 
 
 def step4_parquet_build():
-    """4단계: Parquet 통합 빌드"""
-    logger.info("[4/5] Parquet 빌드...")
+    """4단계: Parquet 통합 빌드 (DC-03: KIS 스킵 + 병렬)"""
+    logger.info("[4/5] Parquet 빌드 (로컬전용+병렬)...")
     t0 = time.time()
     try:
         from data.extend_parquet_data import extend_parquet_all
-        ok, fail = extend_parquet_all(codes=None, force=True)
+        # flow_collector 직후 → KIS 재호출 불필요, 병렬 빌드
+        ok, fail = extend_parquet_all(codes=None, force=True,
+                                       skip_kis_fill=True, n_workers=4)
         logger.info(f"[4/5] Parquet 완료: 성공 {ok} / 실패 {fail} ({int(time.time()-t0)}초)")
         return ok
     except Exception as e:
@@ -379,28 +381,47 @@ def main():
     logger.info(f"유니버스: {len(codes)}종목")
 
     results = {}
+    timings = {}
+    from concurrent.futures import ThreadPoolExecutor
 
-    # 1. 일봉
-    results["daily"] = step1_daily_ohlcv(codes, args.force)
-
-    # 2. 수급
-    results["flow"] = step2_supply_demand(codes, args.force)
+    # DC-07: Step1(일봉 pykrx) + Step2(수급 KIS) 동시 실행
+    logger.info("[1+2/5] 일봉 + 수급 동시 수집 시작...")
+    t12 = time.time()
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        f1 = executor.submit(step1_daily_ohlcv, codes, args.force)
+        f2 = executor.submit(step2_supply_demand, codes, args.force)
+        results["daily"] = f1.result()
+        results["flow"] = f2.result()
+    timings["step1_2"] = int(time.time() - t12)
+    logger.info(f"[1+2/5] 일봉+수급 동시 완료: {timings['step1_2']}초")
 
     # 3. 국적별
+    t3 = time.time()
     results["nationality"] = step3_nationality(args.force)
+    timings["step3"] = int(time.time() - t3)
 
-    # 4. Parquet
+    # 4. Parquet (DC-03: 병렬 + KIS 스킵)
+    t4 = time.time()
     results["parquet"] = step4_parquet_build()
+    timings["step4"] = int(time.time() - t4)
 
     # 5. stock_data_daily 동기화
+    t5 = time.time()
     results["sync"] = step5_sync_stock_data_daily()
+    timings["step5"] = int(time.time() - t5)
 
-    # 수집 완료 기록
+    # DC-08: 수집 시간 로깅
+    timings["total"] = int(time.time() - t_start)
+
+    # 수집 완료 기록 (타이밍 포함)
+    results["timings"] = timings
     _save_collect_result(results)
 
-    elapsed = int(time.time() - t_start)
+    elapsed = timings["total"]
     logger.info(f"{'='*60}")
     logger.info(f"전체 수집 완료: {elapsed}초 ({elapsed//60}분)")
+    logger.info(f"  Step1+2: {timings['step1_2']}초 | Step3: {timings['step3']}초 | "
+                f"Step4: {timings['step4']}초 | Step5: {timings['step5']}초")
     logger.info(f"{'='*60}")
 
 
