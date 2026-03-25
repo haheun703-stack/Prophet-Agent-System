@@ -630,12 +630,8 @@ class BodyHunterBot:
                         log_event("WAR", f"{name} SL근접 {cp:,} → SL {sl:,} ({vs_sl:+.1f}%)")
                         code_alerts.append("SL_NEAR")
 
-                # 2) SL 이탈 — 긴급 텔레그램 전송
+                # 2) SL 이탈 → log_event만 (매도 알림이 대체)  # SILENT: MSG-REDUX
                 if sl > 0 and cp <= sl and "SL_BREAK" not in code_alerts:
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=f"🚨 [긴급] {name} SL 이탈!\n  현재 {cp:,} ≤ SL {sl:,}\n  즉시 대응 필요"
-                    )
                     log_event("WAR", f"{name} SL_BREAK {cp:,} ≤ {sl:,}")
                     code_alerts.append("SL_BREAK")
 
@@ -646,11 +642,7 @@ class BodyHunterBot:
                         log_event("WAR", f"{name} 급등 {day_chg:+.1f}% ({cp:,}원)")
                         code_alerts.append("SURGE")
                     if day_chg <= -5.0 and "DROP5" not in code_alerts:
-                        await context.bot.send_message(
-                            chat_id=chat_id,
-                            text=f"🚨 [긴급] {name} 급락 {day_chg:+.1f}%\n  현재 {cp:,}원"
-                        )
-                        log_event("WAR", f"{name} 급락 {day_chg:+.1f}% 긴급알림")
+                        log_event("WAR", f"{name} 급락 {day_chg:+.1f}% ({cp:,}원)")  # SILENT: MSG-REDUX
                         code_alerts.append("DROP5")
                     elif day_chg <= -3.0 and "DROP" not in code_alerts:
                         log_event("WAR", f"{name} 하락 {day_chg:+.1f}% ({cp:,}원)")
@@ -3721,7 +3713,6 @@ class BodyHunterBot:
 
         lines = [f"[포지션 감시] {now_str}"]
         has_data = False
-        has_urgent = False
 
         for idx, s in enumerate(stocks):
             code = s.get("code", "")
@@ -3773,54 +3764,15 @@ class BodyHunterBot:
                 lines.append(f"  거래량 {vol:,} | 체결강도 {strength:.0f}")
                 lines.append(f"  SL {sl:,}({to_sl:+.1f}%) | TP {tp1:,}({to_tp1:+.1f}%)")
 
-                code_alerts = alerts_sent.setdefault(code, [])
-
-                # 긴급: SL 이탈
-                if sl > 0 and cp <= sl and "SL_BREAK" not in code_alerts:
-                    urgent_msg = (
-                        f"🚨🚨 [긴급] {name} 손절선 이탈!\n"
-                        f"  현재 {cp:,}원 ≤ SL {sl:,}원\n"
-                        f"  진입가 {entry:,} → 손실 {pnl_pct:+.1f}%\n"
-                        f"  즉시 매도 검토!"
-                    )
-                    await context.bot.send_message(chat_id=chat_id, text=urgent_msg)
-                    code_alerts.append("SL_BREAK")
-                    has_urgent = True
-
-                # 경고: warn 라인 근접
-                elif warn > 0 and cp <= warn and "WARN" not in code_alerts:
-                    lines.append(f"  ⚠️ 경고선 {warn:,} 이탈 — 주시 필요")
-                    code_alerts.append("WARN")
-
-                # TP1 도달
-                if tp1 > 0 and cp >= tp1 and "TP1" not in code_alerts:
-                    urgent_msg = (
-                        f"🎯 {name} 1차 목표 도달!\n"
-                        f"  현재 {cp:,}원 ≥ TP1 {tp1:,}원\n"
-                        f"  수익 {pnl_pct:+.1f}% — 반익절 검토"
-                    )
-                    await context.bot.send_message(chat_id=chat_id, text=urgent_msg)
-                    code_alerts.append("TP1")
-                    has_urgent = True
-
-                # TP2 도달
-                if tp2 > 0 and cp >= tp2 and "TP2" not in code_alerts:
-                    urgent_msg = (
-                        f"🎯🎯 {name} 2차 목표 도달!\n"
-                        f"  현재 {cp:,}원 ≥ TP2 {tp2:,}원\n"
-                        f"  수익 {pnl_pct:+.1f}% — 전량 익절 검토"
-                    )
-                    await context.bot.send_message(chat_id=chat_id, text=urgent_msg)
-                    code_alerts.append("TP2")
-                    has_urgent = True
+                # SL/TP/WARN 감지는 rapid watcher가 담당  # SILENT: MSG-REDUX
 
             except Exception as e:
                 lines.append(f"  {name}: 에러 {e}")
 
-        # 30분 정기 보고 전송 (긴급 알림과 별도)
+        # 30분 정기 보고 → log_event만 (텔레그램 미전송)  # SILENT: MSG-REDUX
         if has_data:
-            await context.bot.send_message(chat_id=chat_id, text="\n".join(lines))
-            logger.info(f"포지션 감시 보고: {len(stocks)}종목")
+            log_event("POSITION", "\n".join(lines))
+            logger.info(f"포지션 감시 보고(silent): {len(stocks)}종목")
 
     async def _job_position_watch_rapid(self, context):
         """포지션 감시 — 5분 간격 가격 체크 (SL/TP 긴급알림 전용, 텔레그램 보고 없음)"""
@@ -3868,55 +3820,24 @@ class BodyHunterBot:
                 pnl_pct = (cp / entry - 1) * 100 if entry > 0 else 0
                 code_alerts = alerts_sent.setdefault(code, [])
 
-                # SL 이탈 긴급
+                # SL 이탈 → log_event만 (매도 알림이 대체)  # SILENT: MSG-REDUX
                 if sl > 0 and cp <= sl and "SL_BREAK" not in code_alerts:
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=(
-                            f"🚨🚨 [긴급] {name} 손절선 이탈!\n"
-                            f"  현재 {cp:,}원 ≤ SL {sl:,}원\n"
-                            f"  진입가 {entry:,} → 손실 {pnl_pct:+.1f}%\n"
-                            f"  즉시 매도 검토!"
-                        ),
-                    )
+                    log_event("SL", f"{name} 손절선 이탈 {cp:,}≤SL{sl:,} 손실{pnl_pct:+.1f}%")
                     code_alerts.append("SL_BREAK")
 
-                # warn 근접 긴급
+                # warn 근접 → log_event만  # SILENT: MSG-REDUX
                 if warn > 0 and cp <= warn and "WARN" not in code_alerts:
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=(
-                            f"⚠️ {name} 경고선 이탈\n"
-                            f"  현재 {cp:,}원 ≤ WARN {warn:,}원\n"
-                            f"  SL {sl:,}원까지 {(cp/sl-1)*100:+.1f}%" if sl > 0 else
-                            f"⚠️ {name} 경고선 이탈\n"
-                            f"  현재 {cp:,}원 ≤ WARN {warn:,}원"
-                        ),
-                    )
+                    log_event("WARN", f"{name} 경고선 이탈 {cp:,}≤WARN{warn:,}")
                     code_alerts.append("WARN")
 
-                # TP1
+                # TP1 → log_event만 (매도 알림이 대체)  # SILENT: MSG-REDUX
                 if tp1 > 0 and cp >= tp1 and "TP1" not in code_alerts:
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=(
-                            f"🎯 {name} 1차 목표 도달!\n"
-                            f"  현재 {cp:,}원 ≥ TP1 {tp1:,}원\n"
-                            f"  수익 {pnl_pct:+.1f}% — 반익절 검토"
-                        ),
-                    )
+                    log_event("TP", f"{name} TP1 도달 {cp:,}≥{tp1:,} 수익{pnl_pct:+.1f}%")
                     code_alerts.append("TP1")
 
-                # TP2
+                # TP2 → log_event만  # SILENT: MSG-REDUX
                 if tp2 > 0 and cp >= tp2 and "TP2" not in code_alerts:
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=(
-                            f"🎯🎯 {name} 2차 목표 도달!\n"
-                            f"  현재 {cp:,}원 ≥ TP2 {tp2:,}원\n"
-                            f"  수익 {pnl_pct:+.1f}% — 전량 익절 검토"
-                        ),
-                    )
+                    log_event("TP", f"{name} TP2 도달 {cp:,}≥{tp2:,} 수익{pnl_pct:+.1f}%")
                     code_alerts.append("TP2")
 
             except Exception:

@@ -71,6 +71,7 @@ class AutoTrader:
         self._mdd_limit_pct = risk.get("mdd_limit_pct", 4.5)
         self._risk_state = self._load_risk_state()
         self._risk_blocked = False  # True면 신규 매수 차단
+        self._feed_alert_sent = False  # 피드 중단 알림 1회만  # SILENT: MSG-REDUX
 
         # ── 자동매수 확인 대기열 ──
         self._confirm_auto = config.get("bot", {}).get("confirm_real_order", True)
@@ -1247,18 +1248,26 @@ class AutoTrader:
         try:
             rtm = self._get_rt_monitor()
 
-            # 데이터 피드 중단 감지
+            # 데이터 피드 중단 감지 — 첫 1회만 알림  # SILENT: MSG-REDUX
             if rtm._feed_suspended:
-                await self._alert(
-                    "⚠️ 데이터 피드 중단 감지!\n"
-                    f"   {rtm._consecutive_failures}회 연속 API 실패\n"
-                    "   신규 매매 중지, SL/TP 폴백으로 전환"
-                )
+                if not self._feed_alert_sent:
+                    await self._alert(
+                        "⚠️ 데이터 피드 중단 감지!\n"
+                        f"   {rtm._consecutive_failures}회 연속 API 실패\n"
+                        "   신규 매매 중지, SL/TP 폴백으로 전환"
+                    )
+                    self._feed_alert_sent = True
+                else:
+                    logger.info(f"피드 중단 지속 ({rtm._consecutive_failures}회)")
                 self._risk_blocked = True
                 await self._job_monitor_fallback()
                 return
 
             snapshots = await asyncio.to_thread(rtm.evaluate_all)
+            # 피드 복구 시 플래그 리셋  # SILENT: MSG-REDUX
+            if self._feed_alert_sent:
+                self._feed_alert_sent = False
+                logger.info("데이터 피드 복구 — 알림 플래그 리셋")
         except Exception as e:
             logger.error(f"AI 모니터 평가 실패: {e}")
             # 폴백: 기존 단순 SL/TP 체크
@@ -2310,20 +2319,9 @@ class AutoTrader:
             logger.error(f"갭 탐지 실패: {e}")
 
     async def job_opening_range(self, context):
-        """10:05 - OR/IR 확정 + daily_bias 계산"""
+        """10:05 - OR/IR 확정 + daily_bias 계산 (Silent)"""  # SILENT: MSG-REDUX
         if not is_trading_day():
             return
-
-        chat_id = None
-        if not self._send_alert:
-            import os
-            chat_id = os.getenv("TELEGRAM_CHAT_ID")
-
-        async def _send(text):
-            if self._send_alert:
-                await self._send_alert(text)
-            elif chat_id:
-                await context.bot.send_message(chat_id=chat_id, text=text)
 
         try:
             from strategies.opening_range import run_opening_range
