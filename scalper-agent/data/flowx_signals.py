@@ -546,8 +546,10 @@ def aggregate_scoreboard(bot_type: str = "QUANT") -> dict:
 
 def _upsert_scoreboard(client, board: dict):
     try:
+        # Supabase 스키마에 없는 컬럼 제거 (recent_closed 미존재)
+        payload = {k: v for k, v in board.items() if k != "recent_closed"}
         client.table("scoreboard").upsert(
-            [board], on_conflict="bot_type,period"
+            [payload], on_conflict="bot_type,period"
         ).execute()
     except Exception as e:
         logger.warning(f"scoreboard upsert 실패: {e}")

@@ -79,6 +79,10 @@ def setup_logging():
     )
     file_handler.suffix = "%Y%m%d"
 
+    # 프로덕션: 로깅 핸들러 내부 에러(--- Logging error ---) 억제
+    # pykrx 등 외부 라이브러리의 response.json() 실패 시 stderr 노이즈 방지
+    logging.raiseExceptions = False
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",

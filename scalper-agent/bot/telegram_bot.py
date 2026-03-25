@@ -516,20 +516,17 @@ class BodyHunterBot:
             context.bot_data["portfolio_alert_states"] = new_states
 
             if alerts:
-                # 모든 알림은 log_event에 기록
+                # 모든 알림은 log_event에 기록 (alerts는 문자열 리스트)
                 for a in alerts:
-                    log_event("PORTFOLIO", f"{a.get('name', '')} {a.get('pnl_pct', 0):+.1f}%", a)
+                    log_event("PORTFOLIO", a)
 
-                # 긴급 알림: -5% 이상 급락만 텔레그램 전송
-                urgent = [a for a in alerts if a.get("pnl_pct", 0) <= -5.0]
+                # 긴급 알림: 급락 키워드 포함 시 텔레그램 전송
+                urgent = [a for a in alerts if "급락" in a or "🔴" in a]
                 if urgent:
                     chat_id = os.getenv("TELEGRAM_CHAT_ID")
                     lines = ["🚨 [긴급] 보유종목 급락"]
                     for a in urgent:
-                        lines.append(
-                            f"  {a.get('name', '')} {a.get('pnl_pct', 0):+.1f}%"
-                            f" ({a.get('current_price', 0):,}원)"
-                        )
+                        lines.append(f"  {a}")
                     await context.bot.send_message(
                         chat_id=chat_id, text="\n".join(lines)
                     )
