@@ -121,13 +121,22 @@ class AutoTrader:
         return default
 
     def _save_risk_state(self):
-        """리스크 상태 저장"""
+        """리스크 상태 저장 (atomic write)"""
         try:
             RISK_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-            with open(RISK_STATE_PATH, "w", encoding="utf-8") as f:
+            tmp = RISK_STATE_PATH.with_suffix(".tmp")
+            with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(self._risk_state, f, ensure_ascii=False, indent=2)
+            tmp.replace(RISK_STATE_PATH)
         except Exception as e:
             logger.error(f"리스크 상태 저장 실패: {e}")
+            # tmp 잔여파일 정리
+            tmp = RISK_STATE_PATH.with_suffix(".tmp")
+            if tmp.exists():
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
 
     def record_realized_loss(self, loss_amount: int):
         """실현 손실 기록 (매도 시 호출)"""
@@ -1753,11 +1762,20 @@ class AutoTrader:
                 )
 
                 if action == ACTION_STOP_LOSS:
+                    # 매도 전 수량 확인 (PnL 계산용)
+                    pre_bal = self.trader.fetch_balance()
+                    actual_qty = 1
+                    for p_item in pre_bal.get("positions", []):
+                        if p_item["code"] == code:
+                            actual_qty = p_item.get("qty", 1)
+                            break
                     result = self.trader.liquidate_one(code)
                     if result and result.get("success"):
+                        realized_pnl = (cp - pos["entry_price"]) * actual_qty
+                        self.record_realized_loss(realized_pnl)
                         self._positions.pop(code, None)
                         self._save_positions()
-                        await self._alert(f"⛔ 동적 손절: {name}({code}) @ {cp:,}")
+                        await self._alert(f"⛔ 동적 손절: {name}({code}) @ {cp:,} (PnL {realized_pnl:+,}원)")
                     else:
                         logger.error(f"동적 손절 매도 실패 {code}: {result}")
                         await self._alert(f"❌ 손절 매도 실패: {name}({code}) — 수동 확인 필요")
@@ -1776,19 +1794,30 @@ class AutoTrader:
                                 sell_r = self.trader.smart_sell(code, half)
                                 if sell_r and sell_r.get("success"):
                                     pos["partial_sold"] = True
+                                    partial_pnl = (cp - pos["entry_price"]) * half
+                                    self.record_realized_loss(partial_pnl)
                                     await self._alert(
                                         f"🟡 반분할 익절: {name}({code}) {half}주 @ {cp:,}\n"
-                                        f"   나머지 트레일링 전환 ({reason})"
+                                        f"   나머지 트레일링 전환 ({reason}, PnL {partial_pnl:+,}원)"
                                 )
                                 break
                     else:
+                        # 매도 전 수량 확인 (PnL 계산용)
+                        pre_bal_fs = self.trader.fetch_balance()
+                        actual_qty_fs = 1
+                        for p_item in pre_bal_fs.get("positions", []):
+                            if p_item["code"] == code:
+                                actual_qty_fs = p_item.get("qty", 1)
+                                break
                         result = self.trader.liquidate_one(code)
                         if not result or not result.get("success"):
                             logger.error(f"동적 전량매도 실패 {code}: {result} — 포지션 유지")
                             continue
+                        realized_pnl = (cp - pos["entry_price"]) * actual_qty_fs
+                        self.record_realized_loss(realized_pnl)
                         self._positions.pop(code, None)
                         self._save_positions()
-                        await self._alert(f"🔴 동적 전량매도: {name}({code}) @ {cp:,} ({reason})")
+                        await self._alert(f"🔴 동적 전량매도: {name}({code}) @ {cp:,} ({reason}, PnL {realized_pnl:+,}원)")
                 elif action == ACTION_ADD:
                     # ── 추매: 업사이드 8%+ → 추가 매수 실행 ──
                     risk_ok, risk_reason = self.check_risk_gate()
@@ -1872,19 +1901,35 @@ class AutoTrader:
                     f"🏁 장마감 청산 시작...\n"
                     f"  ({len(preclose_codes)}종목 제외 — 내일용)"
                 )
-                # preclose 제외하고 개별 청산
+                # preclose 제외하고 개별 청산 + PnL 기록
+                eod_total_pnl = 0
                 for code, pos in list(self._positions.items()):
                     if code in preclose_codes:
                         continue
                     try:
+                        # 매도 전 수량/현재가 확인
+                        pi = self.trader.fetch_price(code)
+                        cp_eod = pi.get("current_price", 0) if pi and pi.get("success") else 0
+                        bal_eod = self.trader.fetch_balance()
+                        qty_eod = 1
+                        for p_item in bal_eod.get("positions", []):
+                            if p_item["code"] == code:
+                                qty_eod = p_item.get("qty", 1)
+                                break
                         result_one = self.trader.liquidate_one(code)
                         if result_one and result_one.get("success"):
+                            if cp_eod > 0:
+                                pnl_eod = (cp_eod - pos.get("entry_price", cp_eod)) * qty_eod
+                                self.record_realized_loss(pnl_eod)
+                                eod_total_pnl += pnl_eod
                             self._positions.pop(code, None)
                         else:
                             logger.warning(f"EOD 청산 실패 {code}: {result_one} — 포지션 유지")
                     except Exception as e:
                         logger.warning(f"EOD 청산 예외 {code}: {e} — 포지션 유지")
                 self._save_positions()
+                if eod_total_pnl != 0:
+                    logger.info(f"[EOD] 청산 총 PnL: {eod_total_pnl:+,}원")
                 result = {"success": True, "message": "preclose 제외 청산 완료"}
             else:
                 logger.info("장마감 전량 청산")
@@ -2598,20 +2643,41 @@ class AutoTrader:
         self._save_nxt_positions()
 
     def _save_positions(self):
-        """정규 포지션 JSON 영속화 (VPS 재시작 대비)"""
+        """정규 포지션 JSON 영속화 (VPS 재시작 대비, target_state 직렬화 포함)"""
+        from dataclasses import asdict
         tmp = POSITIONS_PATH.with_suffix(".tmp")
         POSITIONS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        # target_state (dataclass)를 dict로 변환하여 직렬화
+        serializable = {}
+        for code, pos in self._positions.items():
+            p = dict(pos)
+            ts = p.get("target_state")
+            if ts is not None and hasattr(ts, "__dataclass_fields__"):
+                p["target_state"] = asdict(ts)
+            serializable[code] = p
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(self._positions, f, ensure_ascii=False, indent=2)
+            json.dump(serializable, f, ensure_ascii=False, indent=2)
         tmp.replace(POSITIONS_PATH)
 
     def _load_positions(self):
-        """정규 포지션 JSON 복원"""
+        """정규 포지션 JSON 복원 (target_state dict→TargetState 변환 포함)"""
         if POSITIONS_PATH.exists():
             try:
                 with open(POSITIONS_PATH, "r", encoding="utf-8") as f:
                     self._positions = json.load(f)
                 if self._positions:
+                    # target_state가 dict로 저장되어 있으면 TargetState로 복원
+                    from strategies.dynamic_target import TargetState
+                    for code, pos in self._positions.items():
+                        ts = pos.get("target_state")
+                        if isinstance(ts, dict):
+                            try:
+                                pos["target_state"] = TargetState(**{
+                                    k: v for k, v in ts.items()
+                                    if k in TargetState.__dataclass_fields__
+                                })
+                            except Exception:
+                                pos["target_state"] = None
                     logger.info(f"[POSITIONS] 복원: {len(self._positions)}종목")
             except (json.JSONDecodeError, IOError):
                 self._positions = {}
