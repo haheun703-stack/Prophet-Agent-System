@@ -2268,6 +2268,9 @@ class BodyHunterBot:
             r"^flowx$": self.cmd_flowx_vip,
             # ── 국적 차트 ──
             r"^국적차트$": self.cmd_nationality_chart,
+            # ── COO 상태 ──
+            r"^COO$": self.cmd_coo_status,
+            r"^coo$": self.cmd_coo_status,
         }
 
         for pattern, handler in exact_commands.items():
@@ -2504,6 +2507,7 @@ class BodyHunterBot:
                 await context.bot.send_message(chat_id=self.chat_id, text=msg)
             except Exception as e:
                 logger.error(f"헬스체크 실패: {e}")
+        self._job_pipeline_health = _job_pipeline_health
         jq.run_daily(_job_pipeline_health, time=kst_time(17, 15))
         logger.info("파이프라인 헬스체크 등록: 17:15 KST")
 
@@ -2611,6 +2615,16 @@ class BodyHunterBot:
         # ── 국적 픽토그램 차트 자동 생성 (17:00 — 국적 수집 16:00 + MACD 16:55 후) ──
         jq.run_daily(self._job_nationality_charts, time=kst_time(17, 0))
         logger.info("국적 차트 자동 생성 등록: 17:00 KST")
+
+        # ═══ COO (Chief Operating Officer) 연결 ═══
+        try:
+            from bot.trading_coo import TradingCOO
+            self.coo = TradingCOO(self, self.auto_trader)
+            self.coo.setup_schedule(jq)
+            logger.info("COO 스케줄 등록 완료")
+        except Exception as e:
+            logger.error(f"COO 초기화 실패 (기존 스케줄은 정상): {e}")
+            self.coo = None
 
     async def _job_flowx_universe_update(self, context):
         """FLOWX sector_universe 수급/거래량 UPDATE (15:40 — 정보봇 15:35 후)"""
@@ -4620,6 +4634,16 @@ class BodyHunterBot:
             await update.message.reply_text("\n".join(lines))
         except Exception as e:
             await update.message.reply_text(f"AI Eye 조회 실패: {e}")
+
+    async def cmd_coo_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """COO 운영 상태 조회"""
+        if not self._is_authorized(update):
+            return
+        if not getattr(self, "coo", None):
+            await update.message.reply_text("COO 미초기화")
+            return
+        text = self.coo.get_status_summary()
+        await update.message.reply_text(text)
 
     async def cmd_data_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """데이터 수집 현황 조회"""
