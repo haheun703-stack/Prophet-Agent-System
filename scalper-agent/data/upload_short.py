@@ -1,6 +1,6 @@
 """
 FLOWX 단타봇 → Supabase 업로드 모듈
-담당 테이블: short_signals
+담당 테이블: short_signals, nationality_flows
 QUANT 티어 (₩50,000/월) 프리미엄 시그널
 """
 import os
@@ -294,6 +294,96 @@ def upload_short_signals(rows: list) -> bool:
         return False
 
 
+# ═══════════════════════════════════════
+#  국적별 수급 → Supabase nationality_flows
+# ═══════════════════════════════════════
+
+NATIONALITY_DIR = Path(__file__).resolve().parent.parent / "data_store" / "nationality"
+PREDICTION_PATH = Path(__file__).resolve().parent.parent / "data_store" / "nationality_prediction.json"
+
+
+def _load_nationality_csv(code: str) -> dict:
+    """nationality_{code}.csv 읽어서 {국가명: 거래량} dict 반환"""
+    csv_path = NATIONALITY_DIR / f"nationality_{code}.csv"
+    if not csv_path.exists():
+        return {}
+    try:
+        import csv
+        countries = {}
+        with open(csv_path, "r", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                name = row.get("국가명", "").strip()
+                vol = row.get("거래량", "0").strip()
+                if name:
+                    try:
+                        countries[name] = int(float(vol))
+                    except (ValueError, TypeError):
+                        countries[name] = 0
+        return countries
+    except Exception as e:
+        logger.debug(f"국적 CSV 로드 실패({code}): {e}")
+        return {}
+
+
+def upload_nationality_flows() -> bool:
+    """nationality CSV + prediction.json → Supabase nationality_flows 업로드
+
+    Returns:
+        성공 여부
+    """
+    client = _get_client()
+    if not client:
+        return False
+
+    # 1) prediction.json 로드 (signal, score, arch_scores)
+    predictions = {}
+    if PREDICTION_PATH.exists():
+        try:
+            pred_list = json.loads(PREDICTION_PATH.read_text("utf-8"))
+            for p in pred_list:
+                predictions[p["code"]] = p
+        except Exception as e:
+            logger.warning(f"nationality_prediction.json 로드 실패: {e}")
+
+    if not predictions:
+        logger.warning("nationality_prediction.json 없거나 비어있음 — 업로드 스킵")
+        return False
+
+    # 2) 각 종목의 CSV + prediction 병합 → rows
+    today_str = str(date.today())
+    rows = []
+    for code, pred in predictions.items():
+        countries = _load_nationality_csv(code)
+        rows.append({
+            "date": today_str,
+            "code": code,
+            "name": pred.get("name", ""),
+            "countries": countries if countries else None,
+            "arch_scores": pred.get("arch_scores", {}),
+            "signal": pred.get("signal", ""),
+            "score": round(pred.get("score", 0), 1),
+        })
+
+    if not rows:
+        logger.warning("nationality_flows 업로드할 데이터 없음")
+        return False
+
+    # 3) Supabase upsert
+    try:
+        client.table("nationality_flows").upsert(
+            rows, on_conflict="date,code"
+        ).execute()
+        logger.info(
+            f"[FLOWX] nationality_flows 업로드 완료: {len(rows)}종목 "
+            f"(STRONG_BUY: {sum(1 for r in rows if r.get('signal') == 'STRONG_BUY')})"
+        )
+        return True
+    except Exception as e:
+        logger.error(f"[FLOWX] nationality_flows 업로드 실패: {e}")
+        return False
+
+
 def upload_single_signal(signal: dict) -> bool:
     """단일 종목 시그널 업로드 (장중 긴급 시그널 발생 시)"""
     client = _get_client()
@@ -380,9 +470,16 @@ def run_flowx_upload(rec_data: dict = None, nat_daily_all: dict = None) -> bool:
 
     if not flowx_signals:
         logger.info("[FLOWX] 필터 통과 종목 0개 — 기준 미달 시 업로드 스킵 (정상)")
-        return True  # 0종목도 정상 (기준이 맞으면 0이 맞음)
+    else:
+        upload_short_signals(flowx_signals)
 
-    return upload_short_signals(flowx_signals)
+    # nationality_flows 업로드 (prediction.json + CSV)
+    try:
+        upload_nationality_flows()
+    except Exception as e:
+        logger.error(f"[FLOWX] nationality_flows 업로드 실패: {e}")
+
+    return True
 
 
 # ═══════════════════════════════════════
@@ -464,3 +561,10 @@ if __name__ == "__main__":
             print(f"Supabase 업로드 완료! ({len(flowx_signals)}종목)")
         else:
             print("업로드 실패 — .env의 SUPABASE_URL, SUPABASE_KEY 확인하세요.")
+
+        # nationality_flows 업로드
+        print(f"\n{'='*80}")
+        print("  nationality_flows 업로드")
+        print(f"{'='*80}")
+        nat_ok = upload_nationality_flows()
+        print(f"  → {'성공' if nat_ok else '실패/스킵'}")
