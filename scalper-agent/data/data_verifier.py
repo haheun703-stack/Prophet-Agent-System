@@ -5,9 +5,12 @@ Data Pipeline Verifier — 장마감 후 데이터 수집 검증
 분석 돌리기 전에 "데이터 다 들어왔나" 자동 확인.
 
 16개 데이터 소스 검증:
-  CRITICAL: daily_ohlcv, investor_flow, tv_scanner, brain_report
-  HIGH:     minute_candles, minute_5min, nationality, nightwatch,
-            sector_history, sector_relay, guardian, insights
+  CRITICAL: daily_ohlcv, investor_flow
+  HIGH:     tv_scanner, brain_report, minute_candles, minute_5min,
+            nationality, nightwatch, sector_history, sector_relay,
+            guardian, insights
+  NOTE: tv_scanner, brain_report는 16:45+ 추천 파이프라인에서 생성되므로
+        16:25 검증 시점에는 아직 미생성 → CRITICAL 부적합 → HIGH로 하향
   MEDIUM:   short_selling, news_sentiment
   LOW:      dart_disclosure, consensus
 
@@ -391,8 +394,8 @@ def _verify_insights(today: str) -> dict:
 CHECKLIST = {
     "daily_ohlcv":    {"description": "일봉 OHLCV CSV",        "priority": PRIORITY_CRITICAL},
     "investor_flow":  {"description": "투자자 수급 CSV",        "priority": PRIORITY_CRITICAL},
-    "tv_scanner":     {"description": "거래대금 스캐너",         "priority": PRIORITY_CRITICAL},
-    "brain_report":   {"description": "Market Brain 리포트",    "priority": PRIORITY_CRITICAL},
+    "tv_scanner":     {"description": "거래대금 스캐너",         "priority": PRIORITY_HIGH},      # 16:45+ 추천 파이프라인에서 생성
+    "brain_report":   {"description": "Market Brain 리포트",    "priority": PRIORITY_HIGH},      # 16:45+ 추천 파이프라인에서 생성
     "minute_candles": {"description": "1분봉 CSV",             "priority": PRIORITY_HIGH},
     "minute_5min":    {"description": "5분봉 CSV",             "priority": PRIORITY_HIGH},
     "nationality":    {"description": "KRX 국적별 수급",       "priority": PRIORITY_HIGH},

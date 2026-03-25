@@ -2234,6 +2234,17 @@ class AutoTrader:
             f"(자금 {total:,}원)"
         )
 
+        # jarvis brain_allocation → data_store 동기화
+        try:
+            import shutil
+            src = BASE_DIR.parent / "jarvis" / "data" / "brain_allocation.json"
+            dst = BASE_DIR / "data_store" / "brain_allocation.json"
+            if src.exists():
+                shutil.copy2(src, dst)
+                logger.info("[BRAIN] data_store/brain_allocation.json 동기화 완료")
+        except Exception as e:
+            logger.warning(f"[BRAIN] data_store 동기화 실패: {e}")
+
     async def job_brain_allocation(self, context):
         """16:36 - BRAIN 자본 배분 백업 스케줄 (NIGHTWATCH 실패 대비)"""
         if not is_trading_day():
