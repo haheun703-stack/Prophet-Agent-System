@@ -108,11 +108,11 @@ def _build_sector_mapping(date: str) -> dict:
     return mapping
 
 
-def build_universe(min_cap_억: int = 1000) -> dict:
+def build_universe(min_cap_억: int = 500) -> dict:
     """시총 기준 유니버스 자동 생성
 
     Args:
-        min_cap_억: 최소 시가총액 (억원). 기본 1000 = 천억
+        min_cap_억: 최소 시가총액 (억원). 기본 500 = 5백억 (v2: 1000→500 확대)
 
     Returns:
         {code: {"name": ..., "market": ..., "cap": ...}}
@@ -556,7 +556,7 @@ if __name__ == "__main__":
 
     import argparse
     parser = argparse.ArgumentParser(description="유니버스 빌더")
-    parser.add_argument("--min-cap", type=int, default=1000, help="최소 시총 (억원, 기본 1000=천억)")
+    parser.add_argument("--min-cap", type=int, default=500, help="최소 시총 (억원, 기본 500=5천억)")
     parser.add_argument("--force", action="store_true", help="캐시 무시")
     parser.add_argument("--months", type=int, default=24, help="수집 기간 (월)")
     parser.add_argument("--build-only", action="store_true", help="유니버스만 빌드 (수집X)")
@@ -565,7 +565,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.smallcap:
-        sc_min = args.min_cap if args.min_cap != 1000 else 30  # 소형주 기본 30억
+        sc_min = args.min_cap if args.min_cap != 500 else 30  # 소형주 기본 30억
         build_smallcap_universe(sc_min, args.max_cap)
         if not args.build_only:
             collect_smallcap_daily(args.months, args.force)

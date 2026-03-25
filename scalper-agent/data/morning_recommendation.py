@@ -1514,6 +1514,38 @@ def run_evening_recommendation() -> RecommendationReport:
         import traceback
         logger.debug(traceback.format_exc())
 
+    # Step 1.7: 섹터 모멘텀 분석 (pykrx 전체 시장 직접 조회)
+    sector_momentum_report = None
+    sector_boost_map = {}  # {code: boost_score}
+    t0 = time.time()
+    logger.info("[Step 1.7] 섹터 모멘텀 분석 (전체 23개 섹터)...")
+    try:
+        from data.sector_momentum import analyze_sectors, get_hot_sector_codes, format_telegram_report as fmt_sector
+        sector_momentum_report = analyze_sectors()
+        if sector_momentum_report:
+            hot_sects = [s for s in sector_momentum_report.sectors
+                         if isinstance(s, dict) and s.get("phase") in ("HOT", "WARMING")]
+            logger.info(f"  → {len(hot_sects)}개 강세 섹터: "
+                        + ", ".join(f"{s['sector']}({s['avg_return_1d']:+.1f}%)" for s in hot_sects))
+            # HOT 섹터 종목을 자동으로 후보에 주입
+            hot_codes = get_hot_sector_codes(top_n=5)
+            hot_injected = 0
+            for code, boost in hot_codes.items():
+                sector_boost_map[code] = boost
+                # 부스트 15점 이상인 HOT 섹터 종목은 분석 대상에 추가
+                if boost >= 15:
+                    # 유니버스에서 이름 조회
+                    _uni_info = _universe.get(code, {}) if '_universe' in dir() else {}
+                    _nm = _uni_info.get("name", code) if isinstance(_uni_info, dict) else code
+                    if (code, _nm) not in all_codes_set:
+                        all_codes_set.add((code, _nm))
+                        hot_injected += 1
+            logger.info(f"  → 섹터부스트 {len(sector_boost_map)}종목, HOT주입 {hot_injected}종목 ({time.time()-t0:.0f}s)")
+    except Exception as e:
+        logger.warning(f"섹터 모멘텀 분석 실패 (무시): {e}")
+        import traceback
+        logger.debug(traceback.format_exc())
+
     # Step 2: 사전감지 스캔
     t0 = time.time()
     logger.info("[Step 2/6] 사전감지 스캔...")
@@ -1646,7 +1678,7 @@ def run_evening_recommendation() -> RecommendationReport:
         import traceback
         logger.debug(traceback.format_exc())
 
-    # Step 5a.5: 거래대금 폭발 스캔 (전체 유니버스)
+    # Step 5a.5: 거래대금 폭발 스캔 (전체 유니버스 + 소형주)
     tv_signals = {}  # {code: TVSignal dict}
     try:
         import json as _json5a5
@@ -1654,6 +1686,19 @@ def run_evening_recommendation() -> RecommendationReport:
         _uni_path = Path(__file__).resolve().parent.parent / "data_store" / "universe.json"
         with open(_uni_path, "r", encoding="utf-8") as _uf:
             _universe = _json5a5.load(_uf)
+        # 소형주 유니버스 병합 (500억 이하도 TV 스캔 대상)
+        _sc_path = Path(__file__).resolve().parent.parent / "data_store" / "universe_smallcap.json"
+        if _sc_path.exists():
+            try:
+                _sc_uni = _json5a5.loads(_sc_path.read_text("utf-8"))
+                _sc_count = 0
+                for code, info in _sc_uni.items():
+                    if code not in _universe:
+                        _universe[code] = info
+                        _sc_count += 1
+                logger.info(f"  소형주 유니버스 병합: +{_sc_count}종목 → 총 {len(_universe)}")
+            except Exception:
+                pass
         from data.trading_value_scanner import scan_trading_value, save_tv_results
         tv_results = scan_trading_value(_universe, min_tv_billion=10.0)
         save_tv_results(tv_results)
@@ -1748,6 +1793,24 @@ def run_evening_recommendation() -> RecommendationReport:
     if mtm_boost_count > 0:
         final_stocks.sort(key=lambda x: x.total_score, reverse=True)
         logger.info(f"  [MTM] {mtm_boost_count}종목 부스트 → 재정렬 완료")
+
+    # ── Step 5d: 섹터 모멘텀 부스트 ──
+    sect_boost_count = 0
+    if sector_boost_map:
+        for s in final_stocks:
+            boost = sector_boost_map.get(s.code, 0)
+            if boost != 0:
+                s.total_score += boost
+                sect_boost_count += 1
+                logger.info(f"  [섹터부스트] {s.name}: {boost:+.1f}점 → {s.total_score:.1f}")
+        if sect_boost_count > 0:
+            final_stocks.sort(key=lambda x: x.total_score, reverse=True)
+            logger.info(f"  [섹터] {sect_boost_count}종목 부스트 → 재정렬 완료")
+
+    # 섹터 모멘텀 보고서를 report에 첨부 (save_recommendation에서 사용)
+    if sector_momentum_report:
+        from dataclasses import asdict as _asdict
+        report._sector_momentum = _asdict(sector_momentum_report)
 
     # ── Step 5c: 원자재 릴레이 부스트 ──
     try:
@@ -2496,6 +2559,7 @@ def save_recommendation(report: RecommendationReport):
         "tv_cluster_info": report.tv_cluster_info,  # TV 클러스터
         "commodity_info": report.commodity_info,  # 원자재 릴레이 상황
         "event_risk": report.event_risk,  # 이벤트 캘린더 리스크
+        "sector_momentum": getattr(report, "_sector_momentum", {}),  # 섹터 모멘텀
     }
     tmp = path.with_suffix(".tmp")
     with open(tmp, "w", encoding="utf-8") as f:

@@ -2469,6 +2469,44 @@ class BodyHunterBot:
         jq.run_daily(self.auto_trader.job_evening_analysis, time=kst_time(16, 45))
         logger.info("저녁 추천 분석 등록: 16:45 KST")
 
+        # Stage 1.5: 추천 파이프라인 헬스체크 (17:15 — 16:45 실행 후 검증)
+        async def _job_pipeline_health(context):
+            """추천 파이프라인 실행 검증 — 실패시 텔레그램 경고"""
+            try:
+                import json as _jhc
+                from pathlib import Path as _Phc
+                rec_path = _Phc(__file__).resolve().parent.parent / "data_store" / "recommendation.json"
+                if not rec_path.exists():
+                    await context.bot.send_message(
+                        chat_id=self.chat_id,
+                        text="🚨 파이프라인 헬스체크 FAIL\nrecommendation.json 없음!\n16:45 파이프라인 미실행"
+                    )
+                    return
+                data = _jhc.loads(rec_path.read_text("utf-8"))
+                ts = data.get("timestamp", "")
+                today_s = datetime.now().strftime("%Y-%m-%d")
+                stocks = data.get("stocks", [])
+                sector_m = data.get("sector_momentum", {})
+                hot_sects = sector_m.get("hot_sectors", [])
+
+                if today_s not in ts:
+                    await context.bot.send_message(
+                        chat_id=self.chat_id,
+                        text=f"🚨 파이프라인 헬스체크 FAIL\n추천 날짜 불일치: {ts}\n오늘({today_s}) 파이프라인 미실행!"
+                    )
+                    return
+
+                msg = (
+                    f"✅ 파이프라인 헬스체크 OK ({ts})\n"
+                    f"추천: {len(stocks)}종목\n"
+                    f"강세섹터: {', '.join(hot_sects) if hot_sects else '없음'}"
+                )
+                await context.bot.send_message(chat_id=self.chat_id, text=msg)
+            except Exception as e:
+                logger.error(f"헬스체크 실패: {e}")
+        jq.run_daily(_job_pipeline_health, time=kst_time(17, 15))
+        logger.info("파이프라인 헬스체크 등록: 17:15 KST")
+
         # Stage 2: 미국장 체크 (06:30 - 다음날 새벽)
         jq.run_daily(self.auto_trader.job_us_market_check, time=kst_time(6, 30))
         logger.info("미국장 체크 등록: 06:30 KST")
