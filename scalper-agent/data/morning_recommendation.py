@@ -1703,14 +1703,31 @@ def run_evening_recommendation() -> RecommendationReport:
         tv_results = scan_trading_value(_universe, min_tv_billion=10.0)
         save_tv_results(tv_results)
         tv_signals = {s.code: s for s in tv_results if s.score > 0}
-        # TV 스캐너에서 잡힌 종목도 교차검증 대상에 추가
+        # TV 스캐너에서 잡힌 종목도 교차검증 대상에 추가 (code 기반 dedup)
         tv_added = 0
+        existing_codes = {code for code, _ in all_codes_set}
         for code, tv_sig in tv_signals.items():
-            if tv_sig.score >= 60 and (code, tv_sig.name) not in all_codes_set:
+            if tv_sig.score >= 60 and code not in existing_codes:
                 all_codes_set.add((code, tv_sig.name))
                 codes_names.append((code, tv_sig.name))
+                existing_codes.add(code)
                 tv_added += 1
         logger.info(f"[Step 5a.5] 거래대금 이상: {len(tv_signals)}종목 ({tv_added}종목 신규추가) ({time.time()-t_tv:.0f}s)")
+        # TV 신규추가 종목 보충 분석 (tech + news)
+        if tv_added > 0:
+            tv_new_codes = [(code, tv_signals[code].name) for code, tv_sig in tv_signals.items()
+                           if tv_sig.score >= 60 and code not in tech_result]
+            if tv_new_codes:
+                try:
+                    tv_tech = _step3_tech_filter(tv_new_codes, market_chg=market_chg)
+                    tech_result.update(tv_tech)
+                    logger.info(f"  → TV 보충 기술분석: {len(tv_tech)}종목")
+                except Exception as e_tv_tech:
+                    logger.warning(f"TV 보충 기술분석 실패: {e_tv_tech}")
+                # 뉴스는 NEUTRAL로 채움 (속도 우선)
+                for code, name in tv_new_codes:
+                    if code not in news_result:
+                        news_result[code] = {"sentiment": "NEUTRAL", "reason": "TV신규(미분석)", "score": 0}
     except Exception as e:
         logger.warning(f"TV 스캐너 실패 (무시): {e}")
         import traceback
