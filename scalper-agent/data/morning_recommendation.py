@@ -1514,6 +1514,9 @@ def run_evening_recommendation() -> RecommendationReport:
         import traceback
         logger.debug(traceback.format_exc())
 
+    # 기술분석 대상 종목 수집 (Step 1.7 HOT 주입에서도 사용)
+    all_codes_set = set()
+
     # Step 1.7: 섹터 모멘텀 분석 (pykrx 전체 시장 직접 조회)
     sector_momentum_report = None
     sector_boost_map = {}  # {code: boost_score}
@@ -1552,8 +1555,7 @@ def run_evening_recommendation() -> RecommendationReport:
     premove_result = _step2_premove_scan()
     logger.info(f"  → {len(premove_result.get('stocks', {}))}종목 ({time.time()-t0:.0f}s)")
 
-    # 기술분석 대상 종목 수집
-    all_codes_set = set()
+    # 기술분석 대상 종목 수집 (Step 1.7 HOT 주입분 유지)
     for code, info in relay_result.get("stocks", {}).items():
         all_codes_set.add((code, info.get("name", code)))
     for code, info in premove_result.get("stocks", {}).items():
