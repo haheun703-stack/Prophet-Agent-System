@@ -2358,119 +2358,118 @@ class BodyHunterBot:
         def kst_time(h, m):
             return dtime(h, m, tzinfo=KST)
 
-        # 아침 스캔
+        # COO_MANAGED: G2 — 아침 스캔
         scan_time_str = bot_conf.get("morning_scan_time", "09:00")
         h, m = map(int, scan_time_str.split(":"))
-        jq.run_daily(self.auto_trader.job_morning_scan, time=kst_time(h, m))
-        logger.info(f"아침 스캔 등록: {scan_time_str} KST")
+        # jq.run_daily(self.auto_trader.job_morning_scan, time=kst_time(h, m))
+        # logger.info(f"아침 스캔 등록: {scan_time_str} KST")
 
-        # 포지션 감시 (30초)
+        # 포지션 감시 (30초) — COO 감시만 (G4 B3), 직접 실행은 기존 유지
         interval = bot_conf.get("scan_interval_sec", 30)
         jq.run_repeating(self.auto_trader.job_monitor, interval=interval, first=10)
         logger.info(f"포지션 감시 등록: {interval}초")
 
-        # ★ 동적 목표가 재평가 + 트레일링 스탑 (15:00 - 장마감 전)
+        # COO_MANAGED: G5 — 동적 목표가 재평가 + 트레일링 스탑
         reeval_str = bot_conf.get("reeval_time", "15:00")
         h_re, m_re = map(int, reeval_str.split(":"))
-        jq.run_daily(self.auto_trader.job_daily_reeval, time=kst_time(h_re, m_re))
-        logger.info(f"동적 목표가 재평가 등록: {reeval_str} KST (트레일링스탑+수급판정)")
+        # jq.run_daily(self.auto_trader.job_daily_reeval, time=kst_time(h_re, m_re))
+        # logger.info(f"동적 목표가 재평가 등록: {reeval_str} KST (트레일링스탑+수급판정)")
 
-        # 장마감 청산
+        # COO_MANAGED: G5 — 장마감 청산
         eod_str = bot_conf.get("eod_close_time", "15:10")
         h2, m2 = map(int, eod_str.split(":"))
-        jq.run_daily(self.auto_trader.job_eod_close, time=kst_time(h2, m2))
-        logger.info(f"장마감 청산 등록: {eod_str} KST")
+        # jq.run_daily(self.auto_trader.job_eod_close, time=kst_time(h2, m2))
+        # logger.info(f"장마감 청산 등록: {eod_str} KST")
 
-        # 장마감 후 분봉 수집 (15:40)
+        # COO_MANAGED: G5 — 장마감 후 분봉 수집
         minute_str = bot_conf.get("minute_collect_time", "15:40")
         h3, m3 = map(int, minute_str.split(":"))
-        jq.run_daily(self._job_collect_minutes, time=kst_time(h3, m3))
-        logger.info(f"분봉 수집 등록: {minute_str} KST")
+        # jq.run_daily(self._job_collect_minutes, time=kst_time(h3, m3))
+        # logger.info(f"분봉 수집 등록: {minute_str} KST")
 
-        # 일봉 + 수급 수집 (16:00)
+        # COO_MANAGED: G6 — 일봉 + 수급 수집
         daily_str = bot_conf.get("daily_collect_time", "16:00")
         h4, m4 = map(int, daily_str.split(":"))
-        jq.run_daily(self._job_collect_daily, time=kst_time(h4, m4))
-        logger.info(f"일봉 수집 등록: {daily_str} KST")
+        # jq.run_daily(self._job_collect_daily, time=kst_time(h4, m4))
+        # logger.info(f"일봉 수집 등록: {daily_str} KST")
 
-        # 체결 스냅샷 폴링 - 장 시작 시 자동 시작 (09:01)
+        # COO_MANAGED: G3 — 체결 스냅샷 폴링
         tick_enabled = self.config.get("schedule", {}).get(
             "tick_collect", {}
         ).get("enabled", True)
         if tick_enabled:
-            jq.run_daily(self._job_start_tick_polling, time=kst_time(9, 1))
-            logger.info("체결 폴링 등록: 09:01 KST 시작 (1분 간격, 장중)")
+            # jq.run_daily(self._job_start_tick_polling, time=kst_time(9, 1))
+            # logger.info("체결 폴링 등록: 09:01 KST 시작 (1분 간격, 장중)")
+            pass
 
-        # 유니버스 리빌드 (08:35 - premium_levels 08:30과 충돌 방지)
+        # COO_MANAGED: G1 — 유니버스 리빌드
         uni_str = bot_conf.get("universe_rebuild_time", "08:35")
         h5, m5 = map(int, uni_str.split(":"))
-        jq.run_daily(self._job_rebuild_universe, time=kst_time(h5, m5))
-        logger.info(f"유니버스 리빌드 등록: {uni_str} KST")
+        # jq.run_daily(self._job_rebuild_universe, time=kst_time(h5, m5))
+        # logger.info(f"유니버스 리빌드 등록: {uni_str} KST")
 
-        # ★ 데이터 파이프라인 검증 (16:25 - 일봉 수집 후, 시그널 기록 전)
-        jq.run_daily(self._job_verify_data, time=kst_time(16, 25))
-        logger.info("데이터 파이프라인 검증 등록: 16:25 KST")
+        # COO_MANAGED: G6 — 데이터 파이프라인 검증
+        # jq.run_daily(self._job_verify_data, time=kst_time(16, 25))
+        # logger.info("데이터 파이프라인 검증 등록: 16:25 KST")
 
-        # 일간 시그널 기록 (16:30 - 일봉 수집 후)
-        jq.run_daily(self._job_record_signals, time=kst_time(16, 30))
-        logger.info("일간 시그널 기록 등록: 16:30 KST")
+        # COO_MANAGED: G7 — 일간 시그널 기록
+        # jq.run_daily(self._job_record_signals, time=kst_time(16, 30))
+        # logger.info("일간 시그널 기록 등록: 16:30 KST")
 
-        # 일간 학습 리포트 (16:40 - 시그널 기록 후)
-        jq.run_daily(self._job_daily_learning, time=kst_time(16, 40))
-        logger.info("일간 학습 리포트 등록: 16:40 KST")
+        # COO_MANAGED: G7 — 일간 학습 리포트
+        # jq.run_daily(self._job_daily_learning, time=kst_time(16, 40))
+        # logger.info("일간 학습 리포트 등록: 16:40 KST")
 
-        # Position Guardian (08:20 - 장 전 보유종목 수급 진단)
-        jq.run_daily(self._job_position_guardian, time=kst_time(8, 20))
-        logger.info("Position Guardian 등록: 08:20 KST")
+        # COO_MANAGED: G1 — Position Guardian
+        # jq.run_daily(self._job_position_guardian, time=kst_time(8, 20))
+        # logger.info("Position Guardian 등록: 08:20 KST")
 
-        # 옵션 만기일 알림 (08:10 - D-2/D-1/D-day)
-        jq.run_daily(self._job_options_expiry_alert, time=kst_time(8, 10))
-        logger.info("옵션 만기일 알림 등록: 08:10 KST")
+        # COO_MANAGED: G1 — 옵션 만기일 알림
+        # jq.run_daily(self._job_options_expiry_alert, time=kst_time(8, 10))
+        # logger.info("옵션 만기일 알림 등록: 08:10 KST")
 
-        # 정책 트래커 (07:55 - 장 전 정부 정책 수집)
-        jq.run_daily(self._job_policy_scan, time=kst_time(7, 55))
-        logger.info("정책 트래커 등록: 07:55 KST")
+        # COO_MANAGED: G1 — 정책 트래커
+        # jq.run_daily(self._job_policy_scan, time=kst_time(7, 55))
+        # logger.info("정책 트래커 등록: 07:55 KST")
 
-        # 해외 이벤트 캘린더 스캔 (08:00 - 장 전 D-3 알림)
-        jq.run_daily(self._job_global_event_scan, time=kst_time(8, 0))
-        logger.info("해외 이벤트 스캔 등록: 08:00 KST")
+        # COO_MANAGED: G1 — 해외 이벤트 캘린더 스캔
+        # jq.run_daily(self._job_global_event_scan, time=kst_time(8, 0))
+        # logger.info("해외 이벤트 스캔 등록: 08:00 KST")
 
         # DART 거버넌스 공시 크롤링 (08:05 1차 / 13:00 2차 / 16:22 3차)
-        jq.run_daily(self._job_dart_refresh, time=kst_time(8, 5))
-        jq.run_daily(self._job_dart_refresh, time=kst_time(13, 0))
-        jq.run_daily(self._job_dart_refresh, time=kst_time(16, 22))
-        logger.info("DART 크롤링 등록: 08:05 / 13:00 / 16:22 KST")
+        # jq.run_daily(self._job_dart_refresh, time=kst_time(8, 5))   # COO_MANAGED: G1
+        jq.run_daily(self._job_dart_refresh, time=kst_time(13, 0))    # G4 B11 유지
+        # jq.run_daily(self._job_dart_refresh, time=kst_time(16, 22)) # COO_MANAGED: G6
+        logger.info("DART 크롤링 등록: 13:00 KST (08:05/16:22은 COO 관리)")
 
-        # 스윙 종목 선정 (16:35 - 시그널 기록 후)
-        jq.run_daily(self._job_swing_picker, time=kst_time(16, 35))
-        logger.info("스윙 종목 선정 등록: 16:35 KST")
+        # COO_MANAGED: G7 — 스윙 종목 선정
+        # jq.run_daily(self._job_swing_picker, time=kst_time(16, 35))
+        # logger.info("스윙 종목 선정 등록: 16:35 KST")
 
-        # MACD 제로선 크로스 스캔 (16:55 - 마감 리포트 16:50 이후, 선취매 16:52 충돌방지)
-        jq.run_daily(self._job_macd_scan, time=kst_time(16, 55))
-        logger.info("MACD 크로스 스캔 등록: 16:55 KST")
+        # COO_MANAGED: G7 — MACD 제로선 크로스 스캔
+        # jq.run_daily(self._job_macd_scan, time=kst_time(16, 55))
+        # logger.info("MACD 크로스 스캔 등록: 16:55 KST")
 
-        # 사전감지 스캔 (08:50 - 장 시작 전)
-        jq.run_daily(self._job_premove_scan, time=kst_time(8, 50))
-        logger.info("사전감지 스캔 등록: 08:50 KST")
+        # COO_MANAGED: G1 — 사전감지 스캔
+        # jq.run_daily(self._job_premove_scan, time=kst_time(8, 50))
+        # logger.info("사전감지 스캔 등록: 08:50 KST")
 
-        # ── 통합 메시지: 하루 5~7개 ──
-        # ① 모닝 브리프 (08:55 - 추천 파이프라인 직후)
-        jq.run_daily(self._send_morning_brief, time=kst_time(8, 55))
-        logger.info("모닝 브리프 등록: 08:55 KST")
-        # FLOWX VIP 8패널 콘텐츠 (08:56 - 모닝 브리프 직후)
-        jq.run_daily(self._job_flowx_vip_content, time=kst_time(8, 56))
-        logger.info("FLOWX VIP 콘텐츠 등록: 08:56 KST")
+        # COO_MANAGED: G2 — 모닝 브리프
+        # jq.run_daily(self._send_morning_brief, time=kst_time(8, 55))
+        # logger.info("모닝 브리프 등록: 08:55 KST")
+        # COO_MANAGED: G2 — FLOWX VIP 8패널 콘텐츠
+        # jq.run_daily(self._job_flowx_vip_content, time=kst_time(8, 56))
+        # logger.info("FLOWX VIP 콘텐츠 등록: 08:56 KST")
 
         # ⑤ 프리클로즈 리포트 (14:50 — 기존 _job_preclose_report 대체)
         # → 이미 14:30 스캔 + 14:50 리포트 등록됨, _send_preclose_brief로 교체
-        # ⑥ 일일 마감 리포트 (16:50 - 학습 완료 후)
-        jq.run_daily(self._send_daily_closing, time=kst_time(16, 50))
-        logger.info("일일 마감 리포트 등록: 16:50 KST")
+        # COO_MANAGED: G7 — 일일 마감 리포트
+        # jq.run_daily(self._send_daily_closing, time=kst_time(16, 50))
+        # logger.info("일일 마감 리포트 등록: 16:50 KST")
 
-        # ── 추천 파이프라인 3-Stage ──
-        # Stage 1: 저녁 분석 (16:45 - 데이터 수집 완료 후)
-        jq.run_daily(self.auto_trader.job_evening_analysis, time=kst_time(16, 45))
-        logger.info("저녁 추천 분석 등록: 16:45 KST")
+        # COO_MANAGED: G7 — 저녁 분석
+        # jq.run_daily(self.auto_trader.job_evening_analysis, time=kst_time(16, 45))
+        # logger.info("저녁 추천 분석 등록: 16:45 KST")
 
         # Stage 1.5: 추천 파이프라인 헬스체크 (17:15 — 16:45 실행 후 검증)
         async def _job_pipeline_health(context):
@@ -2508,19 +2507,20 @@ class BodyHunterBot:
             except Exception as e:
                 logger.error(f"헬스체크 실패: {e}")
         self._job_pipeline_health = _job_pipeline_health
-        jq.run_daily(_job_pipeline_health, time=kst_time(17, 15))
-        logger.info("파이프라인 헬스체크 등록: 17:15 KST")
+        # COO_MANAGED: G7 — 파이프라인 헬스체크
+        # jq.run_daily(_job_pipeline_health, time=kst_time(17, 15))
+        # logger.info("파이프라인 헬스체크 등록: 17:15 KST")
 
-        # Stage 2: 미국장 체크 (06:30 - 다음날 새벽)
-        jq.run_daily(self.auto_trader.job_us_market_check, time=kst_time(6, 30))
-        logger.info("미국장 체크 등록: 06:30 KST")
+        # COO_MANAGED: G1 — 미국장 체크
+        # jq.run_daily(self.auto_trader.job_us_market_check, time=kst_time(6, 30))
+        # logger.info("미국장 체크 등록: 06:30 KST")
 
         # ── ICT 프리미엄 레벨 (08:30) + 갭 탐지 (09:05) + Opening Range (10:05) ──
-        jq.run_daily(self.auto_trader.job_premium_levels, time=kst_time(8, 30))
-        logger.info("프리미엄 레벨 등록: 08:30 KST")
-        jq.run_daily(self.auto_trader.job_gap_support, time=kst_time(9, 5))
-        logger.info("갭 지지/저항 등록: 09:05 KST")
-        jq.run_daily(self.auto_trader.job_opening_range, time=kst_time(10, 5))
+        # jq.run_daily(self.auto_trader.job_premium_levels, time=kst_time(8, 30))  # COO_MANAGED: G1
+        # logger.info("프리미엄 레벨 등록: 08:30 KST")
+        # jq.run_daily(self.auto_trader.job_gap_support, time=kst_time(9, 5))      # COO_MANAGED: G3
+        # logger.info("갭 지지/저항 등록: 09:05 KST")
+        jq.run_daily(self.auto_trader.job_opening_range, time=kst_time(10, 5))     # G4 B10 유지
         logger.info("Opening Range 등록: 10:05 KST")
 
         # ── 보유종목 대시보드 (장중 3회) + 알림 (60초) ──
@@ -2531,8 +2531,8 @@ class BodyHunterBot:
         logger.info("보유종목 대시보드 등록: 10:00/13:00/14:30 KST + 알림 60초")
 
         # ── 전쟁모드 장중 추적 (시작알림 + 30분 요약 + 급등/급락 알림) ──
-        jq.run_daily(self._job_war_startup, time=kst_time(9, 0))
-        jq.run_repeating(self._job_war_tracker, interval=60, first=30)
+        # jq.run_daily(self._job_war_startup, time=kst_time(9, 0))  # COO_MANAGED: G3
+        jq.run_repeating(self._job_war_tracker, interval=60, first=30)  # G4 B8 유지
         jq.run_daily(self._job_war_summary, time=kst_time(9, 30))
         jq.run_daily(self._job_war_summary, time=kst_time(10, 30))
         jq.run_daily(self._job_war_summary, time=kst_time(11, 30))
@@ -2551,15 +2551,15 @@ class BodyHunterBot:
         logger.info("포지션 감시 등록: 30분 보고 12회 + 5분 SL/TP 체크")
 
         # ── PAPER 트레이딩 자동 추적 ──
-        jq.run_daily(self._job_paper_register, time=kst_time(9, 5))
-        jq.run_repeating(self._job_paper_check, interval=300, first=600)  # 5분마다
-        jq.run_daily(self._job_paper_eod, time=kst_time(15, 25))
-        logger.info("PAPER 트레이딩 등록: 09:05 등록 + 5분 체크 + 15:25 EOD")
+        # jq.run_daily(self._job_paper_register, time=kst_time(9, 5))  # COO_MANAGED: G3
+        jq.run_repeating(self._job_paper_check, interval=300, first=600)  # 5분마다 — 반복 유지
+        # jq.run_daily(self._job_paper_eod, time=kst_time(15, 25))     # COO_MANAGED: G5
+        logger.info("PAPER 트레이딩 등록: 5분 체크 유지 (등록/EOD는 COO 관리)")
 
         # ── 장중 TV 실시간 스캔 (30분마다 유니버스 전체) ──
-        jq.run_daily(self._job_intraday_tv_init, time=kst_time(9, 30))
-        jq.run_repeating(self._job_intraday_tv_scan, interval=1800, first=1800)
-        logger.info("장중 TV 스캔 등록: 09:30 초기화 + 30분 유니버스 스캔")
+        # jq.run_daily(self._job_intraday_tv_init, time=kst_time(9, 30))  # COO_MANAGED: G3
+        jq.run_repeating(self._job_intraday_tv_scan, interval=1800, first=1800)  # G4 B9 유지
+        logger.info("장중 TV 스캔 등록: 30분 유니버스 스캔 유지 (초기화는 COO 관리)")
 
         # ── 장중 뉴스 감성 스캔 (09:30 / 11:00 / 13:30) ──
         jq.run_daily(self._job_news_sentiment, time=kst_time(9, 30))
@@ -2572,49 +2572,52 @@ class BodyHunterBot:
         jq.run_daily(self._send_preclose_brief, time=kst_time(14, 50))
         logger.info("프리클로즈 등록: 14:30 스캔 + 14:50 리포트")
 
-        # ── FLOWX DAYTRADING 일괄 청산 (15:20 - 장 마감 전) ──
-        jq.run_daily(self._job_flowx_close_daytrading, time=kst_time(15, 20))
-        logger.info("FLOWX DAYTRADING 일괄 청산 등록: 15:20 KST")
+        # COO_MANAGED: G5 — FLOWX DAYTRADING 일괄 청산
+        # jq.run_daily(self._job_flowx_close_daytrading, time=kst_time(15, 20))
+        # logger.info("FLOWX DAYTRADING 일괄 청산 등록: 15:20 KST")
 
-        # ── FLOWX sector_universe 수급/거래량 UPDATE (15:40 — 정보봇 15:35 후) ──
-        jq.run_daily(self._job_flowx_universe_update, time=kst_time(15, 40))
-        logger.info("FLOWX sector_universe UPDATE 등록: 15:40 KST")
+        # COO_MANAGED: G6 — FLOWX sector_universe 수급/거래량 UPDATE
+        # jq.run_daily(self._job_flowx_universe_update, time=kst_time(15, 40))
+        # logger.info("FLOWX sector_universe UPDATE 등록: 15:40 KST")
 
-        # ── JARVIS BRAIN 자본 배분 (백업용 - NIGHTWATCH 미실행 대비) ──
-        jq.run_daily(self.auto_trader.job_brain_allocation, time=kst_time(16, 36))
-        logger.info("BRAIN 배분 백업 등록: 16:36 KST")
+        # COO_MANAGED: G7 — JARVIS BRAIN 자본 배분
+        # jq.run_daily(self.auto_trader.job_brain_allocation, time=kst_time(16, 36))
+        # logger.info("BRAIN 배분 백업 등록: 16:36 KST")
 
         # ── NIGHTWATCH NXT 야간매매 ──
         nw_cfg = self.config.get("nightwatch", {})
         if nw_cfg.get("enabled", False):
+            # COO_MANAGED: G6 — NIGHTWATCH 수집
             collect_str = nw_cfg.get("collect_time", "16:02")
             h_nw1, m_nw1 = map(int, collect_str.split(":"))
-            jq.run_daily(self.auto_trader.job_nightwatch_collect, time=kst_time(h_nw1, m_nw1))
-            logger.info(f"NIGHTWATCH 수집 등록: {collect_str} KST")
+            # jq.run_daily(self.auto_trader.job_nightwatch_collect, time=kst_time(h_nw1, m_nw1))
+            # logger.info(f"NIGHTWATCH 수집 등록: {collect_str} KST")
 
+            # nightwatch_decide — COO 미관리, 유지
             decide_str = nw_cfg.get("decide_time", "16:35")
             h_nw2, m_nw2 = map(int, decide_str.split(":"))
             jq.run_daily(self.auto_trader.job_nightwatch_decide, time=kst_time(h_nw2, m_nw2))
             logger.info(f"NIGHTWATCH 판단 등록: {decide_str} KST")
 
+            # COO_MANAGED: G1 — NXT 아침 매도
             sell_str = nw_cfg.get("morning_sell_time", "08:00")
             h_nw3, m_nw3 = map(int, sell_str.split(":"))
-            jq.run_daily(self.auto_trader.job_nxt_morning_sell, time=kst_time(h_nw3, m_nw3))
-            logger.info(f"NXT 아침 매도 등록: {sell_str} KST")
+            # jq.run_daily(self.auto_trader.job_nxt_morning_sell, time=kst_time(h_nw3, m_nw3))
+            # logger.info(f"NXT 아침 매도 등록: {sell_str} KST")
 
-            # ── 시간외 선취매 (16:52 — 추천 16:45 완료 후) ──
+            # COO_MANAGED: G7 — 시간외 선취매
             predawn_str = nw_cfg.get("predawn_time", "16:52")
             h_pd, m_pd = map(int, predawn_str.split(":"))
-            jq.run_daily(self.auto_trader.job_predawn_buy, time=kst_time(h_pd, m_pd))
-            logger.info(f"시간외 선취매 등록: {predawn_str} KST")
+            # jq.run_daily(self.auto_trader.job_predawn_buy, time=kst_time(h_pd, m_pd))
+            # logger.info(f"시간외 선취매 등록: {predawn_str} KST")
 
-        # ── OPT-01: 옵션/ETF 심리 시그널 수집 (16:05 — NXT 수집 직후) ──
-        jq.run_daily(self._job_collect_options_signal, time=kst_time(16, 5))
-        logger.info("옵션 심리 시그널 수집 등록: 16:05 KST")
+        # COO_MANAGED: G6 — 옵션/ETF 심리 시그널 수집
+        # jq.run_daily(self._job_collect_options_signal, time=kst_time(16, 5))
+        # logger.info("옵션 심리 시그널 수집 등록: 16:05 KST")
 
-        # ── 국적 픽토그램 차트 자동 생성 (17:00 — 국적 수집 16:00 + MACD 16:55 후) ──
-        jq.run_daily(self._job_nationality_charts, time=kst_time(17, 0))
-        logger.info("국적 차트 자동 생성 등록: 17:00 KST")
+        # COO_MANAGED: G7 — 국적 픽토그램 차트 자동 생성
+        # jq.run_daily(self._job_nationality_charts, time=kst_time(17, 0))
+        # logger.info("국적 차트 자동 생성 등록: 17:00 KST")
 
         # ═══ COO (Chief Operating Officer) 연결 ═══
         try:
