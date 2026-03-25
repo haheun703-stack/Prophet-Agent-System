@@ -1577,20 +1577,20 @@ PREDAWN_POSITIONS_PATH = DATA_DIR / "predawn_positions.json"
 
 
 def select_predawn_targets(
-    min_score: float = 100.0,
+    min_score: float = 65.0,
     max_targets: int = 3,
 ) -> List[Dict]:
     """
-    recommendation.json에서 시간외 선취매 대상 선별
+    recommendation.json에서 시간외 선취매 대상 선별 (v2: 완화 필터)
 
-    조건:
-    - grade: AAA 또는 AA (최상위 등급)
-    - signal_type: FORCE_BUY (강력 매수 시그널)
-    - total_score >= min_score
-    - confidence: HIGH
+    Tier 1 (확신): AAA/AA + FORCE_BUY + 75점+ + HIGH → 무조건 선취매
+    Tier 2 (유력): A이상 + FORCE_BUY/BUY + 65점+ + HIGH/MED → 후보
+    Tier 3 (모멘텀): BBB이상 + BUY + 70점+ + HOT섹터 부스트 → 후보
+
+    Tier 1은 max_targets 외 추가 슬롯, Tier 2/3은 max_targets 내 점수순
 
     Returns: [{code, name, close, total_score, grade, signal_type,
-               entry, sl, tp, sources, tv_ratio, tv_pattern}]
+               entry, sl, tp, sources, tv_ratio, tv_pattern, predawn_tier}]
     """
     rec_path = DATA_DIR / "recommendation.json"
     if not rec_path.exists():
@@ -1615,26 +1615,32 @@ def select_predawn_targets(
         logger.info("[PREDAWN] 추천 종목 없음")
         return []
 
-    targets = []
+    # HOT 섹터 종목 코드 (sector_momentum 연동)
+    hot_codes = set()
+    if SECTOR_MOMENTUM_PATH.exists():
+        try:
+            sm_data = json.loads(SECTOR_MOMENTUM_PATH.read_text("utf-8"))
+            for sec in sm_data.get("sectors", []):
+                if sec.get("phase") in ("HOT", "WARMING"):
+                    for m in sec.get("top_movers", []):
+                        hot_codes.add(m.get("code", ""))
+        except Exception:
+            pass
+
+    tier1 = []
+    tier2 = []
+    tier3 = []
+
     for s in stocks:
         grade = s.get("grade", "")
         sig = s.get("signal_type", "")
         score = s.get("total_score", 0)
         conf = s.get("confidence", "")
+        code = s.get("code", "")
 
-        # 필터: AAA/AA + FORCE_BUY + 점수 100+ + HIGH 신뢰도
-        if grade not in ("AAA", "AA"):
-            continue
-        if sig != "FORCE_BUY":
-            continue
-        if score < min_score:
-            continue
-        if conf != "HIGH":
-            continue
-
-        targets.append({
-            "code": s["code"],
-            "name": s["name"],
+        base = {
+            "code": code,
+            "name": s.get("name", ""),
             "close": s.get("close", 0),
             "total_score": score,
             "grade": grade,
@@ -1645,17 +1651,36 @@ def select_predawn_targets(
             "sources": s.get("sources", []),
             "tv_ratio": s.get("tv_ratio", 1.0),
             "tv_pattern": s.get("tv_pattern", "NORMAL"),
-        })
+        }
 
-    # 점수 내림차순 정렬
-    targets.sort(key=lambda x: x["total_score"], reverse=True)
-    targets = targets[:max_targets]
+        # Tier 1: 확신 — AAA/AA + FORCE_BUY + 75점+ + HIGH
+        if grade in ("AAA", "AA") and sig == "FORCE_BUY" and score >= 75 and conf == "HIGH":
+            base["predawn_tier"] = 1
+            tier1.append(base)
+        # Tier 2: 유력 — A이상 + FORCE_BUY/BUY + 65점+ + HIGH/MED
+        elif grade in ("AAA", "AA", "A") and sig in ("FORCE_BUY", "BUY") and score >= 65 and conf in ("HIGH", "MED"):
+            base["predawn_tier"] = 2
+            tier2.append(base)
+        # Tier 3: 모멘텀 — BBB이상 + BUY + 70점+ + HOT섹터 종목
+        elif grade in ("AAA", "AA", "A", "BBB") and sig in ("FORCE_BUY", "BUY") and score >= 70 and code in hot_codes:
+            base["predawn_tier"] = 3
+            tier3.append(base)
+
+    # Tier 1은 무조건 포함 + Tier 2/3은 점수순으로 max_targets 채우기
+    targets = tier1[:]
+    remaining = max_targets - len(tier1)
+    if remaining > 0:
+        pool = sorted(tier2 + tier3, key=lambda x: x["total_score"], reverse=True)
+        targets.extend(pool[:remaining])
+
+    # 최종 정렬: 티어 → 점수
+    targets.sort(key=lambda x: (x.get("predawn_tier", 9), -x["total_score"]))
 
     if targets:
-        names = ", ".join(f"{t['name']}({t['total_score']:.0f}점)" for t in targets)
+        names = ", ".join(f"{t['name']}(T{t.get('predawn_tier',0)},{t['total_score']:.0f})" for t in targets)
         logger.info(f"[PREDAWN] 선취매 대상 {len(targets)}종목: {names}")
     else:
-        logger.info(f"[PREDAWN] 조건 충족 종목 없음 (AAA/AA + FORCE_BUY + {min_score}+)")
+        logger.info(f"[PREDAWN] 조건 충족 종목 없음 (A+ BUY/FORCE_BUY {min_score}+)")
 
     return targets
 
