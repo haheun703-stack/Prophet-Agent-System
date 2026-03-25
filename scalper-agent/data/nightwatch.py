@@ -355,6 +355,86 @@ JARVIS_SECTORS = {
     },
 }
 
+# ── KRX 업종명 → JARVIS 섹터 키 매핑 (섹터 모멘텀 연동) ──
+KRX_TO_JARVIS = {
+    "전기전자": ["semiconductor"],
+    "금융": ["securities"],
+    "제약": ["bio"],
+    "의약품": ["bio"],
+    "운송장비": ["shipbuilding", "space_defense"],
+    "기계장비": ["power_infra"],
+    "화학": ["battery_ev"],
+    "금속": ["industrial_metals", "precious_metals"],
+    "전기가스": ["power_infra", "natural_gas"],
+    "서비스": ["entertainment"],
+    "건설": ["reits"],
+    "통신": ["software_ai"],
+    "운수창고": ["shipbuilding"],
+    "철강": ["industrial_metals"],
+}
+
+SECTOR_MOMENTUM_PATH = DATA_DIR / "sector_momentum.json"
+
+
+def _get_hot_sector_targets(max_sectors: int = 3) -> Tuple[List[str], List[Dict], str]:
+    """섹터 모멘텀에서 HOT/WARMING 섹터 → JARVIS 종목 + top movers 반환
+
+    Returns: (jarvis_keys, direct_targets, reason_str)
+      - jarvis_keys: JARVIS_SECTORS 매핑된 키 목록
+      - direct_targets: JARVIS 미매핑 HOT 섹터 top movers (직접 주입)
+      - reason_str: 사유 문자열
+    """
+    if not SECTOR_MOMENTUM_PATH.exists():
+        return [], [], ""
+    try:
+        data = json.loads(SECTOR_MOMENTUM_PATH.read_text("utf-8"))
+    except Exception:
+        return [], [], ""
+
+    hot_sectors = [
+        s for s in data.get("sectors", [])
+        if s.get("phase") in ("HOT", "WARMING")
+    ]
+    if not hot_sectors:
+        return [], [], ""
+
+    hot_sectors.sort(key=lambda s: s.get("boost_score", 0), reverse=True)
+    hot_sectors = hot_sectors[:max_sectors]
+
+    jarvis_keys = []
+    direct_targets = []
+    sector_names = []
+
+    for s in hot_sectors:
+        krx_name = s.get("sector", "")
+        phase = s.get("phase", "")
+        boost = s.get("boost_score", 0)
+        sector_names.append(f"{krx_name}({phase})")
+
+        # JARVIS 매핑 시도
+        mapped = KRX_TO_JARVIS.get(krx_name, [])
+        for key in mapped:
+            if key not in jarvis_keys:
+                jarvis_keys.append(key)
+
+        # JARVIS 미매핑 OR top movers 직접 주입 (상위 3개)
+        for m in s.get("top_movers", [])[:3]:
+            code = m.get("code", "")
+            if code and not any(t.get("code") == code for t in direct_targets):
+                direct_targets.append({
+                    "code": code,
+                    "name": m.get("name", code),
+                    "sector": krx_name,
+                    "sector_key": "sector_momentum",
+                    "tier": 1,
+                    "priority": len(jarvis_keys) + 1,
+                    "chg_1d": m.get("chg_1d", 0),
+                    "boost_score": boost,
+                })
+
+    reason = "🔥 " + ", ".join(sector_names)
+    return jarvis_keys, direct_targets, reason
+
 
 # ═══════════════════════════════════════════════════
 #  yfinance 유틸리티
@@ -1011,6 +1091,7 @@ def select_sectors_and_targets(
     """
     selected_keys = []
     reason = ""
+    hot_direct = []  # 섹터 모멘텀 HOT top movers (관망 시 직접 주입)
 
     # ── 원자재 릴레이 보조 섹터 (점수 무관, 조건 충족 시 추가) ──
     commodity_addon = []
@@ -1089,13 +1170,6 @@ def select_sectors_and_targets(
             selected_keys = ["semiconductor", "power_infra"]
             reason = "🟢 기본"
 
-    # 원자재 릴레이 보조 섹터 병합 (중복 제거, 점수 무관)
-    if commodity_addon:
-        for key in commodity_addon:
-            if key not in selected_keys:
-                selected_keys.append(key)
-        reason += commodity_reason
-
     # ── NXT-02: 인버스 추천 강화 — "진짜 패닉"만 인버스 ──
     # 매크로만 나빠도 한국장이 강하면 인버스 안 함
     # VIX 30+ AND 한국 약세일 때만 인버스 (VIX 25~30은 관망)
@@ -1111,9 +1185,21 @@ def select_sectors_and_targets(
         selected_keys = ["inverse"]
         reason = f"💀 극단 하락 + 한국 약세({korea_strength:+.1f}) → 인버스 헤지"
 
-    # ── 관망 (-1.9 ~ 1.9) ──
+    # ── 관망 (-1.9 ~ 1.9) → 섹터 모멘텀 HOT 확인 ──
     else:
-        return [], [], "🟡 관망 - 진입 없음"
+        hot_keys, hot_direct, hot_reason = _get_hot_sector_targets(max_sectors=3)
+        if hot_keys or hot_direct:
+            selected_keys = hot_keys if hot_keys else []
+            reason = f"🟡→🔥 관망 + {hot_reason}"
+        else:
+            return [], [], "🟡 관망 - 진입 없음"
+
+    # 원자재 릴레이 보조 섹터 병합 (중복 제거, 점수 무관, 별도 if)
+    if commodity_addon:
+        for key in commodity_addon:
+            if key not in selected_keys:
+                selected_keys.append(key)
+        reason += commodity_reason
 
     # 섹터 키 → 종목 목록 변환
     nxt_targets = []
@@ -1148,8 +1234,16 @@ def select_sectors_and_targets(
                     "priority": priority,
                 })
 
+    # HOT 섹터 top movers 직접 주입 (JARVIS 미매핑 종목)
+    if hot_direct:
+        existing_codes = {t["code"] for t in nxt_targets}
+        for dt in hot_direct:
+            if dt["code"] not in existing_codes:
+                nxt_targets.append(dt)
+                existing_codes.add(dt["code"])
+
     # 정렬: 1순위 섹터 Tier1 → 2순위 섹터 Tier1 → ...
-    nxt_targets.sort(key=lambda x: (x["priority"], x["tier"]))
+    nxt_targets.sort(key=lambda x: (x.get("priority", 99), x.get("tier", 99)))
 
     return sector_names, nxt_targets, reason
 
