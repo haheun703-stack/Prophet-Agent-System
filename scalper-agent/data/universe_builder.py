@@ -141,8 +141,8 @@ def build_universe(min_cap_억: int = 500) -> dict:
             continue
 
     if cap_df is None or cap_df.empty:
-        print("  [ERROR] pykrx 시가총액 조회 전체 실패 — 기존 universe.json 유지")
-        return _load_existing_universe()
+        print("  [WARN] pykrx 시가총액 조회 실패 → Naver Finance API fallback")
+        return _build_universe_naver(min_cap_억)
 
     nonzero = cap_df[cap_df["시가총액"] > 0].copy()
 
@@ -242,6 +242,147 @@ def load_universe() -> dict:
         with open(UNIVERSE_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     return {}
+
+
+# ═══════════════════════════════════════════════════
+#  Naver Finance API 기반 유니버스 빌드 (pykrx 실패 시 fallback)
+# ═══════════════════════════════════════════════════
+
+def _build_universe_naver(min_cap_억: int = 500) -> dict:
+    """Naver Finance API로 유니버스 빌드 (pykrx KRX API 차단 시 fallback)
+
+    기존 universe.json의 섹터 매핑을 최대한 재활용하고,
+    시총 기준으로 필터링하여 새 유니버스를 생성한다.
+    """
+    import requests
+
+    print(f"\n  Naver Finance API 유니버스 빌드 - 시총 {min_cap_억:,}억원+")
+    print("=" * 60)
+
+    hdrs = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+    exclude_keywords = ["스팩", "SPAC", "리츠"]
+
+    # 기존 유니버스에서 섹터 매핑 로드
+    old_uni = _load_existing_universe()
+    old_sector_map = {}
+    for code, info in old_uni.items():
+        if isinstance(info, dict) and info.get("sector"):
+            old_sector_map[code] = info["sector"]
+    print(f"  기존 섹터 매핑: {len(old_sector_map)}종목")
+
+    universe = {}
+
+    for market, market_name in [("KOSPI", "KOSPI"), ("KOSDAQ", "KOSDAQ")]:
+        page = 1
+        reached_min = False
+        mkt_count = 0
+
+        while not reached_min:
+            url = (
+                f"https://m.stock.naver.com/api/stocks/marketValue/"
+                f"{market}?page={page}&pageSize=100"
+            )
+            try:
+                r = requests.get(url, headers=hdrs, timeout=10)
+                if r.status_code != 200:
+                    break
+                data = r.json()
+                stocks = data.get("stocks", [])
+                if not stocks:
+                    break
+                total = data.get("totalCount", 0)
+
+                for s in stocks:
+                    code = s.get("itemCode", "")
+                    if not code or len(code) != 6:
+                        continue
+
+                    name = s.get("stockName", code)
+                    cap_str = s.get("marketValue", "0")
+                    cap_억 = int(str(cap_str).replace(",", "")) if cap_str else 0
+                    vol_str = s.get("accumulatedTradingVolume", "0")
+
+                    try:
+                        vol = int(str(vol_str).replace(",", "")) if vol_str else 0
+                    except (ValueError, TypeError):
+                        vol = 0
+
+                    # 시총 필터 (내림차순이므로 min 이하 도달하면 종료)
+                    if cap_억 < min_cap_억:
+                        reached_min = True
+                        break
+
+                    # 스팩/리츠 제거
+                    skip = False
+                    for kw in exclude_keywords:
+                        if kw in name:
+                            skip = True
+                            break
+                    if skip:
+                        continue
+
+                    # 거래량 최소 기준 (1만주 미만 제외)
+                    if vol < 10000:
+                        continue
+
+                    sosok = s.get("sosok", "")
+                    mkt = "KOSPI" if sosok == "0" else "KOSDAQ"
+                    suffix = ".KS" if mkt == "KOSPI" else ".KQ"
+                    mkt_code = "J" if mkt == "KOSPI" else "Q"
+
+                    # 섹터 매핑 (기존 universe에서 가져오기)
+                    sector = old_sector_map.get(code, "기타")
+
+                    # PER/PBR (기존 universe에서 가져오기)
+                    old_info = old_uni.get(code, {})
+                    per_val = old_info.get("per", 0.0) if isinstance(old_info, dict) else 0.0
+                    pbr_val = old_info.get("pbr", 0.0) if isinstance(old_info, dict) else 0.0
+
+                    universe[code] = {
+                        "name": name,
+                        "market": mkt,
+                        "suffix": suffix,
+                        "mkt_code": mkt_code,
+                        "sector": sector,
+                        "cap_億": cap_억,
+                        "volume": vol,
+                        "per": round(per_val, 1),
+                        "pbr": round(pbr_val, 2),
+                    }
+                    mkt_count += 1
+
+                if len(stocks) < 100 or page * 100 >= total:
+                    break
+                page += 1
+                time.sleep(0.15)
+
+            except Exception as e:
+                print(f"  {market_name} p{page} 오류: {e}")
+                break
+
+        print(f"  {market_name}: {mkt_count}종목")
+
+    # cap_億 → cap_억 통일
+    for code, info in universe.items():
+        if "cap_億" in info:
+            info["cap_억"] = info.pop("cap_億")
+
+    # 시총순 정렬
+    universe = dict(sorted(universe.items(), key=lambda x: -x[1].get("cap_억", 0)))
+
+    kospi_cnt = sum(1 for v in universe.values() if v["market"] == "KOSPI")
+    kosdaq_cnt = sum(1 for v in universe.values() if v["market"] == "KOSDAQ")
+    sector_cnt = sum(1 for v in universe.values() if v.get("sector") != "기타")
+    print(f"\n  유니버스: {len(universe)}종목 (KOSPI {kospi_cnt} / KOSDAQ {kosdaq_cnt})")
+    print(f"  섹터 매핑: {sector_cnt}종목 ({len(universe) - sector_cnt}종목 '기타')")
+
+    # 저장
+    _ensure_dirs()
+    with open(UNIVERSE_FILE, "w", encoding="utf-8") as f:
+        json.dump(universe, f, ensure_ascii=False, indent=2)
+    print(f"  저장: {UNIVERSE_FILE}")
+
+    return universe
 
 
 # ═══════════════════════════════════════════════════

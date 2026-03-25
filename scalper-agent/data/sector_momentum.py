@@ -2,12 +2,12 @@
 """
 섹터 모멘텀 분석기 (Sector Momentum Analyzer)
 ==============================================
-전체 23개 섹터의 실시간 모멘텀을 pykrx 직접 조회로 감지.
+전체 23개 섹터의 실시간 모멘텀을 Naver Finance API로 감지.
 rotation_detector.py가 릴레이에 의존하는 반면,
 이 모듈은 독립적으로 전체 시장 섹터를 분석한다.
 
 핵심:
-1. pykrx get_market_price_change로 전체 종목 등락률 일괄 조회 (1회 호출)
+1. Naver Finance API로 KOSPI+KOSDAQ 전체 종목 1일 등락률 일괄 수집
 2. universe.json 섹터별 그룹핑 → 섹터 평균 수익률
 3. 섹터 가속도 감지 (1D vs 5D 대비 급변)
 4. morning_recommendation에 섹터 부스트 점수 공급
@@ -32,6 +32,10 @@ DATA_DIR = BASE_DIR / "data_store"
 UNIVERSE_PATH = DATA_DIR / "universe.json"
 SECTOR_MOMENTUM_PATH = DATA_DIR / "sector_momentum.json"
 SECTOR_HISTORY_DIR = DATA_DIR / "sector_momentum_history"
+
+_NAVER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+}
 
 
 @dataclass
@@ -89,102 +93,130 @@ def _load_universe_sectors() -> Dict[str, List[dict]]:
 
 
 # ═══════════════════════════════════════════════════════
-#  pykrx 일괄 조회 — 핵심 데이터 수집
+#  Naver Finance API — 전체 종목 시세 수집
 # ═══════════════════════════════════════════════════════
 
+def _parse_number(s) -> float:
+    """'191,900' → 191900.0, '-' → 0.0"""
+    if isinstance(s, (int, float)):
+        return float(s)
+    if isinstance(s, str):
+        cleaned = s.replace(",", "").strip()
+        if not cleaned or cleaned == "-":
+            return 0.0
+        try:
+            return float(cleaned)
+        except ValueError:
+            return 0.0
+    return 0.0
+
+
+def _fetch_naver_all(market: str, page_size: int = 100) -> List[dict]:
+    """Naver Finance API로 전체 종목 시세 수집 (KOSPI/KOSDAQ)"""
+    import requests
+    all_stocks = []
+    page = 1
+    while True:
+        try:
+            url = (
+                f"https://m.stock.naver.com/api/stocks/marketValue/"
+                f"{market}?page={page}&pageSize={page_size}"
+            )
+            r = requests.get(url, headers=_NAVER_HEADERS, timeout=10)
+            if r.status_code != 200:
+                break
+            data = r.json()
+            stocks = data.get("stocks", [])
+            if not stocks:
+                break
+            all_stocks.extend(stocks)
+            total = data.get("totalCount", 0)
+            if len(all_stocks) >= total:
+                break
+            page += 1
+            time.sleep(0.15)
+        except Exception as e:
+            logger.warning(f"Naver {market} page {page} 실패: {e}")
+            break
+    return all_stocks
+
+
 def _fetch_market_returns(n_days: int = 5) -> Dict[str, Dict]:
-    """pykrx로 전체 시장 종목별 등락률 수집
+    """Naver Finance API로 전체 시장 종목별 등락률 수집
 
-    Returns: {code: {"chg_1d": float, "chg_3d": float, "chg_5d": float, "vol_ratio": float}}
+    Returns: {code: {"chg_1d": float, "close": float, "volume": float, "market_cap": float}}
     """
-    from pykrx import stock
-    import warnings
-    warnings.filterwarnings("ignore")
-
-    end = datetime.now()
-    # 거래일 여유 확보 (공휴일 감안 +7일)
-    start = end - timedelta(days=n_days + 10)
-    end_s = end.strftime("%Y%m%d")
-    start_s = start.strftime("%Y%m%d")
-
-    all_data: Dict[str, Dict] = {}
+    result: Dict[str, Dict] = {}
 
     for market in ["KOSPI", "KOSDAQ"]:
         try:
-            # 전체 종목 기간 등락률 (1회 호출로 전체 종목 커버)
-            df = stock.get_market_price_change(start_s, end_s, market=market)
-            if df is None or len(df) == 0:
-                continue
-
-            for ticker in df.index:
-                code = str(ticker)
-                row = df.loc[ticker]
-                # 컬럼: 시가, 종가, 변동폭, 등락률, 거래량, 거래대금
-                chg_total = float(row.get("등락률", 0))
-                close = float(row.get("종가", 0))
-                open_p = float(row.get("시가", 0))
-                volume = float(row.get("거래량", 0))
-
-                all_data[code] = {
-                    "chg_period": chg_total,
-                    "close": close,
-                    "volume": volume,
-                }
-        except Exception as e:
-            logger.warning(f"pykrx {market} 조회 실패: {e}")
-
-    # 1일/3일/5일 개별 조회 (get_market_price_change는 기간 합산이므로)
-    # 1일 등락률은 별도 조회
-    result: Dict[str, Dict] = {}
-    try:
-        for market in ["KOSPI", "KOSDAQ"]:
-            df_today = stock.get_market_ohlcv_by_ticker(end_s, market=market)
-            if df_today is None or len(df_today) == 0:
-                # 오늘 데이터 없으면 어제 시도
-                yesterday = (end - timedelta(days=1)).strftime("%Y%m%d")
-                df_today = stock.get_market_ohlcv_by_ticker(yesterday, market=market)
-            if df_today is None or len(df_today) == 0:
-                continue
-
-            for ticker in df_today.index:
-                code = str(ticker)
-                row = df_today.loc[ticker]
-                chg_1d = float(row.get("등락률", 0))
-                vol = float(row.get("거래량", 0))
-                close = float(row.get("종가", 0))
-                result[code] = {
-                    "chg_1d": chg_1d,
-                    "close": close,
-                    "volume": vol,
-                }
-            time.sleep(0.3)
-    except Exception as e:
-        logger.warning(f"1일 등락률 조회 실패: {e}")
-
-    # 3일/5일은 기간 price_change로 계산
-    for label, days_back in [("chg_3d", 3), ("chg_5d", 5)]:
-        try:
-            s = (end - timedelta(days=days_back + 5)).strftime("%Y%m%d")
-            for market in ["KOSPI", "KOSDAQ"]:
-                df_nd = stock.get_market_price_change(s, end_s, market=market)
-                if df_nd is None or len(df_nd) == 0:
+            stocks = _fetch_naver_all(market)
+            logger.info(f"  Naver {market}: {len(stocks)}종목 수집")
+            skip_count = 0
+            for s in stocks:
+                code = s.get("itemCode", "")
+                if not code or len(code) != 6:
                     continue
-                for ticker in df_nd.index:
-                    code = str(ticker)
-                    if code in result:
-                        result[code][label] = float(df_nd.loc[ticker].get("등락률", 0))
-                    else:
-                        result[code] = {
-                            "chg_1d": 0,
-                            label: float(df_nd.loc[ticker].get("등락률", 0)),
-                            "close": float(df_nd.loc[ticker].get("종가", 0)),
-                            "volume": 0,
-                        }
-                time.sleep(0.3)
+                try:
+                    chg_1d = _parse_number(s.get("fluctuationsRatio", 0))
+                    close = _parse_number(s.get("closePrice", 0))
+                    volume = _parse_number(s.get("accumulatedTradingVolume", 0))
+                    market_cap = _parse_number(s.get("marketValue", 0))  # 억원
+                    result[code] = {
+                        "chg_1d": chg_1d,
+                        "close": close,
+                        "volume": volume,
+                        "market_cap": market_cap,
+                    }
+                except Exception:
+                    skip_count += 1
+            if skip_count:
+                logger.debug(f"  {market}: {skip_count}종목 파싱 스킵")
         except Exception as e:
-            logger.warning(f"{label} 조회 실패: {e}")
+            logger.warning(f"Naver {market} 수집 실패: {e}")
+
+    # 3d/5d 수익률 보완: 섹터 모멘텀 히스토리에서 계산
+    _enrich_multi_day_from_history(result)
 
     return result
+
+
+def _enrich_multi_day_from_history(result: Dict[str, Dict]):
+    """과거 섹터 모멘텀 히스토리에서 3d/5d 추정 (개별 종목이 아닌 섹터 레벨)
+
+    히스토리가 없으면 스킵 — 1d만으로도 섹터 감지는 충분히 가능
+    """
+    if not SECTOR_HISTORY_DIR.exists():
+        return
+    try:
+        hist_files = sorted(SECTOR_HISTORY_DIR.glob("*.json"), reverse=True)
+        if len(hist_files) < 2:
+            return
+        # 3일전/5일전 히스토리가 있으면 섹터별 누적 수익률 추정
+        # 각 종목의 chg_3d/chg_5d는 히스토리 sum으로 근사
+        day_returns: Dict[str, List[float]] = {}  # {code: [day1_chg, day2_chg, ...]}
+        for hf in hist_files[:5]:
+            try:
+                hdata = json.loads(hf.read_text("utf-8"))
+                for sector_info in hdata.get("sectors", []):
+                    for mover in sector_info.get("top_movers", []):
+                        code = mover.get("code", "")
+                        chg = mover.get("chg_1d", 0)
+                        if code:
+                            if code not in day_returns:
+                                day_returns[code] = []
+                            day_returns[code].append(chg)
+            except Exception:
+                continue
+        # 근사: 히스토리에서 찾은 종목만 3d/5d 설정
+        for code, daily in day_returns.items():
+            if code in result:
+                if len(daily) >= 3:
+                    result[code]["chg_3d"] = round(sum(daily[:3]), 2)
+                if len(daily) >= 5:
+                    result[code]["chg_5d"] = round(sum(daily[:5]), 2)
+    except Exception as e:
+        logger.debug(f"히스토리 보완 스킵: {e}")
 
 
 # ═══════════════════════════════════════════════════════
@@ -200,7 +232,7 @@ def analyze_sectors(market_returns: Optional[Dict] = None) -> SectorMomentumRepo
     Returns: SectorMomentumReport
     """
     if market_returns is None:
-        logger.info("pykrx 전체 시장 데이터 조회 중...")
+        logger.info("Naver Finance 전체 시장 데이터 조회 중...")
         t0 = time.time()
         market_returns = _fetch_market_returns(n_days=5)
         logger.info(f"  → {len(market_returns)}종목 조회 ({time.time()-t0:.1f}s)")
