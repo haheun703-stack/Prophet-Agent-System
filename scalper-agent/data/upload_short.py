@@ -298,39 +298,52 @@ def upload_short_signals(rows: list) -> bool:
 #  국적별 수급 → Supabase nationality_flows
 # ═══════════════════════════════════════
 
-NATIONALITY_DIR = Path(__file__).resolve().parent.parent / "data_store" / "nationality"
 PREDICTION_PATH = Path(__file__).resolve().parent.parent / "data_store" / "nationality_prediction.json"
 
 
-def _load_nationality_csv(code: str) -> dict:
-    """nationality_{code}.csv 읽어서 {국가명: 거래량} dict 반환"""
-    csv_path = NATIONALITY_DIR / f"nationality_{code}.csv"
-    if not csv_path.exists():
-        return {}
+def _build_countries_detail(code: str) -> list | None:
+    """compare_nationality()로 전일 대비 변화 데이터 생성
+
+    Returns:
+        [{"country": "영국", "category": "기관", "prev": 64871, "curr": 49337,
+          "change": -15434, "change_pct": -24.0, "direction": "매도"}]
+        또는 데이터 없으면 None
+    """
     try:
-        import csv
-        countries = {}
-        with open(csv_path, "r", encoding="utf-8-sig") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                name = row.get("국가명", "").strip()
-                vol = row.get("거래량", "0").strip()
-                if name:
-                    try:
-                        countries[name] = int(float(vol))
-                    except (ValueError, TypeError):
-                        countries[name] = 0
-        return countries
+        from data.nationality_signal import compare_nationality
+        changes = compare_nationality(code)
+        if not changes:
+            return None
+
+        result = []
+        for c in changes:
+            delta = c.get("변화", 0)
+            if delta == 0:
+                direction = "유지"
+            elif delta > 0:
+                direction = "매수"
+            else:
+                direction = "매도"
+
+            result.append({
+                "country": c["국가"],
+                "category": c.get("분류", "기타"),
+                "prev": c.get("전일", 0),
+                "curr": c.get("금일", 0),
+                "change": delta,
+                "change_pct": round(c.get("변화율", 0), 1),
+                "direction": direction,
+            })
+        return result
     except Exception as e:
-        logger.debug(f"국적 CSV 로드 실패({code}): {e}")
-        return {}
+        logger.debug(f"국적 변화 데이터 생성 실패({code}): {e}")
+        return None
 
 
 def upload_nationality_flows() -> bool:
-    """nationality CSV + prediction.json → Supabase nationality_flows 업로드
+    """nationality 변화 데이터 + prediction.json → Supabase nationality_flows 업로드
 
-    Returns:
-        성공 여부
+    countries JSONB: 텔레그램 픽토그램과 동일한 매수/매도 방향 포함
     """
     client = _get_client()
     if not client:
@@ -350,16 +363,16 @@ def upload_nationality_flows() -> bool:
         logger.warning("nationality_prediction.json 없거나 비어있음 — 업로드 스킵")
         return False
 
-    # 2) 각 종목의 CSV + prediction 병합 → rows
+    # 2) 각 종목: compare_nationality()로 변화 데이터 + prediction 병합
     today_str = str(date.today())
     rows = []
     for code, pred in predictions.items():
-        countries = _load_nationality_csv(code)
+        countries = _build_countries_detail(code)
         rows.append({
             "date": today_str,
             "code": code,
             "name": pred.get("name", ""),
-            "countries": countries if countries else None,
+            "countries": countries,
             "arch_scores": pred.get("arch_scores", {}),
             "signal": pred.get("signal", ""),
             "score": round(pred.get("score", 0), 1),
@@ -374,9 +387,11 @@ def upload_nationality_flows() -> bool:
         client.table("nationality_flows").upsert(
             rows, on_conflict="date,code"
         ).execute()
+        with_data = sum(1 for r in rows if r.get("countries"))
         logger.info(
             f"[FLOWX] nationality_flows 업로드 완료: {len(rows)}종목 "
-            f"(STRONG_BUY: {sum(1 for r in rows if r.get('signal') == 'STRONG_BUY')})"
+            f"(변화데이터 {with_data}종목, "
+            f"STRONG_BUY: {sum(1 for r in rows if r.get('signal') == 'STRONG_BUY')})"
         )
         return True
     except Exception as e:
