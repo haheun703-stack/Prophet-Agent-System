@@ -301,19 +301,46 @@ def upload_short_signals(rows: list) -> bool:
 PREDICTION_PATH = Path(__file__).resolve().parent.parent / "data_store" / "nationality_prediction.json"
 
 
-def _build_countries_detail(code: str) -> list | None:
+def _find_latest_csv_date(code: str) -> str | None:
+    """data_store/nationality/{code}_YYYYMMDD.csv 중 가장 최신 날짜 반환"""
+    nat_dir = Path(__file__).resolve().parent.parent / "data_store" / "nationality"
+    import glob
+    files = glob.glob(str(nat_dir / f"{code}_*.csv"))
+    if not files:
+        return None
+    dates = []
+    for f in files:
+        fname = Path(f).stem  # "005930_20260324"
+        parts = fname.split("_")
+        if len(parts) >= 2 and parts[-1].isdigit() and len(parts[-1]) == 8:
+            dates.append(parts[-1])
+    return max(dates) if dates else None
+
+
+def _build_countries_detail(code: str) -> tuple:
     """compare_nationality()로 전일 대비 변화 데이터 생성
 
     Returns:
-        [{"country": "영국", "category": "기관", "prev": 64871, "curr": 49337,
-          "change": -15434, "change_pct": -24.0, "direction": "매도"}]
-        또는 데이터 없으면 None
+        (countries_list, date_new, date_old)
+        countries_list: [{"country": "영국", "category": "기관", "prev": 64871,
+                          "curr": 49337, "change": -15434, "change_pct": -24.0,
+                          "direction": "매도"}]
     """
     try:
-        from data.nationality_signal import compare_nationality
-        changes = compare_nationality(code)
+        from data.nationality_signal import compare_nationality, _find_prev_trading_day
+
+        # 실제 최신 CSV 날짜 사용 (KRX 지연 대응)
+        date_new = _find_latest_csv_date(code)
+        if not date_new:
+            return None, None, None
+
+        date_old = _find_prev_trading_day(date_new)
+        if not date_old:
+            return None, date_new, None
+
+        changes = compare_nationality(code, date_new, date_old)
         if not changes:
-            return None
+            return None, date_new, date_old
 
         result = []
         for c in changes:
@@ -334,10 +361,10 @@ def _build_countries_detail(code: str) -> list | None:
                 "change_pct": round(c.get("변화율", 0), 1),
                 "direction": direction,
             })
-        return result
+        return result, date_new, date_old
     except Exception as e:
         logger.debug(f"국적 변화 데이터 생성 실패({code}): {e}")
-        return None
+        return None, None, None
 
 
 def upload_nationality_flows() -> bool:
@@ -367,12 +394,14 @@ def upload_nationality_flows() -> bool:
     today_str = str(date.today())
     rows = []
     for code, pred in predictions.items():
-        countries = _build_countries_detail(code)
+        countries, date_new, date_old = _build_countries_detail(code)
         rows.append({
             "date": today_str,
             "code": code,
             "name": pred.get("name", ""),
             "countries": countries,
+            "date_new": date_new,
+            "date_old": date_old,
             "arch_scores": pred.get("arch_scores", {}),
             "signal": pred.get("signal", ""),
             "score": round(pred.get("score", 0), 1),
