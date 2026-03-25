@@ -60,6 +60,7 @@ def _get_kis_session() -> Optional[Tuple[str, dict]]:
             from dotenv import load_dotenv
             load_dotenv()
             import mojito
+            import requests as _req
 
             broker = mojito.KoreaInvestment(
                 api_key=os.getenv("KIS_APP_KEY"),
@@ -68,8 +69,14 @@ def _get_kis_session() -> Optional[Tuple[str, dict]]:
                 mock=False,
             )
             token = broker.access_token
-            if token.startswith("Bearer "):
+            if token and token.startswith("Bearer "):
                 token = token.replace("Bearer ", "")
+
+            # H3: 토큰 즉시 검증 — None/빈문자열/짧은 토큰 거부
+            if not token or len(token) < 10:
+                logger.warning(f"[H3] KIS 토큰 무효 (len={len(token) if token else 0}) — 재발급 시도")
+                time.sleep(2)
+                continue
 
             base_url = "https://openapi.koreainvestment.com:9443"
             headers = {
@@ -79,6 +86,23 @@ def _get_kis_session() -> Optional[Tuple[str, dict]]:
                 "appsecret": os.getenv("KIS_APP_SECRET"),
                 "custtype": "P",
             }
+
+            # H3: 토큰 유효성 API 테스트 (삼성전자 현재가 1회 조회)
+            test_h = headers.copy()
+            test_h["tr_id"] = "FHKST01010100"
+            resp = _req.get(
+                f"{base_url}/uapi/domestic-stock/v1/quotations/inquire-price",
+                headers=test_h,
+                params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": "005930"},
+                timeout=5,
+            )
+            if resp.status_code != 200 or resp.json().get("rt_cd") != "0":
+                rt_msg = resp.json().get("msg1", "unknown")
+                logger.warning(f"[H3] KIS 토큰 검증 실패: {rt_msg} — 재발급 시도")
+                time.sleep(2)
+                continue
+
+            logger.info(f"[H3] KIS 토큰 검증 성공 (attempt={attempt+1})")
             return base_url, headers
         except Exception as e:
             if attempt == 0:

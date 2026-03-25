@@ -53,6 +53,7 @@ def _get_kis_session() -> Optional[Tuple[str, dict]]:
             from dotenv import load_dotenv
             load_dotenv()
             import mojito
+            import requests as _req
 
             broker = mojito.KoreaInvestment(
                 api_key=os.getenv("KIS_APP_KEY"),
@@ -62,8 +63,14 @@ def _get_kis_session() -> Optional[Tuple[str, dict]]:
             )
 
             token = broker.access_token
-            if token.startswith("Bearer "):
+            if token and token.startswith("Bearer "):
                 token = token.replace("Bearer ", "")
+
+            # H3: 토큰 즉시 검증 — None/빈문자열/짧은 토큰 거부
+            if not token or len(token) < 10:
+                logger.warning(f"[H3] KIS 토큰 무효 (len={len(token) if token else 0}) — 재발급 시도")
+                time.sleep(2)
+                continue
 
             base_url = "https://openapi.koreainvestment.com:9443"
             headers = {
@@ -74,6 +81,22 @@ def _get_kis_session() -> Optional[Tuple[str, dict]]:
                 "custtype": "P",
             }
 
+            # H3: 토큰 유효성 API 테스트 (삼성전자 현재가 1회 조회)
+            test_h = headers.copy()
+            test_h["tr_id"] = "FHKST01010100"
+            resp = _req.get(
+                f"{base_url}/uapi/domestic-stock/v1/quotations/inquire-price",
+                headers=test_h,
+                params={"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": "005930"},
+                timeout=5,
+            )
+            if resp.status_code != 200 or resp.json().get("rt_cd") != "0":
+                rt_msg = resp.json().get("msg1", "unknown")
+                logger.warning(f"[H3] KIS 토큰 검증 실패 (rt_cd≠0): {rt_msg} — 재발급 시도")
+                time.sleep(2)
+                continue
+
+            logger.info(f"[H3] KIS 토큰 검증 성공 (attempt={attempt+1})")
             return base_url, headers
 
         except Exception as e:
@@ -94,11 +117,15 @@ def collect_investor_flow(
     codes: List[str],
     months: int = 24,
     force: bool = False,
+    session: Optional[Tuple[str, dict]] = None,
 ) -> Dict[str, pd.DataFrame]:
     """투자자별 순매수 금액+수량 수집 (KIS API, pykrx 깨짐 대체 2026-03-04)
 
     KIS API tr_id=FHKST01010900 - 30일치 일별 투자자 매매동향
     컬럼: 기관_금액, 개인_금액, 외국인_금액, 기관_수량, 개인_수량, 외국인_수량
+
+    Args:
+        session: H2 — 외부에서 전달받은 (base_url, headers). None이면 내부 생성.
 
     Returns: {code: DataFrame(date index)}
     """
@@ -122,13 +149,14 @@ def collect_investor_flow(
         print(f"  투자자별 수급: 전체 캐시 히트 ({len(results)}종목)")
         return results
 
-    # KIS 세션 1회 생성
+    # H2: 외부 세션 우선 사용, 없으면 내부 생성
     print(f"  투자자 수급: {len(need_fetch)}종목 KIS API 수집 시작...")
-    session = _get_kis_session()
+    if session is None:
+        session = _get_kis_session()
     if session is None:
         logger.error("[FLOW] KIS 세션 없음 — 투자자 수급 수집 스킵")
         return results
-    base_url, headers = session
+    base_url, headers = session[0], session[1].copy()
     headers["tr_id"] = "FHKST01010900"
 
     fetched = 0
@@ -229,6 +257,7 @@ def collect_foreign_exhaustion(
     codes: List[str],
     months: int = 24,
     force: bool = False,
+    session: Optional[Tuple[str, dict]] = None,
 ) -> Dict[str, pd.DataFrame]:
     """외국인 보유비율(소진율) 수집 - KIS 현재가 API
 
@@ -236,6 +265,9 @@ def collect_foreign_exhaustion(
     일별 추이 대신 현재 보유비율 + 투자자수급 외국인_수량으로 추이 보완
 
     컬럼: 소진율(%), 보유수량, 종가
+
+    Args:
+        session: H2 — 외부에서 전달받은 (base_url, headers). None이면 내부 생성.
 
     Returns: {code: DataFrame(date index)}
     """
@@ -259,13 +291,14 @@ def collect_foreign_exhaustion(
         print(f"  외국인 소진율: 전체 캐시 히트 ({len(results)}종목)")
         return results
 
-    # KIS 세션 1회 생성
+    # H2: 외부 세션 우선 사용, 없으면 내부 생성
     print(f"  외국인 소진율: {len(need_fetch)}종목 KIS API 수집 시작...")
-    session = _get_kis_session()
+    if session is None:
+        session = _get_kis_session()
     if session is None:
         logger.error("[FLOW] KIS 세션 없음 — 외국인 소진율 수집 스킵")
         return results
-    base_url, headers = session
+    base_url, headers = session[0], session[1].copy()
     headers["tr_id"] = "FHKST01010100"
 
     fetched = 0
@@ -440,16 +473,25 @@ def collect_all_flow(
     print(f"  종목: {len(codes)}개 | 기간: {months}개월")
     print("=" * 60)
 
+    # H2: 세션 2개를 진입 시 한 번에 생성 (각 스레드가 독립 headers 사용)
+    print(f"\n[0/4] KIS 세션 사전 생성...")
+    session1 = _get_kis_session()
+    session2 = _get_kis_session() if session1 else None
+    if session1:
+        logger.info(f"[H2] KIS 세션 2개 사전 생성 완료")
+    else:
+        logger.warning(f"[H2] KIS 세션 생성 실패 — 수급 수집 제한적")
+
     # 1+2. 투자자별 순매수 + 외국인 소진율 (동시 실행)
-    # 서로 다른 KIS API tr_id 사용 → 독립적 세션으로 병렬 안전
+    # 서로 다른 KIS API tr_id 사용 → 독립적 headers.copy()로 병렬 안전
     print(f"\n[1+2/4] 투자자 수급 + 외국인 소진율 (병렬)...")
     t0 = time.time()
     investor = {}
     foreign_exh = {}
 
     with ThreadPoolExecutor(max_workers=2) as executor:
-        f_inv = executor.submit(collect_investor_flow, codes, months, force)
-        f_fex = executor.submit(collect_foreign_exhaustion, codes, months, force)
+        f_inv = executor.submit(collect_investor_flow, codes, months, force, session=session1)
+        f_fex = executor.submit(collect_foreign_exhaustion, codes, months, force, session=session2)
         # C3: 개별 try/except — 한쪽 실패해도 다른 쪽 결과 보존
         try:
             investor = f_inv.result()
