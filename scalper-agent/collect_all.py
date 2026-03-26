@@ -112,13 +112,52 @@ def step2_supply_demand(codes: list, force: bool = False):
     return results
 
 
+def _get_top200_codes() -> list:
+    """시총 상위 200종목 코드 반환 (universe.json cap_억 기준)"""
+    try:
+        uni_path = DATA_DIR / "universe.json"
+        if not uni_path.exists():
+            return []
+        with open(uni_path, "r", encoding="utf-8") as f:
+            uni = json.load(f)
+        items = []
+        for code, info in uni.items():
+            if isinstance(info, dict):
+                cap = info.get("cap_억", 0) or 0
+            else:
+                cap = 0
+            items.append((code, cap))
+        items.sort(key=lambda x: x[1], reverse=True)
+        return [code for code, _ in items[:200]]
+    except Exception as e:
+        logger.warning(f"TOP200 로드 실패: {e}")
+        return []
+
+
 def step3_nationality(force: bool = False):
-    """3단계: 국적별 외국인 수급 (추천+보유 종목)"""
+    """3단계: 국적별 외국인 수급 (TOP200 + 추천 + 보유 + 감시 종목)
+
+    수집 대상:
+      1) 시총 TOP200 (universe.json cap_억 기준)
+      2) 추천 종목 (recommendation.json)
+      3) 보유 종목 (swing_candidates, nxt_positions)
+      4) 감시 종목 (watchlist.json)
+      5) 핵심 종목 (삼전/하닉/LG화학/풍산)
+
+    데이터 흐름:
+      - 1차: afetch_nationality_batch() → 5일 집계 (nationality_{code}.csv)
+      - 2차: 단일일 스냅샷 ({code}_{date}.csv) — 동일 세션 재사용
+    """
     logger.info("[3/5] 국적별 수급 수집...")
     t0 = time.time()
     nat_codes = set()
 
-    # 추천 종목
+    # 1) 시총 TOP200
+    top200 = _get_top200_codes()
+    nat_codes.update(top200)
+    logger.info(f"[3/5] TOP200: {len(top200)}종목")
+
+    # 2) 추천 종목
     rec_path = DATA_DIR / "recommendation.json"
     if rec_path.exists():
         try:
@@ -131,7 +170,7 @@ def step3_nationality(force: bool = False):
         except Exception:
             pass
 
-    # 보유 종목 (봇 포지션)
+    # 3) 보유 종목 (봇 포지션)
     for pos_file in ["swing_candidates.json", "nxt_positions.json"]:
         fp = DATA_DIR / pos_file
         if fp.exists():
@@ -147,7 +186,20 @@ def step3_nationality(force: bool = False):
             except Exception:
                 pass
 
-    # 핵심 종목 항상 포함
+    # 4) 감시 종목 (watchlist)
+    wl_path = DATA_DIR / "watchlist.json"
+    if wl_path.exists():
+        try:
+            with open(wl_path, "r", encoding="utf-8") as f:
+                wl = json.load(f)
+            for item in wl:
+                c = item.get("code", "") if isinstance(item, dict) else ""
+                if c:
+                    nat_codes.add(c)
+        except Exception:
+            pass
+
+    # 5) 핵심 종목 항상 포함
     for code in ["005930", "000660", "003570", "103140"]:
         nat_codes.add(code)
 
@@ -156,28 +208,44 @@ def step3_nationality(force: bool = False):
         return 0
 
     nat_codes = list(nat_codes)
-    logger.info(f"[3/5] 국적별 대상: {len(nat_codes)}종목")
+    logger.info(f"[3/5] 국적별 대상: {len(nat_codes)}종목 (TOP200+추천+보유+감시)")
 
     try:
         import asyncio
         from data.krx_nationality_crawler import afetch_nationality_batch
-        from data.nationality_signal import collect_daily_snapshots, _get_latest_data_date
-        from datetime import timedelta
+        from data.nationality_signal import save_daily_snapshot, _get_latest_data_date
 
-        date_from = (datetime.now() - timedelta(days=5)).strftime("%Y%m%d")
-        date_to = datetime.now().strftime("%Y%m%d")
+        snap_date = _get_latest_data_date()
 
-        results = asyncio.run(afetch_nationality_batch(nat_codes, date_from, date_to))
-        ok = sum(1 for df in results.values() if not df.empty)
-        logger.info(f"[3/5] 국적별 완료: {ok}/{len(nat_codes)} ({int(time.time()-t0)}초)")
+        # 1차: 단일일 fetch → 스냅샷 직접 저장 (collect_daily_snapshots 대체)
+        # 세션 1회 생성, 모든 종목에 재사용 → 세션 만료 문제 방지
+        results = asyncio.run(afetch_nationality_batch(nat_codes, snap_date, snap_date))
+        ok = 0
+        snap_saved = 0
+        for code, df in results.items():
+            if df is not None and not df.empty:
+                ok += 1
+                # 스냅샷 직접 저장: {code}_{date}.csv
+                try:
+                    snap_data = {}
+                    if "국가명" in df.columns and "거래량" in df.columns:
+                        for _, row in df.iterrows():
+                            country = str(row.get("국가명", "")).strip()
+                            vol = int(row.get("거래량", 0))
+                            if country:
+                                snap_data[country] = snap_data.get(country, 0) + vol
+                    if snap_data:
+                        save_daily_snapshot(code, snap_date, snap_data)
+                        snap_saved += 1
+                except Exception as e:
+                    logger.debug(f"스냅샷 저장 실패 {code}: {e}")
 
-        # 일별 스냅샷 저장 (날짜별 {code}_{date}.csv)
-        try:
-            snap_date = _get_latest_data_date()
-            snaps = collect_daily_snapshots(nat_codes, snap_date)
-            logger.info(f"[3/5] 국적별 스냅샷: {len(snaps)}/{len(nat_codes)} ({snap_date})")
-        except Exception as e:
-            logger.warning(f"[3/5] 국적별 스냅샷 실패: {e}")
+        elapsed = int(time.time() - t0)
+        logger.info(f"[3/5] 국적별 완료: {ok}/{len(nat_codes)} | 스냅샷: {snap_saved} ({snap_date}) | {elapsed}초")
+
+        # 재발방지: 스냅샷 0건이면 명시적 경고
+        if snap_saved == 0 and len(nat_codes) > 0:
+            logger.warning(f"[3/5] ⚠ 국적별 스냅샷 0건! KRX 세션 또는 API 장애 의심")
 
         return ok
     except Exception as e:

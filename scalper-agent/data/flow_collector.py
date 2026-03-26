@@ -379,6 +379,55 @@ def _fetch_foreign_rate_api(base_url: str, headers: dict, code: str) -> Optional
 #  2순위: 공매도 잔고 (pykrx - 현재 깨짐, 캐시 반환 모드)
 # ============================================================
 
+def _try_pykrx_short_balance(codes: List[str], months: int) -> Dict[str, pd.DataFrame]:
+    """pykrx 공매도 잔고 수집 시도 (깨져 있을 수 있음, 안전하게 실패)
+
+    pykrx API가 복구되면 자동으로 다시 수집됨.
+    Returns: {code: DataFrame} — 실패 시 빈 dict
+    """
+    try:
+        from pykrx import stock
+        from datetime import date, timedelta
+
+        today = date.today()
+        end_date = today.strftime("%Y%m%d")
+        start_date = (today - timedelta(days=months * 30)).strftime("%Y%m%d")
+
+        # 삼성전자 1건으로 API 상태 확인 (probe)
+        probe = stock.get_shorting_balance_by_date(
+            (today - timedelta(days=10)).strftime("%Y%m%d"),
+            end_date, "005930",
+        )
+        if probe.empty:
+            logger.info("[SHORT] pykrx 공매도 API 여전히 비정상 — 캐시 모드 유지")
+            return {}
+
+        logger.info("[SHORT] pykrx 공매도 API 복구 감지! 수집 시작...")
+        results = {}
+        fetched = 0
+        for code in codes[:50]:  # 최대 50종목 (속도 제한)
+            try:
+                df = stock.get_shorting_balance_by_date(start_date, end_date, code)
+                if not df.empty:
+                    results[code] = df
+                    fetched += 1
+                time.sleep(0.5)
+            except Exception:
+                continue
+
+        if fetched > 0:
+            logger.info(f"[SHORT] pykrx 공매도 수집 성공: {fetched}종목")
+            # 캐시 저장
+            for code, df in results.items():
+                cache_file = SHORT_DIR / f"{code}_short_bal.csv"
+                df.to_csv(cache_file)
+        return results
+
+    except Exception as e:
+        logger.debug(f"[SHORT] pykrx 시도 실패: {e}")
+        return {}
+
+
 def collect_short_balance(
     codes: List[str],
     months: int = 24,
@@ -386,20 +435,30 @@ def collect_short_balance(
 ) -> Dict[str, pd.DataFrame]:
     """공매도 잔고 수집
 
-    주의: pykrx 공매도 API 깨짐 (2026-03 기준)
-    - 캐시 있으면 캐시 반환
-    - 신규 수집 시도 → 실패시 skip (전체 수집 안 멈춤)
+    pykrx 공매도 API 깨짐 (2026-03 기준)
+    - 매 실행마다 probe(삼전 1건)로 API 복구 확인
+    - 복구 시 자동 수집 재개
+    - 미복구 시 캐시 반환
 
     Returns: {code: DataFrame(date index)}
     """
     _ensure_dirs()
 
+    # 1) pykrx API 복구 확인 (probe 1건)
+    pykrx_results = _try_pykrx_short_balance(codes, months)
+
     results = {}
     cache_only = 0
-    for i, code in enumerate(codes):
-        cache_file = SHORT_DIR / f"{code}_short_bal.csv"
+    fresh = 0
 
-        # 캐시 있으면 무조건 반환 (pykrx 깨져서 갱신 불가)
+    for code in codes:
+        # pykrx 신규 데이터 우선
+        if code in pykrx_results:
+            results[code] = pykrx_results[code]
+            fresh += 1
+            continue
+
+        cache_file = SHORT_DIR / f"{code}_short_bal.csv"
         if cache_file.exists():
             cached = pd.read_csv(cache_file, index_col=0, parse_dates=True)
             if len(cached) > 0:
@@ -407,10 +466,12 @@ def collect_short_balance(
                 cache_only += 1
                 continue
 
-    if cache_only > 0:
-        print(f"  공매도 잔고: 캐시 {cache_only}종목 반환 (pykrx API 깨짐, 신규수집 불가)")
+    if fresh > 0:
+        print(f"  공매도 잔고: 신규{fresh} + 캐시{cache_only} = {len(results)}종목")
+    elif cache_only > 0:
+        print(f"  공매도 잔고: 캐시 {cache_only}종목 반환 (pykrx API 미복구)")
     else:
-        print(f"  공매도 잔고: 캐시 없음 (pykrx API 깨짐)")
+        print(f"  공매도 잔고: 데이터 없음 (pykrx API 미복구, 캐시 없음)")
     return results
 
 
@@ -425,9 +486,9 @@ def collect_short_volume(
 ) -> Dict[str, pd.DataFrame]:
     """공매도 거래량/거래대금 수집
 
-    주의: pykrx 공매도 API 깨짐 (2026-03 기준)
-    - 캐시 있으면 캐시 반환
-    - 신규 수집 시도 → 실패시 skip
+    pykrx 공매도 API 깨짐 (2026-03 기준) → 캐시 반환 모드
+    collect_short_balance에서 pykrx 복구 probe를 이미 수행하므로
+    여기서는 캐시만 반환 (잔고가 더 중요)
 
     Returns: {code: DataFrame(date index)}
     """
@@ -435,7 +496,7 @@ def collect_short_volume(
 
     results = {}
     cache_only = 0
-    for i, code in enumerate(codes):
+    for code in codes:
         cache_file = SHORT_DIR / f"{code}_short_vol.csv"
 
         if cache_file.exists():
@@ -446,9 +507,9 @@ def collect_short_volume(
                 continue
 
     if cache_only > 0:
-        print(f"  공매도 거래량: 캐시 {cache_only}종목 반환 (pykrx API 깨짐, 신규수집 불가)")
+        print(f"  공매도 거래량: 캐시 {cache_only}종목 반환")
     else:
-        print(f"  공매도 거래량: 캐시 없음 (pykrx API 깨짐)")
+        print(f"  공매도 거래량: 데이터 없음 (pykrx API 미복구)")
     return results
 
 

@@ -171,7 +171,7 @@ def _verify_minute_5min(today: str) -> dict:
 
 
 def _verify_nationality(today: str) -> dict:
-    """KRX 국적별 수급 — T+1 허용 (어제까지 OK)"""
+    """KRX 국적별 수급 — T+1 허용 (어제까지 OK) + 스냅샷 카운트"""
     if not NATIONALITY_DIR.exists():
         return {"status": "FAIL", "reason": "nationality 디렉터리 없음"}
     files = list(NATIONALITY_DIR.glob("nationality_*.csv"))
@@ -180,15 +180,26 @@ def _verify_nationality(today: str) -> dict:
     # 가장 최근 파일의 수정일 확인
     latest_mtime = max(_file_mtime_date(f) or "1900-01-01" for f in files)
     yesterday = (date.fromisoformat(today) - timedelta(days=1)).isoformat()
-    if latest_mtime >= today:
-        return {"status": "PASS", "latest": latest_mtime}
-    elif latest_mtime >= yesterday:
-        return {"status": "PASS", "latest": latest_mtime, "note": "T+1 데이터"}
-    return {"status": "FAIL", "reason": f"최신 파일 날짜: {latest_mtime}", "latest": latest_mtime}
+
+    # 스냅샷 카운트 (TOP200 수집 검증)
+    today_short = today.replace("-", "")
+    yesterday_short = yesterday.replace("-", "")
+    snap_today = len(list(NATIONALITY_DIR.glob(f"*_{today_short}.csv")))
+    snap_yesterday = len(list(NATIONALITY_DIR.glob(f"*_{yesterday_short}.csv")))
+    snap_count = max(snap_today, snap_yesterday)
+
+    if latest_mtime >= today or latest_mtime >= yesterday:
+        result = {"status": "PASS", "latest": latest_mtime, "snapshots": snap_count}
+        if latest_mtime >= yesterday and latest_mtime < today:
+            result["note"] = "T+1 데이터"
+        if snap_count < 10:
+            result["warning"] = f"스냅샷 {snap_count}건 (TOP200 미수집 의심)"
+        return result
+    return {"status": "FAIL", "reason": f"최신 파일 날짜: {latest_mtime}", "latest": latest_mtime, "snapshots": snap_count}
 
 
 def _verify_short_selling(today: str) -> dict:
-    """공매도 잔고 — DC-04: 0개면 SKIP (pykrx 깨짐 인지)"""
+    """공매도 잔고 — DC-04: 0개면 SKIP, 14일+ stale이면 SKIP (pykrx 깨짐)"""
     # DC-04: SHORT_DIR에 파일이 0개면 pykrx 깨짐으로 인한 미배포
     if not SHORT_DIR.exists() or len(list(SHORT_DIR.glob("*_short_bal.csv"))) == 0:
         return {"status": "SKIP", "reason": "공매도 데이터 미배포 (pykrx API 깨짐)"}
@@ -196,12 +207,26 @@ def _verify_short_selling(today: str) -> dict:
     if not codes:
         return {"status": "FAIL", "reason": "유니버스 로드 실패"}
     ok = 0
+    latest_dates = []
     for code in codes:
         csv_path = SHORT_DIR / f"{code}_short_bal.csv"
         last_date = _get_last_csv_date(csv_path)
-        if last_date and last_date >= today:
-            ok += 1
-    status = "PASS" if ok >= 3 else ("PARTIAL" if ok > 0 else "FAIL")
+        if last_date:
+            latest_dates.append(last_date)
+            if last_date >= today:
+                ok += 1
+    if ok >= 3:
+        return {"status": "PASS", "checked": len(codes), "ok": ok}
+    # pykrx API 깨짐 → 14일+ stale이면 SKIP (매일 FAIL 노이즈 방지)
+    if latest_dates:
+        best = max(latest_dates)
+        try:
+            days_stale = (date.fromisoformat(today) - date.fromisoformat(best)).days
+            if days_stale > 14:
+                return {"status": "SKIP", "reason": f"pykrx API 깨짐 ({days_stale}일 경과)", "latest": best}
+        except Exception:
+            pass
+    status = "PARTIAL" if ok > 0 else "FAIL"
     return {"status": status, "checked": len(codes), "ok": ok}
 
 
