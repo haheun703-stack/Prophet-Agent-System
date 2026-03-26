@@ -9,7 +9,8 @@
   2. 수급 데이터 - 투자자/외인소진/공매도잔고/공매도거래량 (data_store/flow/, short/)
   3. 국적별 외국인 수급 (data_store/nationality/) - 추천+보유 종목
   4. Parquet 통합 빌드 (data_store/raw/, processed/)
-  5. stock_data_daily 동기화 (data_store/daily → stock_data_daily)
+  5. SpaceX 관련주 일일 모니터링 (data_store/spacex_report.json)
+  6. stock_data_daily 동기화 (data_store/daily → stock_data_daily)
 
 사용법:
   python collect_all.py                  # 전체 수집 (당일 기준)
@@ -78,21 +79,21 @@ def get_universe_codes() -> list:
 
 def step1_daily_ohlcv(codes: list, force: bool = False):
     """1단계: pykrx 일봉 수집"""
-    logger.info(f"[1/5] 일봉 수집 시작: {len(codes)}종목 (force={force})")
+    logger.info(f"[1/6] 일봉 수집 시작: {len(codes)}종목 (force={force})")
     t0 = time.time()
     try:
         from data.universe_builder import collect_daily_pykrx
         cnt = collect_daily_pykrx(codes, months=24, force=force)
-        logger.info(f"[1/5] 일봉 완료: {cnt}종목 ({int(time.time()-t0)}초)")
+        logger.info(f"[1/6] 일봉 완료: {cnt}종목 ({int(time.time()-t0)}초)")
         return cnt
     except Exception as e:
-        logger.error(f"[1/5] 일봉 실패: {e}")
+        logger.error(f"[1/6] 일봉 실패: {e}")
         return 0
 
 
 def step2_supply_demand(codes: list, force: bool = False):
     """2단계: 수급 데이터 (투자자/외인소진/공매도)"""
-    logger.info(f"[2/5] 수급 수집 시작: {len(codes)}종목")
+    logger.info(f"[2/6] 수급 수집 시작: {len(codes)}종목")
     t0 = time.time()
     results = {}
     try:
@@ -106,9 +107,9 @@ def step2_supply_demand(codes: list, force: bool = False):
         results["foreign_exh"] = len(collect_foreign_exhaustion(codes, 24, force))
         results["short_bal"] = len(collect_short_balance(codes, 24, force))
         results["short_vol"] = len(collect_short_volume(codes, 24, force))
-        logger.info(f"[2/5] 수급 완료: {results} ({int(time.time()-t0)}초)")
+        logger.info(f"[2/6] 수급 완료: {results} ({int(time.time()-t0)}초)")
     except Exception as e:
-        logger.error(f"[2/5] 수급 실패: {e}")
+        logger.error(f"[2/6] 수급 실패: {e}")
     return results
 
 
@@ -148,14 +149,14 @@ def step3_nationality(force: bool = False):
       - 1차: afetch_nationality_batch() → 5일 집계 (nationality_{code}.csv)
       - 2차: 단일일 스냅샷 ({code}_{date}.csv) — 동일 세션 재사용
     """
-    logger.info("[3/5] 국적별 수급 수집...")
+    logger.info("[3/6] 국적별 수급 수집...")
     t0 = time.time()
     nat_codes = set()
 
     # 1) 시총 TOP200
     top200 = _get_top200_codes()
     nat_codes.update(top200)
-    logger.info(f"[3/5] TOP200: {len(top200)}종목")
+    logger.info(f"[3/6] TOP200: {len(top200)}종목")
 
     # 2) 추천 종목
     rec_path = DATA_DIR / "recommendation.json"
@@ -203,12 +204,21 @@ def step3_nationality(force: bool = False):
     for code in ["005930", "000660", "003570", "103140"]:
         nat_codes.add(code)
 
+    # 6) SpaceX 관련주 (Tier 1~2) 항상 포함
+    try:
+        from data.spacex_watchlist import SPACEX_STOCKS
+        sx_codes = [c for c, m in SPACEX_STOCKS.items() if m.get("tier", 9) <= 2]
+        nat_codes.update(sx_codes)
+        logger.info(f"[3/6] SpaceX Tier1~2: {len(sx_codes)}종목 추가")
+    except Exception:
+        pass
+
     if not nat_codes:
-        logger.info("[3/5] 국적별: 대상 종목 없음, 스킵")
+        logger.info("[3/6] 국적별: 대상 종목 없음, 스킵")
         return 0
 
     nat_codes = list(nat_codes)
-    logger.info(f"[3/5] 국적별 대상: {len(nat_codes)}종목 (TOP200+추천+보유+감시)")
+    logger.info(f"[3/6] 국적별 대상: {len(nat_codes)}종목 (TOP200+추천+보유+감시)")
 
     try:
         import asyncio
@@ -241,43 +251,59 @@ def step3_nationality(force: bool = False):
                     logger.debug(f"스냅샷 저장 실패 {code}: {e}")
 
         elapsed = int(time.time() - t0)
-        logger.info(f"[3/5] 국적별 완료: {ok}/{len(nat_codes)} | 스냅샷: {snap_saved} ({snap_date}) | {elapsed}초")
+        logger.info(f"[3/6] 국적별 완료: {ok}/{len(nat_codes)} | 스냅샷: {snap_saved} ({snap_date}) | {elapsed}초")
 
         # 재발방지: 스냅샷 0건이면 명시적 경고
         if snap_saved == 0 and len(nat_codes) > 0:
-            logger.warning(f"[3/5] ⚠ 국적별 스냅샷 0건! KRX 세션 또는 API 장애 의심")
+            logger.warning(f"[3/6] ⚠ 국적별 스냅샷 0건! KRX 세션 또는 API 장애 의심")
 
         return ok
     except Exception as e:
-        logger.error(f"[3/5] 국적별 실패: {e}")
+        logger.error(f"[3/6] 국적별 실패: {e}")
         return 0
 
 
 def step4_parquet_build():
     """4단계: Parquet 통합 빌드 (DC-03: KIS 스킵 + 병렬)"""
-    logger.info("[4/5] Parquet 빌드 (로컬전용+병렬)...")
+    logger.info("[4/6] Parquet 빌드 (로컬전용+병렬)...")
     t0 = time.time()
     try:
         from data.extend_parquet_data import extend_parquet_all
         # flow_collector 직후 → KIS 재호출 불필요, 병렬 빌드
         ok, fail = extend_parquet_all(codes=None, force=True,
                                        skip_kis_fill=True, n_workers=4)
-        logger.info(f"[4/5] Parquet 완료: 성공 {ok} / 실패 {fail} ({int(time.time()-t0)}초)")
+        logger.info(f"[4/6] Parquet 완료: 성공 {ok} / 실패 {fail} ({int(time.time()-t0)}초)")
         return ok
     except Exception as e:
-        logger.error(f"[4/5] Parquet 실패: {e}")
+        logger.error(f"[4/6] Parquet 실패: {e}")
         return 0
 
 
-def step5_sync_stock_data_daily():
-    """5단계: data_store/daily → stock_data_daily 동기화
+def step5_spacex_report():
+    """5단계: SpaceX 관련주 일일 모니터링 리포트"""
+    logger.info("[5/6] SpaceX 관련주 리포트 생성...")
+    t0 = time.time()
+    try:
+        from data.spacex_watchlist import generate_spacex_report
+        report = generate_spacex_report()
+        cnt = len(report.get("stocks", []))
+        avg = report.get("summary", {}).get("avg_change", 0)
+        logger.info(f"[5/6] SpaceX 리포트 완료: {cnt}종목, 평균 {avg:+.2f}% ({int(time.time()-t0)}초)")
+        return cnt
+    except Exception as e:
+        logger.error(f"[5/6] SpaceX 리포트 실패: {e}")
+        return 0
+
+
+def step6_sync_stock_data_daily():
+    """6단계: data_store/daily → stock_data_daily 동기화
 
     stock_data_daily 폴더는 이름_코드.csv 형식으로 저장됨.
     data_store/daily의 pykrx 데이터를 stock_data_daily 형식에 맞게 병합.
     """
-    logger.info("[5/5] stock_data_daily 동기화...")
+    logger.info("[6/6] stock_data_daily 동기화...")
     if not STOCK_DATA_DAILY.exists():
-        logger.warning(f"[5/5] {STOCK_DATA_DAILY} 폴더 없음, 스킵")
+        logger.warning(f"[6/6] {STOCK_DATA_DAILY} 폴더 없음, 스킵")
         return 0
 
     import pandas as pd
@@ -374,7 +400,7 @@ def step5_sync_stock_data_daily():
             if synced < 3:  # 처음 몇 개만 로깅
                 logger.debug(f"동기화 실패 {code}: {e}")
 
-    logger.info(f"[5/5] stock_data_daily 동기화 완료: {synced}종목")
+    logger.info(f"[6/6] stock_data_daily 동기화 완료: {synced}종목")
     return synced
 
 
@@ -453,7 +479,7 @@ def main():
     from concurrent.futures import ThreadPoolExecutor
 
     # DC-07: Step1(일봉 pykrx) + Step2(수급 KIS) 동시 실행
-    logger.info("[1+2/5] 일봉 + 수급 동시 수집 시작...")
+    logger.info("[1+2/6] 일봉 + 수급 동시 수집 시작...")
     t12 = time.time()
     with ThreadPoolExecutor(max_workers=2) as executor:
         f1 = executor.submit(step1_daily_ohlcv, codes, args.force)
@@ -470,9 +496,9 @@ def main():
             logger.error(f"[C3] Step2 수급 스레드 실패: {e}")
             results["flow"] = {}
     timings["step1_2"] = int(time.time() - t12)
-    logger.info(f"[1+2/5] 일봉+수급 동시 완료: {timings['step1_2']}초")
+    logger.info(f"[1+2/6] 일봉+수급 동시 완료: {timings['step1_2']}초")
 
-    # 3. 국적별
+    # 3. 국적별 (SpaceX 관련주 코드도 국적별 수집에 포함)
     t3 = time.time()
     results["nationality"] = step3_nationality(args.force)
     timings["step3"] = int(time.time() - t3)
@@ -482,10 +508,15 @@ def main():
     results["parquet"] = step4_parquet_build()
     timings["step4"] = int(time.time() - t4)
 
-    # 5. stock_data_daily 동기화
-    t5 = time.time()
-    results["sync"] = step5_sync_stock_data_daily()
-    timings["step5"] = int(time.time() - t5)
+    # 5. SpaceX 관련주 모니터링 리포트
+    t5sx = time.time()
+    results["spacex"] = step5_spacex_report()
+    timings["step5_spacex"] = int(time.time() - t5sx)
+
+    # 6. stock_data_daily 동기화
+    t6 = time.time()
+    results["sync"] = step6_sync_stock_data_daily()
+    timings["step6"] = int(time.time() - t6)
 
     # DC-08: 수집 시간 로깅
     timings["total"] = int(time.time() - t_start)
@@ -498,7 +529,8 @@ def main():
     logger.info(f"{'='*60}")
     logger.info(f"전체 수집 완료: {elapsed}초 ({elapsed//60}분)")
     logger.info(f"  Step1+2: {timings['step1_2']}초 | Step3: {timings['step3']}초 | "
-                f"Step4: {timings['step4']}초 | Step5: {timings['step5']}초")
+                f"Step4: {timings['step4']}초 | Step5-SpaceX: {timings.get('step5_spacex',0)}초 | "
+                f"Step6: {timings['step6']}초")
     logger.info(f"{'='*60}")
 
 
