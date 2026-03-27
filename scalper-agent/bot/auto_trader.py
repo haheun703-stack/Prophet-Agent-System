@@ -1459,9 +1459,9 @@ class AutoTrader:
                     actual_qty = pos.get("qty", 1)
                     if pre_bal and pre_bal.get("success"):
                         for p_item in pre_bal.get("positions", []):
-                        if p_item["code"] == code:
-                            actual_qty = p_item.get("qty", 1)
-                            break
+                            if p_item["code"] == code:
+                                actual_qty = p_item.get("qty", 1)
+                                break
                     result = self.trader.liquidate_one(code)
                     if result and result.get("success"):
                         pi_exit = self.trader.fetch_price(code)
