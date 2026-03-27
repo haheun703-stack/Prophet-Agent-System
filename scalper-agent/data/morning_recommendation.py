@@ -878,6 +878,7 @@ def _step5_cross_validate(
     rotation_stocks: dict = None,
     tv_signals: dict = None,
     tv_cluster_map: dict = None,
+    tv_persistence: dict = None,
 ) -> list[RecommendedStock]:
     """모든 스텝 결과 통합 → Soft Scoring → 최종 랭킹
 
@@ -1711,6 +1712,7 @@ def run_evening_recommendation() -> RecommendationReport:
     # Step 5a.5: 거래대금 폭발 스캔 (전체 유니버스 + 소형주)
     #   최근 2시간 이내 TV 스캔 결과 있으면 재사용 (pykrx 대량 호출 방지)
     tv_signals = {}  # {code: TVSignal dict}
+    tv_persistence = {}  # TV 잔존 효과 (outer try 실패 시에도 안전)
     try:
         import json as _json5a5
         t_tv = time.time()
@@ -1881,6 +1883,7 @@ def run_evening_recommendation() -> RecommendationReport:
         rotation_stocks=rotation_stocks,
         tv_signals=tv_signals,
         tv_cluster_map=tv_cluster_map,
+        tv_persistence=tv_persistence,
     )
     logger.info(f"  → {len(final_stocks)}종목 ({time.time()-t0:.0f}s)")
 
