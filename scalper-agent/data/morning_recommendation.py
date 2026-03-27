@@ -1724,8 +1724,29 @@ def run_evening_recommendation() -> RecommendationReport:
                 if _tv_scan_date == _today_str:
                     _tv_cache_fresh = True
                     logger.info(f"[Step 5a.5] TV 스캔 캐시 재사용 (오늘 {_tv_scan_date} 생성)")
+                else:
+                    # 비거래일이면 마지막 거래일 캐시 재사용 (풀스캔 hang 방지)
+                    try:
+                        from data.trading_calendar import is_trading_day
+                        from datetime import date as _date_tv
+                        if not is_trading_day(_date_tv.today()):
+                            _tv_cache_fresh = True
+                            logger.info(
+                                f"[Step 5a.5] 비거래일 — TV 캐시 재사용 "
+                                f"(캐시 {_tv_scan_date}, 오늘 {_today_str})"
+                            )
+                    except Exception:
+                        pass
             except Exception:
                 pass
+
+        # universe.json은 TV 풀스캔 여부와 무관하게 항상 로드 (클러스터 감지 등에서 필요)
+        _uni_path = Path(__file__).resolve().parent.parent / "data_store" / "universe.json"
+        try:
+            with open(_uni_path, "r", encoding="utf-8") as _uf:
+                _universe = _json5a5.load(_uf)
+        except Exception:
+            _universe = {}
 
         if _tv_cache_fresh:
             # 캐시에서 로드 (TVSignal namedtuple 대신 dict 사용)
@@ -1735,9 +1756,6 @@ def run_evening_recommendation() -> RecommendationReport:
                 if ns.score > 0:
                     tv_signals[ns.code] = ns
         else:
-            _uni_path = Path(__file__).resolve().parent.parent / "data_store" / "universe.json"
-            with open(_uni_path, "r", encoding="utf-8") as _uf:
-                _universe = _json5a5.load(_uf)
             # 소형주 유니버스 병합 (500억 이하도 TV 스캔 대상)
             _sc_path = Path(__file__).resolve().parent.parent / "data_store" / "universe_smallcap.json"
             if _sc_path.exists():
@@ -1751,10 +1769,19 @@ def run_evening_recommendation() -> RecommendationReport:
                     logger.info(f"  소형주 유니버스 병합: +{_sc_count}종목 → 총 {len(_universe)}")
                 except Exception:
                     pass
+            # TV 풀스캔에 타임아웃 적용 (hang 방지)
+            TV_SCAN_TIMEOUT = 180  # 3분
+            from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
             from data.trading_value_scanner import scan_trading_value, save_tv_results
-            tv_results = scan_trading_value(_universe, min_tv_billion=10.0)
-            save_tv_results(tv_results)
-            tv_signals = {s.code: s for s in tv_results if s.score > 0}
+            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="tv_scan") as _tv_exec:
+                _tv_future = _tv_exec.submit(scan_trading_value, _universe, min_tv_billion=10.0)
+                try:
+                    tv_results = _tv_future.result(timeout=TV_SCAN_TIMEOUT)
+                    save_tv_results(tv_results)
+                    tv_signals = {s.code: s for s in tv_results if s.score > 0}
+                except FuturesTimeout:
+                    logger.warning(f"[Step 5a.5] TV 풀스캔 타임아웃 ({TV_SCAN_TIMEOUT}s) - 스킵")
+                    tv_signals = {}
         # TV 스캐너에서 잡힌 종목도 교차검증 대상에 추가 (code 기반 dedup)
         tv_added = 0
         existing_codes = {code for code, _ in all_codes_set}
@@ -1999,10 +2026,19 @@ def run_evening_recommendation() -> RecommendationReport:
     except Exception as e:
         logger.warning(f"[ETF 추천] 실패 (무시): {e}")
 
-    # Step 6: KIS API 가격 교차검증
+    # Step 6: KIS API 가격 교차검증 (타임아웃 방어)
+    KIS_VERIFY_TIMEOUT = 60  # 1분
     t0 = time.time()
     logger.info("[Step 6/6] KIS API 가격 교차검증...")
-    final_stocks = _step6_kis_verify(final_stocks, market_chg=market_chg)
+    try:
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="kis_verify") as _kis_exec:
+            _kis_future = _kis_exec.submit(_step6_kis_verify, final_stocks, market_chg)
+            final_stocks = _kis_future.result(timeout=KIS_VERIFY_TIMEOUT)
+    except FuturesTimeout:
+        logger.warning(f"[Step 6] KIS 검증 타임아웃 ({KIS_VERIFY_TIMEOUT}s) - 기존 가격 유지")
+    except Exception as e:
+        logger.warning(f"[Step 6] KIS 검증 실패: {e} - 기존 가격 유지")
     logger.info(f"  → 최종 {len(final_stocks)}종목 ({time.time()-t0:.0f}s)")
 
     report.stocks = final_stocks
