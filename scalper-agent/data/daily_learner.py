@@ -146,7 +146,8 @@ def verify_etf_recommendations(today: str) -> Optional[dict]:
     tmp.write_text(json.dumps(perf_log, ensure_ascii=False, indent=2), encoding="utf-8")
     tmp.replace(ETF_PERF_PATH)
 
-    logger.info(f"[ETF 성과] {hits}/{total} = {hit_rate}% | {', '.join(r['name'] + f'({r[\"pnl_1d\"]:+.1f}%)' for r in results)}")
+    parts = [f"{r['name']}({r['pnl_1d']:+.1f}%)" for r in results]
+    logger.info(f"[ETF 성과] {hits}/{total} = {hit_rate}% | {', '.join(parts)}")
     return {"total": total, "hits": hits, "hit_rate": hit_rate, "results": results}
 
 
