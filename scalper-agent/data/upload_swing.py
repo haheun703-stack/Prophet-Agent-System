@@ -387,7 +387,7 @@ def upload_swing_to_supabase(data: dict) -> bool:
         return False
 
     try:
-        # JSONB 필드는 JSON 문자열로 변환
+        # JSONB 필드는 Python dict/list 그대로 전달 (supabase 클라이언트가 직렬화)
         row = {
             "date": data["date"],
             "brain_verdict": data["brain_verdict"],
@@ -395,11 +395,11 @@ def upload_swing_to_supabase(data: dict) -> bool:
             "brain_reason": data.get("brain_reason", ""),
             "min_grade_applied": data["min_grade_applied"],
             "market_comment": data.get("market_comment", ""),
-            "picks": json.dumps(data.get("picks", []), ensure_ascii=False),
-            "etf_picks": json.dumps(data.get("etf_picks", []), ensure_ascii=False),
-            "portfolio": json.dumps(data.get("portfolio", {}), ensure_ascii=False),
-            "analysis": json.dumps(data.get("analysis", {}), ensure_ascii=False),
-            "watchlist": json.dumps(data.get("watchlist", []), ensure_ascii=False),
+            "picks": data.get("picks", []),
+            "etf_picks": data.get("etf_picks", []),
+            "portfolio": data.get("portfolio", {}),
+            "analysis": data.get("analysis", {}),
+            "watchlist": data.get("watchlist", []),
         }
 
         result = client.table("swing_signals").upsert(
