@@ -57,7 +57,7 @@ class EyeVerdict:
     """AI Eye 분석 결과"""
     code: str
     name: str
-    timestamp: datetime
+    timestamp: str  # isoformat string
 
     # 레이어별 점수 (각 0~100)
     l1_price_structure: float
@@ -854,7 +854,7 @@ class IntradayEye:
         }
 
         return EyeVerdict(
-            code=code, name=name, timestamp=datetime.now(),
+            code=code, name=name, timestamp=datetime.now().isoformat(),
             l1_price_structure=round(l1, 1),
             l2_volume_supply=round(l2, 1),
             l3_momentum=round(l3, 1),

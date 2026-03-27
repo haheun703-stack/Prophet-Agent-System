@@ -255,11 +255,12 @@ class AutoTrader:
                     price_info = self.trader.fetch_price(code)
                     cp = price_info.get("current_price", 0) if price_info and price_info.get("success") else 0
                     if cp <= 0:
-                        # 매수 완료됐으나 가격 조회 실패 → SL 기반 포지션 등록
-                        logger.error(f"가격 조회 실패 {code} — SL/TP 기반 포지션 등록")
-                        cp = item.get("sl", 0) or item.get("tp", 0)
+                        # 매수 완료됐으나 가격 조회 실패 → 추천데이터 기반 포지션 등록
+                        logger.error(f"가격 조회 실패 {code} — 추천데이터 기반 포지션 등록")
+                        cp = item.get("close", 0) or item.get("entry", 0) or item.get("tp", 0) or item.get("sl", 0)
                         if cp <= 0:
-                            cp = 10000  # 최후 fallback
+                            logger.error(f"가격 fallback 전부 실패 {code} — 포지션 등록 불가")
+                            continue
                     target_state = self._init_dynamic_target(code, name, cp)
                     sl = target_state.dynamic_sl if target_state else item["sl"]
                     tp = target_state.dynamic_tp if target_state else item["tp"]
@@ -1322,11 +1323,12 @@ class AutoTrader:
                     logger.info(f"AI 전량매도: {code} @ {snap.price:,} ({snap.decision_reason})")
                     # 매도 전 실제 보유수량 조회 (qty 보정)
                     pre_bal = self.trader.fetch_balance()
-                    actual_qty = 1
-                    for p in pre_bal.get("positions", []):
-                        if p["code"] == code:
-                            actual_qty = p.get("qty", 1)
-                            break
+                    actual_qty = pos.get("qty", 1)
+                    if pre_bal and pre_bal.get("success"):
+                        for p in pre_bal.get("positions", []):
+                            if p["code"] == code:
+                                actual_qty = p.get("qty", 1)
+                                break
                     # 매도 실행
                     result = self.trader.liquidate_one(code)
                     if not result or not result.get("success"):
@@ -1454,8 +1456,9 @@ class AutoTrader:
                 if gv.action == "EXIT":
                     # 즉시 전량 매도
                     pre_bal = self.trader.fetch_balance()
-                    actual_qty = 1
-                    for p_item in pre_bal.get("positions", []):
+                    actual_qty = pos.get("qty", 1)
+                    if pre_bal and pre_bal.get("success"):
+                        for p_item in pre_bal.get("positions", []):
                         if p_item["code"] == code:
                             actual_qty = p_item.get("qty", 1)
                             break
@@ -1550,11 +1553,12 @@ class AutoTrader:
                 if cp <= effective_sl:
                     # 매도 전 실제 보유수량 조회
                     pre_bal = self.trader.fetch_balance()
-                    actual_qty = 1
-                    for p_item in pre_bal.get("positions", []):
-                        if p_item["code"] == code:
-                            actual_qty = p_item.get("qty", 1)
-                            break
+                    actual_qty = pos.get("qty", 1)
+                    if pre_bal and pre_bal.get("success"):
+                        for p_item in pre_bal.get("positions", []):
+                            if p_item["code"] == code:
+                                actual_qty = p_item.get("qty", 1)
+                                break
                     # 매도 실행
                     result = self.trader.liquidate_one(code)
                     if not result or not result.get("success"):
@@ -1764,11 +1768,12 @@ class AutoTrader:
                 if action == ACTION_STOP_LOSS:
                     # 매도 전 수량 확인 (PnL 계산용)
                     pre_bal = self.trader.fetch_balance()
-                    actual_qty = 1
-                    for p_item in pre_bal.get("positions", []):
-                        if p_item["code"] == code:
-                            actual_qty = p_item.get("qty", 1)
-                            break
+                    actual_qty = pos.get("qty", 1)
+                    if pre_bal and pre_bal.get("success"):
+                        for p_item in pre_bal.get("positions", []):
+                            if p_item["code"] == code:
+                                actual_qty = p_item.get("qty", 1)
+                                break
                     result = self.trader.liquidate_one(code)
                     if result and result.get("success"):
                         realized_pnl = (cp - pos["entry_price"]) * actual_qty
@@ -1911,11 +1916,12 @@ class AutoTrader:
                         pi = self.trader.fetch_price(code)
                         cp_eod = pi.get("current_price", 0) if pi and pi.get("success") else 0
                         bal_eod = self.trader.fetch_balance()
-                        qty_eod = 1
-                        for p_item in bal_eod.get("positions", []):
-                            if p_item["code"] == code:
-                                qty_eod = p_item.get("qty", 1)
-                                break
+                        qty_eod = pos.get("qty", 1)  # fallback: 내부 positions 데이터
+                        if bal_eod and bal_eod.get("success"):
+                            for p_item in bal_eod.get("positions", []):
+                                if p_item["code"] == code:
+                                    qty_eod = p_item.get("qty", 1)
+                                    break
                         result_one = self.trader.liquidate_one(code)
                         if result_one and result_one.get("success"):
                             if cp_eod > 0:
@@ -1935,7 +1941,15 @@ class AutoTrader:
                 logger.info("장마감 전량 청산")
                 await self._alert("🏁 장마감 전량 청산 시작...")
                 result = self.trader.liquidate_all()
-                self._positions.clear()
+                if result.get("success"):
+                    self._positions.clear()
+                else:
+                    # 부분 실패 — 성공한 종목만 제거
+                    failed = set(result.get("failed_codes", []))
+                    for code in list(self._positions.keys()):
+                        if code not in failed:
+                            self._positions.pop(code, None)
+                    logger.warning(f"전량 청산 부분실패: {failed}")
                 self._save_positions()
             await self._alert(f"{'✅' if result.get('success') else '❌'} {result.get('message')}")
         else:

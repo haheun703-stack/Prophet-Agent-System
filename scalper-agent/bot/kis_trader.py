@@ -471,7 +471,10 @@ class KISTrader:
         if total_filled < qty:
             msg += f"\n미체결: {qty - total_filled}주"
 
-        self._log_trade("BUY", code, name, total_filled, split)
+        try:
+            self._log_trade("BUY", code, name, total_filled, split)
+        except Exception as e:
+            logger.warning(f"매매일지 기록 실패 (BUY {code}): {e}")
         return {"success": success, "message": msg}
 
     def _execute_buy(self, code: str, qty: int, name: str) -> dict:
@@ -527,7 +530,10 @@ class KISTrader:
         if total_filled < qty:
             msg += f"\n미체결: {qty - total_filled}주"
 
-        self._log_trade("SELL", code, name, total_filled, split)
+        try:
+            self._log_trade("SELL", code, name, total_filled, split)
+        except Exception as e:
+            logger.warning(f"매매일지 기록 실패 (SELL {code}): {e}")
         return {"success": success, "message": msg}
 
     def _execute_sell(self, code: str, qty: int, name: str) -> dict:
@@ -924,8 +930,10 @@ class KISTrader:
 
         entries.append(entry)
 
-        with open(journal_file, "w", encoding="utf-8") as f:
+        tmp_file = journal_file.with_suffix(".tmp")
+        with open(tmp_file, "w", encoding="utf-8") as f:
             json.dump(entries, f, ensure_ascii=False, indent=2)
+        tmp_file.replace(journal_file)
 
         logger.info(f"매매일지 기록: {side} {name}({code}) {qty}주 (분할{split})")
 
@@ -1232,7 +1240,7 @@ class KISTrader:
     def liquidate_one(self, code: str) -> dict:
         """특정 종목 전량 청산"""
         bal = self.fetch_balance()
-        if not bal.get("success"):
+        if not bal or not bal.get("success"):
             return {"success": False, "message": "잔고 조회 실패"}
 
         for pos in bal["positions"]:
@@ -1245,19 +1253,25 @@ class KISTrader:
     def liquidate_all(self) -> dict:
         """전종목 시장가 청산"""
         bal = self.fetch_balance()
-        if not bal.get("success"):
+        if not bal or not bal.get("success"):
             return {"success": False, "message": "잔고 조회 실패"}
 
         if not bal["positions"]:
             return {"success": True, "message": "보유 종목 없음 (청산 불필요)"}
 
         results = []
+        failed_codes = []
         for pos in bal["positions"]:
             r = self.sell_market(pos["code"], pos["qty"])
-            results.append(f"{pos['name']}: {'성공' if r.get('success') else '실패'}")
+            ok = r.get("success", False)
+            results.append(f"{pos['name']}: {'성공' if ok else '실패'}")
+            if not ok:
+                failed_codes.append(pos["code"])
             time.sleep(0.2)
 
+        all_ok = len(failed_codes) == 0
         return {
-            "success": True,
-            "message": f"전량 청산 완료\n" + "\n".join(results),
+            "success": all_ok,
+            "message": f"전량 청산 {'완료' if all_ok else '부분실패'}\n" + "\n".join(results),
+            "failed_codes": failed_codes,
         }

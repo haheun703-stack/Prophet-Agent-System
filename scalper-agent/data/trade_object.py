@@ -594,7 +594,11 @@ def _stock_to_dict(s) -> dict:
     """RecommendedStock → dict"""
     if hasattr(s, "__dict__"):
         return {k: v for k, v in s.__dict__.items()}
-    return dict(s)
+    try:
+        return dict(s)
+    except (TypeError, ValueError):
+        logger.warning(f"_stock_to_dict fallback 실패: {type(s)}")
+        return {}
 
 
 def _get_sector_hot_days(stock, report) -> int:

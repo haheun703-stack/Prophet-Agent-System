@@ -229,7 +229,15 @@ def step3_nationality(force: bool = False):
 
         # 1차: 단일일 fetch → 스냅샷 직접 저장 (collect_daily_snapshots 대체)
         # 세션 1회 생성, 모든 종목에 재사용 → 세션 만료 문제 방지
-        results = asyncio.run(afetch_nationality_batch(nat_codes, snap_date, snap_date))
+        try:
+            results = asyncio.run(afetch_nationality_batch(nat_codes, snap_date, snap_date))
+        except RuntimeError:
+            # 이미 event loop 실행 중 — 새 loop 생성
+            loop = asyncio.new_event_loop()
+            try:
+                results = loop.run_until_complete(afetch_nationality_batch(nat_codes, snap_date, snap_date))
+            finally:
+                loop.close()
         ok = 0
         snap_saved = 0
         for code, df in results.items():
@@ -394,7 +402,9 @@ def step6_sync_stock_data_daily():
                     combined = combined.sort_index()
                     df_new = combined
 
-            df_new.to_csv(dst)
+            tmp_dst = dst.with_suffix(".tmp")
+            df_new.to_csv(tmp_dst)
+            tmp_dst.replace(dst)
             synced += 1
         except Exception as e:
             if synced < 3:  # 처음 몇 개만 로깅
