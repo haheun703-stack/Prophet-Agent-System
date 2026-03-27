@@ -103,6 +103,8 @@ class RecommendationReport:
     commodity_info: dict = field(default_factory=dict)
     # 이벤트 캘린더 리스크
     event_risk: dict = field(default_factory=dict)
+    # ETF 추천 (Phase 2)
+    etf_recommendations: list = field(default_factory=list)  # list[dict] from RecommendedETF
 
 
 # ═══════════════════════════════════════
@@ -1986,6 +1988,17 @@ def run_evening_recommendation() -> RecommendationReport:
     except Exception as e:
         logger.warning(f"[이벤트 캘린더] 실패 (무시): {e}")
 
+    # ── Step 5d: ETF 추천 엔진 ──
+    try:
+        from data.etf_recommender import generate_etf_recommendations, save_etf_recommendations
+        etf_recs = generate_etf_recommendations()
+        if etf_recs:
+            report.etf_recommendations = [r.to_dict() for r in etf_recs]
+            save_etf_recommendations(etf_recs)
+            logger.info(f"[Step 5d] ETF 추천: {len(etf_recs)}종목")
+    except Exception as e:
+        logger.warning(f"[ETF 추천] 실패 (무시): {e}")
+
     # Step 6: KIS API 가격 교차검증
     t0 = time.time()
     logger.info("[Step 6/6] KIS API 가격 교차검증...")
@@ -2474,6 +2487,20 @@ def format_recommendation(report: RecommendationReport, max_budget: int = 0) -> 
             lines.append(f"   출처: {' + '.join(s.sources[:4])}")
         lines.append("")
 
+    # ── ETF 추천 섹션 ──
+    if report.etf_recommendations:
+        from data.etf_recommender import format_etf_recommendations, RecommendedETF
+        etf_recs = []
+        for d in report.etf_recommendations:
+            etf_recs.append(RecommendedETF(**{
+                k: v for k, v in d.items()
+                if k in RecommendedETF.__dataclass_fields__
+            }))
+        etf_text = format_etf_recommendations(etf_recs)
+        if etf_text:
+            lines.append("=" * 32)
+            lines.append(etf_text)
+
     # ── 모멘텀 종목 섹션 ──
     if report.momentum_stocks:
         lines.append("=" * 32)
@@ -2647,6 +2674,7 @@ def save_recommendation(report: RecommendationReport):
         "tv_cluster_info": report.tv_cluster_info,  # TV 클러스터
         "commodity_info": report.commodity_info,  # 원자재 릴레이 상황
         "event_risk": report.event_risk,  # 이벤트 캘린더 리스크
+        "etf_recommendations": report.etf_recommendations,  # ETF 추천 (Phase 2)
         "sector_momentum": getattr(report, "_sector_momentum", {}),  # 섹터 모멘텀
     }
     tmp = path.with_suffix(".tmp")
@@ -2728,6 +2756,7 @@ def load_recommendation() -> Optional[RecommendationReport]:
         report.tv_cluster_info = data.get("tv_cluster_info", [])
         report.commodity_info = data.get("commodity_info", {})
         report.event_risk = data.get("event_risk", {})
+        report.etf_recommendations = data.get("etf_recommendations", [])
         return report
     except Exception as e:
         logger.error(f"추천 로드 실패: {e}")
