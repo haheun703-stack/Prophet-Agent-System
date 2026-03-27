@@ -1105,6 +1105,123 @@ def check_reentry_signals(raw_indicators: Dict, macro_conditions: Dict) -> Dict:
 
 
 # ═══════════════════════════════════════════════════
+#  NXT 개별 수급 필터 헬퍼
+# ═══════════════════════════════════════════════════
+def _load_tv_scanner_data() -> Dict[str, Dict]:
+    """tv_scanner.json → {code: {tv_ratio, pattern, score, change_pct}}"""
+    path = DATA_DIR / "tv_scanner.json"
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text("utf-8"))
+        signals = data.get("signals", [])
+        return {item["code"]: item for item in signals if "code" in item}
+    except Exception:
+        return {}
+
+
+def _load_investor_flow(code: str, days: int = 3) -> Dict:
+    """flow/{code}_investor.csv → 최근 N일 외인/기관 순매수 방향"""
+    path = DATA_DIR / "flow" / f"{code}_investor.csv"
+    if not path.exists():
+        return {"foreign_buy_days": 0, "inst_buy_days": 0}
+    try:
+        import csv
+        rows = []
+        with open(path, "r", encoding="utf-8") as f:
+            reader = csv.reader(f)
+            header = next(reader)
+            for row in reader:
+                rows.append(row)
+        # 최근 N일 (마지막 N행)
+        recent = rows[-days:] if len(rows) >= days else rows
+        # 컬럼 인덱스: 0=date, 1=기관_금액, 4=외국인_금액
+        foreign_idx = None
+        inst_idx = None
+        for i, h in enumerate(header):
+            if "외국인" in h and "금액" in h:
+                foreign_idx = i
+            elif "기관" in h and "금액" in h:
+                inst_idx = i
+        foreign_buy = 0
+        inst_buy = 0
+        for row in recent:
+            try:
+                if foreign_idx is not None and row[foreign_idx].strip():
+                    val = float(row[foreign_idx])
+                    if val > 0:
+                        foreign_buy += 1
+            except (ValueError, IndexError):
+                pass
+            try:
+                if inst_idx is not None and row[inst_idx].strip():
+                    val = float(row[inst_idx])
+                    if val > 0:
+                        inst_buy += 1
+            except (ValueError, IndexError):
+                pass
+        return {"foreign_buy_days": foreign_buy, "inst_buy_days": inst_buy}
+    except Exception:
+        return {"foreign_buy_days": 0, "inst_buy_days": 0}
+
+
+def _score_individual_supply(targets: List[Dict]) -> List[Dict]:
+    """개별 종목 수급 점수 산출 (0~100). ETF는 면제(100점)."""
+    tv_data = _load_tv_scanner_data()
+    for t in targets:
+        if t.get("is_etf"):
+            t["supply_score"] = 100
+            continue
+        code = t["code"]
+        score = 0
+
+        # TV 거래대금 비율 (35점)
+        tv = tv_data.get(code, {})
+        tv_ratio = tv.get("tv_ratio", 0) or 0
+        if tv_ratio >= 2.0:
+            score += 35
+        elif tv_ratio >= 1.5:
+            score += 25
+        elif tv_ratio >= 1.0:
+            score += 15
+
+        # TV 패턴 보너스 (15점)
+        pattern = tv.get("pattern", "")
+        if pattern == "EXPLOSION":
+            score += 15
+        elif "QUIET" in pattern:
+            score += 10
+        elif "GRADUAL" in pattern:
+            score += 5
+
+        # 등락률 양봉 (10점)
+        if (tv.get("change_pct", 0) or 0) > 0:
+            score += 10
+
+        # 투자자 수급 — 외국인 (25점)
+        flow = _load_investor_flow(code)
+        foreign_days = flow.get("foreign_buy_days", 0)
+        if foreign_days >= 3:
+            score += 25
+        elif foreign_days >= 2:
+            score += 15
+        elif foreign_days >= 1:
+            score += 8
+
+        # 투자자 수급 — 기관 (15점)
+        inst_days = flow.get("inst_buy_days", 0)
+        if inst_days >= 3:
+            score += 15
+        elif inst_days >= 2:
+            score += 10
+        elif inst_days >= 1:
+            score += 5
+
+        t["supply_score"] = score
+    return targets
+
+
+# ═══════════════════════════════════════════════════
 #  JARVIS 섹터 선정 + NXT 대상 종목 매칭
 # ═══════════════════════════════════════════════════
 def select_sectors_and_targets(
@@ -1284,8 +1401,48 @@ def select_sectors_and_targets(
                 nxt_targets.append(dt)
                 existing_codes.add(dt["code"])
 
-    # 정렬: 1순위 섹터 Tier1 → 2순위 섹터 Tier1 → ...
-    nxt_targets.sort(key=lambda x: (x.get("priority", 99), x.get("tier", 99)))
+    # ── 개별 수급 필터 ──
+    pre_count = len(nxt_targets)
+    nxt_targets = _score_individual_supply(nxt_targets)
+
+    # ETF 분리 (필터 면제)
+    etf_targets = [t for t in nxt_targets if t.get("is_etf")]
+    stock_targets = [t for t in nxt_targets if not t.get("is_etf")]
+
+    # 최소 임계값 필터
+    min_score_t1, min_score_t2 = 20, 30
+    filtered = [
+        t for t in stock_targets
+        if t.get("supply_score", 0) >= (min_score_t1 if t.get("tier") == 1 else min_score_t2)
+    ]
+
+    # Fallback: 필터 후 주식 0개 → 임계값 낮춰 재시도 (최소 1개 확보)
+    if not filtered and stock_targets:
+        fallback_min = 10
+        filtered = [t for t in stock_targets if t.get("supply_score", 0) >= fallback_min]
+        if not filtered:
+            # 최후 수단: supply_score 상위 3개
+            filtered = sorted(stock_targets, key=lambda x: -x.get("supply_score", 0))[:3]
+        logger.info(f"[NXT-SUPPLY] Fallback 적용: 임계값 {fallback_min}으로 완화 → {len(filtered)}개")
+
+    # 섹터당 상위 2개 선별
+    from collections import defaultdict
+    sector_groups = defaultdict(list)
+    for t in filtered:
+        sector_groups[t.get("sector_key", "unknown")].append(t)
+    final_stocks = []
+    for _key, stocks in sector_groups.items():
+        stocks.sort(key=lambda x: -x.get("supply_score", 0))
+        final_stocks.extend(stocks[:2])
+
+    nxt_targets = etf_targets + final_stocks
+
+    # 정렬: 1순위 섹터 Tier1 → supply_score 내림차순
+    nxt_targets.sort(key=lambda x: (x.get("priority", 99), x.get("tier", 99), -x.get("supply_score", 0)))
+
+    logger.info(f"[NXT-SUPPLY] 필터 전 {pre_count}개 → 필터 후 {len(nxt_targets)}개")
+    for t in nxt_targets[:10]:
+        logger.info(f"  {t['name']} (supply={t.get('supply_score', 0)}, tier={t.get('tier')}, {t.get('sector_key')})")
 
     return sector_names, nxt_targets, reason
 
@@ -2125,9 +2282,11 @@ def format_nightwatch_report(report: NightwatchReport) -> str:
                 continue
             shown.add(key)
             tier_mark = "★" if t["tier"] == 1 else "☆"
+            supply = t.get("supply_score")
+            supply_str = f" 수급{supply}" if supply is not None else ""
             lines.append(
                 f"  {tier_mark} {t['name']}({t['code']}) "
-                f"[{t['sector']}]"
+                f"[{t['sector']}]{supply_str}"
             )
             if len(shown) >= 8:  # 최대 8종목까지 표시
                 remaining = len(report.nxt_targets) - len(shown)
