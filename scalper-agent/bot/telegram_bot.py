@@ -105,9 +105,10 @@ Body Hunter v5 명령어
   분석 삼성전자 / 스윙 삼성전자
   뉴스 삼성전자 / 국적수급 SK하이닉스
 
-📈 릴레이
+📈 릴레이 / ETF
   섹터릴레이/그룹릴레이/ETF릴레이
   릴레이종합/로테이션
+  ETF추천       — ETF 매매 추천 조회
 
 🌐 JARVIS
   선행지표/스트레스/COT/유동성
@@ -272,6 +273,22 @@ class BodyHunterBot:
         except Exception as e:
             logger.error(f"ETF 스캔 실패: {e}", exc_info=True)
             await update.message.reply_text(f"⚠️ ETF 스캔 실패: {str(e)[:200]}")
+
+    async def cmd_etf_rec(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """ETF 추천 조회"""
+        if not self._is_authorized(update):
+            return
+        try:
+            from data.etf_recommender import load_etf_recommendations, format_etf_recommendations
+            recs = load_etf_recommendations()
+            if not recs:
+                await update.message.reply_text("📊 ETF 추천 없음 (아침 추천 생성 후 조회 가능)")
+                return
+            report = format_etf_recommendations(recs)
+            await update.message.reply_text(report)
+        except Exception as e:
+            logger.error(f"ETF 추천 조회 실패: {e}", exc_info=True)
+            await update.message.reply_text(f"⚠️ ETF 추천 조회 실패: {str(e)[:200]}")
 
     async def cmd_report(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update):
@@ -2171,6 +2188,7 @@ class BodyHunterBot:
             r"^로그$": self.cmd_log,
             r"^스캔$": self.cmd_scan,
             r"^ETF$": self.cmd_etf_scan,
+            r"^ETF추천$": self.cmd_etf_rec,
             r"^리포트$": self.cmd_report,
             r"^현재잔고$": self.cmd_balance,
             r"^체결내역$": self.cmd_executions,

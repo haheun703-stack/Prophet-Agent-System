@@ -520,6 +520,37 @@ class AutoTrader:
         except Exception as e:
             logger.warning(f"전쟁릴레이 로드 실패: {e}")
 
+        # 1.3) ETF 추천 후보 추가 (Phase 3)
+        etf_count = 0
+        try:
+            if rec and rec.etf_recommendations:
+                existing_codes = {c["code"] for c in candidates}
+                for etf_r in rec.etf_recommendations:
+                    code = etf_r.get("code", "")
+                    if not code or code in existing_codes:
+                        continue
+                    if etf_r.get("signal") != "BUY":
+                        continue
+                    candidates.append({
+                        "code": code,
+                        "name": etf_r.get("name", ""),
+                        "total_score": etf_r.get("score", 50),
+                        "entry": etf_r.get("entry", 0),
+                        "sl": etf_r.get("sl", 0),
+                        "tp": etf_r.get("tp", 0),
+                        "tp1_quick": etf_r.get("tp", 0),
+                        "source": "etf_rec",
+                        "confidence": etf_r.get("confidence", "LOW"),
+                        "is_etf": True,
+                        "etf_category": etf_r.get("category", ""),
+                        "holding_days": etf_r.get("holding_days", 5),
+                    })
+                    etf_count += 1
+                if etf_count:
+                    await _send(f"ETF 추천 {etf_count}종목 추가 로드")
+        except Exception as e:
+            logger.warning(f"ETF 추천 로드 실패: {e}")
+
         # 1.5) NIGHTWATCH 채권 자경단 신호등 게이트
         if cross_regime == "DIVERGENCE":
             await _send(
@@ -783,14 +814,20 @@ class AutoTrader:
                 # ── MOMENTUM 레짐 ──
                 "regime": c.get("regime", "NORMAL"),
                 "regime_score": c.get("regime_score", 0.0),
+                # ── ETF Phase 3 ──
+                "is_etf": c.get("is_etf", False),
+                "etf_category": c.get("etf_category", ""),
+                "holding_days": c.get("holding_days", 10),
             }
             registered += 1
 
         lines = [f"👁 장 시작 - {registered}종목 실시간 감시 시작"]
         for code, w in self._entry_watch.items():
+            etf_tag = " [ETF]" if w.get("is_etf") else ""
             mtm_tag = " [MTM]" if w.get("regime") == "MOMENTUM" else ""
+            extra_tag = etf_tag or mtm_tag
             lines.append(
-                f"  📡 {w['name']}({code}){mtm_tag} 점수:{w['score']:.0f} "
+                f"  📡 {w['name']}({code}){extra_tag} 점수:{w['score']:.0f} "
                 f"금액:{w['buy_amount']:,}원 "
                 f"({w['split_count']}분할×{w['split_amount']:,}원)"
             )
@@ -867,8 +904,9 @@ class AutoTrader:
                 prev_close = watch["prev_close"]
                 open_price = watch["open_price"]
 
-                # ── 진입 조건 체크 (NORMAL 3/6, MOMENTUM 2/6) ──
+                # ── 진입 조건 체크 (NORMAL 3/6, MOMENTUM 2/6, ETF 2/3) ──
                 is_momentum = watch.get("regime") == "MOMENTUM"
+                is_etf_entry = watch.get("is_etf", False)
                 conditions_met = 0
                 conditions_detail = []
 
@@ -918,41 +956,50 @@ class AutoTrader:
                     conditions_met += 1
                     conditions_detail.append("양봉")
 
-                # 4) 체결강도 100+ (매수 우위)
-                strength = price_info.get("strength", 0)
-                if strength >= 100:
+                # 4) 체결강도 100+ (매수 우위) — ETF 스킵
+                if is_etf_entry:
                     conditions_met += 1
-                    conditions_detail.append(f"체결{strength:.0f}")
+                    conditions_detail.append("체결스킵(ETF)")
+                else:
+                    strength = price_info.get("strength", 0)
+                    if strength >= 100:
+                        conditions_met += 1
+                        conditions_detail.append(f"체결{strength:.0f}")
 
-                # 5) AI EYE 점수 체크
-                ai_score = -1
-                try:
-                    rtm = self._get_rt_monitor()
-                    # 임시 등록 → 평가 → 해제
-                    rtm.register_position(
-                        code, watch["name"], cp, watch["sl"], watch["tp"]
-                    )
-                    snap = await asyncio.to_thread(rtm.evaluate_position, code)
-                    if snap:
-                        ai_score = snap.realtime_score
-                        watch["ai_scores"].append(ai_score)
-                    rtm.unregister_position(code)
-                except Exception:
-                    pass
-
-                ai_threshold = 30 if is_momentum else 50
-                if ai_score >= ai_threshold:
+                # 5) AI EYE 점수 체크 — ETF 스킵
+                if is_etf_entry:
                     conditions_met += 1
-                    mtm_s = "(MTM)" if is_momentum and ai_score < 50 else ""
-                    conditions_detail.append(f"AI{ai_score}{mtm_s}")
-                elif ai_score >= 0:
-                    conditions_detail.append(f"AI{ai_score}(약)")
+                    conditions_detail.append("AI스킵(ETF)")
+                else:
+                    ai_score = -1
+                    try:
+                        rtm = self._get_rt_monitor()
+                        # 임시 등록 → 평가 → 해제
+                        rtm.register_position(
+                            code, watch["name"], cp, watch["sl"], watch["tp"]
+                        )
+                        snap = await asyncio.to_thread(rtm.evaluate_position, code)
+                        if snap:
+                            ai_score = snap.realtime_score
+                            watch["ai_scores"].append(ai_score)
+                        rtm.unregister_position(code)
+                    except Exception:
+                        pass
+
+                    ai_threshold = 30 if is_momentum else 50
+                    if ai_score >= ai_threshold:
+                        conditions_met += 1
+                        mtm_s = "(MTM)" if is_momentum and ai_score < 50 else ""
+                        conditions_detail.append(f"AI{ai_score}{mtm_s}")
+                    elif ai_score >= 0:
+                        conditions_detail.append(f"AI{ai_score}(약)")
 
                 # 6) MACD 0선 크로스 상태 (일봉 기반)
-                # MOMENTUM: MACD 스킵 (초기 진입이므로 0선 안 왔을 수 있음)
-                if is_momentum:
+                # MOMENTUM/ETF: MACD 스킵
+                if is_momentum or is_etf_entry:
                     conditions_met += 1
-                    conditions_detail.append("MACD스킵(MTM)")
+                    tag = "MTM" if is_momentum else "ETF"
+                    conditions_detail.append(f"MACD스킵({tag})")
                 else:
                     try:
                         from strategies.macd_zero_scanner import _calc_macd
@@ -975,19 +1022,24 @@ class AutoTrader:
                         pass
 
                 # 5분마다 관찰 로그 (매 10회 = 30초 * 10 = 5분)
+                _total_conds = 6
                 if watch["checks"] % 10 == 0:
+                    etf_tag = "[ETF] " if is_etf_entry else ""
                     logger.info(
-                        f"진입감시 {watch['name']}: "
+                        f"진입감시 {etf_tag}{watch['name']}: "
                         f"현재{cp:,} 시가{open_price:,} 갭{gap_pct:+.1f}% | "
-                        f"조건 {conditions_met}/6 | "
+                        f"조건 {conditions_met}/{_total_conds} | "
                         f"{' '.join(conditions_detail)}"
                     )
 
                 # ── 진입 조건 충족! → 분할매수 ──
-                # MOMENTUM: 2개 / NORMAL: 3개 (연말 4개)
+                # ETF: 5개 (가격안정+양봉+체결스킵+AI스킵+MACD스킵 → 5/6)
+                # MOMENTUM: 3개 / NORMAL: 3개 (연말 4개)
                 _now = datetime.now()
                 _yearend = (_now.month == 12 and _now.day >= 15) or (_now.month == 1 and _now.day <= 5)
-                if is_momentum:
+                if is_etf_entry:
+                    entry_threshold = 5  # 자동패스3 + 가격안정+양봉 = 5
+                elif is_momentum:
                     entry_threshold = 3  # MACD스킵 포함 6조건 중 3개 (실제 5개 평가 중 60%)
                 else:
                     entry_threshold = 4 if _yearend else 3
@@ -1078,6 +1130,9 @@ class AutoTrader:
                                     "trailing_activated": False,
                                     "trailing_sl": 0,
                                     "regime": watch.get("regime", "NORMAL"),
+                                    "is_etf": watch.get("is_etf", False),
+                                    "etf_category": watch.get("etf_category", ""),
+                                    "holding_days": watch.get("holding_days", 10),
                                 }
                                 # MOMENTUM: 타이트 SL (-3.5%)
                                 if watch.get("regime") == "MOMENTUM":
@@ -1745,6 +1800,9 @@ class AutoTrader:
                     effective_max = min(effective_max, 5)
                 if code in reversal_codes:
                     effective_max = min(effective_max, 3)
+                # ETF 보유일 제한 (레버리지/인버스=3일, 섹터=5일, 원자재=10일)
+                if pos.get("is_etf"):
+                    effective_max = min(effective_max, pos.get("holding_days", 5))
                 if hold_days >= effective_max:
                     action = ACTION_FULL_SELL
                     reason = f"최대 보유일 {effective_max}일 도달" + (
@@ -2966,8 +3024,10 @@ class AutoTrader:
 
         analyzer = SupplyAnalyzer()
 
-        # ETF 제외
-        exclude = {"069500", "371160", "102780", "305720", "018880", "011210"}
+        # ETF 제외 (Phase 3: ETF 추천 시스템 별도 관리 → 스캔에서만 제외)
+        from data.etf_universe import get_all_etf_codes
+        etf_codes = set(get_all_etf_codes())
+        exclude = etf_codes | {"371160", "018880", "011210"}
         codes = [c for c in UNIVERSE.keys() if c not in exclude]
 
         fulls = analyzer.scan_all_full(codes)

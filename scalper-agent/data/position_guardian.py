@@ -439,6 +439,97 @@ SIGNAL_WEIGHTS = {
 }
 
 
+def _evaluate_etf_position(
+    code: str, name: str,
+    current_price: int = 0, change_pct: float = 0.0,
+    entry: int = 0, tp1: int = 0, sl: int = 0,
+    etf_category: str = "", holding_days: int = 5,
+    days_held: int = 0,
+) -> PositionVerdict:
+    """ETF 전용 포지션 평가 (개별주 수급 분석 대신 간소화)
+
+    - 보유일수 초과 → EXIT
+    - SL 이탈 → EXIT
+    - TP 도달 → TAKE_PROFIT
+    - 기초자산 방향 체크 (인버스/원자재)
+    """
+    logger.info(f"[Guardian-ETF] {name}({code}) 평가 (cat={etf_category}, D{days_held}/{holding_days})")
+
+    signals = []
+    risk_score = 0.0
+
+    # PNL 계산
+    pnl_pct = 0.0
+    if entry > 0 and current_price > 0:
+        pnl_pct = (current_price - entry) / entry * 100
+
+    # 1) 보유일수 체크
+    if days_held >= holding_days:
+        risk_score += 50
+        signals.append(GuardianSignal(
+            name="HOLDING_LIMIT", score=80,
+            severity="DANGER", detail=f"보유 {days_held}일/{holding_days}일 초과"
+        ))
+    elif days_held >= holding_days - 1:
+        risk_score += 20
+        signals.append(GuardianSignal(
+            name="HOLDING_LIMIT", score=40,
+            severity="WARNING", detail=f"보유 {days_held}일/{holding_days}일 (내일 만기)"
+        ))
+    else:
+        signals.append(GuardianSignal(
+            name="HOLDING_LIMIT", score=0,
+            severity="SAFE", detail=f"보유 {days_held}일/{holding_days}일"
+        ))
+
+    # 2) 가격 구조 (SL/TP)
+    if sl > 0 and current_price > 0 and current_price <= sl:
+        risk_score += 40
+        signals.append(GuardianSignal(
+            name="PRICE_CRACK", score=90,
+            severity="CRITICAL", detail=f"SL {sl:,} 이탈 (현재 {current_price:,})"
+        ))
+    elif entry > 0 and pnl_pct <= -3.0:
+        risk_score += 25
+        signals.append(GuardianSignal(
+            name="PRICE_CRACK", score=50,
+            severity="WARNING", detail=f"손실 {pnl_pct:.1f}%"
+        ))
+    else:
+        signals.append(GuardianSignal(
+            name="PRICE_CRACK", score=0,
+            severity="SAFE", detail=f"PNL {pnl_pct:+.1f}%"
+        ))
+
+    risk_score = max(0, min(100, risk_score))
+
+    # 액션 결정
+    if tp1 > 0 and current_price >= tp1:
+        action = "TAKE_PROFIT"
+        key_reason = f"TP({tp1:,}) 도달! 익절 권장"
+    elif risk_score >= 60:
+        action = "EXIT"
+        worst = max(signals, key=lambda s: s.score)
+        key_reason = f"{worst.name}: {worst.detail}"
+    elif risk_score >= 35:
+        action = "REDUCE"
+        key_reason = "복합 위험 요소"
+    else:
+        action = "HOLD"
+        key_reason = f"ETF 정상 (D{days_held}/{holding_days})"
+
+    verdict = PositionVerdict(
+        code=code, name=name,
+        current_price=current_price, change_pct=change_pct,
+        action=action, risk_score=round(risk_score, 1),
+        signals=signals, key_reason=key_reason,
+        entry_price=entry, tp1=tp1, sl=sl,
+        pnl_pct=round(pnl_pct, 1),
+    )
+    logger.info(f"  [ETF-{action}] risk={risk_score:.0f} | {key_reason}")
+    return verdict
+
+
 def evaluate_position(
     code: str, name: str,
     current_price: int = 0, change_pct: float = 0.0,
@@ -549,6 +640,10 @@ def evaluate_all_holdings() -> List[PositionVerdict]:
                         "entry": info.get("entry_price", info.get("entry", 0)),
                         "tp1": info.get("target_price", info.get("tp1", 0)),
                         "sl": info.get("stop_loss", info.get("sl", 0)),
+                        "is_etf": info.get("is_etf", False),
+                        "etf_category": info.get("etf_category", ""),
+                        "holding_days": info.get("holding_days", 10),
+                        "entry_date": info.get("entry_date", ""),
                     })
                     seen_codes.add(code)
         except Exception as e:
@@ -573,13 +668,34 @@ def evaluate_all_holdings() -> List[PositionVerdict]:
         cp = resp.get("current_price", 0) if resp and resp.get("success") else 0
         chg = resp.get("change_rate", 0) if resp and resp.get("success") else 0
 
-        verdict = evaluate_position(
-            code=code, name=name,
-            current_price=cp, change_pct=chg,
-            entry=s.get("entry", 0),
-            tp1=s.get("tp1", 0),
-            sl=s.get("sl", 0),
-        )
+        if s.get("is_etf"):
+            # ETF 보유일수 계산
+            days_held = 0
+            ed = s.get("entry_date", "")
+            if ed:
+                try:
+                    entry_dt = datetime.fromisoformat(ed).date() if "T" in ed else date.fromisoformat(ed)
+                    days_held = (date.today() - entry_dt).days
+                except Exception:
+                    pass
+            verdict = _evaluate_etf_position(
+                code=code, name=name,
+                current_price=cp, change_pct=chg,
+                entry=s.get("entry", 0),
+                tp1=s.get("tp1", 0),
+                sl=s.get("sl", 0),
+                etf_category=s.get("etf_category", ""),
+                holding_days=s.get("holding_days", 5),
+                days_held=days_held,
+            )
+        else:
+            verdict = evaluate_position(
+                code=code, name=name,
+                current_price=cp, change_pct=chg,
+                entry=s.get("entry", 0),
+                tp1=s.get("tp1", 0),
+                sl=s.get("sl", 0),
+            )
         verdicts.append(verdict)
 
     # 위험도 내림차순 정렬
