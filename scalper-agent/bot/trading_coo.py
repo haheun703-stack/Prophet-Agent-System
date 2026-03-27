@@ -1368,7 +1368,7 @@ class TradingCOO:
             ))
 
         if stage1_jobs:
-            s1 = await self.run_parallel_async(stage1_jobs, timeout=300)
+            s1 = await self.run_parallel_async(stage1_jobs, timeout_per_job=300)
             results.extend(s1)
 
         # ── Stage 2: C12 → C13 순차 ──
@@ -1454,7 +1454,7 @@ class TradingCOO:
             ))
 
         if stage3_jobs:
-            s3 = await self.run_parallel_async(stage3_jobs, timeout=300)
+            s3 = await self.run_parallel_async(stage3_jobs, timeout_per_job=300)
             results.extend(s3)
 
         # ── 그룹 상태 업데이트 ──
