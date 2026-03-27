@@ -4703,7 +4703,31 @@ class BodyHunterBot:
                 pass
 
     def run(self):
-        """봇 시작 (blocking)"""
+        """봇 시작 (blocking)
+
+        TELEGRAM_POLLING=false → 폴링 없이 스케줄러만 실행 (send-only).
+        VPS에서만 폴링하고 로컬은 send-only로 409 Conflict 방지.
+        """
         app = self.build_app()
-        logger.info("텔레그램 봇 polling 시작...")
-        app.run_polling(allowed_updates=Update.ALL_TYPES)
+        poll_enabled = os.getenv("TELEGRAM_POLLING", "true").lower() != "false"
+
+        if poll_enabled:
+            logger.info("텔레그램 봇 polling 시작 (VPS 모드)")
+            app.run_polling(
+                allowed_updates=Update.ALL_TYPES,
+                drop_pending_updates=True,
+            )
+        else:
+            logger.info("텔레그램 봇 스케줄러 전용 모드 (TELEGRAM_POLLING=false)")
+            import asyncio
+            async def _scheduler_only():
+                async with app:
+                    await app.start()
+                    logger.info("스케줄러+발송 전용 — 폴링 없음 (409 Conflict 방지)")
+                    try:
+                        await asyncio.Event().wait()
+                    except (KeyboardInterrupt, SystemExit):
+                        pass
+                    finally:
+                        await app.stop()
+            asyncio.run(_scheduler_only())

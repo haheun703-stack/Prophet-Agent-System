@@ -2552,6 +2552,16 @@ def format_recommendation(report: RecommendationReport, max_budget: int = 0) -> 
                 lines.append(f"   {s['reason']}")
             lines.append("")
 
+    # ── 금요일 주말 리스크 안내 ──
+    from datetime import datetime as _dt
+    if _dt.now().weekday() == 4:  # 금요일
+        lines.append("=" * 32)
+        lines.append(
+            "📢 금요일 추천 안내: 주말 동안 해외 이벤트·지정학 "
+            "리스크가 반영되지 않습니다. 월요일 갭다운 가능성을 "
+            "감안하여 포지션 규모에 유의하세요."
+        )
+
     return "\n".join(lines)
 
 
@@ -2698,6 +2708,18 @@ def load_recommendation() -> Optional[RecommendationReport]:
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
+
+        # 형식 검증: 다른 시스템(quantum 등)이 덮어쓴 경우 감지
+        if "recommendations" not in data and "stocks" not in data:
+            logger.warning(
+                f"recommendation.json 형식 불일치 — 다른 시스템이 덮어쓴 것으로 판단. "
+                f"keys={list(data.keys())[:5]}"
+            )
+            return None
+
+        # "recommendations" 키 사용 시 "stocks"로 변환 (호환)
+        if "recommendations" in data and "stocks" not in data:
+            data["stocks"] = data["recommendations"]
 
         report = RecommendationReport(
             stage=data.get("stage", ""),
