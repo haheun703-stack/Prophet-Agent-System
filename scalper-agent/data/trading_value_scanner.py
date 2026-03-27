@@ -350,6 +350,24 @@ def save_tv_results(signals: list[TVSignal], path: Path = None):
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     logger.info(f"[TV Scanner] 저장 완료: {path} ({len(signals)}건)")
 
+    # ── 히스토리 아카이빙 (최근 7일 유지) ──
+    try:
+        history_dir = DATA_DIR / "tv_history"
+        history_dir.mkdir(parents=True, exist_ok=True)
+        hist_path = history_dir / f"{now.strftime('%Y-%m-%d')}.json"
+        hist_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        # 7일 초과 파일 정리
+        cutoff = now - timedelta(days=7)
+        for old in sorted(history_dir.glob("*.json")):
+            try:
+                fdate = datetime.strptime(old.stem, "%Y-%m-%d")
+                if fdate < cutoff:
+                    old.unlink()
+            except (ValueError, OSError):
+                pass
+    except Exception as e:
+        logger.warning(f"[TV Scanner] 히스토리 아카이빙 실패: {e}")
+
 
 def load_tv_results(path: Path = None) -> list[dict]:
     """저장된 TV 스캐너 결과 로드"""
@@ -365,6 +383,115 @@ def load_tv_results(path: Path = None) -> list[dict]:
     except Exception as e:
         logger.warning(f"TV 스캐너 결과 로드 실패: {e}")
         return []
+
+
+# =============================================================================
+# TV 시그널 잔존 효과 (Signal Persistence)
+# =============================================================================
+
+# Decay 테이블: (pattern, min_score) → {days_ago: bonus}
+_PERSISTENCE_TABLE = {
+    ("EXPLOSION", 80):           {1: 15, 2: 10, 3: 5},
+    ("EXPLOSION", 70):           {1: 10, 2: 5,  3: 2},
+    ("QUIET_ACCUMULATION", 80):  {1: 18, 2: 12, 3: 5},
+    ("QUIET_ACCUMULATION", 70):  {1: 12, 2: 6,  3: 3},
+    ("GRADUAL_BUILDUP", 70):     {1: 8,  2: 4,  3: 2},
+}
+
+
+def calc_tv_persistence(today_codes: set = None, max_lookback: int = 3) -> dict:
+    """T-1 ~ T-N 히스토리에서 잔존 시그널 점수 계산
+
+    Args:
+        today_codes: 오늘 이미 감지된 종목 (중복 방지). None이면 자동 로드.
+        max_lookback: 최대 며칠 전까지 조회 (기본 3)
+
+    Returns: {code: {
+        "days_ago": int, "peak_score": float, "peak_pattern": str,
+        "peak_ratio": float, "change_pct": float,
+        "persistence_score": float, "consecutive": int,
+    }}
+    """
+    history_dir = DATA_DIR / "tv_history"
+    if not history_dir.exists():
+        return {}
+
+    # 오늘 감지 종목 로드
+    if today_codes is None:
+        today_codes = set()
+        today_signals = load_tv_results()
+        for s in today_signals:
+            today_codes.add(s.get("code", ""))
+
+    # 히스토리 파일 로드 (최신순)
+    hist_files = sorted(history_dir.glob("*.json"), reverse=True)
+
+    # 오늘 파일 제외
+    today = datetime.now().date()
+    today_str = today.strftime("%Y-%m-%d")
+    hist_files = [f for f in hist_files if f.stem != today_str]
+
+    if not hist_files:
+        return {}
+
+    # 실제 날짜 차이로 days_ago 계산 (파일 갭/주말 대응)
+    code_history = {}  # {code: [(days_ago, signal_dict), ...]}
+    for hf in hist_files:
+        try:
+            file_date = datetime.strptime(hf.stem, "%Y-%m-%d").date()
+            days_ago = (today - file_date).days
+            if days_ago < 1 or days_ago > max_lookback:
+                continue
+            data = json.loads(hf.read_text(encoding="utf-8"))
+            for sig in data.get("signals", []):
+                code = sig.get("code", "")
+                if not code or code in today_codes:
+                    continue
+                if code not in code_history:
+                    code_history[code] = []
+                code_history[code].append((days_ago, sig))
+        except Exception:
+            continue
+
+    # 잔존 점수 계산
+    result = {}
+    for code, entries in code_history.items():
+        # 가장 강한 시그널 찾기 (peak)
+        best_entry = max(entries, key=lambda e: e[1].get("score", 0))
+        days_ago, peak_sig = best_entry
+
+        peak_score = peak_sig.get("score", 0)
+        peak_pattern = peak_sig.get("pattern", "NORMAL")
+        peak_ratio = peak_sig.get("tv_ratio", 0)
+        change_pct = peak_sig.get("change_pct", 0)
+        name = peak_sig.get("name", code)
+
+        # Decay 테이블 매칭
+        persistence_score = 0.0
+        for (pat, min_sc), decay_map in _PERSISTENCE_TABLE.items():
+            if peak_pattern == pat and peak_score >= min_sc:
+                persistence_score = decay_map.get(days_ago, 0)
+                break
+
+        if persistence_score <= 0:
+            continue
+
+        # 연속 감지 일수
+        consecutive = len(set(d for d, _ in entries))
+
+        result[code] = {
+            "days_ago": days_ago,
+            "name": name,
+            "peak_score": peak_score,
+            "peak_pattern": peak_pattern,
+            "peak_ratio": peak_ratio,
+            "change_pct": change_pct,
+            "persistence_score": persistence_score,
+            "consecutive": consecutive,
+        }
+
+    logger.info(f"[TV Persistence] {len(result)}종목 잔존 시그널 감지")
+    return result
 
 
 # =============================================================================

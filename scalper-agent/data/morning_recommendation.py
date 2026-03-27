@@ -1185,6 +1185,23 @@ def _step5_cross_validate(
                 tv_direct += cluster_bonus
                 sources.append(f"tv_cluster(+{cluster_bonus})")
 
+        # ── TV 잔존 효과 (오늘 TV 미감지지만 과거 강신호 있었던 종목) ──
+        if tv_direct == 0 and tv_persistence and code in tv_persistence:
+            pinfo = tv_persistence[code]
+            p_score = pinfo["persistence_score"]
+            p_pattern = pinfo["peak_pattern"]
+            p_days = pinfo["days_ago"]
+            p_peak = pinfo["peak_score"]
+            tv_direct = p_score
+            _tv_pattern = p_pattern
+            _tv_score = p_peak
+            sources.append(f"tv_persist(T-{p_days}:{p_pattern}:{p_peak:.0f})")
+            # 연속 모멘텀: T-1 EXPLOSION + 등락률 15%+ → 추가 +10
+            if (p_days == 1 and p_pattern == "EXPLOSION"
+                    and abs(pinfo.get("change_pct", 0)) >= 15.0):
+                tv_direct += 10
+                sources.append("tv_momentum(+10)")
+
         # ── 공매도 잔고 스코어 ──────────────
         short_sc = 0.0
         try:
@@ -1746,6 +1763,27 @@ def run_evening_recommendation() -> RecommendationReport:
                 existing_codes.add(code)
                 tv_added += 1
         logger.info(f"[Step 5a.5] 거래대금 이상: {len(tv_signals)}종목 ({tv_added}종목 신규추가) ({time.time()-t_tv:.0f}s)")
+
+        # ── TV 잔존 효과 (Signal Persistence) ──
+        tv_persistence = {}
+        try:
+            from data.trading_value_scanner import calc_tv_persistence
+            today_tv_codes = set(tv_signals.keys())
+            tv_persistence = calc_tv_persistence(today_codes=today_tv_codes)
+            # 잔존 종목도 교차검증 대상에 추가
+            persist_added = 0
+            for pcode, pinfo in tv_persistence.items():
+                if pinfo["persistence_score"] >= 10 and pcode not in existing_codes:
+                    pname = pinfo.get("name", pcode)
+                    all_codes_set.add((pcode, pname))
+                    codes_names.append((pcode, pname))
+                    existing_codes.add(pcode)
+                    persist_added += 1
+            if tv_persistence:
+                logger.info(f"[Step 5a.6] TV 잔존 시그널: {len(tv_persistence)}종목 ({persist_added}종목 신규추가)")
+        except Exception as e:
+            logger.warning(f"[TV Persistence] 로드 실패: {e}")
+
         # TV 신규추가 종목 보충 분석 (tech + news)
         if tv_added > 0:
             tv_new_codes = [(code, tv_signals[code].name) for code, tv_sig in tv_signals.items()
