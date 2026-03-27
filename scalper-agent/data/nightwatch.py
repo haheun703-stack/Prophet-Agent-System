@@ -353,6 +353,36 @@ JARVIS_SECTORS = {
         "kr_tier2": [],
         "relay": "하락시그널→인버스ETF",
     },
+    # ── 원자재 ETF (릴레이 연동) ──
+    "commodity_etf_gold": {
+        "name": "🥇 금 ETF",
+        "us": ["GLD", "IAU"],
+        "kr_tier1": [
+            {"code": "132030", "name": "KODEX 골드선물(H)", "is_etf": True},
+            {"code": "411060", "name": "ACE KRX금현물", "is_etf": True},
+        ],
+        "kr_tier2": [],
+        "relay": "금가격상승→골드ETF",
+    },
+    "commodity_etf_oil": {
+        "name": "🛢 원유 ETF",
+        "us": ["USO", "BNO"],
+        "kr_tier1": [
+            {"code": "261220", "name": "KODEX WTI원유선물(H)", "is_etf": True},
+            {"code": "130680", "name": "TIGER 원유선물Enhanced(H)", "is_etf": True},
+        ],
+        "kr_tier2": [],
+        "relay": "원유가격상승→원유ETF",
+    },
+    "commodity_etf_metals": {
+        "name": "🏗 금속 ETF",
+        "us": ["COPX", "SLV"],
+        "kr_tier1": [
+            {"code": "139320", "name": "TIGER 금속선물(H)", "is_etf": True},
+        ],
+        "kr_tier2": [],
+        "relay": "구리/은상승→금속ETF",
+    },
 }
 
 # ── KRX 업종명 → JARVIS 섹터 키 매핑 (섹터 모멘텀 연동) ──
@@ -1125,6 +1155,16 @@ def select_sectors_and_targets(
             commodity_addon.append("shipbuilding")  # 탱커 수요
         commodity_reason += " + 유가↑"
 
+    # ── 원자재 ETF 릴레이 자동 추가 ──
+    _etf_addon_map = {
+        "precious_metals": "commodity_etf_gold",
+        "oil_resource": "commodity_etf_oil",
+        "industrial_metals": "commodity_etf_metals",
+    }
+    for stock_key, etf_key in _etf_addon_map.items():
+        if stock_key in commodity_addon and etf_key not in commodity_addon:
+            commodity_addon.append(etf_key)
+
     # ── 강매수 (5+) ──
     if total_score >= 5:
         if macro.get("nasdaq_up"):
@@ -1220,6 +1260,7 @@ def select_sectors_and_targets(
                 "sector_key": key,
                 "tier": 1,
                 "priority": priority,
+                "is_etf": stock.get("is_etf", False),
             })
 
         # Tier 2 (max_tier >= 2 일 때만)
@@ -1232,6 +1273,7 @@ def select_sectors_and_targets(
                     "sector_key": key,
                     "tier": 2,
                     "priority": priority,
+                    "is_etf": stock.get("is_etf", False),
                 })
 
     # HOT 섹터 top movers 직접 주입 (JARVIS 미매핑 종목)

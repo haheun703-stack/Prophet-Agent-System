@@ -7,6 +7,7 @@
 수집 항목:
   1. pykrx 일봉 OHLCV (data_store/daily/)
   2. 수급 데이터 - 투자자/외인소진/공매도잔고/공매도거래량 (data_store/flow/, short/)
+  2b. ETF 일봉 OHLCV (data_store/etf_daily/) — ~30종목
   3. 국적별 외국인 수급 (data_store/nationality/) - 추천+보유 종목
   4. Parquet 통합 빌드 (data_store/raw/, processed/)
   5. SpaceX 관련주 일일 모니터링 (data_store/spacex_report.json)
@@ -111,6 +112,20 @@ def step2_supply_demand(codes: list, force: bool = False):
     except Exception as e:
         logger.error(f"[2/6] 수급 실패: {e}")
     return results
+
+
+def step2b_etf_ohlcv(force: bool = False):
+    """2b단계: ETF 일봉 수집 (pykrx → data_store/etf_daily/)"""
+    logger.info("[2b] ETF 일봉 수집 시작...")
+    t0 = time.time()
+    try:
+        from data.etf_universe import collect_etf_daily
+        cnt = collect_etf_daily(months=12, force=force)
+        logger.info(f"[2b] ETF 일봉 완료: {cnt}종목 ({int(time.time()-t0)}초)")
+        return cnt
+    except Exception as e:
+        logger.error(f"[2b] ETF 일봉 실패: {e}")
+        return 0
 
 
 def _get_top200_codes() -> list:
@@ -488,12 +503,13 @@ def main():
     timings = {}
     from concurrent.futures import ThreadPoolExecutor
 
-    # DC-07: Step1(일봉 pykrx) + Step2(수급 KIS) 동시 실행
-    logger.info("[1+2/6] 일봉 + 수급 동시 수집 시작...")
+    # DC-07: Step1(일봉) + Step2(수급) + Step2b(ETF) 동시 실행
+    logger.info("[1+2+2b] 일봉 + 수급 + ETF 동시 수집 시작...")
     t12 = time.time()
-    with ThreadPoolExecutor(max_workers=2) as executor:
+    with ThreadPoolExecutor(max_workers=3) as executor:
         f1 = executor.submit(step1_daily_ohlcv, codes, args.force)
         f2 = executor.submit(step2_supply_demand, codes, args.force)
+        f2b = executor.submit(step2b_etf_ohlcv, args.force)
         # C3: 개별 try/except — 한쪽 실패해도 다른 쪽 결과 보존
         try:
             results["daily"] = f1.result()
@@ -505,8 +521,13 @@ def main():
         except Exception as e:
             logger.error(f"[C3] Step2 수급 스레드 실패: {e}")
             results["flow"] = {}
+        try:
+            results["etf_daily"] = f2b.result()
+        except Exception as e:
+            logger.error(f"[C3] Step2b ETF 스레드 실패: {e}")
+            results["etf_daily"] = 0
     timings["step1_2"] = int(time.time() - t12)
-    logger.info(f"[1+2/6] 일봉+수급 동시 완료: {timings['step1_2']}초")
+    logger.info(f"[1+2+2b] 일봉+수급+ETF 동시 완료: {timings['step1_2']}초")
 
     # 3. 국적별 (SpaceX 관련주 코드도 국적별 수집에 포함)
     t3 = time.time()
