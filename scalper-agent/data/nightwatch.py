@@ -1320,6 +1320,26 @@ def calculate_nightwatch_score(
     except Exception:
         pass
 
+    # NQ(나스닥) 직접 보정 — 나스닥 등락이 NXT 갭업 핵심 드라이버
+    nq_data = raw_indicators.get("NQ", {})
+    nq_pct = nq_data.get("change_pct", 0) or 0
+    nq_adj = 0.0
+    if nq_pct >= 1.5:
+        nq_adj = +2.0
+    elif nq_pct >= 0.8:
+        nq_adj = +1.0
+    elif nq_pct >= 0.3:
+        nq_adj = +0.5
+    elif nq_pct <= -1.5:
+        nq_adj = -2.0
+    elif nq_pct <= -0.8:
+        nq_adj = -1.0
+    elif nq_pct <= -0.3:
+        nq_adj = -0.5
+    if abs(nq_adj) > 0:
+        total += nq_adj
+        logger.info(f"[NXT] NQ 직접 보정: {nq_adj:+.1f} (NQ {nq_pct:+.2f}%)")
+
     total = max(-10.0, min(10.0, total))
 
     # NXT-04: 시그널 구간 재조정 (한국장 강도 반영)
@@ -1372,31 +1392,216 @@ def calculate_nightwatch_score(
 
 
 # ═══════════════════════════════════════════════════
+#  [NXT 조기 알림] 사전 수집 + 캐시
+# ═══════════════════════════════════════════════════
+NXT_EARLY_DATA_PATH = DATA_DIR / "nxt_early_data.json"
+
+
+def collect_nxt_early_data() -> dict:
+    """NXT stages 1~4 사전 수집 (G6 C4E에서 C3 일봉수집과 독립 병렬 실행).
+
+    stages 1(아시안), 2(유럽), 3(괴리) 병렬 → stage 4(매크로) 순차.
+    결과를 nxt_early_data.json에 캐시하여 16:35 run_nightwatch()에서 재사용.
+    """
+    import concurrent.futures
+    logger.info("[NXT-EARLY] 사전 데이터 수집 시작")
+
+    results = {}
+
+    # stages 1~3 병렬 (yfinance 네트워크 I/O — GIL 영향 적음)
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=3, thread_name_prefix="nxt_early"
+    ) as ex:
+        f1 = ex.submit(collect_asian_risk)
+        f2 = ex.submit(collect_europe_open)
+        f3 = ex.submit(detect_divergence)
+
+        try:
+            asian_score, asian_detail = f1.result(timeout=90)
+            results["asian_score"] = asian_score
+            results["asian_detail"] = asian_detail
+        except Exception as e:
+            logger.warning(f"[NXT-EARLY] 1단 실패: {e}")
+            results["asian_score"] = 0.0
+            results["asian_detail"] = {}
+
+        try:
+            europe_score, europe_detail = f2.result(timeout=90)
+            results["europe_score"] = europe_score
+            results["europe_detail"] = europe_detail
+        except Exception as e:
+            logger.warning(f"[NXT-EARLY] 2단 실패: {e}")
+            results["europe_score"] = 0.0
+            results["europe_detail"] = {}
+
+        try:
+            div_score, divergences, raw = f3.result(timeout=90)
+            results["div_score"] = div_score
+            results["divergences"] = divergences
+            results["raw"] = raw
+        except Exception as e:
+            logger.warning(f"[NXT-EARLY] 3단 실패: {e}")
+            results["div_score"] = 0.0
+            results["divergences"] = []
+            results["raw"] = {}
+
+    # stage 4: macro (stage 3 raw 필요 → 순차)
+    try:
+        macro_conditions, macro_raw = collect_macro_conditions(
+            results.get("asian_detail", {}),
+            results.get("raw", {}),
+        )
+        results["raw"].update(macro_raw)
+        results["macro_conditions"] = macro_conditions
+    except Exception as e:
+        logger.warning(f"[NXT-EARLY] 4단 실패: {e}")
+        results["macro_conditions"] = {}
+
+    results["collected_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # 원자적 저장
+    try:
+        tmp = NXT_EARLY_DATA_PATH.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(results, f, ensure_ascii=False, indent=2, default=str)
+        tmp.replace(NXT_EARLY_DATA_PATH)
+        logger.info(f"[NXT-EARLY] 수집 완료 → {NXT_EARLY_DATA_PATH.name}")
+    except Exception as e:
+        logger.error(f"[NXT-EARLY] 저장 실패: {e}")
+
+    return results
+
+
+def _load_early_data_if_fresh(max_age_hours: float = 3.0) -> Optional[dict]:
+    """nxt_early_data.json 로드 — max_age_hours 이내 데이터만 유효."""
+    if not NXT_EARLY_DATA_PATH.exists():
+        return None
+    try:
+        data = json.loads(NXT_EARLY_DATA_PATH.read_text("utf-8"))
+        collected_at = data.get("collected_at", "")
+        if not collected_at:
+            return None
+        dt = datetime.strptime(collected_at, "%Y-%m-%d %H:%M:%S")
+        age_hours = (datetime.now() - dt).total_seconds() / 3600
+        if age_hours > max_age_hours:
+            logger.info(f"[NXT-EARLY] 캐시 만료 ({age_hours:.1f}h > {max_age_hours}h)")
+            return None
+        return data
+    except Exception:
+        return None
+
+
+def format_nxt_pre_alert(early_data: dict) -> str:
+    """사전 수집 데이터만으로 NXT 예비 알림 메시지 생성 (NASDAQ 방향 강조)."""
+    asian_score = early_data.get("asian_score", 0.0)
+    europe_score = early_data.get("europe_score", 0.0)
+    div_score = early_data.get("div_score", 0.0)
+    macro = early_data.get("macro_conditions", {})
+    raw = early_data.get("raw", {})
+    ad = early_data.get("asian_detail", {})
+    ed = early_data.get("europe_detail", {})
+
+    # 예비 총점 (4.5단 한국장 강도 미포함)
+    partial_total = asian_score + europe_score + div_score
+    partial_total = max(-10.0, min(10.0, partial_total))
+
+    # NQ 방향 강조
+    nq_pct = macro.get("nasdaq_pct", None)
+    nq_line = ""
+    nq_verdict = ""
+    if nq_pct is not None:
+        if nq_pct >= 1.0:
+            nq_verdict = "NXT 고확신 진입 후보"
+        elif nq_pct >= 0.5:
+            nq_verdict = "NXT 진입 고려"
+        elif nq_pct <= -1.0:
+            nq_verdict = "NXT 진입 자제"
+        else:
+            nq_verdict = "중립"
+        nq_line = f"NASDAQ: {nq_pct:+.2f}%"
+
+    # 예비 판정
+    if partial_total >= 4:
+        pre_signal = "매수 유력"
+    elif partial_total >= 1.5:
+        pre_signal = "매수 고려"
+    elif partial_total >= -1:
+        pre_signal = "관망"
+    else:
+        pre_signal = "진입 자제"
+
+    vix_val = raw.get("VIX", {}).get("value", "N/A")
+    dax_pct = ed.get("DAX_30min", {}).get("change_pct", 0) or 0
+    audjpy_pct = ad.get("AUD/JPY", {}).get("change_pct", 0) or 0
+
+    ts = early_data.get("collected_at", "")[:16]
+    lines = [
+        f"[NXT 예비 알림] {ts}",
+        "=" * 30,
+        f"예비 점수: {partial_total:+.1f} (4.5단 미포함)",
+        f"예비 판단: {pre_signal}",
+        "",
+    ]
+    if nq_line:
+        lines.append(f"[핵심] {nq_line}")
+        if nq_verdict:
+            lines.append(f"  => {nq_verdict}")
+        lines.append("")
+    lines.extend([
+        f"DAX 30분: {dax_pct:+.2f}%",
+        f"VIX: {vix_val}",
+        f"AUD/JPY: {audjpy_pct:+.2f}%",
+        f"유럽: {europe_score:+.1f} | 아시안: {asian_score:+.1f} | 괴리: {div_score:+.1f}",
+        "",
+        "* 16:35 최종 판단 후 NXT 대상 종목 확정",
+        "* 한국장 강도 반영 시 점수 변동 가능",
+        "=" * 30,
+    ])
+    return "\n".join(lines)
+
+
+# ═══════════════════════════════════════════════════
 #  메인 실행
 # ═══════════════════════════════════════════════════
 def run_nightwatch() -> NightwatchReport:
-    """NIGHTWATCH 전체 실행 (3단 체인 + JARVIS 섹터 매핑)"""
+    """NIGHTWATCH 전체 실행 (3단 체인 + JARVIS 섹터 매핑).
+
+    nxt_early_data.json 캐시가 신선하면 stages 1~4를 스킵하여
+    16:35 실행 시 5분 이내 완료.
+    """
     logger.info("[NIGHTWATCH] 실행 시작")
 
-    # 1단: 아시안 리스크
-    logger.info("[NIGHTWATCH] [1단] 아시안 리스크 수집...")
-    asian_score, asian_detail = collect_asian_risk()
-    logger.info(f"[NIGHTWATCH] 아시안 스코어: {asian_score:+.1f}")
+    # ── 사전 수집 캐시 확인 (C4E에서 15:40~16:00에 수집된 경우) ──
+    early_data = _load_early_data_if_fresh()
 
-    # 2단: 유럽 오픈
-    logger.info("[NIGHTWATCH] [2단] 유럽 오픈 수집...")
-    europe_score, europe_detail = collect_europe_open()
-    logger.info(f"[NIGHTWATCH] 유럽 스코어: {europe_score:+.1f}")
+    if early_data:
+        logger.info("[NIGHTWATCH] 사전 수집 캐시 사용 (stages 1~4 스킵)")
+        asian_score = early_data.get("asian_score", 0.0)
+        asian_detail = early_data.get("asian_detail", {})
+        europe_score = early_data.get("europe_score", 0.0)
+        europe_detail = early_data.get("europe_detail", {})
+        div_score = early_data.get("div_score", 0.0)
+        divergences = early_data.get("divergences", [])
+        raw = early_data.get("raw", {})
+        macro_conditions = early_data.get("macro_conditions", {})
+    else:
+        # 캐시 MISS → 기존 순차 실행 (fallback)
+        logger.info("[NIGHTWATCH] [1단] 아시안 리스크 수집...")
+        asian_score, asian_detail = collect_asian_risk()
+        logger.info(f"[NIGHTWATCH] 아시안 스코어: {asian_score:+.1f}")
 
-    # 3단: 괴리 감지
-    logger.info("[NIGHTWATCH] [3단] 괴리 감지...")
-    div_score, divergences, raw = detect_divergence()
-    logger.info(f"[NIGHTWATCH] 괴리 스코어: {div_score:+.1f}, 감지: {len(divergences)}건")
+        logger.info("[NIGHTWATCH] [2단] 유럽 오픈 수집...")
+        europe_score, europe_detail = collect_europe_open()
+        logger.info(f"[NIGHTWATCH] 유럽 스코어: {europe_score:+.1f}")
 
-    # 4단: 매크로 조건 수집 (JARVIS 섹터 매핑용)
-    logger.info("[NIGHTWATCH] [4단] 매크로 조건 수집 (NQ/CL/HG)...")
-    macro_conditions, macro_raw = collect_macro_conditions(asian_detail, raw)
-    raw.update(macro_raw)  # 추가 지표 병합
+        logger.info("[NIGHTWATCH] [3단] 괴리 감지...")
+        div_score, divergences, raw = detect_divergence()
+        logger.info(f"[NIGHTWATCH] 괴리 스코어: {div_score:+.1f}, 감지: {len(divergences)}건")
+
+        logger.info("[NIGHTWATCH] [4단] 매크로 조건 수집 (NQ/CL/HG)...")
+        macro_conditions, macro_raw = collect_macro_conditions(asian_detail, raw)
+        raw.update(macro_raw)
+
     active = macro_conditions.get("active_text", [])
     logger.info(f"[NIGHTWATCH] 매크로: {', '.join(active) if active else '특이사항 없음'}")
 

@@ -1129,18 +1129,21 @@ class TradingCOO:
                                  GroupStatus.SKIPPED):
                 logger.warning("[COO] G5 5분 초과 — 강제 진행")
 
-        # ── 2) C2 _job_flowx_universe_update (non-critical) ──
+        # ── 2) C2 + C4E 선행 병렬 (NXT 사전 수집은 C3 대기 없이 즉시) ──
+        early_jobs = []
         if self.bot:
-            r = await self.run_job_safe_async(
+            early_jobs.append((
                 "C2_flowx_universe",
-                self.bot._job_flowx_universe_update(context),
-                timeout=300,
-            )
-            results.append(r)
-            if not r.success:
-                logger.warning("[COO] C2 FLOWX 유니버스 실패 — 스킵")
-        else:
-            logger.warning("[COO] bot 미연결 — C2 스킵")
+                self.bot._job_flowx_universe_update(context)))
+        # C4E: NXT 사전 수집 (C3 일봉수집과 독립 — 핵심!)
+        early_jobs.append((
+            "C4E_nxt_early_collect",
+            self._job_nxt_early_collect(context)))
+
+        if early_jobs:
+            early_results = await self.run_parallel_async(
+                early_jobs, timeout_per_job=300)
+            results.extend(early_results)
 
         # ── 3) C3 ★ _job_collect_daily (CRITICAL!) ──
         c3_ok = False
@@ -1159,12 +1162,8 @@ class TradingCOO:
         else:
             logger.warning("[COO] bot 미연결 — C3 스킵")
 
-        # ── 4) C4 + C5 + C6 병렬 (non-critical) ──
+        # ── 4) C5 + C6 병렬 (C4는 C4E로 대체됨) ──
         parallel_jobs: List[Tuple[str, Coroutine]] = []
-        if self.auto_trader:
-            parallel_jobs.append(
-                ("C4_nightwatch_collect",
-                 self.auto_trader.job_nightwatch_collect(context)))
         if self.bot:
             parallel_jobs.append(
                 ("C5_options_signal",
@@ -1482,6 +1481,34 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[C19] FLOWX 스윙 업로드 실패 (무시): {e}")
             return {"flowx_swing": f"ERROR: {e}"}
+
+    async def _job_nxt_early_collect(self, context=None) -> dict:
+        """C4E: NXT 사전 데이터 수집 + 예비 알림 발송.
+
+        G6에서 C3(일봉수집 90분)과 독립 병렬로 실행.
+        stages 1~4를 캐시에 저장하여 16:35 run_nightwatch() 가속.
+        NQ 데이터 수집 성공 시 즉시 예비 알림 텔레그램 발송.
+        """
+        try:
+            from data.nightwatch import collect_nxt_early_data, format_nxt_pre_alert
+            import asyncio
+
+            data = await asyncio.to_thread(collect_nxt_early_data)
+            logger.info(f"[C4E] NXT 사전 수집 완료: {data.get('collected_at', '')}")
+
+            # NQ 데이터 있으면 예비 알림 발송
+            nq_pct = data.get("macro_conditions", {}).get("nasdaq_pct")
+            if nq_pct is not None and self.auto_trader:
+                msg = format_nxt_pre_alert(data)
+                alert_fn = getattr(self.auto_trader, "_send_alert", None)
+                if alert_fn and msg:
+                    await asyncio.to_thread(alert_fn, msg)
+                    logger.info("[C4E] NXT 예비 알림 발송 완료")
+
+            return {"nxt_early": "OK", "nasdaq_pct": nq_pct}
+        except Exception as e:
+            logger.warning(f"[C4E] NXT 사전 수집 실패 (무시): {e}")
+            return {"nxt_early": f"ERROR: {e}"}
 
     # ─────────────────────────────────────────────
     # FALLBACK-C13: 이브닝 분석 실패 시 복구
