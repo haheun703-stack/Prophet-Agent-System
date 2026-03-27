@@ -1,0 +1,434 @@
+"""
+FLOWX VIP 스윙시스템 → Supabase 업로드 모듈
+담당 테이블: swing_signals
+VIP 스윙 추천 + 모델 포트폴리오 + 분석 보고서
+
+BRAIN 역방향 등급 필터:
+  공격 (pct>=80) → A이상, 최대5종목
+  표준 (pct>=60) → AA이상, 최대3종목
+  방어 (pct>=40) → AAA만, 최대2종목
+  관망 (pct<40)  → 개별주 0, ETF/현금 전략+워치리스트
+"""
+import json
+import logging
+import os
+from datetime import date, datetime
+from pathlib import Path
+
+logger = logging.getLogger("flowx_swing")
+
+STORE_DIR = Path(__file__).resolve().parent.parent / "data_store"
+
+# ── 등급 서열 (필터링용) ──
+_GRADE_ORDER = {"AAA": 0, "AA": 1, "A": 2, "BBB": 3, "BB": 4, "B": 5, "C": 6, "D": 7, "F": 8}
+
+
+# ── Supabase 클라이언트 (lazy init, upload_short.py와 동일 패턴) ──
+_supabase = None
+
+
+def _get_client():
+    global _supabase
+    if _supabase is not None:
+        return _supabase
+
+    from dotenv import load_dotenv
+    env_path = Path(__file__).resolve().parent.parent.parent / ".env"
+    load_dotenv(env_path)
+
+    url = os.environ.get("SUPABASE_URL", "")
+    key = os.environ.get("SUPABASE_KEY", "")
+    if not url or not key:
+        logger.error("SUPABASE_URL / SUPABASE_KEY 미설정")
+        return None
+
+    from supabase import create_client
+    _supabase = create_client(url, key)
+    logger.info(f"Supabase 연결: {url[:40]}...")
+    return _supabase
+
+
+# ═══════════════════════════════════════
+#  BRAIN 역방향 등급 필터
+# ═══════════════════════════════════════
+
+def _get_swing_filter(brain_pct: int) -> tuple:
+    """BRAIN 비중에 따른 (min_grade, max_picks, mode_label) 결정"""
+    if brain_pct >= 80:
+        return "A", 5, "공격"
+    elif brain_pct >= 60:
+        return "AA", 3, "표준"
+    elif brain_pct >= 40:
+        return "AAA", 2, "방어"
+    else:
+        return "NONE", 0, "관망"
+
+
+def _grade_passes(stock_grade: str, min_grade: str) -> bool:
+    """stock_grade가 min_grade 이상인지 확인"""
+    if min_grade == "NONE":
+        return False
+    s_rank = _GRADE_ORDER.get(stock_grade, 99)
+    m_rank = _GRADE_ORDER.get(min_grade, 99)
+    return s_rank <= m_rank
+
+
+# ═══════════════════════════════════════
+#  메인: 스윙 페이지 데이터 생성
+# ═══════════════════════════════════════
+
+def generate_swing_page_data() -> dict:
+    """recommendation.json + brain_report.json + trade_objects.json
+    → FLOWX 스윙 페이지 데이터 생성"""
+    today_str = date.today().strftime("%Y-%m-%d")
+
+    # ── 1) BRAIN 로드 ──
+    brain_pct = 0
+    brain_verdict = "관망"
+    brain_reason = ""
+    analysis = {}
+
+    brain_path = STORE_DIR / "brain_report.json"
+    if brain_path.exists():
+        try:
+            brain = json.loads(brain_path.read_text("utf-8"))
+            brain_pct = brain.get("position_size_pct", 0)
+            brain_verdict_raw = brain.get("overall_verdict", "")
+
+            # verdict 번역
+            if brain_pct >= 80:
+                brain_verdict = "공격"
+            elif brain_pct >= 60:
+                brain_verdict = "표준"
+            elif brain_pct >= 40:
+                brain_verdict = "방어"
+            else:
+                brain_verdict = "관망"
+
+            brain_reason = brain.get("position_size_reason", brain_verdict_raw[:100])
+
+            # 분석 보고서: Brain 6Phase narrative 추출
+            analysis = {
+                "macro_summary": _safe_get_narrative(brain, "macro"),
+                "commodity_summary": _safe_get_narrative(brain, "commodity"),
+                "sector_summary": _safe_get_narrative(brain, "sector"),
+                "flow_summary": _safe_get_narrative(brain, "flow"),
+                "risk_summary": _safe_get_narrative(brain, "risk"),
+            }
+        except Exception as e:
+            logger.warning(f"brain_report.json 로드 실패: {e}")
+
+    # ── 2) 역방향 필터 결정 ──
+    min_grade, max_picks, mode_label = _get_swing_filter(brain_pct)
+    logger.info(f"[FLOWX 스윙] BRAIN {brain_pct}% → {mode_label} 모드 (min={min_grade}, max={max_picks})")
+
+    # ── 3) recommendation.json 로드 ──
+    rec_path = STORE_DIR / "recommendation.json"
+    rec_data = {}
+    if rec_path.exists():
+        try:
+            rec_data = json.loads(rec_path.read_text("utf-8"))
+        except Exception as e:
+            logger.warning(f"recommendation.json 로드 실패: {e}")
+
+    stocks = rec_data.get("stocks", [])
+    etf_recs = rec_data.get("etf_recommendations", [])
+
+    # ── 4) trade_objects.json 로드 ──
+    to_map = {}  # code → trade_object dict
+    to_path = STORE_DIR / "trade_objects.json"
+    if to_path.exists():
+        try:
+            to_data = json.loads(to_path.read_text("utf-8"))
+            for t in to_data.get("trades", []):
+                to_map[t.get("code", "")] = t
+        except Exception:
+            pass
+
+    # ── 5) 등급 필터링 + picks 생성 ──
+    picks = []
+    if min_grade != "NONE":
+        for s in stocks:
+            grade = s.get("grade", "F")
+            if not _grade_passes(grade, min_grade):
+                continue
+
+            code = s.get("code", "")
+            to = to_map.get(code, {})
+
+            pick = {
+                "code": code,
+                "name": s.get("name", ""),
+                "grade": grade,
+                "score": round(s.get("total_score", 0), 1),
+                "rr_ratio": round(to.get("rr_ratio", 0), 2),
+                "rr_verdict": to.get("rr_verdict", ""),
+                "entry_price": s.get("entry", 0),
+                "target_price": s.get("tp", 0),
+                "stop_price": s.get("sl", 0),
+                "hold_days": to.get("expected_hold_days", s.get("hold_days", 3)),
+                "conviction": _calc_conviction(s, to),
+                "catalyst": _build_catalyst(s),
+                "regime": s.get("regime", "NORMAL"),
+                "tv_pattern": s.get("tv_pattern", ""),
+                "news_sentiment": _extract_news_sentiment(s),
+                "tech_score": s.get("tech_score", 0),
+                "supply_signal": s.get("flow_signal", "NEUTRAL"),
+                "nat_power_grade": s.get("nat_power_grade", ""),
+            }
+            picks.append(pick)
+            if len(picks) >= max_picks:
+                break
+
+    # ── 6) ETF picks (모든 모드에서 표시) ──
+    etf_picks = []
+    for e in etf_recs:
+        if e.get("signal") != "BUY":
+            continue
+        etf_picks.append({
+            "code": e.get("code", ""),
+            "name": e.get("name", ""),
+            "category": e.get("category", ""),
+            "signal": e.get("signal", "BUY"),
+            "entry": e.get("entry", 0),
+            "sl": e.get("sl", 0),
+            "tp": e.get("tp", 0),
+            "reason": e.get("reason", ""),
+            "holding_days": e.get("holding_days", 5),
+        })
+
+    # ── 7) 모델 포트폴리오 (학습 데이터 기반) ──
+    portfolio = _build_portfolio_stats(brain_pct, len(picks))
+
+    # ── 8) 관망 모드 market_comment + watchlist ──
+    if brain_pct < 40:
+        market_comment = "방향 불명확 — 현금이 포지션입니다"
+        watchlist = _build_watchlist(stocks[:3])
+    else:
+        market_comment = brain_reason[:200] if brain_reason else ""
+        watchlist = []
+
+    result = {
+        "date": today_str,
+        "brain_verdict": brain_verdict,
+        "brain_pct": brain_pct,
+        "brain_reason": brain_reason[:300],
+        "min_grade_applied": min_grade,
+        "market_comment": market_comment,
+        "picks": picks,
+        "etf_picks": etf_picks,
+        "portfolio": portfolio,
+        "analysis": analysis,
+        "watchlist": watchlist,
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+    # 로컬 저장 (디버깅용)
+    local_path = STORE_DIR / "flowx_swing.json"
+    try:
+        tmp = local_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(local_path)
+        logger.info(f"[FLOWX 스윙] 로컬 저장: {local_path}")
+    except Exception as e:
+        logger.warning(f"로컬 저장 실패: {e}")
+
+    logger.info(
+        f"[FLOWX 스윙] {brain_verdict} 모드 | "
+        f"{len(picks)}종목 + {len(etf_picks)} ETF | "
+        f"watchlist {len(watchlist)}건"
+    )
+    return result
+
+
+# ═══════════════════════════════════════
+#  헬퍼 함수
+# ═══════════════════════════════════════
+
+def _safe_get_narrative(brain: dict, phase_key: str) -> str:
+    """brain_report에서 phase별 narrative 안전 추출"""
+    phase = brain.get(phase_key, {})
+    if isinstance(phase, dict):
+        return phase.get("narrative", "")
+    return ""
+
+
+def _calc_conviction(stock: dict, trade_obj: dict) -> str:
+    """확신도 계산 (HIGH/MEDIUM/LOW)"""
+    score = stock.get("total_score", 0)
+    confidence = stock.get("confidence", "LOW")
+    rr = trade_obj.get("rr_ratio", 0)
+
+    if score >= 90 and confidence == "HIGH" and rr >= 2.0:
+        return "HIGH"
+    elif score >= 70 and rr >= 1.5:
+        return "MEDIUM"
+    else:
+        return "LOW"
+
+
+def _build_catalyst(stock: dict) -> str:
+    """촉매(catalyst) 문자열 생성"""
+    parts = []
+    sources = stock.get("sources", [])
+    if sources:
+        # 상위 3개 소스만
+        parts.extend(sources[:3])
+
+    regime = stock.get("regime", "")
+    if regime == "MOMENTUM":
+        parts.append("모멘텀")
+
+    tv_pattern = stock.get("tv_pattern", "")
+    if tv_pattern == "QUIET_ACCUMULATION":
+        parts.append("조용한매집")
+    elif tv_pattern == "EXPLOSION":
+        parts.append("거래대금폭발")
+
+    return " + ".join(parts[:4]) if parts else "기술적 시그널"
+
+
+def _extract_news_sentiment(stock: dict) -> str:
+    """뉴스 감성 추출"""
+    news = stock.get("news_detail", "")
+    if isinstance(news, dict):
+        return news.get("sentiment", "NEUTRAL")
+    if isinstance(news, str):
+        if "POSITIVE" in news.upper():
+            return "POSITIVE"
+        elif "NEGATIVE" in news.upper():
+            return "NEGATIVE"
+    return "NEUTRAL"
+
+
+def _build_portfolio_stats(brain_pct: int, current_picks: int) -> dict:
+    """모델 포트폴리오 통계 (learning 데이터 기반)"""
+    # patterns.json에서 적중률
+    win_rate = 0
+    total_trades = 0
+    patterns_path = STORE_DIR / "learning" / "patterns.json"
+    if patterns_path.exists():
+        try:
+            patterns = json.loads(patterns_path.read_text("utf-8"))
+            # 전체 적중률 계산
+            total_wins = 0
+            total_count = 0
+            for key, val in patterns.items():
+                if isinstance(val, dict) and "count" in val and "wins" in val:
+                    total_count += val["count"]
+                    total_wins += val["wins"]
+            if total_count > 0:
+                win_rate = round(total_wins / total_count * 100, 1)
+                total_trades = total_count
+        except Exception:
+            pass
+
+    # ETF 성과
+    etf_perf_path = STORE_DIR / "learning" / "etf_performance.json"
+    etf_trades = 0
+    if etf_perf_path.exists():
+        try:
+            etf_perf = json.loads(etf_perf_path.read_text("utf-8"))
+            etf_trades = len(etf_perf.get("history", []))
+        except Exception:
+            pass
+
+    return {
+        "win_rate": win_rate,
+        "total_trades": total_trades + etf_trades,
+        "current_picks": current_picks,
+        "brain_cash_ratio": max(0, 100 - brain_pct),
+        "brain_pct": brain_pct,
+    }
+
+
+def _build_watchlist(top_stocks: list) -> list:
+    """관망 모드용 워치리스트 (매수 시그널 아님, 반등 감시)"""
+    watchlist = []
+    for s in top_stocks:
+        code = s.get("code", "")
+        name = s.get("name", "")
+        entry = s.get("entry", 0)
+        tp = s.get("tp", 0)
+
+        # 반등 트리거: 진입가 돌파 시
+        trigger = f"종가 {entry:,}원 돌파 + 거래량 증가 시 진입 검토" if entry else "수급 전환 확인 시"
+
+        reasons = []
+        if s.get("regime") == "MOMENTUM":
+            reasons.append("모멘텀 레짐")
+        if s.get("nat_power_grade") in ("POWER_BUY", "BUY"):
+            reasons.append("외국인 수급 양호")
+        if s.get("tv_pattern") in ("QUIET_ACCUMULATION", "EXPLOSION"):
+            reasons.append("거래대금 이상")
+        if not reasons:
+            reasons.append("기술적 반등 대기")
+
+        watchlist.append({
+            "code": code,
+            "name": name,
+            "reason": "반등 감시 — " + ", ".join(reasons),
+            "trigger": trigger,
+            "grade": s.get("grade", ""),
+            "score": round(s.get("total_score", 0), 1),
+        })
+
+    return watchlist
+
+
+# ═══════════════════════════════════════
+#  Supabase 업로드
+# ═══════════════════════════════════════
+
+def upload_swing_to_supabase(data: dict) -> bool:
+    """swing_signals 테이블에 upsert (date 기준)"""
+    client = _get_client()
+    if not client:
+        return False
+
+    try:
+        # JSONB 필드는 JSON 문자열로 변환
+        row = {
+            "date": data["date"],
+            "brain_verdict": data["brain_verdict"],
+            "brain_pct": data["brain_pct"],
+            "brain_reason": data.get("brain_reason", ""),
+            "min_grade_applied": data["min_grade_applied"],
+            "market_comment": data.get("market_comment", ""),
+            "picks": json.dumps(data.get("picks", []), ensure_ascii=False),
+            "etf_picks": json.dumps(data.get("etf_picks", []), ensure_ascii=False),
+            "portfolio": json.dumps(data.get("portfolio", {}), ensure_ascii=False),
+            "analysis": json.dumps(data.get("analysis", {}), ensure_ascii=False),
+            "watchlist": json.dumps(data.get("watchlist", []), ensure_ascii=False),
+        }
+
+        result = client.table("swing_signals").upsert(
+            row, on_conflict="date"
+        ).execute()
+
+        logger.info(
+            f"[FLOWX 스윙] Supabase 업로드 완료: "
+            f"{data['brain_verdict']} 모드, {len(data.get('picks', []))}종목"
+        )
+        return True
+
+    except Exception as e:
+        logger.error(f"[FLOWX 스윙] Supabase 업로드 실패: {e}")
+        return False
+
+
+# ═══════════════════════════════════════
+#  메인 진입점
+# ═══════════════════════════════════════
+
+def run_flowx_swing_upload() -> bool:
+    """FLOWX 스윙 페이지 데이터 생성 + Supabase 업로드"""
+    try:
+        data = generate_swing_page_data()
+        uploaded = upload_swing_to_supabase(data)
+        return uploaded
+    except Exception as e:
+        logger.error(f"[FLOWX 스윙] 전체 실패: {e}")
+        import traceback
+        logger.debug(traceback.format_exc())
+        return False

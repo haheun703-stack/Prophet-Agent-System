@@ -1453,6 +1453,13 @@ class TradingCOO:
                 300,
             ))
 
+        # C19: FLOWX 스윙 VIP 업로드 (non-critical)
+        stage3_jobs.append((
+            "C19_flowx_swing",
+            self._job_flowx_swing_upload(context),
+            120,
+        ))
+
         if stage3_jobs:
             s3 = await self.run_parallel_async(stage3_jobs, timeout_per_job=300)
             results.extend(s3)
@@ -1462,6 +1469,19 @@ class TradingCOO:
 
         logger.info("[COO] ═══ G7 EVENING_BRAIN 완료 ═══")
         return results
+
+    # ─────────────────────────────────────────────
+    # C19: FLOWX VIP 스윙 업로드
+    # ─────────────────────────────────────────────
+    async def _job_flowx_swing_upload(self, context=None) -> dict:
+        """FLOWX VIP 스윙 페이지 데이터 생성 + Supabase 업로드"""
+        try:
+            from data.upload_swing import run_flowx_swing_upload
+            success = run_flowx_swing_upload()
+            return {"flowx_swing": "OK" if success else "UPLOAD_FAIL"}
+        except Exception as e:
+            logger.warning(f"[C19] FLOWX 스윙 업로드 실패 (무시): {e}")
+            return {"flowx_swing": f"ERROR: {e}"}
 
     # ─────────────────────────────────────────────
     # FALLBACK-C13: 이브닝 분석 실패 시 복구
