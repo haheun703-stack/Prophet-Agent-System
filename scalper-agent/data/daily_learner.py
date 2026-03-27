@@ -59,6 +59,98 @@ def tg_send(text: str):
 
 
 # ═══════════════════════════════════════════
+#  ETF 추천 성과 트래킹
+# ═══════════════════════════════════════════
+ETF_PERF_PATH = LEARNING_DIR / "etf_performance.json"
+
+
+def verify_etf_recommendations(today: str) -> Optional[dict]:
+    """ETF 추천의 1일/3일 수익률 검증 + 30일 롤링 저장"""
+    rec_path = STORE_DIR / "recommendation.json"
+    if not rec_path.exists():
+        return None
+
+    rec = json.loads(rec_path.read_text("utf-8"))
+    etf_recs = rec.get("etf_recommendations", [])
+    if not etf_recs:
+        return None
+
+    from bot.kis_trader import KISTrader
+    import time
+    trader = KISTrader()
+
+    results = []
+    for etf in etf_recs:
+        code = etf.get("code", "")
+        name = etf.get("name", "")
+        entry = etf.get("entry", 0)
+        if not code or entry <= 0:
+            continue
+
+        resp = trader.fetch_price(code)
+        time.sleep(0.15)
+        if not resp or not resp.get("success"):
+            continue
+
+        close = resp["current_price"]
+        if close <= 0:
+            continue
+
+        pnl_1d = round((close - entry) / entry * 100, 2)
+        hit = pnl_1d > 0
+
+        results.append({
+            "code": code,
+            "name": name,
+            "category": etf.get("category", ""),
+            "signal": etf.get("signal", ""),
+            "entry": entry,
+            "close": close,
+            "pnl_1d": pnl_1d,
+            "sl": etf.get("sl", 0),
+            "tp": etf.get("tp", 0),
+            "hit": hit,
+            "date": today,
+        })
+
+    if not results:
+        return None
+
+    total = len(results)
+    hits = sum(1 for r in results if r["hit"])
+    hit_rate = round(hits / total * 100, 1) if total > 0 else 0.0
+
+    # 30일 롤링 저장
+    perf_log = []
+    if ETF_PERF_PATH.exists():
+        try:
+            perf_log = json.loads(ETF_PERF_PATH.read_text("utf-8"))
+        except Exception:
+            perf_log = []
+
+    # 중복 제거
+    perf_log = [r for r in perf_log if r.get("date") != today]
+    perf_log.append({
+        "date": today,
+        "total": total,
+        "hits": hits,
+        "hit_rate": hit_rate,
+        "results": results,
+    })
+
+    # 30일 롤링
+    if len(perf_log) > 30:
+        perf_log = perf_log[-30:]
+
+    tmp = ETF_PERF_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps(perf_log, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(ETF_PERF_PATH)
+
+    logger.info(f"[ETF 성과] {hits}/{total} = {hit_rate}% | {', '.join(r['name'] + f'({r[\"pnl_1d\"]:+.1f}%)' for r in results)}")
+    return {"total": total, "hits": hits, "hit_rate": hit_rate, "results": results}
+
+
+# ═══════════════════════════════════════════
 #  1. 추천 적중률 검증
 # ═══════════════════════════════════════════
 def verify_recommendations(today: str) -> dict:
@@ -595,6 +687,7 @@ def format_learning_report(
     insights: Optional[dict] = None,
     nxt_verify: Optional[dict] = None,
     nxt_rolling: Optional[dict] = None,
+    etf_verify: Optional[dict] = None,
 ) -> str:
     """텔레그램 학습 리포트 포맷"""
     lines = [
@@ -711,6 +804,17 @@ def format_learning_report(
             lines.append(f"  최고: {nr['best']['name']} {nr['best']['return_pct']:+.1f}%")
         if nr.get("worst"):
             lines.append(f"  최저: {nr['worst']['name']} {nr['worst']['return_pct']:+.1f}%")
+
+    # ── ETF 추천 성과 ──
+    if etf_verify and etf_verify.get("total", 0) > 0:
+        ev = etf_verify
+        etf_emoji = "🎯" if ev["hit_rate"] >= 60 else "📊"
+        lines.append(f"\n{etf_emoji} ETF 추천 성과: {ev['hits']}/{ev['total']} ({ev['hit_rate']}%)")
+        lines.append("────────────────────────")
+        for r in sorted(ev["results"], key=lambda x: x["pnl_1d"], reverse=True):
+            icon = "✅" if r["hit"] else "❌"
+            cat = f"[{r['category']}]" if r.get("category") else ""
+            lines.append(f"  {icon} {r['name']} {cat} {r['pnl_1d']:+.1f}%")
 
     # ── 내일 이벤트 리스크 ──
     try:
@@ -1003,6 +1107,15 @@ def run(quick: bool = False):
     except Exception as e:
         logger.error(f"NXT 검증 실패: {e}")
 
+    # 4.7 ETF 추천 성과 검증
+    etf_verify = None
+    try:
+        etf_verify = verify_etf_recommendations(today)
+        if etf_verify:
+            logger.info(f"[Phase 4.7] ETF 검증: {etf_verify['hits']}/{etf_verify['total']} ({etf_verify['hit_rate']}%)")
+    except Exception as e:
+        logger.warning(f"[ETF 성과] 검증 실패 (무시): {e}")
+
     # 5. 브레인 업데이트 (피드백 루프 핵심!)
     logger.info("[Phase 5] 브레인 업데이트 — 인사이트 추출...")
     insights = generate_insights()
@@ -1018,7 +1131,8 @@ def run(quick: bool = False):
     # 6. 텔레그램 리포트
     logger.info("[Phase 6] 텔레그램 리포트 전송...")
     report = format_learning_report(today, verify, missed, rolling, insights,
-                                     nxt_verify=nxt_verify, nxt_rolling=nxt_rolling)
+                                     nxt_verify=nxt_verify, nxt_rolling=nxt_rolling,
+                                     etf_verify=etf_verify)
     tg_send(report)
 
     # FIX-08: BRAIN 자기 학습 — 성과 추적
@@ -1059,6 +1173,7 @@ def run(quick: bool = False):
         "nxt_verify": nxt_verify,
         "nxt_rolling": nxt_rolling,
         "brain_perf": brain_perf,
+        "etf_verify": etf_verify,
     }
 
 

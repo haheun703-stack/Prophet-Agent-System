@@ -303,6 +303,30 @@ def _verify_consensus() -> dict:
     return {"status": "PARTIAL", "reason": f"{days_old}일 전 업데이트", "updated": mtime}
 
 
+def _verify_etf_daily(today: str) -> dict:
+    """ETF 일봉 데이터 — etf_daily/ 디렉토리 존재 + 파일 개수 + 신선도"""
+    etf_dir = STORE_DIR / "etf_daily"
+    if not etf_dir.exists():
+        return {"status": "FAIL", "reason": "etf_daily/ 디렉토리 없음"}
+
+    csv_files = list(etf_dir.glob("*.csv"))
+    if len(csv_files) < 10:
+        return {"status": "PARTIAL", "reason": f"ETF CSV {len(csv_files)}개 (최소 10개 필요)"}
+
+    # 최근 24시간 이내 업데이트 확인
+    fresh = 0
+    for f in csv_files:
+        mtime = _file_mtime_date(f)
+        if mtime and mtime >= today:
+            fresh += 1
+
+    if fresh >= 10:
+        return {"status": "PASS", "total_files": len(csv_files), "fresh_today": fresh}
+    elif fresh > 0:
+        return {"status": "PARTIAL", "reason": f"오늘 업데이트 {fresh}/{len(csv_files)}개", "total_files": len(csv_files)}
+    return {"status": "FAIL", "reason": "오늘 업데이트 없음", "total_files": len(csv_files)}
+
+
 def _verify_nightwatch(today: str) -> dict:
     """NIGHTWATCH — 오늘 리포트 존재"""
     path = STORE_DIR / "nightwatch_report.json"
@@ -434,6 +458,7 @@ CHECKLIST = {
     "options_signal": {"description": "옵션 심리 (P/C Ratio)", "priority": PRIORITY_MEDIUM},
     "dart_disclosure":{"description": "DART 공시",             "priority": PRIORITY_LOW},
     "consensus":      {"description": "컨센서스 목표가",        "priority": PRIORITY_LOW},
+    "etf_daily":      {"description": "ETF 일봉 데이터",        "priority": PRIORITY_MEDIUM},
 }
 
 # 재수집 매핑 (VER-03)
@@ -447,6 +472,7 @@ RETRY_MAP = {
     "sector_history": "_job_record_signals",
     "sector_relay":   "_job_swing_picker",
     "insights":       "_job_daily_learning",
+    "etf_daily":      "_job_collect_daily",
 }
 
 
@@ -480,6 +506,7 @@ class DataVerifier:
         details["options_signal"] = _verify_options_signal(t)
         details["dart_disclosure"] = _verify_dart_disclosure()
         details["consensus"] = _verify_consensus()
+        details["etf_daily"] = _verify_etf_daily(t)
 
         # 통계 계산
         passed = sum(1 for d in details.values() if d["status"] == "PASS")
