@@ -1636,8 +1636,8 @@ def run_evening_recommendation() -> RecommendationReport:
 
     # Step 4: 뉴스AI - 전종목 분석 (타임아웃 방어)
     t0 = time.time()
-    NEWS_AI_TIMEOUT = 600  # 10분 최대
-    NEWS_AI_MAX_STOCKS = 40  # 캐시 미스 시 최대 40종목만 신규 분석
+    NEWS_AI_TIMEOUT = 120  # 2분 최대 (기존 600s → 타임아웃 빈발로 축소)
+    NEWS_AI_MAX_STOCKS = 15  # 캐시 미스 시 최대 15종목만 신규 분석 (기존 40)
     logger.info(f"[Step 4/6] 뉴스AI ({len(codes_names)}종목, timeout={NEWS_AI_TIMEOUT}s, max_new={NEWS_AI_MAX_STOCKS})...")
     try:
         from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
@@ -1660,6 +1660,7 @@ def run_evening_recommendation() -> RecommendationReport:
     #   기존 nationality_signal.py는 KRX 국적별 데이터 3종목만 존재 → 사실상 미작동
     #   → 네이버 금융 크롤링으로 대체 (백테스트 PF 1.50과 동일 로직)
     nationality_scores = {}
+    SUPPLY_TIMEOUT = 120  # 네이버 수급 최대 2분
     try:
         t_supply = time.time()
         from data.supply_naver import score_supply_batch
@@ -1670,9 +1671,17 @@ def run_evening_recommendation() -> RecommendationReport:
             t_info = tech_result.get(code, {})
             if t_info.get("close"):
                 close_prices[code] = int(t_info["close"])
-        nationality_scores = score_supply_batch(
-            all_code_list, close_prices=close_prices
-        )
+        # 타임아웃 방어 (기존에 없었음 → 무한대기 원인)
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+        with ThreadPoolExecutor(max_workers=1, thread_name_prefix="supply") as _sup_exec:
+            _sup_future = _sup_exec.submit(
+                score_supply_batch, all_code_list, close_prices=close_prices
+            )
+            try:
+                nationality_scores = _sup_future.result(timeout=SUPPLY_TIMEOUT)
+            except FuturesTimeout:
+                logger.warning(f"[Step 5a] 네이버 수급 타임아웃 ({SUPPLY_TIMEOUT}s) - 스킵")
+                nationality_scores = {}
         scored = sum(1 for sc, _ in nationality_scores.values() if sc != 0)
         logger.info(f"[Step 5a] 네이버 수급: {scored}/{len(all_code_list)}종목 점수 반영 ({time.time()-t_supply:.0f}s)")
     except Exception as e:
@@ -1681,30 +1690,52 @@ def run_evening_recommendation() -> RecommendationReport:
         logger.debug(traceback.format_exc())
 
     # Step 5a.5: 거래대금 폭발 스캔 (전체 유니버스 + 소형주)
+    #   최근 2시간 이내 TV 스캔 결과 있으면 재사용 (pykrx 대량 호출 방지)
     tv_signals = {}  # {code: TVSignal dict}
     try:
         import json as _json5a5
         t_tv = time.time()
-        _uni_path = Path(__file__).resolve().parent.parent / "data_store" / "universe.json"
-        with open(_uni_path, "r", encoding="utf-8") as _uf:
-            _universe = _json5a5.load(_uf)
-        # 소형주 유니버스 병합 (500억 이하도 TV 스캔 대상)
-        _sc_path = Path(__file__).resolve().parent.parent / "data_store" / "universe_smallcap.json"
-        if _sc_path.exists():
+        _tv_cache_path = Path(__file__).resolve().parent.parent / "data_store" / "tv_scanner.json"
+        _tv_cache_fresh = False
+        if _tv_cache_path.exists():
             try:
-                _sc_uni = _json5a5.loads(_sc_path.read_text("utf-8"))
-                _sc_count = 0
-                for code, info in _sc_uni.items():
-                    if code not in _universe:
-                        _universe[code] = info
-                        _sc_count += 1
-                logger.info(f"  소형주 유니버스 병합: +{_sc_count}종목 → 총 {len(_universe)}")
+                _tv_cache = _json5a5.loads(_tv_cache_path.read_text("utf-8"))
+                _tv_scan_date = _tv_cache.get("scan_date", "")
+                _today_str = datetime.now().strftime("%Y-%m-%d")
+                if _tv_scan_date == _today_str:
+                    _tv_cache_fresh = True
+                    logger.info(f"[Step 5a.5] TV 스캔 캐시 재사용 (오늘 {_tv_scan_date} 생성)")
             except Exception:
                 pass
-        from data.trading_value_scanner import scan_trading_value, save_tv_results
-        tv_results = scan_trading_value(_universe, min_tv_billion=10.0)
-        save_tv_results(tv_results)
-        tv_signals = {s.code: s for s in tv_results if s.score > 0}
+
+        if _tv_cache_fresh:
+            # 캐시에서 로드 (TVSignal namedtuple 대신 dict 사용)
+            from types import SimpleNamespace
+            for s in _tv_cache.get("signals", []):
+                ns = SimpleNamespace(**s)
+                if ns.score > 0:
+                    tv_signals[ns.code] = ns
+        else:
+            _uni_path = Path(__file__).resolve().parent.parent / "data_store" / "universe.json"
+            with open(_uni_path, "r", encoding="utf-8") as _uf:
+                _universe = _json5a5.load(_uf)
+            # 소형주 유니버스 병합 (500억 이하도 TV 스캔 대상)
+            _sc_path = Path(__file__).resolve().parent.parent / "data_store" / "universe_smallcap.json"
+            if _sc_path.exists():
+                try:
+                    _sc_uni = _json5a5.loads(_sc_path.read_text("utf-8"))
+                    _sc_count = 0
+                    for code, info in _sc_uni.items():
+                        if code not in _universe:
+                            _universe[code] = info
+                            _sc_count += 1
+                    logger.info(f"  소형주 유니버스 병합: +{_sc_count}종목 → 총 {len(_universe)}")
+                except Exception:
+                    pass
+            from data.trading_value_scanner import scan_trading_value, save_tv_results
+            tv_results = scan_trading_value(_universe, min_tv_billion=10.0)
+            save_tv_results(tv_results)
+            tv_signals = {s.code: s for s in tv_results if s.score > 0}
         # TV 스캐너에서 잡힌 종목도 교차검증 대상에 추가 (code 기반 dedup)
         tv_added = 0
         existing_codes = {code for code, _ in all_codes_set}
