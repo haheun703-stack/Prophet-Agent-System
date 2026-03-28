@@ -134,6 +134,9 @@ class FlowAssessment:
     nationality_signals: list = field(default_factory=list)
     strong_buy_count: int = 0
     sell_count: int = 0
+    flow_zscore_level: str = ""      # STRONG_BUY/BUY/NEUTRAL/CAUTION/SELL/DIVERGENCE
+    flow_zscore_detail: str = ""     # "기관Z+2.3 외인Z+1.8 2-sigma 동반 폭발매수"
+    flow_zscore_adj: float = 0.0     # ±5.0
     narrative: str = ""
 
 
@@ -747,6 +750,30 @@ def _phase4_flow(tv: dict, rec: dict) -> FlowAssessment:
     if fa.nationality_signals:
         parts.append(fa.nationality_signals[0])  # 가장 주요 1건만
 
+    # Z-score 통계적 이상치 감지 (flow_zscore 연동)
+    try:
+        from data.flow_zscore import get_brain_flow_zscore_adj
+        z_adj, z_detail = get_brain_flow_zscore_adj()
+        if z_adj != 0 or z_detail:
+            fa.flow_zscore_adj = z_adj
+            fa.flow_zscore_detail = z_detail
+            # adj 기반 level 분류
+            if z_adj >= 4.0:
+                fa.flow_zscore_level = "STRONG_BUY"
+            elif z_adj >= 2.0:
+                fa.flow_zscore_level = "BUY"
+            elif z_adj <= -4.0:
+                fa.flow_zscore_level = "SELL"
+            elif z_adj <= -2.0:
+                fa.flow_zscore_level = "CAUTION"
+            elif z_adj == 0 and "괴리" in z_detail:
+                fa.flow_zscore_level = "DIVERGENCE"
+            else:
+                fa.flow_zscore_level = "NEUTRAL"
+            parts.append(f"Z-score {fa.flow_zscore_level}({z_adj:+.1f})")
+    except Exception as e:
+        logger.debug(f"[BRAIN] Flow Z-score 연동 스킵: {e}")
+
     fa.narrative = ". ".join(parts) if parts else "수급 데이터 부족"
     return fa
 
@@ -996,6 +1023,12 @@ def _phase6_synthesis(
             score -= 5
             reasons.append("개인쏠림(-5)")
 
+    # 9.5 수급 Z-score 통계적 이상치 보정
+    if flow.flow_zscore_adj != 0:
+        z_adj = max(-5.0, min(5.0, flow.flow_zscore_adj))
+        score += z_adj
+        reasons.append(f"수급Z{flow.flow_zscore_level}({z_adj:+.1f})")
+
     # 10. BRAIN 자기 학습 적중률 (FIX-08)
     if brain_perf and len(brain_perf) >= 5:
         recent = brain_perf[-10:]  # 최근 10일
@@ -1230,6 +1263,11 @@ def format_brain_telegram(report: BrainReport) -> str:
 
     # Phase 4: 수급
     lines.append(f"💰 수급: {f.narrative}")
+    if f.flow_zscore_detail:
+        z_emoji = {"STRONG_BUY": "🔴", "BUY": "🟠", "SELL": "🔵",
+                   "CAUTION": "🟡", "DIVERGENCE": "⚡", "NEUTRAL": "⚪"}.get(
+            f.flow_zscore_level, "⚪")
+        lines.append(f"  📊 수급Z: {z_emoji} {f.flow_zscore_detail}")
 
     lines.append("")
 
