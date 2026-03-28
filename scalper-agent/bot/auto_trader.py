@@ -84,6 +84,13 @@ class AutoTrader:
         # ── 시간외 선취매 (Pre-Dawn) ──
         self._predawn_positions = {}  # {code: {name, entry_price, sl, tp, score, ...}}
 
+        # ── CFO 파사드 (set_cfo로 연결) ──
+        self._cfo = None
+
+    def set_cfo(self, cfo):
+        """CFO 파사드 연결 (telegram_bot에서 호출)"""
+        self._cfo = cfo
+
     def _get_rt_monitor(self):
         """RealtimeMonitor lazy init"""
         if self._rt_monitor is None:
@@ -710,12 +717,13 @@ class AutoTrader:
             from data.event_calendar import get_event_risk_for_recommendation
             ev_risk = get_event_risk_for_recommendation(date.today())
             _rl = ev_risk.get("risk_level", "LOW")
-            if _rl == "EXTREME":
-                usable_cash = int(usable_cash * 0.5)
-                await _send("💀 EXTREME 이벤트 → 스윙 예산 50% 축소")
-            elif _rl == "HIGH":
-                usable_cash = int(usable_cash * 0.7)
-                await _send("🔴 HIGH 이벤트 → 스윙 예산 30% 축소")
+            if self._cfo:
+                _mult = self._cfo.get_event_multiplier(_rl, "swing")
+            else:
+                _mult = {"EXTREME": 0.5, "HIGH": 0.7}.get(_rl, 1.0)
+            if _mult < 1.0:
+                usable_cash = int(usable_cash * _mult)
+                await _send(f"{_rl} 이벤트 → 스윙 예산 x{_mult:.1f}")
         except Exception:
             pass
 
@@ -1231,10 +1239,12 @@ class AutoTrader:
             from data.event_calendar import get_event_risk_for_recommendation
             ev_risk = get_event_risk_for_recommendation(date.today())
             _rl = ev_risk.get("risk_level", "LOW")
-            if _rl == "EXTREME":
-                buy_amount = int(buy_amount * 0.5)
-            elif _rl == "HIGH":
-                buy_amount = int(buy_amount * 0.7)
+            if self._cfo:
+                _mult = self._cfo.get_event_multiplier(_rl, "day")
+            else:
+                _mult = {"EXTREME": 0.5, "HIGH": 0.7}.get(_rl, 1.0)
+            if _mult < 1.0:
+                buy_amount = int(buy_amount * _mult)
         except Exception:
             pass
 
@@ -2853,12 +2863,13 @@ class AutoTrader:
                 ev_risk = get_event_risk_for_recommendation(tomorrow)
                 risk_level = ev_risk.get("risk_level", "LOW")
 
-                if risk_level == "EXTREME":
-                    budget_pct *= 0.3  # 40% → 12%
-                    event_warning = f"💀 EXTREME 이벤트 → 예산 70% 축소"
-                elif risk_level == "HIGH":
-                    budget_pct *= 0.5  # 40% → 20%
-                    event_warning = f"🔴 HIGH 이벤트 → 예산 50% 축소"
+                if self._cfo:
+                    _mult = self._cfo.get_event_multiplier(risk_level, "predawn")
+                else:
+                    _mult = {"EXTREME": 0.3, "HIGH": 0.5}.get(risk_level, 1.0)
+                if _mult < 1.0:
+                    budget_pct *= _mult
+                    event_warning = f"{risk_level} 이벤트 → 예산 x{_mult:.1f}"
 
                 if event_warning:
                     ev_names = [e["name"] for e in ev_risk.get("events", []) if e.get("impact") == "HIGH"][:3]

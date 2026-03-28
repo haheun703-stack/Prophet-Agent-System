@@ -106,10 +106,12 @@ class JobResult:
 class TradingCOO:
     """매매봇 운영 총괄 — 실행 순서 보장 + 예외 격리 + 상태 기록"""
 
-    def __init__(self, bot=None, auto_trader=None):
+    def __init__(self, bot=None, auto_trader=None, cfo=None, cto=None):
         self._lock = threading.Lock()
         self.bot = bot              # TelegramBot 인스턴스
         self.auto_trader = auto_trader  # AutoTrader 인스턴스
+        self.cfo = cfo              # TradingCFO 인스턴스
+        self.cto = cto              # TradingCTO 인스턴스
 
         # G3 B6 TV 초기화 플래그 (B9 TV스캔 스킵 판단용)
         self._tv_init_ok = True
@@ -1317,7 +1319,7 @@ class TradingCOO:
         3-Stage 실행:
         - Stage 1: C8+C10+C11 병렬 (신호기록 / 스윙선정 / 브레인배분)
         - Stage 2: C12→C13 순차 (일간학습 → ★이브닝분석 CRITICAL)
-        - Stage 3: C14~C23 병렬 (클로징/선취매/MACD/TRIX/국적/헬스/스윙/수급/ETF/퀀트대시)
+        - Stage 3: C14~C24 병렬 (클로징/선취매/MACD/TRIX/국적/헬스/스윙/수급/ETF/퀀트대시/CTO정확도)
 
         g6_mode 분기:
         - NORMAL: 전체 실행
@@ -1480,6 +1482,13 @@ class TradingCOO:
             self._job_trix_prescan(context),
         ))
 
+        # C24: CTO 시그널 정확도 업데이트
+        if self.cto:
+            stage3_jobs.append((
+                "C24_cto_accuracy",
+                self._job_cto_accuracy_update(context),
+            ))
+
         if stage3_jobs:
             s3 = await self.run_parallel_async(stage3_jobs, timeout_per_job=300)
             results.extend(s3)
@@ -1590,6 +1599,26 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[C23] TRIX 사전 스캔 실패 (무시): {e}")
             return {"trix_prescan": f"ERROR: {e}"}
+
+    # ─────────────────────────────────────────────
+    # C24: CTO 시그널 정확도 업데이트
+    # ─────────────────────────────────────────────
+    async def _job_cto_accuracy_update(self, context=None) -> dict:
+        """CTO 시그널 소스별 정확도 계산 (recommendation_history 기반)."""
+        try:
+            import asyncio
+            result = await asyncio.to_thread(self.cto.calc_signal_accuracy)
+            top_sources = sorted(
+                result.items(), key=lambda x: -x[1].get("accuracy_pct", 0)
+            )[:3]
+            summary = ", ".join(
+                f"{s[0]}={s[1]['accuracy_pct']:.0f}%" for s in top_sources
+            )
+            logger.info(f"[C24] CTO 정확도 업데이트: {len(result)}소스 ({summary})")
+            return {"cto_accuracy": "OK", "sources": len(result)}
+        except Exception as e:
+            logger.warning(f"[C24] CTO 정확도 업데이트 실패 (무시): {e}")
+            return {"cto_accuracy": f"ERROR: {e}"}
 
     async def _job_nxt_early_collect(self, context=None) -> dict:
         """C4E: NXT 사전 데이터 수집 + 예비 알림 발송.

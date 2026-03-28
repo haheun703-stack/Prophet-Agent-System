@@ -2324,6 +2324,11 @@ class BodyHunterBot:
             # ── COO 상태 ──
             r"^COO$": self.cmd_coo_status,
             r"^coo$": self.cmd_coo_status,
+            # ── CFO / CTO 상태 ──
+            r"^CFO$": self.cmd_cfo_status,
+            r"^cfo$": self.cmd_cfo_status,
+            r"^CTO$": self.cmd_cto_status,
+            r"^cto$": self.cmd_cto_status,
         }
 
         for pattern, handler in exact_commands.items():
@@ -2672,10 +2677,29 @@ class BodyHunterBot:
         # jq.run_daily(self._job_nationality_charts, time=kst_time(17, 0))
         # logger.info("국적 차트 자동 생성 등록: 17:00 KST")
 
+        # ═══ CFO (Chief Financial Officer) 연결 ═══
+        self.cfo = None
+        try:
+            from bot.trading_cfo import TradingCFO
+            self.cfo = TradingCFO(self.config, self.auto_trader)
+            self.auto_trader.set_cfo(self.cfo)
+            logger.info("CFO 초기화 완료")
+        except Exception as e:
+            logger.error(f"CFO 초기화 실패 (기존 로직 폴백): {e}")
+
+        # ═══ CTO (Chief Technology Officer) 연결 ═══
+        self.cto = None
+        try:
+            from bot.trading_cto import TradingCTO
+            self.cto = TradingCTO(self.config)
+            logger.info("CTO 초기화 완료")
+        except Exception as e:
+            logger.error(f"CTO 초기화 실패 (기존 로직 폴백): {e}")
+
         # ═══ COO (Chief Operating Officer) 연결 ═══
         try:
             from bot.trading_coo import TradingCOO
-            self.coo = TradingCOO(self, self.auto_trader)
+            self.coo = TradingCOO(self, self.auto_trader, cfo=self.cfo, cto=self.cto)
             self.coo.setup_schedule(jq)
             logger.info("COO 스케줄 등록 완료")
         except Exception as e:
@@ -4699,6 +4723,32 @@ class BodyHunterBot:
             return
         text = self.coo.get_status_summary()
         await update.message.reply_text(text)
+
+    async def cmd_cfo_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """CFO 재무 상태 조회"""
+        if not self._is_authorized(update):
+            return
+        if not getattr(self, "cfo", None):
+            await update.message.reply_text("CFO 미초기화")
+            return
+        try:
+            text = self.cfo.get_status()
+            await update.message.reply_text(text)
+        except Exception as e:
+            await update.message.reply_text(f"CFO 상태 조회 실패: {e}")
+
+    async def cmd_cto_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """CTO 기술 상태 조회"""
+        if not self._is_authorized(update):
+            return
+        if not getattr(self, "cto", None):
+            await update.message.reply_text("CTO 미초기화")
+            return
+        try:
+            text = self.cto.get_status()
+            await update.message.reply_text(text)
+        except Exception as e:
+            await update.message.reply_text(f"CTO 상태 조회 실패: {e}")
 
     async def cmd_data_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """데이터 수집 현황 조회"""

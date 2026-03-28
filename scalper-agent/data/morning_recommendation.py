@@ -227,6 +227,17 @@ def _step_macd_zero_scan() -> dict:
 
 def _step_trix_divergence_scan() -> dict:
     """TRIX 상승 다이버전스 + ADX 추세 확인 종목"""
+    # CTO 피처 플래그 체크
+    try:
+        from bot.trading_cto import TradingCTO
+        _cto_check_path = Path(__file__).resolve().parent.parent / "data_store" / "cto_features.json"
+        if _cto_check_path.exists():
+            _cto = TradingCTO(config={})
+            if not _cto.is_enabled("trix_divergence"):
+                logger.info("TRIX: CTO 피처 비활성 - 스킵")
+                return {}
+    except Exception:
+        pass  # CTO 실패 시 기존 동작 유지
     try:
         from strategies.trix_divergence import scan_trix_divergence, load_trix_cache
         # 캐시 확인 (3시간 이내면 재사용)
@@ -2237,6 +2248,19 @@ def run_evening_recommendation() -> RecommendationReport:
         logger.info("[FLOWX] 업로드 완료")
     except Exception as e:
         logger.warning(f"[FLOWX] 업로드 실패 (무시): {e}")
+
+    # ── CTO 시그널 추적 (최종 추천 종목) ──
+    try:
+        from bot.trading_cto import TradingCTO
+        _cto_path = Path(__file__).resolve().parent.parent / "data_store" / "cto_features.json"
+        if _cto_path.exists():
+            _cto = TradingCTO(config={})
+            for s in report.stocks:
+                top_src = s.sources[0] if isinstance(s.sources, list) and s.sources else "unknown"
+                _cto.track_signal(s.code, top_src, "BUY", s.total_score, s.tp)
+            logger.info(f"[CTO] {len(report.stocks)}종목 시그널 추적 기록")
+    except Exception as e:
+        logger.debug(f"[CTO] 시그널 추적 실패 (무시): {e}")
 
     return report
 
