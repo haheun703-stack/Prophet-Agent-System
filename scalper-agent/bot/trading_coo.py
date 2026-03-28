@@ -1351,19 +1351,16 @@ class TradingCOO:
             stage1_jobs.append((
                 "C8_record_signals",
                 self.bot._job_record_signals(context),
-                300,
             ))
             stage1_jobs.append((
                 "C10_swing_picker",
                 self.bot._job_swing_picker(context),
-                300,
             ))
 
         if self.auto_trader:
             stage1_jobs.append((
                 "C11_brain_allocation",
                 self.auto_trader.job_brain_allocation(context),
-                300,
             ))
 
         if stage1_jobs:
@@ -1408,7 +1405,6 @@ class TradingCOO:
             stage3_jobs.append((
                 "C14_closing_brief",
                 self.bot._send_daily_closing(context),
-                300,
             ))
 
         # C15: 선취매 — DEGRADED면 스킵
@@ -1416,7 +1412,6 @@ class TradingCOO:
             stage3_jobs.append((
                 "C15_predawn_buy",
                 self.auto_trader.job_predawn_buy(context),
-                300,
             ))
         elif self._g6_mode == "DEGRADED":
             logger.warning("[COO] C15 선취매 스킵 (DEGRADED 모드)")
@@ -1433,7 +1428,6 @@ class TradingCOO:
             stage3_jobs.append((
                 "C16_macd_scan",
                 self.bot._job_macd_scan(context),
-                300,
             ))
 
         # C17: 국적 차트
@@ -1441,7 +1435,6 @@ class TradingCOO:
             stage3_jobs.append((
                 "C17_nationality_charts",
                 self.bot._job_nationality_charts(context),
-                300,
             ))
 
         # C18: 파이프라인 헬스
@@ -1449,14 +1442,12 @@ class TradingCOO:
             stage3_jobs.append((
                 "C18_pipeline_health",
                 self.bot._job_pipeline_health(context),
-                300,
             ))
 
         # C19: FLOWX 스윙 VIP 업로드 (non-critical)
         stage3_jobs.append((
             "C19_flowx_swing",
             self._job_flowx_swing_upload(context),
-            120,
         ))
 
         # C20: 섹터 기관 수급 분석 (TIER2)
@@ -1464,7 +1455,6 @@ class TradingCOO:
             stage3_jobs.append((
                 "C20_sector_flow",
                 self.bot._job_sector_flow(context),
-                120,
             ))
 
         # C21: ETF 투자자별 수급 분석 (TIER2 Phase 2)
@@ -1472,14 +1462,12 @@ class TradingCOO:
             stage3_jobs.append((
                 "C21_etf_flow",
                 self.bot._job_etf_flow(context),
-                120,
             ))
 
         # C22: FLOWX 퀀트 대시보드 통합 업로드 (5개 테이블)
         stage3_jobs.append((
             "C22_quant_dashboard",
             self._job_quant_dashboard_upload(context),
-            180,
         ))
 
         if stage3_jobs:
