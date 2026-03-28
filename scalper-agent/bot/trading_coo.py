@@ -1459,6 +1459,14 @@ class TradingCOO:
             120,
         ))
 
+        # C20: 섹터 기관 수급 분석 (TIER2)
+        if self.bot:
+            stage3_jobs.append((
+                "C20_sector_flow",
+                self.bot._job_sector_flow(context),
+                120,
+            ))
+
         if stage3_jobs:
             s3 = await self.run_parallel_async(stage3_jobs, timeout_per_job=300)
             results.extend(s3)

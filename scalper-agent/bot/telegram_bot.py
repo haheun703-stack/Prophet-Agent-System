@@ -3018,6 +3018,29 @@ class BodyHunterBot:
         except Exception as e:
             await update.message.reply_text(f"국적차트 실패: {str(e)[:300]}")
 
+    async def _job_sector_flow(self, context):
+        """섹터 기관 수급 분석 + 텔레그램 보고 (TIER2 Phase 1)
+
+        G7 Stage 3에서 호출. flow/ CSV 기반 23개 섹터별 기관/외인 수급 집계.
+        """
+        if not is_trading_day():
+            return
+        try:
+            from data.sector_institution_flow import analyze_sector_flow, format_telegram_report
+            report = await asyncio.to_thread(analyze_sector_flow)
+            if not report or not report.sectors:
+                logger.warning("[섹터수급] 분석 결과 없음")
+                return
+
+            msg = format_telegram_report(report)
+            chat_id = self.chat_id
+            if chat_id and msg:
+                await context.bot.send_message(chat_id=chat_id, text=msg)
+            logger.info(f"[섹터수급] 분석 완료: {report.total_sectors}섹터, "
+                        f"매수집중={report.top_inflow}, 이탈={report.top_outflow}")
+        except Exception as e:
+            logger.error(f"[섹터수급] 분석 실패: {e}")
+
     async def _job_nationality_charts(self, context):
         """17:00 국적 픽토그램 차트 자동 생성
 

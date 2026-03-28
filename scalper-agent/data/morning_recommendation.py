@@ -1932,6 +1932,27 @@ def run_evening_recommendation() -> RecommendationReport:
         from dataclasses import asdict as _asdict
         report._sector_momentum = _asdict(sector_momentum_report)
 
+    # ── Step 5b-2: 섹터 기관 수급 부스트 (TIER2) ──
+    try:
+        from data.sector_institution_flow import get_sector_flow_boost
+        inst_boost_count = 0
+        for s in final_stocks:
+            # 종목의 섹터 조회
+            sec = code_to_sector.get(s.code, "")
+            if not sec:
+                continue
+            iboost = get_sector_flow_boost(sec)
+            if abs(iboost) >= 1.0:
+                s.total_score += iboost
+                inst_boost_count += 1
+                if abs(iboost) >= 5.0:
+                    logger.info(f"  [기관수급] {s.name}: {iboost:+.1f}점 ({sec}) → {s.total_score:.1f}")
+        if inst_boost_count > 0:
+            final_stocks.sort(key=lambda x: x.total_score, reverse=True)
+            logger.info(f"  [기관수급] {inst_boost_count}종목 부스트 → 재정렬 완료")
+    except Exception as e:
+        logger.warning(f"섹터 기관수급 부스트 실패 (무시): {e}")
+
     # ── Step 5c: 원자재 릴레이 부스트 ──
     try:
         from data.nightwatch import get_commodity_trend, JARVIS_SECTORS
