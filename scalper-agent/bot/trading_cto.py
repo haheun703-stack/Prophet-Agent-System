@@ -56,11 +56,18 @@ class TradingCTO:
             "explosion_threshold": 80,
             "direct_quiet_bonus": 35,
             "direct_explosion_bonus": 30,
+            "tv_ratio_aaa": 2.0,
+            "tv_ratio_buy_signal": 1.5,
+            "tv_ratio_caution": 1.3,
         },
         "nxt": {
             "min_score": 3,
             "budget_pct": 30,
             "max_positions": 1,
+            "predawn_min_score": 100,
+            "predawn_budget_pct": 40,
+            "min_score_tier1": 20,
+            "min_score_tier2": 30,
         },
         "entry": {
             "conditions_needed": 3,
@@ -75,11 +82,25 @@ class TradingCTO:
         "eye": {
             "min_score": 50,
             "poll_interval": 10,
+            "sr_touch_pct": 0.003,
+            "bouncing_sl": 0.995,
+            "alive_trailing_sl": 0.985,
+            "weakening_trailing_sl": 0.975,
+            "min_strength_weak": 90,
         },
         "risk": {
             "sl_pct": 3.5,
             "trailing_pct": 2.0,
             "max_hold_days_momentum": 5,
+            "daily_loss_limit": 500000,
+            "reserve_ratio": 0.10,
+            "sl_pct_day": 2.0,
+            "tp_pct_day": 5.0,
+        },
+        "bot": {
+            "auto_buy_amount": 500000,
+            "add_on_ratio": 0.30,
+            "min_add_amount": 100000,
         },
     }
 
@@ -328,7 +349,7 @@ class TradingCTO:
 
         # 주요 파라미터
         lines.append(f"\n주요 파라미터:")
-        for ind in ["trix", "macd", "entry", "nxt"]:
+        for ind in ["trix", "macd", "entry", "nxt", "risk", "eye", "bot"]:
             p = self._params.get(ind, {})
             if p:
                 vals = ", ".join(f"{k}={v}" for k, v in p.items())
