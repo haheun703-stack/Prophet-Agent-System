@@ -1313,7 +1313,7 @@ class TradingCOO:
         3-Stage 실행:
         - Stage 1: C8+C10+C11 병렬 (신호기록 / 스윙선정 / 브레인배분)
         - Stage 2: C12→C13 순차 (일간학습 → ★이브닝분석 CRITICAL)
-        - Stage 3: C14+C15+C16+C17+C18 병렬 (클로징 / 선취매 / MACD / 국적 / 헬스)
+        - Stage 3: C14~C22 병렬 (클로징/선취매/MACD/국적/헬스/스윙/수급/ETF/퀀트대시)
 
         g6_mode 분기:
         - NORMAL: 전체 실행
@@ -1400,7 +1400,7 @@ class TradingCOO:
                     c13_ok = True
 
         # ── Stage 3: C14 + C15 + C16 + C17 + C18 병렬 (300s) ──
-        logger.info("[COO] G7 Stage 3: C14+C15+C16+C17+C18 병렬")
+        logger.info("[COO] G7 Stage 3: C14~C22 병렬")
         stage3_jobs = []
 
         # C14: 클로징 브리프
@@ -1475,6 +1475,13 @@ class TradingCOO:
                 120,
             ))
 
+        # C22: FLOWX 퀀트 대시보드 통합 업로드 (5개 테이블)
+        stage3_jobs.append((
+            "C22_quant_dashboard",
+            self._job_quant_dashboard_upload(context),
+            180,
+        ))
+
         if stage3_jobs:
             s3 = await self.run_parallel_async(stage3_jobs, timeout_per_job=300)
             results.extend(s3)
@@ -1497,6 +1504,20 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[C19] FLOWX 스윙 업로드 실패 (무시): {e}")
             return {"flowx_swing": f"ERROR: {e}"}
+
+    # ─────────────────────────────────────────────
+    # C22: FLOWX 퀀트 대시보드 통합 업로드
+    # ─────────────────────────────────────────────
+    async def _job_quant_dashboard_upload(self, context=None) -> dict:
+        """5개 퀀트 대시보드 테이블 → Supabase 업로드"""
+        try:
+            from data.upload_quant_dashboard import run_quant_dashboard_upload
+            results = run_quant_dashboard_upload()
+            ok_count = sum(1 for v in results.values() if v == "OK")
+            return {"quant_dashboard": f"{ok_count}/5 OK", "detail": results}
+        except Exception as e:
+            logger.warning(f"[C22] 퀀트 대시보드 업로드 실패 (무시): {e}")
+            return {"quant_dashboard": f"ERROR: {e}"}
 
     async def _job_nxt_early_collect(self, context=None) -> dict:
         """C4E: NXT 사전 데이터 수집 + 예비 알림 발송.
