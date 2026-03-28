@@ -65,17 +65,27 @@ def _fetch_market_trading_data(market: str = "KOSPI",
     """pykrx로 시장별 투자자 매매동향 가져오기.
 
     _calc_market_flow() (market_brain.py) 패턴과 동일.
+    주말/공휴일에는 KRX 서버가 빈 응답을 줄 수 있으므로 최대 3일 전까지 재시도.
 
     Returns: [{"date": str, "inst": float, "foreign": float, "indiv": float}, ...]
     """
     from pykrx import stock
 
-    end = date.today()
-    start = end - timedelta(days=days)
+    # 비거래일 대응: 오늘부터 최대 3일 전까지 시도
+    df = None
+    for offset in range(4):
+        end = date.today() - timedelta(days=offset)
+        start = end - timedelta(days=days)
+        try:
+            df = stock.get_market_trading_value_by_date(
+                start.strftime("%Y%m%d"), end.strftime("%Y%m%d"), market
+            )
+            if df is not None and len(df) >= MIN_DAYS:
+                break
+        except Exception:
+            continue
+        df = None
 
-    df = stock.get_market_trading_value_by_date(
-        start.strftime("%Y%m%d"), end.strftime("%Y%m%d"), market
-    )
     if df is None or len(df) < MIN_DAYS:
         return []
 
@@ -270,19 +280,26 @@ def load_flow_zscore() -> dict:
 def get_brain_flow_zscore_adj() -> Tuple[float, str]:
     """BRAIN에서 호출하는 API.
 
-    1. flow_zscore.json 캐시 확인 (오늘 날짜면 재사용)
+    1. flow_zscore.json 캐시 확인 (오늘 또는 최근 3일 이내면 재사용)
     2. 캐시 없으면 calc_market_zscore() 실행 + 저장
     3. (brain_adj, signal_text) 반환
+
+    비거래일(주말/공휴일)에는 가장 최근 거래일 캐시를 재사용.
 
     Returns: (brain_adj: float, detail: str)
     """
     try:
         cached = load_flow_zscore()
-        today_str = date.today().strftime("%Y-%m-%d")
+        today = date.today()
 
-        # 캐시가 오늘이면 재사용
-        if cached.get("data_date") == today_str:
-            return cached.get("brain_adj", 0.0), cached.get("signal", "")
+        # 캐시가 최근 3일 이내면 재사용 (주말/공휴일 대응)
+        if cached.get("data_date"):
+            try:
+                cache_date = datetime.strptime(cached["data_date"], "%Y-%m-%d").date()
+                if (today - cache_date).days <= 3:
+                    return cached.get("brain_adj", 0.0), cached.get("signal", "")
+            except (ValueError, TypeError):
+                pass
 
         # 신규 계산
         result = calc_market_zscore()
@@ -290,6 +307,13 @@ def get_brain_flow_zscore_adj() -> Tuple[float, str]:
             save_flow_zscore(result)
             logger.info(f"[FlowZ] Z-score 계산 완료: {result['signal_level']} "
                         f"adj={result['brain_adj']:+.1f}")
+            return result.get("brain_adj", 0.0), result.get("signal", "")
+
+        # 신규 계산 실패 시 기존 캐시 fallback (stale이라도)
+        if cached.get("brain_adj") is not None and cached.get("signal"):
+            logger.info("[FlowZ] 신규 계산 실패 — 기존 캐시 재사용")
+            return cached.get("brain_adj", 0.0), cached.get("signal", "")
+
         return result.get("brain_adj", 0.0), result.get("signal", "")
 
     except Exception as e:
