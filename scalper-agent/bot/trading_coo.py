@@ -40,7 +40,7 @@ STEP 3-7: G6 DATA_PIPELINE 그룹 실행 함수
   - _fallback_collect_daily() — 5분 대기 재시도 → 전일 데이터 폴백
   - _fallback_verify_data() — 재검증 → DEGRADED 모드
 STEP 3-8: G7 EVENING_BRAIN 그룹 실행 함수
-  - run_g7() — 3-Stage (신호+스윙+브레인 → 학습→★분석 → 클로징+선취매+MACD+국적+헬스)
+  - run_g7() — 3-Stage (신호+스윙+브레인 → 학습→★분석 → 클로징+선취매+MACD+TRIX+국적+헬스)
   - _fallback_evening_analysis() — 3분 재시도 → 전일 recommendation.json 유지
 STEP 3-9: setup_schedule() + telegram_bot.py 연결
   - setup_schedule(jq) — G1~G7 시간별 등록
@@ -1101,7 +1101,7 @@ class TradingCOO:
           1. G5 완료 대기 (최대 5분)
           2. C2 _job_flowx_universe_update (non-critical)
           3. C3 ★ _job_collect_daily (CRITICAL + FALLBACK)
-          4. C4+C5+C6 병렬 (non-critical)
+          4. C5+C6+C5Z 병렬 (non-critical, Z-score 사전 계산 포함)
           5. C7 ★ _job_verify_data (CRITICAL + FALLBACK)
           6. g6_mode 결정: NORMAL / STALE / DEGRADED
         """
@@ -1162,7 +1162,7 @@ class TradingCOO:
         else:
             logger.warning("[COO] bot 미연결 — C3 스킵")
 
-        # ── 4) C5 + C6 병렬 (C4는 C4E로 대체됨) ──
+        # ── 4) C5 + C6 + C5Z 병렬 (C4는 C4E로 대체됨) ──
         parallel_jobs: List[Tuple[str, Coroutine]] = []
         if self.bot:
             parallel_jobs.append(
@@ -1171,6 +1171,10 @@ class TradingCOO:
             parallel_jobs.append(
                 ("C6_dart_refresh",
                  self.bot._job_dart_refresh(context)))
+        # C5Z: 수급 Z-score 사전 계산 (BRAIN이 캐시 즉시 사용)
+        parallel_jobs.append((
+            "C5Z_flow_zscore",
+            self._job_flow_zscore_precalc(context)))
 
         if parallel_jobs:
             par_results = await self.run_parallel_async(
@@ -1313,7 +1317,7 @@ class TradingCOO:
         3-Stage 실행:
         - Stage 1: C8+C10+C11 병렬 (신호기록 / 스윙선정 / 브레인배분)
         - Stage 2: C12→C13 순차 (일간학습 → ★이브닝분석 CRITICAL)
-        - Stage 3: C14~C22 병렬 (클로징/선취매/MACD/국적/헬스/스윙/수급/ETF/퀀트대시)
+        - Stage 3: C14~C23 병렬 (클로징/선취매/MACD/TRIX/국적/헬스/스윙/수급/ETF/퀀트대시)
 
         g6_mode 분기:
         - NORMAL: 전체 실행
@@ -1396,8 +1400,8 @@ class TradingCOO:
                 if recovered:
                     c13_ok = True
 
-        # ── Stage 3: C14 + C15 + C16 + C17 + C18 병렬 (300s) ──
-        logger.info("[COO] G7 Stage 3: C14~C22 병렬")
+        # ── Stage 3: C14~C23 병렬 (300s) ──
+        logger.info("[COO] G7 Stage 3: C14~C23 병렬")
         stage3_jobs = []
 
         # C14: 클로징 브리프
@@ -1470,6 +1474,12 @@ class TradingCOO:
             self._job_quant_dashboard_upload(context),
         ))
 
+        # C23: TRIX 다이버전스 사전 스캔 (다음날 모닝추천 캐시)
+        stage3_jobs.append((
+            "C23_trix_prescan",
+            self._job_trix_prescan(context),
+        ))
+
         if stage3_jobs:
             s3 = await self.run_parallel_async(stage3_jobs, timeout_per_job=300)
             results.extend(s3)
@@ -1506,6 +1516,80 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[C22] 퀀트 대시보드 업로드 실패 (무시): {e}")
             return {"quant_dashboard": f"ERROR: {e}"}
+
+    # ─────────────────────────────────────────────
+    # C5Z: 수급 Z-score 사전 계산
+    # ─────────────────────────────────────────────
+    async def _job_flow_zscore_precalc(self, context=None) -> dict:
+        """pykrx 투자자별 수급 데이터 → 20일 Z-score → 캐시 저장.
+
+        G6 Step 4에서 C5+C6과 병렬 실행.
+        G7 C11(BRAIN)이 캐시를 즉시 재사용하여 pykrx 재호출 불필요.
+        """
+        try:
+            import asyncio
+            from data.flow_zscore import calc_market_zscore, save_flow_zscore
+
+            result = await asyncio.to_thread(calc_market_zscore)
+            if result.get("combined"):
+                save_flow_zscore(result)
+                signal = result.get("signal", "")
+                brain_adj = result.get("brain_adj", 0.0)
+                logger.info(
+                    f"[C5Z] Z-score 사전 계산 완료: adj={brain_adj:+.1f}, "
+                    f"signal={signal[:40]}")
+                return {
+                    "flow_zscore": "OK",
+                    "brain_adj": brain_adj,
+                    "signal": signal,
+                }
+            logger.warning("[C5Z] Z-score 계산 결과 없음 (빈 데이터)")
+            return {"flow_zscore": "EMPTY"}
+        except Exception as e:
+            logger.warning(f"[C5Z] Z-score 사전 계산 실패 (무시): {e}")
+            return {"flow_zscore": f"ERROR: {e}"}
+
+    # ─────────────────────────────────────────────
+    # C23: TRIX 다이버전스 사전 스캔
+    # ─────────────────────────────────────────────
+    async def _job_trix_prescan(self, context=None) -> dict:
+        """전체 유니버스 TRIX 다이버전스 스캔 → 캐시 저장.
+
+        G7 Stage 3에서 C16(MACD)과 병렬 실행.
+        다음날 모닝추천 Step 2.6에서 캐시(3시간 TTL) 즉시 재사용.
+        """
+        try:
+            import asyncio
+            from strategies.trix_divergence import (
+                scan_trix_divergence, save_trix_cache,
+            )
+
+            signals = await asyncio.to_thread(scan_trix_divergence, 10)
+            if signals:
+                # 캐시 형식: {code: {info}}
+                cache_data = {}
+                for s in signals:
+                    cache_data[s["code"]] = {
+                        "name": s.get("name", s["code"]),
+                        "source": "trix_divergence",
+                        "div_strength": s.get("div_strength", 0),
+                        "adx": s.get("adx", 0),
+                        "trix_cross": s.get("trix_cross", "neutral"),
+                        "composite_score": s.get("composite_score", 0),
+                    }
+                save_trix_cache(cache_data)
+                logger.info(
+                    f"[C23] TRIX 사전 스캔 완료: {len(signals)}종목 감지")
+                return {
+                    "trix_prescan": "OK",
+                    "count": len(signals),
+                    "top": [s.get("name", s["code"]) for s in signals[:3]],
+                }
+            logger.info("[C23] TRIX 다이버전스 감지 종목 없음")
+            return {"trix_prescan": "EMPTY"}
+        except Exception as e:
+            logger.warning(f"[C23] TRIX 사전 스캔 실패 (무시): {e}")
+            return {"trix_prescan": f"ERROR: {e}"}
 
     async def _job_nxt_early_collect(self, context=None) -> dict:
         """C4E: NXT 사전 데이터 수집 + 예비 알림 발송.
