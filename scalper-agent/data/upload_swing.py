@@ -418,15 +418,144 @@ def upload_swing_to_supabase(data: dict) -> bool:
 
 
 # ═══════════════════════════════════════
+#  dashboard_swing 통합 업로드
+# ═══════════════════════════════════════
+
+def _load_nxt_data() -> dict:
+    """nightwatch_report.json → NXT 데이터"""
+    path = STORE_DIR / "nightwatch_report.json"
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text("utf-8"))
+    except Exception:
+        return {}
+
+
+def _load_allocation_data() -> dict:
+    """brain_allocation.json → 자산배분 + 센서 데이터"""
+    path = STORE_DIR / "brain_allocation.json"
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text("utf-8"))
+    except Exception:
+        return {}
+
+
+def upload_dashboard_swing(swing_data: dict) -> bool:
+    """dashboard_swing 테이블에 통합 upsert
+    swing_data + NXT + Brain Allocation + 시장지표 병합"""
+    client = _get_client()
+    if not client:
+        return False
+
+    try:
+        nxt = _load_nxt_data()
+        alloc = _load_allocation_data()
+        alloc_pct = alloc.get("allocation_pct", {})
+        raw = nxt.get("raw_indicators", {})
+        macro = nxt.get("macro_conditions", {})
+
+        # NXT targets에서 supply_score 포함
+        nxt_targets = nxt.get("nxt_targets", [])
+        nxt_targets_clean = []
+        for t in nxt_targets:
+            nxt_targets_clean.append({
+                "code": t.get("code", ""),
+                "name": t.get("name", ""),
+                "sector": t.get("sector", ""),
+                "tier": t.get("tier", 0),
+                "priority": t.get("priority", 0),
+                "supply_score": t.get("supply_score", 0),
+                "is_etf": t.get("is_etf", False),
+            })
+
+        # 센서 데이터
+        cot = alloc.get("cot_smartmoney", {})
+        stress = alloc.get("cross_asset_stress", {})
+        rotation = alloc.get("rotation", {})
+        liquidity = alloc.get("liquidity_cycle", {})
+
+        row = {
+            "date": swing_data["date"],
+            # BRAIN
+            "brain_verdict": swing_data["brain_verdict"],
+            "brain_pct": swing_data["brain_pct"],
+            "brain_reason": swing_data.get("brain_reason", "")[:300],
+            "regime": alloc.get("effective_regime", alloc.get("regime", "NORMAL")),
+            "regime_severity": alloc.get("severity", 0),
+            "regime_desc": alloc.get("description", ""),
+            # 자산 배분
+            "alloc_swing": alloc_pct.get("bh_swing", 0),
+            "alloc_gold_etf": alloc_pct.get("gold_etf", 0),
+            "alloc_inverse": alloc_pct.get("inverse_etf", 0),
+            "alloc_group_etf": alloc_pct.get("group_etf", 0),
+            "alloc_small_cap": alloc_pct.get("small_cap", 0),
+            "alloc_cash": alloc_pct.get("cash", 100),
+            # 추천 종목
+            "picks": swing_data.get("picks", []),
+            "etf_picks": swing_data.get("etf_picks", []),
+            "watchlist": swing_data.get("watchlist", []),
+            # NXT
+            "nxt_signal": nxt.get("signal", ""),
+            "nxt_signal_text": nxt.get("signal_text", ""),
+            "nxt_score": nxt.get("total_score", 0),
+            "nxt_reason": nxt.get("selection_reason", ""),
+            "nxt_targets": nxt_targets_clean,
+            # 시장 지표
+            "vix": raw.get("VIX", {}).get("value", 0) or 0,
+            "nasdaq_pct": macro.get("nasdaq_pct", 0) or 0,
+            "usdkrw": raw.get("USDKRW", {}).get("value", 0) or 0,
+            "oil_pct": macro.get("oil_pct", 0) or 0,
+            "gold_pct": raw.get("GOLD", {}).get("change_pct", 0) or 0,
+            "silver_pct": macro.get("silver_pct", 0) or 0,
+            # 분석
+            "analysis": swing_data.get("analysis", {}),
+            "portfolio": swing_data.get("portfolio", {}),
+            # 센서
+            "smart_money_score": cot.get("smart_money_score", 0) or 0,
+            "smart_money_signal": cot.get("smart_money_signal", ""),
+            "stress_index": stress.get("stress_index", 0) or 0,
+            "stress_level": stress.get("stress_level", ""),
+            "rotation_signal": rotation.get("rotation_signal", ""),
+            "liquidity_score": liquidity.get("liquidity_score", 0) or 0,
+            # 메타
+            "market_comment": swing_data.get("market_comment", ""),
+        }
+
+        client.table("dashboard_swing").upsert(
+            row, on_conflict="date"
+        ).execute()
+
+        logger.info(
+            f"[DASHBOARD] 스윙 업로드 완료: {row['regime']} | "
+            f"NXT {row['nxt_signal']} {row['nxt_score']:+.1f} | "
+            f"{len(swing_data.get('picks', []))}종목"
+        )
+        return True
+
+    except Exception as e:
+        logger.error(f"[DASHBOARD] 스윙 업로드 실패: {e}")
+        return False
+
+
+# ═══════════════════════════════════════
 #  메인 진입점
 # ═══════════════════════════════════════
 
 def run_flowx_swing_upload() -> bool:
-    """FLOWX 스윙 페이지 데이터 생성 + Supabase 업로드"""
+    """FLOWX 스윙 페이지 데이터 생성 + Supabase 업로드 (swing_signals + dashboard_swing)"""
     try:
         data = generate_swing_page_data()
+
+        # 1) 기존 swing_signals 업로드 (유지)
         uploaded = upload_swing_to_supabase(data)
-        return uploaded
+
+        # 2) dashboard_swing 통합 업로드 (NXT + Brain Allocation 병합)
+        dashboard_ok = upload_dashboard_swing(data)
+
+        return uploaded or dashboard_ok
     except Exception as e:
         logger.error(f"[FLOWX 스윙] 전체 실패: {e}")
         import traceback
