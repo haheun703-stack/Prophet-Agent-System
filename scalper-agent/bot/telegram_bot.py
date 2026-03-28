@@ -568,7 +568,7 @@ class BodyHunterBot:
             return []
 
     async def _job_war_startup(self, context):
-        """09:00 전쟁모드 시작 — Silent: log_event만 (모닝브리프에 포함됨)"""
+        """09:00 전쟁모드 시작 — Telegram 알림 (entry_monitor 통합)"""
         from datetime import date as _date
         if not is_trading_day():
             return
@@ -576,9 +576,23 @@ class BodyHunterBot:
         if not targets:
             logger.info("전쟁모드 종목 없음 — 추적 비활성")
             return
-        names = [s.get("name", s.get("code")) for s in targets[:8]]
-        log_event("WAR", f"전쟁모드 추적 시작 {len(targets[:8])}종목: {', '.join(names)}")
-        logger.info(f"전쟁모드 시작: {len(targets[:8])}종목 (로그만)")
+        picks = targets[:8]
+        names = [s.get("name", s.get("code")) for s in picks]
+        log_event("WAR", f"전쟁모드 추적 시작 {len(picks)}종목: {', '.join(names)}")
+
+        # Telegram 시작 알림
+        chat_id = self.chat_id
+        if chat_id:
+            lines = [f"📡 장중 추적 모니터 시작 ({len(picks)}종목)"]
+            for s in picks:
+                nm = s.get("name", s.get("code", "?"))
+                sl = s.get("sl", 0)
+                tp = s.get("tp", 0)
+                sc = s.get("total_score", 0)
+                src = ", ".join(s.get("sources", [])[:2]) if s.get("sources") else ""
+                lines.append(f"  {nm} SL:{sl:,} TP:{tp:,} 점수:{sc} {src}")
+            lines.append("SL이탈/TP도달/급등락(5%+) 자동 알림")
+            await context.bot.send_message(chat_id=chat_id, text="\n".join(lines))
 
     async def _job_war_tracker(self, context):
         """전쟁모드 추적 — 60초 간격, 급등/급락/SL 알림"""
@@ -647,27 +661,44 @@ class BodyHunterBot:
                         log_event("WAR", f"{name} SL근접 {cp:,} → SL {sl:,} ({vs_sl:+.1f}%)")
                         code_alerts.append("SL_NEAR")
 
-                # 2) SL 이탈 → log_event만 (매도 알림이 대체)  # SILENT: MSG-REDUX
+                # 2) SL 이탈 → Telegram 전송 (entry_monitor 통합)
                 if sl > 0 and cp <= sl and "SL_BREAK" not in code_alerts:
+                    sl_msg = f"🚨 {name} SL 이탈!\n현재 {cp:,} ≤ SL {sl:,}"
                     log_event("WAR", f"{name} SL_BREAK {cp:,} ≤ {sl:,}")
+                    if chat_id:
+                        await context.bot.send_message(chat_id=chat_id, text=sl_msg)
                     code_alerts.append("SL_BREAK")
 
-                # 3) 급등/급락 — log_event만 (급락 -5% 이상만 긴급 전송)
+                # 3) 급등/급락 — critical만 Telegram (entry_monitor 통합)
                 if open_p > 0:
                     day_chg = (cp / open_p - 1) * 100
-                    if day_chg >= 3.0 and "SURGE" not in code_alerts:
+                    # +5% 이상 급등 → Telegram
+                    if day_chg >= 5.0 and "SURGE5" not in code_alerts:
+                        surge_msg = f"🚀 {name} 급등!\n현재 {cp:,}원 ({day_chg:+.1f}% from 시가)"
+                        log_event("WAR", f"{name} 급등 {day_chg:+.1f}% ({cp:,}원)")
+                        if chat_id:
+                            await context.bot.send_message(chat_id=chat_id, text=surge_msg)
+                        code_alerts.append("SURGE5")
+                    elif day_chg >= 3.0 and "SURGE" not in code_alerts:
                         log_event("WAR", f"{name} 급등 {day_chg:+.1f}% ({cp:,}원)")
                         code_alerts.append("SURGE")
+                    # -5% 이하 급락 → Telegram
                     if day_chg <= -5.0 and "DROP5" not in code_alerts:
-                        log_event("WAR", f"{name} 급락 {day_chg:+.1f}% ({cp:,}원)")  # SILENT: MSG-REDUX
+                        drop_msg = f"📉 {name} 급락!\n현재 {cp:,}원 ({day_chg:+.1f}% from 시가)"
+                        log_event("WAR", f"{name} 급락 {day_chg:+.1f}% ({cp:,}원)")
+                        if chat_id:
+                            await context.bot.send_message(chat_id=chat_id, text=drop_msg)
                         code_alerts.append("DROP5")
                     elif day_chg <= -3.0 and "DROP" not in code_alerts:
                         log_event("WAR", f"{name} 하락 {day_chg:+.1f}% ({cp:,}원)")
                         code_alerts.append("DROP")
 
-                # 4) TP 도달 — log_event만
+                # 4) TP 도달 → Telegram 전송 (entry_monitor 통합)
                 if tp > 0 and cp >= tp and "TP_HIT" not in code_alerts:
+                    tp_msg = f"🎯 {name} TP 도달!\n현재 {cp:,} ≥ TP {tp:,}"
                     log_event("WAR", f"{name} TP도달 {cp:,} ≥ {tp:,}")
+                    if chat_id:
+                        await context.bot.send_message(chat_id=chat_id, text=tp_msg)
                     code_alerts.append("TP_HIT")
 
             except Exception as e:
@@ -678,8 +709,11 @@ class BodyHunterBot:
         if now.minute % 5 == 0:
             logger.info(f"전쟁추적: {ok_count}/{ok_count+fail_count} 조회성공")
 
+    # 텔레그램 요약 전송 시간 (entry_monitor 통합 — 나머지는 log만)
+    _WAR_SUMMARY_TG_TIMES = {(10, 30), (13, 30), (15, 15)}
+
     async def _job_war_summary(self, context):
-        """전쟁모드 30분 요약 — Silent: log_event만 (/ㅍ로 수동 조회)"""
+        """전쟁모드 30분 요약 — 10:30/13:30/15:15만 Telegram, 나머지 log (entry_monitor 통합)"""
         from datetime import date as _date
         if not is_trading_day():
             return
@@ -692,12 +726,14 @@ class BodyHunterBot:
         last_prices = war_state.get("prices", {})
         open_prices = war_state.get("opens", {})
 
+        now = datetime.now(KST)
         data_count = 0
-        summary_items = []
+        tg_lines = [f"📊 추적 요약 [{now:%H:%M}]", ""]
         for idx, s in enumerate(targets[:8]):
             code = s.get("code", "")
             name = s.get("name", code)
             tp = s.get("tp", 0)
+            sl = s.get("sl", 0)
             cp = last_prices.get(code, 0)
 
             if cp == 0:
@@ -721,10 +757,20 @@ class BodyHunterBot:
             open_p = open_prices.get(code, cp)
             day_chg = (cp / open_p - 1) * 100 if open_p > 0 else 0
             vs_tp = (tp / cp - 1) * 100 if tp > 0 and cp > 0 else 0
-            summary_items.append(f"{name} {cp:,}원 ({day_chg:+.1f}%) →TP({vs_tp:+.1f}%)")
+            vs_sl = (cp / sl - 1) * 100 if sl > 0 and cp > 0 else 0
+            icon = "🟢" if day_chg > 0 else ("🔴" if day_chg < -1 else "⚪")
+            tg_lines.append(f"{icon} {name} {cp:,}원 ({day_chg:+.1f}%) SL({vs_sl:+.1f}%) TP({vs_tp:+.1f}%)")
 
-        log_event("WAR", f"30분 요약 {data_count}종목", summary_items)
-        logger.info(f"전쟁추적 요약: {data_count}종목 (로그만)")
+        log_event("WAR", f"30분 요약 {data_count}종목", tg_lines[2:])
+
+        # 선별 시간에만 Telegram 전송
+        if (now.hour, now.minute) in self._WAR_SUMMARY_TG_TIMES and data_count > 0:
+            chat_id = self.chat_id
+            if chat_id:
+                await context.bot.send_message(chat_id=chat_id, text="\n".join(tg_lines))
+                logger.info(f"전쟁추적 요약 Telegram 전송: {data_count}종목")
+        else:
+            logger.info(f"전쟁추적 요약: {data_count}종목 (로그만)")
 
     async def cmd_buy(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._is_authorized(update):
@@ -3417,7 +3463,7 @@ class BodyHunterBot:
             logger.error(f"[TV Intraday] 초기화 실패: {e}")
 
     async def _job_intraday_tv_scan(self, context):
-        """30분 반복 — 장중 TV 스캔 — Silent: 저장만 (프리클로즈에 통합)"""
+        """30분 반복 — 장중 TV 스캔 + 강신호 Telegram (entry_monitor 통합)"""
         from datetime import date
         now = datetime.now()
         if not is_trading_day():
@@ -3441,7 +3487,29 @@ class BodyHunterBot:
                 save_intraday_results(signals)
                 for sig in signals[:5]:
                     self._tv_prev_codes.add(sig.code)
-                logger.info(f"[TV Intraday] {len(signals)}개 신호 저장 (프리클로즈에 통합)")
+                logger.info(f"[TV Intraday] {len(signals)}개 신호 저장")
+
+                # 강신호만 Telegram 전송 (entry_monitor 통합)
+                chat_id = self.chat_id
+                if chat_id:
+                    for sig in signals[:3]:
+                        # EXPLOSION 75+ 또는 QUIET_ACC 80+ 만 알림
+                        pattern = getattr(sig, "pattern", "")
+                        score = getattr(sig, "score", 0)
+                        if (pattern == "EXPLOSION" and score >= 75) or \
+                           (pattern == "QUIET_ACCUMULATION" and score >= 80):
+                            name = getattr(sig, "name", "?")
+                            tv_r = getattr(sig, "estimated_tv_ratio", 0)
+                            chg = getattr(sig, "change_pct", 0)
+                            conf = getattr(sig, "confidence", "")
+                            tag = {"QUIET_ACCUMULATION": "조용한매집",
+                                   "GRADUAL_BUILDUP": "점진적증가"}.get(pattern, "거래대금폭발")
+                            tv_msg = (
+                                f"[장중감지] {name} — {tag}\n"
+                                f"  TV {tv_r:.1f}x | 가격 {chg:+.1f}% | score {score:.0f}\n"
+                                f"  신뢰도: {conf}"
+                            )
+                            await context.bot.send_message(chat_id=chat_id, text=tv_msg)
         except Exception as e:
             logger.error(f"[TV Intraday] 스캔 실패: {e}")
 
