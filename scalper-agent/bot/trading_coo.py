@@ -1467,6 +1467,14 @@ class TradingCOO:
                 120,
             ))
 
+        # C21: ETF 투자자별 수급 분석 (TIER2 Phase 2)
+        if self.bot:
+            stage3_jobs.append((
+                "C21_etf_flow",
+                self.bot._job_etf_flow(context),
+                120,
+            ))
+
         if stage3_jobs:
             s3 = await self.run_parallel_async(stage3_jobs, timeout_per_job=300)
             results.extend(s3)

@@ -3041,6 +3041,31 @@ class BodyHunterBot:
         except Exception as e:
             logger.error(f"[섹터수급] 분석 실패: {e}")
 
+    async def _job_etf_flow(self, context):
+        """ETF 투자자별 수급 분석 + 텔레그램 보고 (TIER2 Phase 2)
+
+        G7 Stage 3에서 호출. 21개 ETF 기관/외인 수급 분석.
+        인버스 기관매수 경고 등 시장 방향 시그널 제공.
+        """
+        if not is_trading_day():
+            return
+        try:
+            from data.etf_fund_flow import analyze_etf_flow, format_telegram_report
+            report = await asyncio.to_thread(analyze_etf_flow)
+            if not report or not report.items:
+                logger.warning("[ETF수급] 분석 결과 없음")
+                return
+
+            msg = format_telegram_report(report)
+            chat_id = self.chat_id
+            if chat_id and msg:
+                await context.bot.send_message(chat_id=chat_id, text=msg)
+            logger.info(f"[ETF수급] 분석 완료: 방향={report.market_direction}, "
+                        f"인버스경고={report.inverse_warning}, "
+                        f"안전자산={report.safe_haven_signal}")
+        except Exception as e:
+            logger.error(f"[ETF수급] 분석 실패: {e}")
+
     async def _job_nationality_charts(self, context):
         """17:00 국적 픽토그램 차트 자동 생성
 

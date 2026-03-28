@@ -217,6 +217,17 @@ def _phase1_macro(nw: dict) -> MacroAssessment:
     except Exception:
         pass
 
+    # TIER2: ETF 수급 방어 점수 반영
+    try:
+        from data.etf_fund_flow import get_etf_flow_defense_score
+        etf_defense = get_etf_flow_defense_score()
+        etf_defense = max(-5.0, min(5.0, etf_defense))  # ±5.0 클램핑
+        if abs(etf_defense) >= 1.0:
+            m.nxt_total -= etf_defense  # 양수=하락경고 → BRAIN 점수 차감
+            logger.info(f"[BRAIN] ETF수급방어: {-etf_defense:+.1f} (defense={etf_defense:.1f})")
+    except Exception:
+        pass
+
     # Step 1A: 기본 방향 (NXT-06: 한국장 강도 포함된 total 기준)
     t = m.nxt_total
     if t >= 7:

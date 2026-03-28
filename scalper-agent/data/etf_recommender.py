@@ -415,6 +415,18 @@ def generate_etf_recommendations() -> list[RecommendedETF]:
     if sector and sector.signal == "BUY":
         recommendations.append(sector)
 
+    # ── ETF 수급 부스트 (TIER2 Phase 2) ──
+    try:
+        from data.etf_fund_flow import get_etf_flow_boost
+        for r in recommendations:
+            boost = get_etf_flow_boost(r.code)
+            if abs(boost) >= 1.0:
+                r.score += boost
+                r.reason += f" | 수급{boost:+.0f}"
+                logger.info(f"  [ETF수급부스트] {r.name}: {boost:+.1f}점 → {r.score:.0f}")
+    except Exception as e:
+        logger.warning(f"[ETF수급부스트] 실패 (무시): {e}")
+
     # 점수 내림차순 정렬
     recommendations.sort(key=lambda x: x.score, reverse=True)
 
