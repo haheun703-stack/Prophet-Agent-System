@@ -4808,12 +4808,20 @@ class BodyHunterBot:
 
     async def _error_handler(self, update, context):
         import traceback
-        tb = "".join(traceback.format_exception(type(context.error), context.error, context.error.__traceback__))
-        logger.error(f"봇 에러: {context.error}\n{tb}")
+        err = context.error
+
+        # 409 Conflict: 다른 인스턴스와 충돌 — 경고만 (봇 크래시 방지)
+        if "Conflict" in str(err) or "409" in str(err):
+            logger.warning(
+                f"[409] 텔레그램 Conflict (다중 인스턴스 충돌) — 무시: {err}")
+            return
+
+        tb = "".join(traceback.format_exception(type(err), err, err.__traceback__))
+        logger.error(f"봇 에러: {err}\n{tb}")
         if update and update.effective_message:
             try:
                 await update.effective_message.reply_text(
-                    f"⚠️ 오류 발생: {str(context.error)[:200]}"
+                    f"⚠️ 오류 발생: {str(err)[:200]}"
                 )
             except Exception:
                 pass

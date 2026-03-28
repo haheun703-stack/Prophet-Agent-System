@@ -1639,4 +1639,17 @@ class TradingCOO:
         jq.run_daily(self.run_g7, time=kst_time(16, 30))
         logger.info("[COO] G7 EVENING_BRAIN 등록: 16:30 KST")
 
+        # ── G7 자동복구: G6 done + G7 pending + 현재 16:35 이후 → 60초 후 재실행 ──
+        now_kst = datetime.now(timezone(timedelta(hours=9)))
+        g6_done = self.group_status.get("G6") in (
+            GroupStatus.DONE, GroupStatus.PARTIAL)
+        g7_pending = self.group_status.get("G7") == GroupStatus.PENDING
+        past_g7_time = (now_kst.hour > 16 or
+                        (now_kst.hour == 16 and now_kst.minute >= 35))
+        if g6_done and g7_pending and past_g7_time:
+            logger.warning(
+                "[COO] ⚠️ G7 미완료 감지 (G6=done, G7=pending) "
+                "— 60초 후 자동복구 실행")
+            jq.run_once(self.run_g7, when=60)
+
         logger.info("[COO] ═══ 전체 스케줄 등록 완료 (G1~G7) ═══")
