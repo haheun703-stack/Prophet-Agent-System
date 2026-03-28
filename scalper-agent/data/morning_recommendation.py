@@ -222,6 +222,39 @@ def _step_macd_zero_scan() -> dict:
 
 
 # ═══════════════════════════════════════
+#  Step 2.6: TRIX 다이버전스 스캔
+# ═══════════════════════════════════════
+
+def _step_trix_divergence_scan() -> dict:
+    """TRIX 상승 다이버전스 + ADX 추세 확인 종목"""
+    try:
+        from strategies.trix_divergence import scan_trix_divergence, load_trix_cache
+        # 캐시 확인 (3시간 이내면 재사용)
+        cached = load_trix_cache()
+        if cached:
+            logger.info(f"TRIX 다이버전스: 캐시 {len(cached)}종목 재사용")
+            return cached
+
+        # 신규 스캔
+        signals = scan_trix_divergence(top_n=10)
+        trix_stocks = {}
+        for s in signals:
+            trix_stocks[s["code"]] = {
+                "name": s.get("name", s["code"]),
+                "source": "trix_divergence",
+                "div_strength": s.get("div_strength", 0),
+                "adx": s.get("adx", 0),
+                "trix_cross": s.get("trix_cross", "neutral"),
+                "composite_score": s.get("composite_score", 0),
+            }
+        logger.info(f"TRIX 다이버전스: {len(trix_stocks)}종목 감지")
+        return trix_stocks
+    except Exception as e:
+        logger.warning(f"TRIX 다이버전스 스캔 실패: {e}")
+        return {}
+
+
+# ═══════════════════════════════════════
 #  Step 2.7: 줍줍 스캔 (낙폭+수급매집)
 # ═══════════════════════════════════════
 
@@ -879,6 +912,7 @@ def _step5_cross_validate(
     tv_signals: dict = None,
     tv_cluster_map: dict = None,
     tv_persistence: dict = None,
+    trix_result: dict = None,
 ) -> list[RecommendedStock]:
     """모든 스텝 결과 통합 → Soft Scoring → 최종 랭킹
 
@@ -887,6 +921,7 @@ def _step5_cross_validate(
     v4: 거래대금 폭발 소스 추가 - TV 스캐너 교차검증
     v4: CORTEX 체제별 점수 배수 + 충격 섹터 페널티/보너스
     v5: 로테이션 디텍터 - 다음 섹터 종목 보너스 + 반전 섹터 페널티
+    v6: TRIX 다이버전스 - 바닥 반전 시그널 보조 점수
     """
     if macd_result is None:
         macd_result = {}
@@ -900,6 +935,8 @@ def _step5_cross_validate(
         shock_info = {}
     if rotation_stocks is None:
         rotation_stocks = {}
+    if trix_result is None:
+        trix_result = {}
 
     # ── 학습 인사이트 로드 (피드백 루프) ──
     _brain_insights = _load_brain_insights()
@@ -1219,6 +1256,21 @@ def _step5_cross_validate(
         except Exception:
             pass
 
+        # ── TRIX 다이버전스 스코어 ──────────────
+        trix_sc = 0.0
+        tx = trix_result.get(code, {})
+        if tx and tx.get("div_strength", 0) > 0:
+            cross += 1  # TRIX = 1 소스
+            base = 12
+            if tx.get("adx", 0) >= 20:
+                base += 6
+            if tx.get("trix_cross") == "bullish_cross":
+                base += 7
+                if tx.get("div_strength", 0) >= 0.7:
+                    cross += 1  # 강한 다이버전스 = 추가 소스
+            trix_sc = min(base * tx["div_strength"], 25)
+            sources.append(f"trix({tx['div_strength']:.2f})")
+
         # ── 합산 ──────────────────────────────
         raw_total = (relay_sc + premove_sc + tech_sc + bargain_sc + cross_bonus
                      + nat_sc + news_pen + obv_pen + rel_pen
@@ -1226,7 +1278,8 @@ def _step5_cross_validate(
                      + eq_adj + gap_adj
                      + nat_power_sc   # 7 SECRET 파워
                      + tv_direct      # TV 강신호 직접 점수
-                     + short_sc)      # 공매도 잔고 점수
+                     + short_sc       # 공매도 잔고 점수
+                     + trix_sc)       # TRIX 다이버전스 점수
 
         # ── 브레인 학습 가중치 적용 ──────────────
         brain_adj = _apply_brain_adjustment(
@@ -1595,6 +1648,15 @@ def run_evening_recommendation() -> RecommendationReport:
             all_codes_set.add((code, info.get("name", code)))
     logger.info(f"  → {len(macd_result)}종목 ({time.time()-t0:.0f}s)")
 
+    # Step 2.6: TRIX 다이버전스 스캔
+    t0 = time.time()
+    logger.info("[Step 2.6] TRIX 다이버전스 스캔...")
+    trix_result = _step_trix_divergence_scan()
+    for code, info in trix_result.items():
+        if (code, info.get("name", code)) not in all_codes_set:
+            all_codes_set.add((code, info.get("name", code)))
+    logger.info(f"  → {len(trix_result)}종목 ({time.time()-t0:.0f}s)")
+
     # Step 2.7: 줍줍 스캔 (낙폭+수급매집)
     t0 = time.time()
     logger.info("[Step 2.7] 줍줍 스캔 (낙폭+수급매집)...")
@@ -1884,6 +1946,7 @@ def run_evening_recommendation() -> RecommendationReport:
         tv_signals=tv_signals,
         tv_cluster_map=tv_cluster_map,
         tv_persistence=tv_persistence,
+        trix_result=trix_result,
     )
     logger.info(f"  → {len(final_stocks)}종목 ({time.time()-t0:.0f}s)")
 

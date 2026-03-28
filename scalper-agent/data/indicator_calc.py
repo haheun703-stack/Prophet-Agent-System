@@ -66,6 +66,59 @@ class IndicatorCalc:
         return macd_line, signal_line, histogram
 
     @staticmethod
+    def trix(series: pd.Series, period: int = 12) -> pd.Series:
+        """TRIX — Triple EMA Rate of Change.
+
+        TRIX = ROC(EMA(EMA(EMA(close, n), n), n)) × 100
+        노이즈 필터링에 강한 모멘텀 오실레이터.
+        """
+        ema1 = series.ewm(span=period, adjust=False).mean()
+        ema2 = ema1.ewm(span=period, adjust=False).mean()
+        ema3 = ema2.ewm(span=period, adjust=False).mean()
+        return ema3.pct_change() * 100
+
+    @staticmethod
+    def adx_di(high: pd.Series, low: pd.Series, close: pd.Series,
+               period: int = 14) -> Tuple[pd.Series, pd.Series, pd.Series]:
+        """ADX + Plus_DI + Minus_DI (Wilder smoothing).
+
+        Returns: (adx, plus_di, minus_di)
+        """
+        prev_close = close.shift(1)
+        tr = pd.concat([
+            high - low,
+            (high - prev_close).abs(),
+            (low - prev_close).abs(),
+        ], axis=1).max(axis=1)
+
+        up_move = high - high.shift(1)
+        down_move = low.shift(1) - low
+
+        plus_dm = pd.Series(
+            np.where((up_move > down_move) & (up_move > 0), up_move, 0.0),
+            index=high.index,
+        )
+        minus_dm = pd.Series(
+            np.where((down_move > up_move) & (down_move > 0), down_move, 0.0),
+            index=high.index,
+        )
+
+        # Wilder smoothing (alpha = 1/period)
+        alpha = 1.0 / period
+        atr = tr.ewm(alpha=alpha, min_periods=period, adjust=False).mean()
+        sm_plus = plus_dm.ewm(alpha=alpha, min_periods=period, adjust=False).mean()
+        sm_minus = minus_dm.ewm(alpha=alpha, min_periods=period, adjust=False).mean()
+
+        plus_di = 100 * sm_plus / atr.replace(0, np.nan)
+        minus_di = 100 * sm_minus / atr.replace(0, np.nan)
+
+        di_sum = plus_di + minus_di
+        dx = 100 * (plus_di - minus_di).abs() / di_sum.replace(0, np.nan)
+        adx_val = dx.ewm(alpha=alpha, min_periods=period, adjust=False).mean()
+
+        return adx_val, plus_di, minus_di
+
+    @staticmethod
     def volume_ratio(volume: pd.Series, period: int = 20) -> pd.Series:
         """현재 거래량 / N기간 평균 거래량"""
         avg = volume.rolling(window=period, min_periods=1).mean()
