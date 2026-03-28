@@ -153,6 +153,20 @@ class AutoTrader:
         self._save_risk_state()
         logger.info(f"일일 실현 손실 누적: {self._risk_state['daily_realized_loss']:,}원")
 
+    def _record_trade_pnl(self, code: str, pnl: int, source: str = ""):
+        """매매 P&L 통합 기록 (기존 리스크 + CFO)
+
+        모든 매도 완료 지점에서 record_realized_loss 대신 이 메서드를 호출.
+        """
+        # 1) 기존 일일 손실 추적 (손실만)
+        self.record_realized_loss(pnl)
+        # 2) CFO P&L 추적 (손익 모두 — DrawdownShield 포함)
+        if self._cfo:
+            try:
+                self._cfo.record_trade(code, pnl, source)
+            except Exception as e:
+                logger.warning(f"CFO record_trade 실패 (무시): {e}")
+
     def check_risk_gate(self) -> tuple[bool, str]:
         """리스크 게이트 체크 → (통과여부, 사유)
 
@@ -1401,7 +1415,7 @@ class AutoTrader:
                         continue
                     # 실현 손익 기록
                     pnl_amount = (snap.price - pos["entry_price"]) * actual_qty
-                    self.record_realized_loss(pnl_amount)
+                    self._record_trade_pnl(code, pnl_amount, "ai_monitor")
                     self._positions.pop(code, None)
                     self._save_positions()
                     rtm.unregister_position(code)
@@ -1534,7 +1548,7 @@ class AutoTrader:
                         if cp == 0:
                             cp = pos.get("entry_price", 0)
                         pnl = (cp - pos["entry_price"]) * actual_qty
-                        self.record_realized_loss(pnl)
+                        self._record_trade_pnl(code, pnl, "eye_guardian")
                         self._positions.pop(code, None)
                         self._save_positions()
                         await self._alert(
@@ -1630,7 +1644,7 @@ class AutoTrader:
                         logger.error(f"SL 매도 실패 {code}: {result} — 포지션 유지")
                         continue
                     pnl = (cp - entry) * actual_qty
-                    self.record_realized_loss(pnl)
+                    self._record_trade_pnl(code, pnl, "stop_loss")
                     self._positions.pop(code, None)
                     self._save_positions()
 
@@ -1845,7 +1859,7 @@ class AutoTrader:
                     result = self.trader.liquidate_one(code)
                     if result and result.get("success"):
                         realized_pnl = (cp - pos["entry_price"]) * actual_qty
-                        self.record_realized_loss(realized_pnl)
+                        self._record_trade_pnl(code, realized_pnl, "dynamic_sl")
                         self._positions.pop(code, None)
                         self._save_positions()
                         await self._alert(f"⛔ 동적 손절: {name}({code}) @ {cp:,} (PnL {realized_pnl:+,}원)")
@@ -1868,7 +1882,7 @@ class AutoTrader:
                                 if sell_r and sell_r.get("success"):
                                     pos["partial_sold"] = True
                                     partial_pnl = (cp - pos["entry_price"]) * half
-                                    self.record_realized_loss(partial_pnl)
+                                    self._record_trade_pnl(code, partial_pnl, "partial_tp")
                                     await self._alert(
                                         f"🟡 반분할 익절: {name}({code}) {half}주 @ {cp:,}\n"
                                         f"   나머지 트레일링 전환 ({reason}, PnL {partial_pnl:+,}원)"
@@ -1887,7 +1901,7 @@ class AutoTrader:
                             logger.error(f"동적 전량매도 실패 {code}: {result} — 포지션 유지")
                             continue
                         realized_pnl = (cp - pos["entry_price"]) * actual_qty_fs
-                        self.record_realized_loss(realized_pnl)
+                        self._record_trade_pnl(code, realized_pnl, "dynamic_sell")
                         self._positions.pop(code, None)
                         self._save_positions()
                         await self._alert(f"🔴 동적 전량매도: {name}({code}) @ {cp:,} ({reason}, PnL {realized_pnl:+,}원)")
@@ -1994,7 +2008,7 @@ class AutoTrader:
                         if result_one and result_one.get("success"):
                             if cp_eod > 0:
                                 pnl_eod = (cp_eod - pos.get("entry_price", cp_eod)) * qty_eod
-                                self.record_realized_loss(pnl_eod)
+                                self._record_trade_pnl(code, pnl_eod, "eod_close")
                                 eod_total_pnl += pnl_eod
                             self._positions.pop(code, None)
                         else:
