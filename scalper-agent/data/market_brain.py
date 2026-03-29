@@ -1067,6 +1067,18 @@ def _phase6_synthesis(
     except Exception:
         pass
 
+    # 12. 상대가치 ERP (BOND-P2: 주식 vs 채권 기대수익률)
+    try:
+        from data.bond_yield_signal import get_erp_brain_adjustment
+        ri = nw.get("raw_indicators", {}) if isinstance(nw, dict) else {}
+        erp_adj, erp_detail = get_erp_brain_adjustment(ri)
+        erp_adj = max(-3.0, min(3.0, erp_adj))
+        if abs(erp_adj) >= 0.5:
+            score += erp_adj
+            reasons.append(f"상대가치{erp_detail}({erp_adj:+.1f})")
+    except Exception:
+        pass
+
     # 결정
     if score >= 20:
         pct, label = 100, "공격"

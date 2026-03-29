@@ -417,3 +417,165 @@ def get_nxt_bond_adjustment(raw_indicators: Dict = None) -> Tuple[float, str]:
     except Exception as e:
         logger.warning(f"[BondYield] NXT 보정 실패: {e}")
         return 0.0, ""
+
+
+# ═══════════════════════════════════════════
+#  P2: 상대가치 분석 (Equity Risk Premium)
+# ═══════════════════════════════════════════
+
+def calc_equity_risk_premium(
+    us10y_value: float = 0.0,
+    market_per: float = 0.0,
+) -> Dict:
+    """
+    주식-채권 상대가치 분석 (Equity Risk Premium).
+
+    ERP = 주식 기대수익률(Earnings Yield) - 채권 수익률(US10Y)
+    Earnings Yield = 100 / PER (%)
+
+    ERP 해석:
+      > 4% : 주식 매우 매력적 (채권 대비 압도적 할인)
+      2~4% : 주식 매력적 (정상적 프리미엄)
+      1~2% : 주식 보통 (프리미엄 축소)
+      0~1% : 주식 비쌈 (채권과 비슷한 수익률)
+      < 0% : 채권이 더 매력적 (역전)
+
+    Args:
+        us10y_value: 미국 10년물 수익률 (%)
+        market_per: 시장 평균 PER (KOSPI ~12, 유니버스 중간값 ~17)
+
+    Returns:
+        {
+            "earnings_yield": float,  # 100/PER (%)
+            "bond_yield": float,      # US10Y (%)
+            "erp": float,             # Equity Risk Premium (%)
+            "erp_class": str,         # VERY_CHEAP / CHEAP / FAIR / EXPENSIVE / VERY_EXPENSIVE
+            "brain_adj": float,       # BRAIN Phase 6 추가 보정 (±3)
+            "narrative": str,
+        }
+    """
+    result = {
+        "earnings_yield": 0.0,
+        "bond_yield": us10y_value,
+        "erp": 0.0,
+        "erp_class": "UNKNOWN",
+        "brain_adj": 0.0,
+        "narrative": "",
+    }
+
+    if us10y_value <= 0 or market_per <= 0:
+        result["narrative"] = "데이터 부족"
+        return result
+
+    earnings_yield = 100.0 / market_per
+    erp = earnings_yield - us10y_value
+
+    result["earnings_yield"] = round(earnings_yield, 2)
+    result["erp"] = round(erp, 2)
+
+    # ERP 분류
+    if erp >= 4.0:
+        result["erp_class"] = "VERY_CHEAP"
+        result["brain_adj"] = 3.0
+    elif erp >= 2.0:
+        result["erp_class"] = "CHEAP"
+        result["brain_adj"] = 1.5
+    elif erp >= 1.0:
+        result["erp_class"] = "FAIR"
+        result["brain_adj"] = 0.0
+    elif erp >= 0.0:
+        result["erp_class"] = "EXPENSIVE"
+        result["brain_adj"] = -1.5
+    else:
+        result["erp_class"] = "VERY_EXPENSIVE"
+        result["brain_adj"] = -3.0
+
+    erp_kr = {
+        "VERY_CHEAP": "주식 매우 저평가",
+        "CHEAP": "주식 매력적",
+        "FAIR": "적정 수준",
+        "EXPENSIVE": "주식 고평가",
+        "VERY_EXPENSIVE": "채권이 더 매력적",
+    }
+
+    result["narrative"] = (
+        f"EY {earnings_yield:.1f}%(PER {market_per:.0f}) vs "
+        f"Bond {us10y_value:.1f}% → "
+        f"ERP {erp:+.1f}% ({erp_kr.get(result['erp_class'], '')})"
+    )
+
+    logger.info(f"[BondYield] 상대가치: {result['narrative']}")
+    return result
+
+
+def get_market_per() -> float:
+    """
+    시장 대표 PER 계산 (universe.json 기반).
+    KOSPI 대형주(시총 상위) 중간값 사용.
+
+    Returns:
+        시장 대표 PER (실패시 0)
+    """
+    try:
+        import json
+        from pathlib import Path
+
+        uni_path = Path(__file__).resolve().parent.parent / "data_store" / "universe.json"
+        if not uni_path.exists():
+            return 0.0
+
+        uni = json.loads(uni_path.read_text("utf-8"))
+
+        # KOSPI 시장의 유효 PER만 수집 (0 < PER < 100)
+        pers = []
+        for code, info in uni.items():
+            if not isinstance(info, dict):
+                continue
+            market = info.get("market", "")
+            per = info.get("per", 0) or 0
+            if market == "KOSPI" and 0 < per < 100:
+                pers.append(per)
+
+        if len(pers) < 10:
+            return 0.0
+
+        # 중간값 (극단값에 강건한 대표값)
+        pers.sort()
+        median = pers[len(pers) // 2]
+        return round(median, 1)
+
+    except Exception as e:
+        logger.debug(f"[BondYield] 시장 PER 계산 실패: {e}")
+        return 0.0
+
+
+def get_erp_brain_adjustment(raw_indicators: Dict = None) -> Tuple[float, str]:
+    """
+    BRAIN Phase 6에서 호출: 상대가치(ERP) 기반 보정.
+
+    Returns:
+        (adj_score, detail_text)
+        adj_score: -3.0 ~ +3.0
+        detail_text: "ERP +3.5%(주식 매력적)" 같은 요약
+    """
+    try:
+        tnx = (raw_indicators or {}).get("TNX", {})
+        us10y = tnx.get("value", 0) or 0
+        if us10y <= 0:
+            return 0.0, ""
+
+        market_per = get_market_per()
+        if market_per <= 0:
+            return 0.0, ""
+
+        erp = calc_equity_risk_premium(us10y, market_per)
+        adj = erp.get("brain_adj", 0.0)
+        if abs(adj) < 0.5:
+            return 0.0, ""
+
+        detail = f"ERP{erp['erp']:+.1f}%({erp['erp_class']})"
+        return adj, detail
+
+    except Exception as e:
+        logger.warning(f"[BondYield] ERP 보정 실패: {e}")
+        return 0.0, ""
