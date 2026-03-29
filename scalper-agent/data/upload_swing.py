@@ -1,7 +1,13 @@
 """
 FLOWX VIP 스윙시스템 → Supabase 업로드 모듈
-담당 테이블: swing_signals
+담당 테이블: swing_signals + dashboard_swing
 VIP 스윙 추천 + 모델 포트폴리오 + 분석 보고서
+
+3-Source 융합 (v2):
+  Source 1: nightwatch_report.json  → 세계 지표 + NXT 종목
+  Source 2: macro_baseline.json     → 시장 상태 판정 + 전략
+  Source 3: sector_momentum.json    → 섹터별 온도 (HOT/COLD)
+  + recommendation.json (기존)      → 있으면 가산, 없어도 페이지 생성
 
 BRAIN 역방향 등급 필터:
   공격 (pct>=80) → A이상, 최대5종목
@@ -237,6 +243,12 @@ def generate_swing_page_data() -> dict:
         "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
 
+    # ── 9) 3-Source 매크로 융합 (v2) ──
+    try:
+        result = _enrich_with_macro(result)
+    except Exception as e:
+        logger.warning(f"[FLOWX 스윙] 매크로 융합 실패 (무시): {e}")
+
     # 로컬 저장 (디버깅용)
     local_path = STORE_DIR / "flowx_swing.json"
     try:
@@ -248,11 +260,423 @@ def generate_swing_page_data() -> dict:
         logger.warning(f"로컬 저장 실패: {e}")
 
     logger.info(
-        f"[FLOWX 스윙] {brain_verdict} 모드 | "
-        f"{len(picks)}종목 + {len(etf_picks)} ETF | "
-        f"watchlist {len(watchlist)}건"
+        f"[FLOWX 스윙] {result.get('brain_verdict', '?')} 모드 | "
+        f"{len(result.get('picks', []))}종목 + {len(result.get('etf_picks', []))} ETF | "
+        f"매크로:{result.get('analysis', {}).get('시장상태', '?')}"
     )
     return result
+
+
+# ═══════════════════════════════════════
+#  3-Source 융합: 매크로 + 섹터 + 나이트워치
+# ═══════════════════════════════════════
+
+def _load_json(filename: str) -> dict:
+    """data_store에서 JSON 안전 로드"""
+    path = STORE_DIR / filename
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text("utf-8"))
+    except Exception:
+        return {}
+
+
+def _build_macro_report() -> dict:
+    """세계 경제 지표 + 시장 상태 판정
+
+    macro_baseline.json → 6개 지표 (유가/금/구리/VIX/금리/환율)
+    inflation_chain     → 시장 상태 (물가상승+경기둔화 / 비용상승 / 수요둔화 / 안정)
+    macro_strategy      → 대응 전략 (비중/손절/보유일/선호·회피 섹터)
+    """
+    baseline = _load_json("macro_baseline.json")
+    if not baseline:
+        return {}
+
+    # 방향 한국어 변환
+    _방향 = {
+        "STRONG_UP": "급등", "UP": "상승", "FLAT": "보합",
+        "DOWN": "하락", "STRONG_DOWN": "급락", "보합": "보합",
+    }
+
+    # 6개 핵심 지표
+    지표목록 = {}
+    지표키 = {
+        "oil": "유가", "gold": "금", "copper": "구리",
+        "vix": "공포지수", "tnx": "미국금리", "usdkrw": "환율",
+    }
+    for key, 이름 in 지표키.items():
+        item = baseline.get(key, {})
+        if not item:
+            continue
+        지표목록[이름] = {
+            "값": round(item.get("current", 0), 2),
+            "20일평균_차이": round(item.get("dev20_pct", 0), 1),
+            "60일평균_차이": round(item.get("dev60_pct", 0), 1),
+            "방향": _방향.get(item.get("trend_20d", ""), "보합"),
+            "위치": round(item.get("pct_rank_60d", 50), 0),  # 0~100 (100=최고점)
+        }
+
+    # 시장 상태 판정 (inflation_chain)
+    시장상태 = "안정"
+    try:
+        from data.macro_strategy import get_current_regime, get_regime_response
+        시장상태 = get_current_regime()
+        전략 = get_regime_response(시장상태)
+    except Exception:
+        from dataclasses import dataclass, field
+        전략 = None
+
+    # 전략 → 쉬운 한국어
+    전략요약 = {}
+    if 전략:
+        _상태이름 = {
+            "스태그플레이션": "물가상승 + 경기둔화 (최고 위험)",
+            "비용상승": "원자재 가격 상승 (주의)",
+            "수요둔화": "소비 위축 (주의)",
+            "안정": "정상 (표준 운영)",
+        }
+        전략요약 = {
+            "상태": 시장상태,
+            "설명": _상태이름.get(시장상태, 시장상태),
+            "투자비중": 전략.max_position_pct,
+            "손절": round(전략.sl_pct * 100, 1),
+            "추적손절": round(전략.trailing_pct * 100, 1),
+            "최대보유일": 전략.max_hold_days,
+            "선호섹터": 전략.preferred_classes,
+            "회피섹터": 전략.blacklist_classes,
+            "방어ETF": 전략.etf_defensive,
+            "추천ETF종류": 전략.etf_preferred_types,
+            "안내문": 전략.action_summary,
+        }
+
+    return {
+        "지표": 지표목록,
+        "시장상태": 시장상태,
+        "전략": 전략요약,
+        "기준시각": baseline.get("timestamp", ""),
+    }
+
+
+def _build_category_picks() -> list:
+    """나이트워치 NXT 종목 → 카테고리별 묶음
+
+    인버스/헤지, 금/귀금속, 원유/에너지, 조선/방산, 금ETF, 원유ETF
+    """
+    nxt = _load_json("nightwatch_report.json")
+    targets = nxt.get("nxt_targets", [])
+    if not targets:
+        return []
+
+    # 섹터키 → 알기 쉬운 분류명
+    _분류 = {
+        "inverse": "인버스 (시장 하락 대비)",
+        "precious_metals": "금/귀금속 (안전자산)",
+        "oil_resource": "원유/에너지 (유가 수혜)",
+        "shipbuilding": "조선/방산 (지정학 수혜)",
+        "commodity_etf_gold": "금 ETF",
+        "commodity_etf_oil": "원유 ETF",
+    }
+    # 섹터키별 우선순위 (낮을수록 먼저)
+    _우선순위 = {
+        "inverse": 1, "precious_metals": 2, "oil_resource": 3,
+        "shipbuilding": 4, "commodity_etf_gold": 5, "commodity_etf_oil": 6,
+    }
+
+    # 그룹핑
+    groups = {}
+    for t in targets:
+        sk = t.get("sector_key", "")
+        if sk not in _분류:
+            continue
+        if sk not in groups:
+            groups[sk] = {
+                "분류": _분류[sk],
+                "순위": _우선순위.get(sk, 99),
+                "종목": [],
+            }
+        groups[sk]["종목"].append({
+            "코드": t.get("code", ""),
+            "이름": t.get("name", ""),
+            "등급": f"Tier{t.get('tier', 0)}",
+            "ETF": t.get("is_etf", False),
+        })
+
+    # 순위순 정렬, Tier1 종목 우선
+    result = sorted(groups.values(), key=lambda x: x["순위"])
+    for g in result:
+        g["종목"] = sorted(g["종목"], key=lambda x: x["등급"])
+
+    return result
+
+
+def _build_sector_heatmap() -> list:
+    """섹터 온도계 — HOT/따뜻/보통/차가움 시각화용
+
+    sector_momentum.json → 22개 섹터 수익률 + 상태
+    """
+    sm = _load_json("sector_momentum.json")
+    sectors = sm.get("sectors", [])
+    if not sectors:
+        return []
+
+    _상태 = {"HOT": "뜨거움", "WARMING": "따뜻", "NEUTRAL": "보통", "COLD": "차가움"}
+
+    result = []
+    for s in sectors[:22]:  # 상위 22개
+        top3 = []
+        for m in s.get("top_movers", [])[:3]:
+            top3.append({
+                "이름": m.get("name", ""),
+                "등락": round(m.get("chg_1d", 0), 1),
+            })
+        result.append({
+            "섹터": s.get("sector", ""),
+            "수익률": round(s.get("avg_return_1d", 0), 2),
+            "상태": _상태.get(s.get("phase", "NEUTRAL"), "보통"),
+            "상승비율": round(s.get("breadth_1d", 0) * 100),
+            "대표종목": top3,
+        })
+
+    return result
+
+
+def _build_action_guide(macro_regime: str, nxt_score: float) -> list:
+    """시간대별 매매 안내 (쉬운 한국어)"""
+    guide = []
+
+    if nxt_score <= -5:
+        # 강한 하락 신호
+        guide = [
+            {"시간": "09:00~09:15", "행동": "시장 방향 확인 → 인버스/금 ETF 먼저 진입"},
+            {"시간": "09:15~09:30", "행동": "원유/에너지주 → 많이 빠졌으면 조금씩 분할 매수"},
+            {"시간": "09:30~10:00", "행동": "방어주(통신/제약) 진입 검토"},
+            {"시간": "10:00~11:00", "행동": "TV 스캔 결과 확인 후 추가 조정"},
+            {"시간": "종일", "행동": "인버스 보유 유지 (보험 역할)"},
+        ]
+    elif nxt_score <= 0:
+        # 약한 하락 / 중립
+        guide = [
+            {"시간": "09:00~09:15", "행동": "전날 추천종목 갭 확인"},
+            {"시간": "09:15~10:00", "행동": "1/3씩 분할 매수 (한 번에 몰빵 금지)"},
+            {"시간": "10:00~11:00", "행동": "거래량 터지는 종목 실시간 확인"},
+            {"시간": "14:00~15:00", "행동": "당일 손절선 확인 → 다음날 전략 준비"},
+        ]
+    else:
+        # 상승 신호
+        guide = [
+            {"시간": "09:00~09:15", "행동": "추천종목 1순위부터 순서대로 진입"},
+            {"시간": "09:15~10:00", "행동": "모멘텀 강한 종목 추가 진입"},
+            {"시간": "10:00~14:00", "행동": "목표가 도달 시 일부 익절"},
+            {"시간": "14:30~15:00", "행동": "내일 연속 상승 가능한 종목 보유 유지"},
+        ]
+
+    # 매크로 상태별 추가 안내
+    if macro_regime == "스태그플레이션":
+        guide.append({"시간": "주의사항", "행동": "물가상승+경기둔화 → 3일 안에 청산, 손절 -2%로 타이트하게"})
+    elif macro_regime == "비용상승":
+        guide.append({"시간": "주의사항", "행동": "원자재 비용 상승 → 에너지/원자재 주 선호, 전기가스/운송 주의"})
+
+    return guide
+
+
+def _build_warnings(nxt: dict, macro_report: dict) -> list:
+    """핵심 경고 목록 (쉬운 한국어)"""
+    warnings = []
+
+    # 나이트워치 경고
+    reentry = nxt.get("reentry_signals", {})
+    if reentry.get("war_gate_active"):
+        warnings.append("전쟁 게이트 발동 — 유가+공포지수 위험 수준")
+
+    raw = nxt.get("raw_indicators", {})
+    vix = raw.get("VIX", {}).get("value", 0) or 0
+    if vix >= 30:
+        warnings.append(f"공포지수(VIX) {vix:.1f} — 극도의 불안 구간")
+    elif vix >= 25:
+        warnings.append(f"공포지수(VIX) {vix:.1f} — 불안 구간")
+
+    oil = raw.get("CL", {}).get("value", 0) or 0
+    if oil >= 95:
+        warnings.append(f"유가 ${oil:.1f} — $100 돌파 임박, 추가 급등 가능")
+
+    macro = nxt.get("macro_conditions", {})
+    nq_pct = macro.get("nasdaq_pct", 0) or 0
+    if nq_pct <= -1.5:
+        warnings.append(f"나스닥 {nq_pct:+.1f}% 급락 → 월요일 갭하락 가능")
+
+    usdkrw = raw.get("USDKRW", {}).get("value", 0) or 0
+    if usdkrw >= 1500:
+        warnings.append(f"환율 {usdkrw:,.0f}원 — 원화 약세, 외국인 이탈 주의")
+
+    # 매크로 상태 경고
+    시장상태 = macro_report.get("시장상태", "안정")
+    if 시장상태 == "스태그플레이션":
+        warnings.append("시장 상태: 물가상승+경기둔화 — 최소 비중으로 방어")
+    elif 시장상태 == "비용상승":
+        warnings.append("시장 상태: 비용 상승 중 — 에너지 외 섹터 주의")
+
+    # 오래된 데이터 경고
+    nxt_ts = nxt.get("timestamp", "")
+    if nxt_ts:
+        try:
+            nxt_dt = datetime.strptime(nxt_ts[:19], "%Y-%m-%d %H:%M:%S")
+            age_hours = (datetime.now() - nxt_dt).total_seconds() / 3600
+            if age_hours > 48:
+                warnings.append(f"데이터 {age_hours:.0f}시간 전 기준 — 최신 데이터 아님, 참고만")
+        except (ValueError, TypeError):
+            pass
+
+    return warnings
+
+
+def _enrich_with_macro(result: dict) -> dict:
+    """기존 스윙 데이터에 매크로/섹터/카테고리 융합
+
+    brain이 없어도 나이트워치+매크로로 풍성한 페이지 생성
+    """
+    nxt = _load_json("nightwatch_report.json")
+
+    # 1) 매크로 보고서
+    macro_report = _build_macro_report()
+
+    # 2) 카테고리별 추천 (나이트워치 기반)
+    카테고리 = _build_category_picks()
+
+    # 3) 섹터 온도계
+    섹터온도 = _build_sector_heatmap()
+
+    # 4) 나이트워치 요약
+    nxt_score = nxt.get("total_score", 0) or 0
+    nxt_summary = {
+        "점수": nxt_score,
+        "신호": nxt.get("signal", ""),
+        "의미": nxt.get("signal_text", ""),
+        "판단근거": nxt.get("selection_reason", ""),
+        "추천섹터": nxt.get("recommended_sectors", []),
+    }
+
+    # 5) 매매 안내
+    시장상태 = macro_report.get("시장상태", "안정")
+    매매안내 = _build_action_guide(시장상태, nxt_score)
+
+    # 6) 경고
+    경고 = _build_warnings(nxt, macro_report)
+
+    # 7) 시장 한줄 요약
+    시장요약 = _make_market_summary(nxt, macro_report)
+
+    # analysis 필드에 융합 (기존 키 유지 + 새 키 추가)
+    analysis = result.get("analysis", {})
+    analysis["매크로_지표"] = macro_report.get("지표", {})
+    analysis["시장상태"] = 시장상태
+    analysis["전략"] = macro_report.get("전략", {})
+    analysis["카테고리별_추천"] = 카테고리
+    analysis["섹터_온도계"] = 섹터온도
+    analysis["나이트워치"] = nxt_summary
+    analysis["매매안내"] = 매매안내
+    analysis["경고"] = 경고
+    analysis["시장요약"] = 시장요약
+    analysis["기준시각"] = macro_report.get("기준시각", "")
+    result["analysis"] = analysis
+
+    # brain이 없어서 picks가 비었으면 → 나이트워치 종목으로 대체
+    if not result.get("picks") and 카테고리:
+        fallback_picks = []
+        for cat in 카테고리:
+            for stock in cat.get("종목", [])[:2]:  # 카테고리당 2개
+                if stock.get("ETF"):
+                    continue  # ETF는 etf_picks에
+                fallback_picks.append({
+                    "code": stock.get("코드", ""),
+                    "name": stock.get("이름", ""),
+                    "grade": "",
+                    "score": 0,
+                    "sector": cat.get("분류", ""),
+                    "rr_ratio": 0,
+                    "rr_verdict": "",
+                    "entry_price": 0,
+                    "target_price": 0,
+                    "stop_price": 0,
+                    "hold_days": 3,
+                    "conviction": "MEDIUM",
+                    "catalyst": cat.get("분류", ""),
+                    "regime": "NXT",
+                    "tv_pattern": "",
+                    "news_sentiment": "NEUTRAL",
+                    "tech_score": 0,
+                    "supply_signal": "NXT",
+                    "nat_power_grade": "",
+                })
+        result["picks"] = fallback_picks[:10]
+        logger.info(f"[FLOWX 스윙] Brain 없음 → 나이트워치 종목 {len(fallback_picks[:10])}개 대체")
+
+    # ETF도 비었으면 → 나이트워치 ETF 종목으로 대체
+    if not result.get("etf_picks") and 카테고리:
+        fallback_etf = []
+        for cat in 카테고리:
+            for stock in cat.get("종목", []):
+                if stock.get("ETF"):
+                    fallback_etf.append({
+                        "code": stock.get("코드", ""),
+                        "name": stock.get("이름", ""),
+                        "category": cat.get("분류", ""),
+                        "signal": "BUY",
+                        "entry": 0,
+                        "sl": 0,
+                        "tp": 0,
+                        "reason": cat.get("분류", ""),
+                        "holding_days": 3,
+                    })
+        result["etf_picks"] = fallback_etf
+        logger.info(f"[FLOWX 스윙] ETF 비어있음 → 나이트워치 ETF {len(fallback_etf)}개 대체")
+
+    # market_comment 보강
+    if not result.get("market_comment") or result["market_comment"] == "방향 불명확 — 현금이 포지션입니다":
+        result["market_comment"] = 시장요약
+
+    return result
+
+
+def _make_market_summary(nxt: dict, macro_report: dict) -> str:
+    """시장 한줄 요약 생성"""
+    parts = []
+
+    시장상태 = macro_report.get("시장상태", "안정")
+    전략 = macro_report.get("전략", {})
+
+    nxt_score = nxt.get("total_score", 0) or 0
+    nxt_text = nxt.get("signal_text", "")
+
+    # 나이트워치 신호
+    if nxt_score <= -5:
+        parts.append(f"야간 {nxt_text}({nxt_score:+.0f}점)")
+    elif nxt_score >= 5:
+        parts.append(f"야간 {nxt_text}({nxt_score:+.0f}점)")
+
+    # 매크로 상태
+    if 시장상태 != "안정":
+        설명 = 전략.get("설명", 시장상태)
+        parts.append(설명)
+
+    # 핵심 지표 변동
+    지표 = macro_report.get("지표", {})
+    유가 = 지표.get("유가", {})
+    if 유가.get("60일평균_차이", 0) > 20:
+        parts.append(f"유가 60일 대비 +{유가['60일평균_차이']:.0f}%")
+
+    공포 = 지표.get("공포지수", {})
+    if 공포.get("값", 0) >= 25:
+        parts.append(f"VIX {공포['값']:.0f}")
+
+    # 투자 안내
+    비중 = 전략.get("투자비중", 100)
+    if 비중 < 100:
+        parts.append(f"투자비중 {비중}%로 축소")
+
+    if parts:
+        return " | ".join(parts)
+    return "시장 안정 — 표준 전략 유지"
 
 
 # ═══════════════════════════════════════
