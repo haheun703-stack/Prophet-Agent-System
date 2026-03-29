@@ -218,12 +218,18 @@ class InflationRegime:
     regime: str = "STABLE"              # COST_PUSH / STAGFLATION / DEFLATIONARY / STABLE
     regime_score: float = 0.0           # -5.0(디플레) ~ +5.0(강한 인플레)
 
-    # 원자재 입력
+    # 원자재 입력 (전일비)
     oil_chg: float = 0.0
     ng_chg: float = 0.0
     copper_chg: float = 0.0
     gold_chg: float = 0.0
     tnx_change: float = 0.0            # 금리 변화 (bp)
+
+    # 기준선 이탈도 (60MA 대비 %)
+    oil_dev60: float = 0.0
+    copper_dev60: float = 0.0
+    gold_dev60: float = 0.0
+    baseline_used: bool = False         # 기준선 데이터 사용 여부
 
     # 섹터 영향
     sector_adjustments: Dict[str, float] = field(default_factory=dict)
@@ -237,25 +243,66 @@ class InflationRegime:
 # ═══════════════════════════════════════════
 
 def _detect_regime(oil_chg: float, ng_chg: float, copper_chg: float,
-                   gold_chg: float, tnx_bp: float) -> Tuple[str, float, str]:
+                   gold_chg: float, tnx_bp: float,
+                   oil_dev60: float = 0, copper_dev60: float = 0,
+                   gold_dev60: float = 0) -> Tuple[str, float, str]:
     """
     원자재 가격 패턴으로 인플레이션 레짐 판단.
+
+    2-Layer 판단:
+      Layer 1 (주): 60MA 이탈도 — "3달간 유가가 +39% 올라왔다" (구조적 추세)
+      Layer 2 (보조): 전일 변화율 — "오늘 +5% 올랐다" (단기 가속)
+
+    기준선이 없으면 Layer 2만 사용 (기존 호환).
 
     Returns: (regime, regime_score, detail)
       regime_score: -5.0(디플레) ~ +5.0(강인플레)
     """
-    # 산업용 원자재 평균 등락률
+    has_baseline = (abs(oil_dev60) > 0 or abs(copper_dev60) > 0)
+
+    # ── Layer 1: 기준선 기반 구조적 판단 ──
+    if has_baseline:
+        # STAGFLATION: 유가 고공 + 구리 약세 + 금리 상승 (경기 둔화 + 비용 인상)
+        if oil_dev60 > 15 and copper_dev60 < -3 and tnx_bp > 0:
+            severity = min(5.0, oil_dev60 * 0.08 + abs(copper_dev60) * 0.15)
+            return ("STAGFLATION", severity,
+                    f"유가60MA+{oil_dev60:.0f}%+구리60MA{copper_dev60:+.0f}%+금리↑")
+
+        # COST_PUSH: 유가 60MA 크게 상회
+        if oil_dev60 > 10:
+            severity = min(5.0, oil_dev60 * 0.1)
+            # 전일비로 가속 여부 확인
+            if oil_chg > 1.0:
+                severity = min(5.0, severity + 0.5)
+            parts = [f"유가60MA+{oil_dev60:.0f}%"]
+            if oil_chg > 1.0:
+                parts.append(f"오늘+{oil_chg:.1f}%")
+            return "COST_PUSH", severity, " ".join(parts)
+
+        # DEFLATIONARY: 유가+구리 모두 60MA 크게 하회
+        if oil_dev60 < -10 and copper_dev60 < -5:
+            severity = max(-5.0, (oil_dev60 + copper_dev60) * 0.08)
+            return ("DEFLATIONARY", severity,
+                    f"유가60MA{oil_dev60:+.0f}%+구리60MA{copper_dev60:+.0f}%")
+
+    # ── Layer 2: 전일비 기반 단기 판단 (기준선 없거나 Layer 1 미해당) ──
     industrial_avg = (oil_chg + ng_chg + copper_chg) / 3.0
 
-    # === STAGFLATION: 금 상승 + 구리 하락 + 금리 상승 ===
+    # STAGFLATION (단기): 금 상승 + 구리 하락 + 금리 상승
     if gold_chg > 1.0 and copper_chg < -0.5 and tnx_bp > 3:
         severity = min(5.0, gold_chg * 0.5 + abs(copper_chg) * 0.5 + tnx_bp * 0.1)
+        # 기준선이 있으면 구조적 추세와 결합
+        if has_baseline and oil_dev60 > 5:
+            severity = min(5.0, severity + 0.5)
         return "STAGFLATION", severity, f"금↑{gold_chg:+.1f}%+구리↓{copper_chg:+.1f}%+금리↑{tnx_bp:+.0f}bp"
 
-    # === COST_PUSH: 산업용 원자재 동반 상승 ===
+    # COST_PUSH (단기): 산업용 원자재 동반 상승
     rising_count = sum(1 for x in [oil_chg, ng_chg, copper_chg] if x > 0.5)
     if rising_count >= 2 and industrial_avg > 0.5:
         severity = min(5.0, industrial_avg * 1.5)
+        # 기준선 가중: 이미 높은 수준에서 더 오르면 더 위험
+        if has_baseline and oil_dev60 > 10:
+            severity = min(5.0, severity + oil_dev60 * 0.03)
         rising = []
         if oil_chg > 0.5:
             rising.append(f"유가{oil_chg:+.1f}%")
@@ -263,9 +310,11 @@ def _detect_regime(oil_chg: float, ng_chg: float, copper_chg: float,
             rising.append(f"NG{ng_chg:+.1f}%")
         if copper_chg > 0.5:
             rising.append(f"구리{copper_chg:+.1f}%")
+        if has_baseline and oil_dev60 > 10:
+            rising.append(f"(60MA+{oil_dev60:.0f}%)")
         return "COST_PUSH", severity, "+".join(rising)
 
-    # === DEFLATIONARY: 산업용 원자재 동반 하락 ===
+    # DEFLATIONARY (단기): 산업용 원자재 동반 하락
     falling_count = sum(1 for x in [oil_chg, ng_chg, copper_chg] if x < -0.5)
     if falling_count >= 2 and industrial_avg < -0.5:
         severity = max(-5.0, industrial_avg * 1.5)
@@ -377,10 +426,25 @@ def analyze_inflation_chain(raw_indicators: dict) -> InflationRegime:
         else:
             result.tnx_change = 0
 
-        # 레짐 감지
+        # 기준선 이탈도 로드 (있으면 2-Layer 판단)
+        try:
+            from data.macro_baseline import load_cached_baselines
+            bl = load_cached_baselines()
+            if bl and bl.oil.current > 0:
+                result.oil_dev60 = bl.oil.dev60_pct
+                result.copper_dev60 = bl.copper.dev60_pct
+                result.gold_dev60 = bl.gold.dev60_pct
+                result.baseline_used = True
+        except Exception:
+            pass
+
+        # 레짐 감지 (기준선 있으면 2-Layer)
         result.regime, result.regime_score, result.detail = _detect_regime(
             result.oil_chg, result.ng_chg, result.copper_chg,
             result.gold_chg, result.tnx_change,
+            oil_dev60=result.oil_dev60,
+            copper_dev60=result.copper_dev60,
+            gold_dev60=result.gold_dev60,
         )
 
         # 섹터 영향 계산

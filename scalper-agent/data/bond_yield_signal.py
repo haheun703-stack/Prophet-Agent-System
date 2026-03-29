@@ -36,6 +36,12 @@ class BondEnvironment:
     kr3y_change: float = 0.0        # 전일 대비 변화 (%p)
     hyg_change: float = 0.0         # HYG(하이일드) 전일 등락률 (%)
 
+    # 기준선 이탈도
+    tnx_dev20: float = 0.0          # 20MA 이탈도 (%)
+    tnx_dev60: float = 0.0          # 60MA 이탈도 (%)
+    tnx_trend_20d: str = "FLAT"     # 20일 추세 (STRONG_UP/UP/FLAT/DOWN/STRONG_DOWN)
+    baseline_used: bool = False     # 기준선 사용 여부
+
     # 분류
     level_class: str = "MODERATE"   # LOW / MODERATE / ELEVATED / HIGH
     change_class: str = "STABLE"    # SHARP_DROP / DROP / STABLE / RISE / SHARP_RISE
@@ -48,6 +54,7 @@ class BondEnvironment:
     change_score: float = 0.0       # 일간 변화 점수 (±1.5)
     trend_score: float = 0.0        # 5일 추세 점수 (±1.0)
     credit_score: float = 0.0       # 크레딧 콤보 점수 (±1.0)
+    baseline_score: float = 0.0     # 기준선 이탈 점수 (±1.0)
     composite_score: float = 0.0    # 종합 점수 (±5.0)
 
     # 통합 출력
@@ -300,16 +307,38 @@ def analyze_bond_environment(
     # ── KR3Y 수집 (향후 확장) ──
     env.kr3y_value, env.kr3y_change = _fetch_kr3y()
 
-    # ── 5개 축 분류 ──
+    # ── 기준선 이탈도 로드 ──
+    try:
+        from data.macro_baseline import load_cached_baselines
+        bl = load_cached_baselines()
+        if bl and bl.tnx.current > 0:
+            env.tnx_dev20 = bl.tnx.dev20_pct
+            env.tnx_dev60 = bl.tnx.dev60_pct
+            env.tnx_trend_20d = bl.tnx.trend_20d
+            env.baseline_used = True
+            # 기준선 점수: 60MA 크게 상회 → 금리 상승 추세 → 주식 불리
+            if env.tnx_dev60 > 5:
+                env.baseline_score = -1.0  # 구조적 금리 상승
+            elif env.tnx_dev60 > 2:
+                env.baseline_score = -0.5
+            elif env.tnx_dev60 < -5:
+                env.baseline_score = 1.0   # 구조적 금리 하락
+            elif env.tnx_dev60 < -2:
+                env.baseline_score = 0.5
+    except Exception:
+        pass
+
+    # ── 5개 축 분류 + 기준선 ──
     env.level_class, env.level_score = _classify_level(env.us10y_value)
     env.change_class, env.change_score = _classify_change(env.us10y_change)
     env.trend_class, env.trend_score = _classify_trend(env.us10y_5d_change)
     env.credit_class, env.credit_score = _classify_credit(env.us10y_change, env.hyg_change)
     env.spread_class, _ = _classify_spread(env.kr3y_value, env.us10y_value)
 
-    # ── 종합 스코어 ──
+    # ── 종합 스코어 (5축 + 기준선) ──
     env.composite_score = round(
-        env.level_score + env.change_score + env.trend_score + env.credit_score,
+        env.level_score + env.change_score + env.trend_score
+        + env.credit_score + env.baseline_score,
         1
     )
     # 클램핑 ±5.0
@@ -340,7 +369,8 @@ def analyze_bond_environment(
 
     # ── 내러티브 ──
     parts = []
-    parts.append(f"US10Y {env.us10y_value:.2f}%({env.us10y_change*100:+.1f}bp)")
+    dev60_str = f" 60MA{env.tnx_dev60:+.1f}%" if env.baseline_used else ""
+    parts.append(f"US10Y {env.us10y_value:.2f}%({env.us10y_change*100:+.1f}bp{dev60_str})")
 
     if env.us10y_5d_change != 0:
         parts.append(f"5일{env.us10y_5d_change*100:+.1f}bp")

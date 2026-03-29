@@ -1343,6 +1343,14 @@ class TradingCOO:
 
         logger.info(f"[COO] G7 g6_mode={self._g6_mode}")
 
+        # ── 매크로 기준선 갱신 (1일 1회, 캐시 히트 시 스킵) ──
+        try:
+            from data.macro_baseline import fetch_all_baselines
+            await asyncio.to_thread(fetch_all_baselines)
+            logger.info("[COO] G7: 매크로 기준선 갱신 완료")
+        except Exception as e:
+            logger.warning(f"[COO] G7: 기준선 갱신 실패 (무시): {e}")
+
         # ── g6_mode 경고 ──
         if self._g6_mode == "STALE":
             logger.warning("[COO] G7: STALE 데이터 — 선취매 주의")

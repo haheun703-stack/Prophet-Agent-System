@@ -1307,6 +1307,16 @@ def format_brain_telegram(report: BrainReport) -> str:
         "=" * 32,
     ]
 
+    # 기준선 요약 (있으면 상단에 표시)
+    try:
+        from data.macro_baseline import get_baseline_summary
+        bl_summary = get_baseline_summary()
+        if bl_summary and "데이터 없음" not in bl_summary:
+            lines.append(bl_summary)
+            lines.append("")
+    except Exception:
+        pass
+
     # Phase 1: 매크로
     d_emoji = DIR_EMOJI.get(m.direction, "⚪")
     d_kr = DIR_KR.get(m.direction, m.direction)
