@@ -145,6 +145,15 @@ def generate_swing_page_data() -> dict:
         except Exception:
             pass
 
+    # ── 4b) universe.json 로드 (sector 매핑용) ──
+    universe = {}  # code → {name, sector, ...}
+    uni_path = STORE_DIR / "universe.json"
+    if uni_path.exists():
+        try:
+            universe = json.loads(uni_path.read_text("utf-8"))
+        except Exception:
+            pass
+
     # ── 5) 등급 필터링 + picks 생성 ──
     picks = []
     if min_grade != "NONE":
@@ -156,11 +165,16 @@ def generate_swing_page_data() -> dict:
             code = s.get("code", "")
             to = to_map.get(code, {})
 
+            # universe에서 sector 조회
+            uni_info = universe.get(code, {})
+            sector = uni_info.get("sector", "") if isinstance(uni_info, dict) else ""
+
             pick = {
                 "code": code,
                 "name": s.get("name", ""),
                 "grade": grade,
                 "score": round(s.get("total_score", 0), 1),
+                "sector": sector,
                 "rr_ratio": round(to.get("rr_ratio", 0), 2),
                 "rr_verdict": to.get("rr_verdict", ""),
                 "entry_price": s.get("entry", 0),
@@ -203,7 +217,7 @@ def generate_swing_page_data() -> dict:
     # ── 8) 관망 모드 market_comment + watchlist ──
     if brain_pct < 40:
         market_comment = "방향 불명확 — 현금이 포지션입니다"
-        watchlist = _build_watchlist(stocks[:3])
+        watchlist = _build_watchlist(stocks[:3], universe)
     else:
         market_comment = brain_reason[:200] if brain_reason else ""
         watchlist = []
@@ -342,14 +356,17 @@ def _build_portfolio_stats(brain_pct: int, current_picks: int) -> dict:
     }
 
 
-def _build_watchlist(top_stocks: list) -> list:
+def _build_watchlist(top_stocks: list, universe: dict = None) -> list:
     """관망 모드용 워치리스트 (매수 시그널 아님, 반등 감시)"""
+    universe = universe or {}
     watchlist = []
     for s in top_stocks:
         code = s.get("code", "")
         name = s.get("name", "")
         entry = s.get("entry", 0)
         tp = s.get("tp", 0)
+        uni_info = universe.get(code, {})
+        sector = uni_info.get("sector", "") if isinstance(uni_info, dict) else ""
 
         # 반등 트리거: 진입가 돌파 시
         trigger = f"종가 {entry:,}원 돌파 + 거래량 증가 시 진입 검토" if entry else "수급 전환 확인 시"
@@ -367,6 +384,7 @@ def _build_watchlist(top_stocks: list) -> list:
         watchlist.append({
             "code": code,
             "name": name,
+            "sector": sector,
             "reason": "반등 감시 — " + ", ".join(reasons),
             "trigger": trigger,
             "grade": s.get("grade", ""),
