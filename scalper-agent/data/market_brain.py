@@ -896,6 +896,7 @@ def _phase6_synthesis(
     index_tech: dict = None,
     market_flow: dict = None,
     brain_perf: list = None,
+    nw: dict = None,
 ) -> tuple:
     """Returns: (overall_verdict, position_size_pct, position_size_reason, stock_narratives)"""
 
@@ -1040,6 +1041,18 @@ def _phase6_synthesis(
         elif hit_rate > 70:
             score += 3
             reasons.append(f"BRAIN적중률{hit_rate:.0f}%↑(+3)")
+
+    # 11. 채권금리 환경 (BOND-01)
+    try:
+        from data.bond_yield_signal import get_brain_bond_adjustment
+        ri = nw.get("raw_indicators", {}) if isinstance(nw, dict) else {}
+        bond_adj, bond_detail = get_brain_bond_adjustment(ri)
+        bond_adj = max(-5.0, min(5.0, bond_adj))
+        if abs(bond_adj) >= 0.5:
+            score += bond_adj
+            reasons.append(f"채권{bond_detail}({bond_adj:+.1f})")
+    except Exception:
+        pass
 
     # 결정
     if score >= 20:
@@ -1338,7 +1351,7 @@ def generate_brain_report() -> BrainReport:
 
     verdict, pct, reason, narratives = _phase6_synthesis(
         macro, commodity, sector, flow, risk, rec, themes,
-        insights, index_tech, market_flow, brain_perf,
+        insights, index_tech, market_flow, brain_perf, nw,
     )
     logger.info(f"  [Phase 6] 판정: 비중 {pct}% | {verdict[:60]}")
 

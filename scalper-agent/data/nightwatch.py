@@ -941,6 +941,18 @@ def collect_macro_conditions(
         conditions["rate_down"] = tnx["change_abs"] < -0.04
         conditions["rate_up"] = tnx["change_abs"] > 0.04
 
+    # BOND-01: 채권 환경 세분화 (수준/추세/크레딧 콤보)
+    try:
+        from data.bond_yield_signal import analyze_bond_environment
+        bond_env = analyze_bond_environment(raw_indicators, fetch_trend=False)
+        if bond_env.us10y_value > 0:
+            conditions["bond_verdict"] = bond_env.verdict
+            conditions["bond_score"] = bond_env.composite_score
+            conditions["us10y_value"] = bond_env.us10y_value
+            conditions["us10y_level"] = bond_env.level_class
+    except Exception:
+        pass
+
     # --- CNH: 위안화 강세 (collect_asian_risk에서 이미 수집) ---
     cnh = asian_detail.get("CNH", {})
     if cnh.get("change_pct") is not None:
@@ -964,9 +976,16 @@ def collect_macro_conditions(
         active.append(f"나스닥↑ {conditions.get('nasdaq_pct', 0):+.1f}%")
     if conditions.get("nasdaq_down"):
         active.append(f"나스닥↓ {conditions.get('nasdaq_pct', 0):+.1f}%")
-    if conditions.get("rate_down"):
+    # 채권 환경 verdict가 있으면 더 풍부한 텍스트 사용
+    bond_v = conditions.get("bond_verdict")
+    if bond_v and bond_v != "NEUTRAL":
+        bond_kr = {"DOVISH": "금리완화", "HAWKISH": "금리긴축",
+                   "TIGHTENING_SHOCK": "금리쇼크"}
+        us10y_val = conditions.get("us10y_value", 0)
+        active.append(f"{bond_kr.get(bond_v, bond_v)}({us10y_val:.1f}%)")
+    elif conditions.get("rate_down"):
         active.append("금리↓")
-    if conditions.get("rate_up"):
+    elif conditions.get("rate_up"):
         active.append("금리↑")
     if conditions.get("oil_up"):
         active.append(f"유가↑ {conditions.get('oil_pct', 0):+.1f}%")
@@ -1496,6 +1515,17 @@ def calculate_nightwatch_score(
     if abs(nq_adj) > 0:
         total += nq_adj
         logger.info(f"[NXT] NQ 직접 보정: {nq_adj:+.1f} (NQ {nq_pct:+.2f}%)")
+
+    # BOND-01: 채권금리 방향 보정 (±1.5)
+    bond_adj = 0.0
+    try:
+        from data.bond_yield_signal import get_nxt_bond_adjustment
+        bond_adj, bond_detail = get_nxt_bond_adjustment(raw_indicators)
+        if abs(bond_adj) > 0:
+            total += bond_adj
+            logger.info(f"[NXT] 채권금리 보정: {bond_adj:+.1f} ({bond_detail})")
+    except Exception:
+        pass
 
     total = max(-10.0, min(10.0, total))
 
