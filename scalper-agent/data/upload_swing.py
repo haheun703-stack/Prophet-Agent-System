@@ -981,13 +981,8 @@ def upload_dashboard_swing(swing_data: dict) -> bool:
             "gold_pct": raw.get("GOLD", {}).get("change_pct", 0) or 0,
             "silver_pct": macro.get("silver_pct", 0) or 0,
             # 분석 (analysis는 문자열만 + _macro_fusion은 별도 JSONB)
-            "analysis": {
-                **swing_data.get("analysis", {}),
-                # dashboard_swing에만 복잡한 객체 포함 (swing_signals와 분리)
-                **({} if not swing_data.get("_macro_fusion") else {
-                    "macro_fusion": swing_data["_macro_fusion"]
-                }),
-            },
+            # analysis에는 문자열만 (React #31 방지)
+            "analysis": swing_data.get("analysis", {}),
             "portfolio": swing_data.get("portfolio", {}),
             # 센서
             "smart_money_score": cot.get("smart_money_score", 0) or 0,
