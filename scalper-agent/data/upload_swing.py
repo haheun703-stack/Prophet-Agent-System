@@ -566,29 +566,47 @@ def _enrich_with_macro(result: dict) -> dict:
     # 7) 시장 한줄 요약
     시장요약 = _make_market_summary(nxt, macro_report)
 
-    # analysis 필드에 융합
-    # 주의: analysis 최상위에는 문자열만! (프론트가 직접 렌더링함)
-    # 복잡한 객체/배열은 모두 v2 안에 넣어서 프론트 에러 방지
+    # analysis 필드: 문자열만! (프론트가 값을 직접 렌더링 → 객체 넣으면 React #31 에러)
     analysis = result.get("analysis", {})
-
-    # 최상위: 문자열만 (기존 프론트 호환)
     analysis["시장상태"] = 시장상태
     analysis["시장요약"] = 시장요약
     analysis["경고"] = " | ".join(경고) if 경고 else ""
     analysis["기준시각"] = macro_report.get("기준시각", "")
 
-    # v2: 복잡한 객체/배열 (신규 프론트에서 사용)
-    analysis["v2"] = {
-        "매크로_지표": macro_report.get("지표", {}),
-        "전략": macro_report.get("전략", {}),
-        "카테고리별_추천": 카테고리,
-        "섹터_온도계": 섹터온도,
-        "나이트워치": nxt_summary,
-        "매매안내": 매매안내,
-        "경고": 경고,
-    }
+    # 전략 → 한줄 문자열
+    전략 = macro_report.get("전략", {})
+    if 전략:
+        analysis["전략요약"] = (
+            f"{전략.get('설명', '')} | "
+            f"투자비중 {전략.get('투자비중', 100)}% | "
+            f"손절 -{전략.get('손절', 3.5)}% | "
+            f"최대 {전략.get('최대보유일', 5)}일"
+        )
+
+    # 나이트워치 → 한줄 문자열
+    analysis["나이트워치"] = (
+        f"{nxt_summary.get('신호', '')} {nxt_summary.get('의미', '')} "
+        f"({nxt_score:+.0f}점) — {nxt_summary.get('판단근거', '')}"
+    )
+
+    # 매매안내 → 한줄 문자열
+    if 매매안내:
+        analysis["매매안내"] = " | ".join(
+            f"[{a['시간']}] {a['행동']}" for a in 매매안내
+        )
 
     result["analysis"] = analysis
+
+    # 복잡한 객체는 result 최상위에 별도 저장 (dashboard_swing 전용)
+    result["_macro_fusion"] = {
+        "매크로_지표": macro_report.get("지표", {}),
+        "전략": 전략,
+        "카테고리별_추천": 카테고리,
+        "섹터_온도계": 섹터온도,
+        "나이트워치_상세": nxt_summary,
+        "매매안내_상세": 매매안내,
+        "경고_목록": 경고,
+    }
 
     # brain이 없어서 picks가 비었으면 → 나이트워치 종목으로 대체
     if not result.get("picks") and 카테고리:
@@ -962,8 +980,14 @@ def upload_dashboard_swing(swing_data: dict) -> bool:
             "oil_pct": macro.get("oil_pct", 0) or 0,
             "gold_pct": raw.get("GOLD", {}).get("change_pct", 0) or 0,
             "silver_pct": macro.get("silver_pct", 0) or 0,
-            # 분석
-            "analysis": swing_data.get("analysis", {}),
+            # 분석 (analysis는 문자열만 + _macro_fusion은 별도 JSONB)
+            "analysis": {
+                **swing_data.get("analysis", {}),
+                # dashboard_swing에만 복잡한 객체 포함 (swing_signals와 분리)
+                **({} if not swing_data.get("_macro_fusion") else {
+                    "macro_fusion": swing_data["_macro_fusion"]
+                }),
+            },
             "portfolio": swing_data.get("portfolio", {}),
             # 센서
             "smart_money_score": cot.get("smart_money_score", 0) or 0,
