@@ -1177,6 +1177,10 @@ class TradingCOO:
         parallel_jobs.append((
             "C5Z_flow_zscore",
             self._job_flow_zscore_precalc(context)))
+        # C5M: 매크로 기준선 수집 (1일 1회, 2-Layer 판단 활성화)
+        parallel_jobs.append((
+            "C5M_macro_baseline",
+            self._job_macro_baseline(context)))
 
         if parallel_jobs:
             par_results = await self.run_parallel_async(
@@ -1565,6 +1569,26 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[C5Z] Z-score 사전 계산 실패 (무시): {e}")
             return {"flow_zscore": f"ERROR: {e}"}
+
+    async def _job_macro_baseline(self, context=None) -> dict:
+        """C5M: 매크로 기준선 수집 (yfinance 6지표 20MA/60MA).
+
+        G6 Step 4에서 병렬 실행.
+        macro_baseline.json에 캐시 → inflation_chain/fx_sector/bond_yield의
+        2-Layer 판단 활성화.
+        """
+        try:
+            import asyncio
+            from data.macro_baseline import fetch_all_baselines
+
+            baselines = await asyncio.to_thread(fetch_all_baselines)
+            if baselines and baselines.timestamp:
+                logger.info(f"[C5M] 매크로 기준선 수집 완료 ({baselines.timestamp})")
+                return {"macro_baseline": "OK", "timestamp": baselines.timestamp}
+            return {"macro_baseline": "EMPTY"}
+        except Exception as e:
+            logger.warning(f"[C5M] 매크로 기준선 수집 실패 (무시): {e}")
+            return {"macro_baseline": f"ERROR: {e}"}
 
     # ─────────────────────────────────────────────
     # C23: TRIX 다이버전스 사전 스캔

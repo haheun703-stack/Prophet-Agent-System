@@ -295,18 +295,18 @@ def get_deviation(indicator: str) -> Tuple[float, float, str]:
         indicator: "oil", "tnx", "gold", "copper", "usdkrw", "vix"
 
     Returns:
-        (dev20_pct, dev60_pct, trend_20d) — 캐시 없으면 (0, 0, "FLAT")
+        (dev20_pct, dev60_pct, trend_20d) — 캐시 없으면 (0, 0, "보합")
     """
     try:
         baselines = load_cached_baselines()
         if not baselines:
-            return 0.0, 0.0, "FLAT"
+            return 0.0, 0.0, "보합"
         bl = getattr(baselines, indicator, None)
         if not bl or bl.current == 0:
-            return 0.0, 0.0, "FLAT"
+            return 0.0, 0.0, "보합"
         return bl.dev20_pct, bl.dev60_pct, bl.trend_20d
     except Exception:
-        return 0.0, 0.0, "FLAT"
+        return 0.0, 0.0, "보합"
 
 
 def get_baseline_summary() -> str:

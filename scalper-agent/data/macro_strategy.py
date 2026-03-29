@@ -174,20 +174,36 @@ REGIME_STRATEGIES: Dict[str, RegimeResponse] = {
 # ═══════════════════════════════════════════
 
 def get_current_regime() -> str:
-    """현재 인플레이션 레짐 반환. 캐시 없으면 STABLE."""
+    """현재 인플레이션 레짐 반환. 캐시 없거나 24h+ stale이면 '안정'."""
     try:
-        from data.macro_baseline import load_cached_baselines
         from data.inflation_chain import analyze_inflation_chain
         import json
         from pathlib import Path
+        from datetime import datetime
 
         # nightwatch raw_indicators 로드
         nw_path = Path(__file__).resolve().parent.parent / "data_store" / "nightwatch_report.json"
-        if nw_path.exists():
-            nw = json.loads(nw_path.read_text("utf-8"))
-            ri = nw.get("raw_indicators", {})
-            result = analyze_inflation_chain(ri)
-            return result.regime
+        if not nw_path.exists():
+            return "안정"
+
+        nw = json.loads(nw_path.read_text("utf-8"))
+
+        # staleness 체크: 24시간 이상이면 경고 + 안정 폴백
+        ts = nw.get("timestamp", "")
+        if ts:
+            try:
+                nw_dt = datetime.strptime(ts[:19], "%Y-%m-%d %H:%M:%S")
+                age_hours = (datetime.now() - nw_dt).total_seconds() / 3600
+                if age_hours > 48:
+                    logger.warning(
+                        f"[MacroStrategy] nightwatch_report {age_hours:.0f}h stale → 안정 폴백")
+                    return "안정"
+            except (ValueError, TypeError):
+                pass
+
+        ri = nw.get("raw_indicators", {})
+        result = analyze_inflation_chain(ri)
+        return result.regime
     except Exception:
         pass
     return "안정"
