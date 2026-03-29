@@ -2033,6 +2033,32 @@ def run_evening_recommendation() -> RecommendationReport:
     except Exception as e:
         logger.debug(f"FX 섹터 부스트 실패 (무시): {e}")
 
+    # ── Step 5d-3: 인플레이션 비용 체인 부스트 (BOND-P3) ──
+    try:
+        from data.inflation_chain import get_inflation_sector_boosts
+        nw_path2 = BASE_DIR / "data_store" / "nightwatch_report.json"
+        if nw_path2.exists():
+            nw_data2 = json.loads(nw_path2.read_text("utf-8"))
+            ri2 = nw_data2.get("raw_indicators", {})
+            infl_boosts = get_inflation_sector_boosts(ri2)
+            if infl_boosts:
+                infl_count = 0
+                for s in final_stocks:
+                    s_sector = getattr(s, "sector", "")
+                    if not s_sector and _universe:
+                        ui = _universe.get(s.code, {})
+                        s_sector = ui.get("sector", "") if isinstance(ui, dict) else ""
+                    infl_adj = infl_boosts.get(s_sector, 0.0)
+                    if abs(infl_adj) >= 0.5:
+                        s.total_score += infl_adj
+                        infl_count += 1
+                        logger.debug(f"  [인플레체인] {s.name}({s_sector}): {infl_adj:+.1f}점")
+                if infl_count > 0:
+                    final_stocks.sort(key=lambda x: x.total_score, reverse=True)
+                    logger.info(f"  [인플레→섹터] {infl_count}종목 비용체인 부스트 → 재정렬 완료")
+    except Exception as e:
+        logger.debug(f"인플레 비용체인 부스트 실패 (무시): {e}")
+
     # ── Step 5b-2: 섹터 기관 수급 부스트 (TIER2) ──
     try:
         from data.sector_institution_flow import get_sector_flow_boost

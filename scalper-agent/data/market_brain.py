@@ -561,11 +561,28 @@ def _phase3_sector(history: dict, rotation_detail: list = None) -> SectorAssessm
     except Exception:
         pass
 
+    # 인플레 분류 태그 (BOND-P3)
+    infl_tag = {}
+    try:
+        from data.inflation_chain import get_inflation_class
+        for hs in sa.hot_sectors:
+            ic = get_inflation_class(hs["name"])
+            if ic in ("VICTIM", "HEDGE"):
+                infl_tag[hs["name"]] = "비용피해" if ic == "VICTIM" else "원자재헤지"
+    except Exception:
+        pass
+
     # 내러티브 생성
     parts = []
     for hs in sa.hot_sectors:
-        tag = fx_tag.get(hs["name"], "")
-        tag_str = f"/{tag}" if tag else ""
+        tags = []
+        fx_t = fx_tag.get(hs["name"], "")
+        if fx_t:
+            tags.append(fx_t)
+        infl_t = infl_tag.get(hs["name"], "")
+        if infl_t:
+            tags.append(infl_t)
+        tag_str = f"/{'/'.join(tags)}" if tags else ""
         parts.append(f"{hs['name']}(HOT {hs['hot_days']}일→{hs['cycle_position']}{tag_str})")
     for ns in sa.next_sectors:
         if ns["momentum"] > 3 or ns["vol_ratio"] > 1.0:
@@ -1076,6 +1093,18 @@ def _phase6_synthesis(
         if abs(erp_adj) >= 0.5:
             score += erp_adj
             reasons.append(f"상대가치{erp_detail}({erp_adj:+.1f})")
+    except Exception:
+        pass
+
+    # 13. 인플레이션 비용 체인 (BOND-P3: CPI/PPI 대리 → 기업이익 영향)
+    try:
+        from data.inflation_chain import get_inflation_brain_adjustment
+        ri = nw.get("raw_indicators", {}) if isinstance(nw, dict) else {}
+        infl_adj, infl_detail = get_inflation_brain_adjustment(ri)
+        infl_adj = max(-3.0, min(3.0, infl_adj))
+        if abs(infl_adj) >= 0.5:
+            score += infl_adj
+            reasons.append(f"인플레{infl_detail}({infl_adj:+.1f})")
     except Exception:
         pass
 
