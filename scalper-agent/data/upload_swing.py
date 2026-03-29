@@ -566,18 +566,28 @@ def _enrich_with_macro(result: dict) -> dict:
     # 7) 시장 한줄 요약
     시장요약 = _make_market_summary(nxt, macro_report)
 
-    # analysis 필드에 융합 (기존 키 유지 + 새 키 추가)
+    # analysis 필드에 융합
+    # 주의: analysis 최상위에는 문자열만! (프론트가 직접 렌더링함)
+    # 복잡한 객체/배열은 모두 v2 안에 넣어서 프론트 에러 방지
     analysis = result.get("analysis", {})
-    analysis["매크로_지표"] = macro_report.get("지표", {})
+
+    # 최상위: 문자열만 (기존 프론트 호환)
     analysis["시장상태"] = 시장상태
-    analysis["전략"] = macro_report.get("전략", {})
-    analysis["카테고리별_추천"] = 카테고리
-    analysis["섹터_온도계"] = 섹터온도
-    analysis["나이트워치"] = nxt_summary
-    analysis["매매안내"] = 매매안내
-    analysis["경고"] = 경고
     analysis["시장요약"] = 시장요약
+    analysis["경고"] = " | ".join(경고) if 경고 else ""
     analysis["기준시각"] = macro_report.get("기준시각", "")
+
+    # v2: 복잡한 객체/배열 (신규 프론트에서 사용)
+    analysis["v2"] = {
+        "매크로_지표": macro_report.get("지표", {}),
+        "전략": macro_report.get("전략", {}),
+        "카테고리별_추천": 카테고리,
+        "섹터_온도계": 섹터온도,
+        "나이트워치": nxt_summary,
+        "매매안내": 매매안내,
+        "경고": 경고,
+    }
+
     result["analysis"] = analysis
 
     # brain이 없어서 picks가 비었으면 → 나이트워치 종목으로 대체
