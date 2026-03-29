@@ -550,10 +550,23 @@ def _phase3_sector(history: dict, rotation_detail: list = None) -> SectorAssessm
                     "name": sector_name, "key": sk, "momentum": momentum,
                 })
 
+    # FX 분류 태그 (BOND-P1)
+    fx_tag = {}
+    try:
+        from data.fx_sector_signal import get_fx_type
+        for hs in sa.hot_sectors:
+            ft = get_fx_type(hs["name"])
+            if ft in ("EXPORT", "IMPORT"):
+                fx_tag[hs["name"]] = "수출" if ft == "EXPORT" else "수입"
+    except Exception:
+        pass
+
     # 내러티브 생성
     parts = []
     for hs in sa.hot_sectors:
-        parts.append(f"{hs['name']}(HOT {hs['hot_days']}일→{hs['cycle_position']})")
+        tag = fx_tag.get(hs["name"], "")
+        tag_str = f"/{tag}" if tag else ""
+        parts.append(f"{hs['name']}(HOT {hs['hot_days']}일→{hs['cycle_position']}{tag_str})")
     for ns in sa.next_sectors:
         if ns["momentum"] > 3 or ns["vol_ratio"] > 1.0:
             parts.append(f"{ns['name']}(WARMING→HOT 임박)")

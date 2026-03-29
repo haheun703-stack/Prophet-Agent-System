@@ -2006,6 +2006,33 @@ def run_evening_recommendation() -> RecommendationReport:
         from dataclasses import asdict as _asdict
         report._sector_momentum = _asdict(sector_momentum_report)
 
+    # ── Step 5d-2: FX→섹터 환율 부스트 (BOND-P1) ──
+    try:
+        from data.fx_sector_signal import get_fx_all_sector_boosts
+        # nightwatch_report.json에서 USDKRW 데이터 로드
+        nw_path = BASE_DIR / "data_store" / "nightwatch_report.json"
+        if nw_path.exists():
+            nw_data = json.loads(nw_path.read_text("utf-8"))
+            ri = nw_data.get("raw_indicators", {})
+            fx_boosts = get_fx_all_sector_boosts(ri)
+            if fx_boosts:
+                fx_count = 0
+                for s in final_stocks:
+                    s_sector = getattr(s, "sector", "")
+                    if not s_sector and _universe:
+                        ui = _universe.get(s.code, {})
+                        s_sector = ui.get("sector", "") if isinstance(ui, dict) else ""
+                    fx_adj = fx_boosts.get(s_sector, 0.0)
+                    if abs(fx_adj) >= 0.3:
+                        s.total_score += fx_adj
+                        fx_count += 1
+                        logger.debug(f"  [FX부스트] {s.name}({s_sector}): {fx_adj:+.1f}점")
+                if fx_count > 0:
+                    final_stocks.sort(key=lambda x: x.total_score, reverse=True)
+                    logger.info(f"  [FX→섹터] {fx_count}종목 환율 부스트 → 재정렬 완료")
+    except Exception as e:
+        logger.debug(f"FX 섹터 부스트 실패 (무시): {e}")
+
     # ── Step 5b-2: 섹터 기관 수급 부스트 (TIER2) ──
     try:
         from data.sector_institution_flow import get_sector_flow_boost
