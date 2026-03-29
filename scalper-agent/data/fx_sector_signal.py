@@ -166,7 +166,7 @@ class FXSectorImpact:
     usdkrw_value: float = 0.0       # 현재 환율
     usdkrw_change_pct: float = 0.0  # 전일 대비 변화율 (%)
     usdkrw_dev60: float = 0.0       # 60MA 이탈도 (%)  ← 기준선
-    fx_regime: str = "STABLE"       # STRONG_WEAK / WEAK / STABLE / STRONG / STRONG_STRONG
+    fx_regime: str = "환율안정"       # 원화급락 / 원화약세 / 환율안정 / 원화강세 / 원화급등
     baseline_used: bool = False     # 기준선 데이터 사용 여부
     sector_adjustments: Dict[str, float] = field(default_factory=dict)  # {sector: adj_score}
     narrative: str = ""
@@ -183,34 +183,34 @@ def _classify_fx_regime(change_pct: float, dev60: float = 0.0) -> str:
     Layer 1 (주): 60MA 이탈도 — "3개월 추세에서 원화가 얼마나 벗어났나"
     Layer 2 (보조): 전일비 — "오늘의 방향성"
 
-    STRONG_WEAK: 원화 급락 (수출주 강한 수혜)
-    WEAK:        원화 약세 (수출주 수혜)
-    STABLE:      영향 미미
-    STRONG:      원화 강세 (수입주 수혜)
-    STRONG_STRONG: 원화 급등 (수입주 강한 수혜)
+    원화급락:   원화 급락 (수출주 강한 수혜)
+    원화약세:   원화 약세 (수출주 수혜)
+    환율안정:   영향 미미
+    원화강세:   원화 강세 (수입주 수혜)
+    원화급등:   원화 급등 (수입주 강한 수혜)
     """
     # Layer 1: 기준선 기반 구조적 판단
     if abs(dev60) > 0:
         if dev60 > 3.0:       # 60MA 대비 3%+ → 구조적 원화 약세
-            return "STRONG_WEAK" if change_pct > 0 else "WEAK"
+            return "원화급락" if change_pct > 0 else "원화약세"
         elif dev60 > 1.5:     # 60MA 대비 1.5%+ → 약세 경향
-            return "WEAK"
+            return "원화약세"
         elif dev60 < -3.0:    # 60MA 대비 -3% → 구조적 원화 강세
-            return "STRONG_STRONG" if change_pct < 0 else "STRONG"
+            return "원화급등" if change_pct < 0 else "원화강세"
         elif dev60 < -1.5:    # 60MA 대비 -1.5% → 강세 경향
-            return "STRONG"
+            return "원화강세"
 
     # Layer 2: 전일비 기반 (기준선 없거나 ±1.5% 이내)
     if change_pct >= 1.0:
-        return "STRONG_WEAK"
+        return "원화급락"
     elif change_pct >= 0.3:
-        return "WEAK"
+        return "원화약세"
     elif change_pct <= -1.0:
-        return "STRONG_STRONG"
+        return "원화급등"
     elif change_pct <= -0.3:
-        return "STRONG"
+        return "원화강세"
     else:
-        return "STABLE"
+        return "환율안정"
 
 
 # ═══════════════════════════════════════════
@@ -227,20 +227,20 @@ def _calc_sector_adjustments(change_pct: float, regime: str) -> Dict[str, float]
       DOMESTIC/MIXED: 미미한 간접 효과
 
     fx_multiplier (레짐별 강도):
-      STRONG_WEAK/STRONG_STRONG: 3.0 (급변 시 강한 영향)
-      WEAK/STRONG: 2.0 (의미 있는 변화)
-      STABLE: 0.0 (노이즈 무시)
+      원화급락/원화급등: 3.0 (급변 시 강한 영향)
+      원화약세/원화강세: 2.0 (의미 있는 변화)
+      환율안정: 0.0 (노이즈 무시)
 
     보정값 범위: ±5.0 (sector_momentum boost_score에 더할 값)
     """
-    if regime == "STABLE":
+    if regime == "환율안정":
         return {}
 
     mult_map = {
-        "STRONG_WEAK": 3.0,
-        "WEAK": 2.0,
-        "STRONG": 2.0,
-        "STRONG_STRONG": 3.0,
+        "원화급락": 3.0,
+        "원화약세": 2.0,
+        "원화강세": 2.0,
+        "원화급등": 3.0,
     }
     fx_mult = mult_map.get(regime, 1.0)
 
@@ -330,18 +330,11 @@ def analyze_fx_sector_impact(
         effective_change, impact.fx_regime
     )
 
-    # 내러티브
-    regime_kr = {
-        "STRONG_WEAK": "원화 급락",
-        "WEAK": "원화 약세",
-        "STABLE": "환율 안정",
-        "STRONG": "원화 강세",
-        "STRONG_STRONG": "원화 급등",
-    }
+    # 내러티브 (fx_regime이 이미 한국어)
     dev60_str = f" 60MA{impact.usdkrw_dev60:+.1f}%" if impact.baseline_used else ""
     parts = [
         f"$/₩ {impact.usdkrw_value:.0f}({impact.usdkrw_change_pct:+.2f}%{dev60_str})",
-        regime_kr.get(impact.fx_regime, impact.fx_regime),
+        impact.fx_regime,
     ]
 
     if impact.sector_adjustments:

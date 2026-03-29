@@ -2321,6 +2321,9 @@ class BodyHunterBot:
             r"^flowx$": self.cmd_flowx_vip,
             # ── 국적 차트 ──
             r"^국적차트$": self.cmd_nationality_chart,
+            # ── 매크로 전략 ──
+            r"^매크로$": self.cmd_macro_strategy,
+            r"^전략$": self.cmd_macro_strategy,
             # ── COO 상태 ──
             r"^COO$": self.cmd_coo_status,
             r"^coo$": self.cmd_coo_status,
@@ -4713,6 +4716,28 @@ class BodyHunterBot:
             await update.message.reply_text("\n".join(lines))
         except Exception as e:
             await update.message.reply_text(f"AI Eye 조회 실패: {e}")
+
+    async def cmd_macro_strategy(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """매크로 전략 대시보드"""
+        if not self._is_authorized(update):
+            return
+        try:
+            from data.macro_strategy import get_strategy_dashboard, get_regime_alert
+            from data.macro_baseline import get_baseline_summary
+            parts = []
+            # 기준선 요약
+            bl = get_baseline_summary()
+            if bl and "데이터 없음" not in bl:
+                parts.append(bl)
+            # 전략 대시보드
+            parts.append(get_strategy_dashboard())
+            # 알림 (안정이 아닐 때만)
+            alert = get_regime_alert()
+            if alert:
+                parts.append(f"\n{alert}")
+            await update.message.reply_text("\n".join(parts) or "매크로 데이터 없음")
+        except Exception as e:
+            await update.message.reply_text(f"매크로 전략 조회 실패: {e}")
 
     async def cmd_coo_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """COO 운영 상태 조회"""

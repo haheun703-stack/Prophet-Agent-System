@@ -55,7 +55,7 @@ class IndicatorBaseline:
     dev20_pct: float = 0.0         # 20MA 이탈도 (%)
     dev60_pct: float = 0.0         # 60MA 이탈도 (%)
     pct_rank_60d: float = 50.0     # 60일 내 백분위 (0=최저, 100=최고)
-    trend_20d: str = "FLAT"        # STRONG_UP / UP / FLAT / DOWN / STRONG_DOWN
+    trend_20d: str = "보합"        # 급상승 / 상승 / 보합 / 하락 / 급하락
     data_days: int = 0             # 수집된 영업일 수
 
 
@@ -150,15 +150,15 @@ def _calc_one_baseline(ticker: str, name: str) -> IndicatorBaseline:
         if ma20_5ago > 0:
             slope_pct = (ma20_now - ma20_5ago) / ma20_5ago * 100
             if slope_pct > 3.0:
-                bl.trend_20d = "STRONG_UP"
+                bl.trend_20d = "급상승"
             elif slope_pct > 1.0:
-                bl.trend_20d = "UP"
+                bl.trend_20d = "상승"
             elif slope_pct < -3.0:
-                bl.trend_20d = "STRONG_DOWN"
+                bl.trend_20d = "급하락"
             elif slope_pct < -1.0:
-                bl.trend_20d = "DOWN"
+                bl.trend_20d = "하락"
             else:
-                bl.trend_20d = "FLAT"
+                bl.trend_20d = "보합"
 
     return bl
 
@@ -318,8 +318,8 @@ def get_baseline_summary() -> str:
     lines = [f"📊 매크로 기준선 ({baselines.timestamp})"]
 
     trend_icons = {
-        "STRONG_UP": "⬆️⬆️", "UP": "⬆️", "FLAT": "➡️",
-        "DOWN": "⬇️", "STRONG_DOWN": "⬇️⬇️",
+        "급상승": "⬆️⬆️", "상승": "⬆️", "보합": "➡️",
+        "하락": "⬇️", "급하락": "⬇️⬇️",
     }
 
     for key, defn in INDICATOR_DEFS.items():
@@ -363,7 +363,7 @@ def get_regime_context() -> Dict[str, str]:
 
     Returns:
         {
-            "oil_trend": "STRONG_UP",
+            "oil_trend": "급상승",
             "oil_dev60": "+39.5",
             "tnx_trend": "UP",
             "tnx_dev60": "+6.0",

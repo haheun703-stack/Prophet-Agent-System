@@ -978,9 +978,9 @@ def collect_macro_conditions(
         active.append(f"나스닥↓ {conditions.get('nasdaq_pct', 0):+.1f}%")
     # 채권 환경 verdict가 있으면 더 풍부한 텍스트 사용
     bond_v = conditions.get("bond_verdict")
-    if bond_v and bond_v != "NEUTRAL":
-        bond_kr = {"DOVISH": "금리완화", "HAWKISH": "금리긴축",
-                   "TIGHTENING_SHOCK": "금리쇼크"}
+    if bond_v and bond_v != "중립":
+        bond_kr = {"완화적": "금리완화", "긴축적": "금리긴축",
+                   "금리쇼크": "금리쇼크"}
         us10y_val = conditions.get("us10y_value", 0)
         active.append(f"{bond_kr.get(bond_v, bond_v)}({us10y_val:.1f}%)")
     elif conditions.get("rate_down"):

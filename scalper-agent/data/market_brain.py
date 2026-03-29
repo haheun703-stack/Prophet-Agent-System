@@ -1120,6 +1120,17 @@ def _phase6_synthesis(
     else:
         pct, label = 0, "관망"
 
+    # 14. 매크로 전략 비중 캡 (macro_strategy → 레짐별 상한)
+    try:
+        from data.macro_strategy import get_budget_cap
+        macro_cap_pct, _ = get_budget_cap()
+        if macro_cap_pct < pct:
+            reasons.append(f"매크로캡{macro_cap_pct}%")
+            pct = macro_cap_pct
+            label = f"매크로제한({label})"
+    except Exception:
+        pass
+
     size_reason = f"{label}({score:+d}) — " + " | ".join(reasons)
 
     # ── 종합 판정 문장 ──

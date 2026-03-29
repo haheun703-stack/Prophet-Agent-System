@@ -39,7 +39,7 @@ class BondEnvironment:
     # 기준선 이탈도
     tnx_dev20: float = 0.0          # 20MA 이탈도 (%)
     tnx_dev60: float = 0.0          # 60MA 이탈도 (%)
-    tnx_trend_20d: str = "FLAT"     # 20일 추세 (STRONG_UP/UP/FLAT/DOWN/STRONG_DOWN)
+    tnx_trend_20d: str = "보합"     # 20일 추세 (급상승/상승/보합/하락/급하락)
     baseline_used: bool = False     # 기준선 사용 여부
 
     # 분류
@@ -58,7 +58,7 @@ class BondEnvironment:
     composite_score: float = 0.0    # 종합 점수 (±5.0)
 
     # 통합 출력
-    verdict: str = "NEUTRAL"        # DOVISH / NEUTRAL / HAWKISH / TIGHTENING_SHOCK
+    verdict: str = "중립"            # 완화적 / 중립 / 긴축적 / 금리쇼크
     brain_adj: float = 0.0          # BRAIN Phase 6 보정값 (±5)
     nxt_adj: float = 0.0            # NXT 스코어 보정값 (±1.5)
     narrative: str = ""             # 한줄 요약
@@ -346,13 +346,13 @@ def analyze_bond_environment(
 
     # ── 판정 (verdict) ──
     if env.composite_score >= 2.0:
-        env.verdict = "DOVISH"       # 금리 하락 → 주식 우호
+        env.verdict = "완화적"       # 금리 하락 → 주식 우호
     elif env.composite_score >= -1.0:
-        env.verdict = "NEUTRAL"
+        env.verdict = "중립"
     elif env.composite_score >= -3.0:
-        env.verdict = "HAWKISH"      # 금리 상승 → 밸류에이션 압박
+        env.verdict = "긴축적"       # 금리 상승 → 밸류에이션 압박
     else:
-        env.verdict = "TIGHTENING_SHOCK"  # 금리 급등 + 크레딧 스트레스
+        env.verdict = "금리쇼크"      # 금리 급등 + 크레딧 스트레스
 
     # ── BRAIN 보정값 (Phase 6 synthesis에 반영) ──
     # composite_score를 ±5 범위로 매핑
@@ -375,13 +375,13 @@ def analyze_bond_environment(
     if env.us10y_5d_change != 0:
         parts.append(f"5일{env.us10y_5d_change*100:+.1f}bp")
 
-    verdict_kr = {
-        "DOVISH": "완화적(주식 우호)",
-        "NEUTRAL": "중립",
-        "HAWKISH": "긴축적(밸류에이션 압박)",
-        "TIGHTENING_SHOCK": "금리쇼크(크레딧 스트레스)",
+    verdict_detail = {
+        "완화적": "완화적(주식 우호)",
+        "중립": "중립",
+        "긴축적": "긴축적(밸류에이션 압박)",
+        "금리쇼크": "금리쇼크(크레딧 스트레스)",
     }
-    parts.append(verdict_kr.get(env.verdict, env.verdict))
+    parts.append(verdict_detail.get(env.verdict, env.verdict))
 
     if env.credit_class not in ("NEUTRAL", ""):
         credit_kr = {"EASING": "크레딧완화", "STRESS": "크레딧스트레스",

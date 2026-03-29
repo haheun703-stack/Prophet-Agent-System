@@ -9,11 +9,11 @@ CPI/PPI 대리변수(원자재 가격 변동)로 인플레이션 레짐 감지 �
   원자재 하락 → 비용 하락 수혜 + 디플레이션 리스크
   금 상승 + 구리 하락 → 스태그플레이션 경고 (경기 둔화 + 인플레 동시)
 
-4가지 인플레이션 레짐:
-  COST_PUSH    — 유가+NG+구리 동반 상승 (원자재발 비용 인상)
-  STAGFLATION  — 금 상승 + 구리 하락 + 금리 상승 (최악 시나리오)
-  DEFLATIONARY — 유가+구리 동반 하락 (수요 위축)
-  STABLE       — 변동 없음 (±0.5% 이내)
+4가지 인플레이션 국면:
+  비용상승      — 유가+NG+구리 동반 상승 (원자재발 비용 인상)
+  스태그플레이션 — 금 상승 + 구리 하락 + 금리 상승 (최악 시나리오)
+  수요둔화      — 유가+구리 동반 하락 (수요 위축)
+  안정          — 변동 없음 (±0.5% 이내)
 
 원칙:
   - nightwatch raw_indicators에서 원자재 데이터 수신
@@ -215,7 +215,7 @@ SECTOR_INFLATION_MAP: Dict[str, dict] = {
 @dataclass
 class InflationRegime:
     """인플레이션 레짐 종합 평가"""
-    regime: str = "STABLE"              # COST_PUSH / STAGFLATION / DEFLATIONARY / STABLE
+    regime: str = "안정"                # 비용상승 / 스태그플레이션 / 수요둔화 / 안정
     regime_score: float = 0.0           # -5.0(디플레) ~ +5.0(강한 인플레)
 
     # 원자재 입력 (전일비)
@@ -262,13 +262,13 @@ def _detect_regime(oil_chg: float, ng_chg: float, copper_chg: float,
 
     # ── Layer 1: 기준선 기반 구조적 판단 ──
     if has_baseline:
-        # STAGFLATION: 유가 고공 + 구리 약세 + 금리 상승 (경기 둔화 + 비용 인상)
+        # 스태그플레이션: 유가 고공 + 구리 약세 + 금리 상승 (경기 둔화 + 비용 인상)
         if oil_dev60 > 15 and copper_dev60 < -3 and tnx_bp > 0:
             severity = min(5.0, oil_dev60 * 0.08 + abs(copper_dev60) * 0.15)
-            return ("STAGFLATION", severity,
+            return ("스태그플레이션", severity,
                     f"유가60MA+{oil_dev60:.0f}%+구리60MA{copper_dev60:+.0f}%+금리↑")
 
-        # COST_PUSH: 유가 60MA 크게 상회
+        # 비용상승: 유가 60MA 크게 상회
         if oil_dev60 > 10:
             severity = min(5.0, oil_dev60 * 0.1)
             # 전일비로 가속 여부 확인
@@ -277,26 +277,26 @@ def _detect_regime(oil_chg: float, ng_chg: float, copper_chg: float,
             parts = [f"유가60MA+{oil_dev60:.0f}%"]
             if oil_chg > 1.0:
                 parts.append(f"오늘+{oil_chg:.1f}%")
-            return "COST_PUSH", severity, " ".join(parts)
+            return "비용상승", severity, " ".join(parts)
 
-        # DEFLATIONARY: 유가+구리 모두 60MA 크게 하회
+        # 수요둔화: 유가+구리 모두 60MA 크게 하회
         if oil_dev60 < -10 and copper_dev60 < -5:
             severity = max(-5.0, (oil_dev60 + copper_dev60) * 0.08)
-            return ("DEFLATIONARY", severity,
+            return ("수요둔화", severity,
                     f"유가60MA{oil_dev60:+.0f}%+구리60MA{copper_dev60:+.0f}%")
 
     # ── Layer 2: 전일비 기반 단기 판단 (기준선 없거나 Layer 1 미해당) ──
     industrial_avg = (oil_chg + ng_chg + copper_chg) / 3.0
 
-    # STAGFLATION (단기): 금 상승 + 구리 하락 + 금리 상승
+    # 스태그플레이션 (단기): 금 상승 + 구리 하락 + 금리 상승
     if gold_chg > 1.0 and copper_chg < -0.5 and tnx_bp > 3:
         severity = min(5.0, gold_chg * 0.5 + abs(copper_chg) * 0.5 + tnx_bp * 0.1)
         # 기준선이 있으면 구조적 추세와 결합
         if has_baseline and oil_dev60 > 5:
             severity = min(5.0, severity + 0.5)
-        return "STAGFLATION", severity, f"금↑{gold_chg:+.1f}%+구리↓{copper_chg:+.1f}%+금리↑{tnx_bp:+.0f}bp"
+        return "스태그플레이션", severity, f"금↑{gold_chg:+.1f}%+구리↓{copper_chg:+.1f}%+금리↑{tnx_bp:+.0f}bp"
 
-    # COST_PUSH (단기): 산업용 원자재 동반 상승
+    # 비용상승 (단기): 산업용 원자재 동반 상승
     rising_count = sum(1 for x in [oil_chg, ng_chg, copper_chg] if x > 0.5)
     if rising_count >= 2 and industrial_avg > 0.5:
         severity = min(5.0, industrial_avg * 1.5)
@@ -312,9 +312,9 @@ def _detect_regime(oil_chg: float, ng_chg: float, copper_chg: float,
             rising.append(f"구리{copper_chg:+.1f}%")
         if has_baseline and oil_dev60 > 10:
             rising.append(f"(60MA+{oil_dev60:.0f}%)")
-        return "COST_PUSH", severity, "+".join(rising)
+        return "비용상승", severity, "+".join(rising)
 
-    # DEFLATIONARY (단기): 산업용 원자재 동반 하락
+    # 수요둔화 (단기): 산업용 원자재 동반 하락
     falling_count = sum(1 for x in [oil_chg, ng_chg, copper_chg] if x < -0.5)
     if falling_count >= 2 and industrial_avg < -0.5:
         severity = max(-5.0, industrial_avg * 1.5)
@@ -325,19 +325,19 @@ def _detect_regime(oil_chg: float, ng_chg: float, copper_chg: float,
             falling.append(f"NG{ng_chg:+.1f}%")
         if copper_chg < -0.5:
             falling.append(f"구리{copper_chg:+.1f}%")
-        return "DEFLATIONARY", severity, "+".join(falling)
+        return "수요둔화", severity, "+".join(falling)
 
-    # === STABLE ===
-    return "STABLE", 0.0, "원자재안정"
+    # === 안정 ===
+    return "안정", 0.0, "원자재안정"
 
 
 def _calc_sector_impact(regime: str, regime_score: float) -> Dict[str, float]:
     """
     레짐 + 강도 → 23섹터 보정값 계산.
 
-    COST_PUSH/STAGFLATION: VICTIM 페널티, BENEFICIARY/HEDGE 수혜
-    DEFLATIONARY: VICTIM 수혜(비용↓), BENEFICIARY 약간 페널티(금리↓)
-    STABLE: 전부 0
+    비용상승/스태그플레이션: VICTIM 페널티, BENEFICIARY/HEDGE 수혜
+    수요둔화: VICTIM 수혜(비용↓), BENEFICIARY 약간 페널티(금리↓)
+    안정: 전부 0
     """
     if abs(regime_score) < 0.3:
         return {}
@@ -350,7 +350,7 @@ def _calc_sector_impact(regime: str, regime_score: float) -> Dict[str, float]:
         cost_sens = info["cost_sensitivity"]
         pricing_pw = info["pricing_power"]
 
-        if regime in ("COST_PUSH", "STAGFLATION"):
+        if regime in ("비용상승", "스태그플레이션"):
             # 인플레: 비용 민감도 높고 전가력 낮으면 피해
             if net_class == "VICTIM":
                 adj = -cost_sens * (1 - pricing_pw) * intensity * 5.0
@@ -361,11 +361,11 @@ def _calc_sector_impact(regime: str, regime_score: float) -> Dict[str, float]:
             else:  # SURVIVOR
                 adj = (pricing_pw - cost_sens) * intensity * 2.0
 
-            # STAGFLATION은 전체적으로 더 부정적
-            if regime == "STAGFLATION":
+            # 스태그플레이션은 전체적으로 더 부정적
+            if regime == "스태그플레이션":
                 adj -= intensity * 1.0
 
-        elif regime == "DEFLATIONARY":
+        elif regime == "수요둔화":
             # 디플레: VICTIM 수혜(비용↓), BENEFICIARY 약간 피해(금리↓)
             if net_class == "VICTIM":
                 adj = cost_sens * (1 - pricing_pw) * intensity * 3.0
@@ -457,7 +457,7 @@ def analyze_inflation_chain(raw_indicators: dict) -> InflationRegime:
             elif adj >= 1.0:
                 result.beneficiaries.append(sector)
 
-        if result.regime != "STABLE":
+        if result.regime != "안정":
             logger.info(
                 f"[Inflation] {result.regime} (score={result.regime_score:+.1f}): "
                 f"{result.detail} | 피해={result.victims} 수혜={result.beneficiaries}"
@@ -465,7 +465,7 @@ def analyze_inflation_chain(raw_indicators: dict) -> InflationRegime:
 
     except Exception as e:
         logger.warning(f"[Inflation] 분석 실패 (무시): {e}")
-        result.regime = "STABLE"
+        result.regime = "안정"
         result.regime_score = 0.0
 
     return result
@@ -477,31 +477,31 @@ def get_inflation_brain_adjustment(raw_indicators: dict) -> Tuple[float, str]:
 
     Returns:
         (adjustment: ±3.0, detail: str)
-        - COST_PUSH → -1.0 ~ -3.0 (비용 부담 → 기업이익 압박)
-        - STAGFLATION → -2.0 ~ -3.0 (최악)
-        - DEFLATIONARY → -0.5 ~ -1.5 (수요 위축 우려)
-        - STABLE → 0.0
+        - 비용상승 → -1.0 ~ -3.0 (비용 부담 → 기업이익 압박)
+        - 스태그플레이션 → -2.0 ~ -3.0 (최악)
+        - 수요둔화 → -0.5 ~ -1.5 (수요 위축 우려)
+        - 안정 → 0.0
     """
     try:
         regime = analyze_inflation_chain(raw_indicators)
 
-        if regime.regime == "STABLE":
+        if regime.regime == "안정":
             return 0.0, ""
 
-        if regime.regime == "COST_PUSH":
+        if regime.regime == "비용상승":
             # 비용 인상 → 기업 마진 압박 (강도에 비례)
             adj = max(-3.0, -regime.regime_score * 0.6)
-            return adj, f"비용인상({regime.detail})"
+            return adj, f"비용상승({regime.detail})"
 
-        if regime.regime == "STAGFLATION":
+        if regime.regime == "스태그플레이션":
             # 최악 시나리오 → 강한 방어
             adj = max(-3.0, -regime.regime_score * 0.8)
             return adj, f"스태그({regime.detail})"
 
-        if regime.regime == "DEFLATIONARY":
+        if regime.regime == "수요둔화":
             # 디플레 → 수요 위축 (약한 부정)
             adj = max(-1.5, regime.regime_score * 0.3)  # score가 음수이므로
-            return adj, f"디플레({regime.detail})"
+            return adj, f"수요둔화({regime.detail})"
 
     except Exception as e:
         logger.debug(f"[Inflation] BRAIN 보정 실패: {e}")

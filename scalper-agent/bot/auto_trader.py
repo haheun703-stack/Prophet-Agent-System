@@ -465,7 +465,14 @@ class AutoTrader:
                             except Exception:
                                 entry = 0
                         if entry and not sl:
-                            sl = int(entry * 0.965)  # 기본 -3.5%
+                            # 매크로 전략 기반 SL 조정
+                            _base_sl = 0.035
+                            try:
+                                from data.macro_strategy import get_adjusted_sl
+                                _base_sl = get_adjusted_sl(0.035)
+                            except Exception:
+                                pass
+                            sl = int(entry * (1 - _base_sl))
                         if entry and not tp:
                             tp = int(entry * 1.05)   # 기본 +5%
 
@@ -1284,6 +1291,12 @@ class AutoTrader:
         bought = 0
         risk_conf = self.config.get("risk", {})
         sl_pct = risk_conf.get("stop_loss_pct", 0.02)
+        # 매크로 전략 기반 SL 조정 (타이트하면 더 좁은 값 사용)
+        try:
+            from data.macro_strategy import get_adjusted_sl
+            sl_pct = get_adjusted_sl(sl_pct)
+        except Exception:
+            pass
         tp_pct = risk_conf.get("take_profit_pct", 0.05)
 
         for f in candidates[:slots]:
@@ -1819,7 +1832,13 @@ class AutoTrader:
                 # 최대 보유일 초과 (모멘텀 포지션은 5일, 스윙은 config값)
                 # REVERSAL 섹터 종목은 최대 3일로 단축
                 # MOMENTUM 레짐 포지션은 5일로 제한
+                # 매크로 전략 기반 보유일 단축
                 effective_max = 5 if pos.get("source") == "momentum" else max_hold
+                try:
+                    from data.macro_strategy import get_adjusted_max_hold
+                    effective_max = get_adjusted_max_hold(effective_max)
+                except Exception:
+                    pass
                 if pos.get("regime") == "MOMENTUM":
                     effective_max = min(effective_max, 5)
                 if code in reversal_codes:

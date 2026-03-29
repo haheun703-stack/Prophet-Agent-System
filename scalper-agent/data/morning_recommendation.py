@@ -2059,6 +2059,38 @@ def run_evening_recommendation() -> RecommendationReport:
     except Exception as e:
         logger.debug(f"인플레 비용체인 부스트 실패 (무시): {e}")
 
+    # ── Step 5d-4: 매크로 전략 섹터 블랙리스트/페널티 ──
+    try:
+        from data.macro_strategy import get_regime_response, get_sector_score_multiplier, should_avoid_sector
+        regime_resp = get_regime_response()
+        if regime_resp.regime != "안정":
+            avoid_count = 0
+            mult_count = 0
+            for s in final_stocks[:]:
+                s_sector = getattr(s, "sector", "")
+                if not s_sector and _universe:
+                    ui = _universe.get(s.code, {})
+                    s_sector = ui.get("sector", "") if isinstance(ui, dict) else ""
+                # 블랙리스트 확인 (스태그플레이션 시 VICTIM 제거)
+                avoid, reason = should_avoid_sector(s_sector, regime_resp.regime)
+                if avoid:
+                    logger.info(f"  [매크로전략] {s.name} 제외: {reason}")
+                    final_stocks.remove(s)
+                    avoid_count += 1
+                    continue
+                # 섹터 점수 배수 (VICTIM 감점, BENEFICIARY 가점)
+                mult = get_sector_score_multiplier(s_sector, regime_resp.regime)
+                if abs(mult - 1.0) > 0.05:
+                    old = s.total_score
+                    s.total_score = round(s.total_score * mult, 1)
+                    mult_count += 1
+                    logger.debug(f"  [매크로전략] {s.name}({s_sector}): x{mult:.1f} ({old:.1f}→{s.total_score:.1f})")
+            if avoid_count or mult_count:
+                final_stocks.sort(key=lambda x: x.total_score, reverse=True)
+                logger.info(f"  [매크로전략] {regime_resp.strategy_name}: {avoid_count}종목 제외, {mult_count}종목 배수 적용")
+    except Exception as e:
+        logger.debug(f"매크로 전략 적용 실패 (무시): {e}")
+
     # ── Step 5b-2: 섹터 기관 수급 부스트 (TIER2) ──
     try:
         from data.sector_institution_flow import get_sector_flow_boost
