@@ -58,6 +58,28 @@ def _get_client():
 #  BRAIN 역방향 등급 필터
 # ═══════════════════════════════════════
 
+def _judge_star(score: float, grade: str, rr: float, conviction: str, stock: dict) -> bool:
+    """★ 별표 판정 — 진입해도 되는 종목인지 결정
+
+    조건 (하나라도 만족하면 star):
+    1. score 60+ AND (grade AAA/AA/A)
+    2. score 70+ (등급 무관)
+    3. RSI 40~65 AND vol_ratio 1.5+ AND score 50+
+    4. conviction HIGH
+    """
+    if conviction == "HIGH":
+        return True
+    if score >= 70:
+        return True
+    if score >= 60 and grade in ("AAA", "AA", "A"):
+        return True
+    rsi = stock.get("rsi", 50)
+    vol = stock.get("vol_ratio", 0)
+    if 40 <= rsi <= 65 and vol >= 1.5 and score >= 50:
+        return True
+    return False
+
+
 def _get_swing_filter(brain_pct: int) -> tuple:
     """BRAIN 비중에 따른 (min_grade, max_picks, mode_label) 결정"""
     if brain_pct >= 80:
@@ -160,45 +182,123 @@ def generate_swing_page_data() -> dict:
         except Exception:
             pass
 
-    # ── 5) 등급 필터링 + picks 생성 ──
+    # ── 5) KRX 주간 종목 (recommendation.json 기반) ──
+    # 등급 필터 없이 전부 표시 (star로 구분)
     picks = []
-    if min_grade != "NONE":
-        for s in stocks:
-            grade = s.get("grade", "F")
-            if not _grade_passes(grade, min_grade):
-                continue
+    for s in stocks:
+        code = s.get("code", "")
+        to = to_map.get(code, {})
+        grade = s.get("grade", "")
 
-            code = s.get("code", "")
-            to = to_map.get(code, {})
+        # universe에서 sector 조회
+        uni_info = universe.get(code, {})
+        sector = uni_info.get("sector", "") if isinstance(uni_info, dict) else ""
 
-            # universe에서 sector 조회
-            uni_info = universe.get(code, {})
-            sector = uni_info.get("sector", "") if isinstance(uni_info, dict) else ""
+        score = round(s.get("total_score", s.get("score", 0)), 1)
+        rr = round(to.get("rr_ratio", 0), 2)
+        conviction = _calc_conviction(s, to)
+        entry = s.get("entry", 0)
+        tp = s.get("tp", s.get("tp1", 0))
+        sl = s.get("sl", 0)
 
-            pick = {
-                "code": code,
-                "name": s.get("name", ""),
-                "grade": grade,
-                "score": round(s.get("total_score", 0), 1),
-                "sector": sector,
-                "rr_ratio": round(to.get("rr_ratio", 0), 2),
-                "rr_verdict": to.get("rr_verdict", ""),
-                "entry_price": s.get("entry", 0),
-                "target_price": s.get("tp", 0),
-                "stop_price": s.get("sl", 0),
-                "hold_days": to.get("expected_hold_days", s.get("hold_days", 3)),
-                "conviction": _calc_conviction(s, to),
-                "catalyst": _build_catalyst(s),
-                "regime": s.get("regime", "NORMAL"),
-                "tv_pattern": s.get("tv_pattern", ""),
-                "news_sentiment": _extract_news_sentiment(s),
-                "tech_score": s.get("tech_score", 0),
-                "supply_signal": s.get("flow_signal", "NEUTRAL"),
-                "nat_power_grade": s.get("nat_power_grade", ""),
-            }
-            picks.append(pick)
-            if len(picks) >= max_picks:
-                break
+        # ★ 별표 판정: 진입 추천 여부
+        star = _judge_star(score, grade, rr, conviction, s)
+
+        # 한국어 레이블
+        _확신 = {"HIGH": "확신 높음", "MEDIUM": "보통", "LOW": "낮음"}
+        _행동 = "매수" if star else ("관심매수" if score >= 40 else "관찰")
+
+        pick = {
+            "code": code,
+            "name": s.get("name", ""),
+            "category": "KRX",
+            "category_label": "주간 매매",
+            "star": star,
+            "action": _행동,
+            "grade": grade,
+            "score": score,
+            "sector": sector,
+            "rr_ratio": rr,
+            "entry_price": int(entry) if entry else 0,
+            "target_price": int(tp) if tp else 0,
+            "stop_price": int(sl) if sl else 0,
+            "hold_days": to.get("expected_hold_days", s.get("hold_days", 3)),
+            "conviction": conviction,
+            "conviction_label": _확신.get(conviction, "보통"),
+            "catalyst": _build_catalyst(s),
+            "reasons": s.get("reasons", []),
+            "close": s.get("close", 0),
+            "chg_pct": round(s.get("chg_pct", 0), 1),
+            "rsi": round(s.get("rsi", 0), 1),
+            "vol_ratio": round(s.get("vol_ratio", 0), 1),
+            "source": s.get("source", ""),
+        }
+        picks.append(pick)
+
+    # ── 5b) NXT 야간 종목 (nightwatch 기반, 항상 추가) ──
+    nxt_data = _load_json("nightwatch_report.json")
+    nxt_targets = nxt_data.get("nxt_targets", [])
+    nxt_codes = {p["code"] for p in picks}  # KRX와 중복 방지
+
+    for t in nxt_targets:
+        code = t.get("code", "")
+        if code in nxt_codes:
+            continue
+        nxt_codes.add(code)
+
+        tier = t.get("tier", 3)
+        is_etf = t.get("is_etf", False)
+        sector_key = t.get("sector_key", t.get("sector", ""))
+        name = t.get("name", "")
+
+        # NXT star: Tier1 → star
+        star = tier <= 1
+
+        _분류명 = {
+            "inverse": "인버스 (하락 대비)",
+            "precious_metals": "금/귀금속",
+            "oil_resource": "원유/에너지",
+            "shipbuilding": "조선/방산",
+            "commodity_etf_gold": "금 ETF",
+            "commodity_etf_oil": "원유 ETF",
+        }
+
+        picks.append({
+            "code": code,
+            "name": name,
+            "category": "NXT",
+            "category_label": "야간 매매",
+            "star": star,
+            "action": "매수" if star else "관심매수",
+            "grade": f"Tier{tier}",
+            "score": 0,
+            "sector": _분류명.get(sector_key, sector_key),
+            "rr_ratio": 0,
+            "entry_price": 0,
+            "target_price": 0,
+            "stop_price": 0,
+            "hold_days": 3,
+            "conviction": "HIGH" if tier <= 1 else "MEDIUM",
+            "conviction_label": "확신 높음" if tier <= 1 else "보통",
+            "catalyst": _분류명.get(sector_key, "야간 신호"),
+            "reasons": [f"NXT Tier{tier}", _분류명.get(sector_key, "")],
+            "close": 0,
+            "chg_pct": 0,
+            "rsi": 0,
+            "vol_ratio": 0,
+            "source": "NXT",
+            "is_etf": is_etf,
+            "supply_score": t.get("supply_score", 0),
+        })
+
+    # picks 정렬: star 먼저, 그 다음 score 순
+    picks.sort(key=lambda x: (-int(x.get("star", False)), -x.get("score", 0)))
+
+    logger.info(
+        f"[FLOWX 스윙] picks: KRX {sum(1 for p in picks if p.get('category')=='KRX')}개 + "
+        f"NXT {sum(1 for p in picks if p.get('category')=='NXT')}개 = {len(picks)}개 "
+        f"(star {sum(1 for p in picks if p.get('star'))}개)"
+    )
 
     # ── 6) ETF picks (모든 모드에서 표시) ──
     etf_picks = []
@@ -209,7 +309,7 @@ def generate_swing_page_data() -> dict:
             "code": e.get("code", ""),
             "name": e.get("name", ""),
             "category": e.get("category", ""),
-            "signal": e.get("signal", "BUY"),
+            "signal": "매수",
             "entry": e.get("entry", 0),
             "sl": e.get("sl", 0),
             "tp": e.get("tp", 0),
@@ -608,56 +708,7 @@ def _enrich_with_macro(result: dict) -> dict:
         "경고_목록": 경고,
     }
 
-    # brain이 없어서 picks가 비었으면 → 나이트워치 종목으로 대체
-    if not result.get("picks") and 카테고리:
-        fallback_picks = []
-        for cat in 카테고리:
-            for stock in cat.get("종목", [])[:2]:  # 카테고리당 2개
-                if stock.get("ETF"):
-                    continue  # ETF는 etf_picks에
-                fallback_picks.append({
-                    "code": stock.get("코드", ""),
-                    "name": stock.get("이름", ""),
-                    "grade": "",
-                    "score": 0,
-                    "sector": cat.get("분류", ""),
-                    "rr_ratio": 0,
-                    "rr_verdict": "",
-                    "entry_price": 0,
-                    "target_price": 0,
-                    "stop_price": 0,
-                    "hold_days": 3,
-                    "conviction": "MEDIUM",
-                    "catalyst": cat.get("분류", ""),
-                    "regime": "NXT",
-                    "tv_pattern": "",
-                    "news_sentiment": "NEUTRAL",
-                    "tech_score": 0,
-                    "supply_signal": "NXT",
-                    "nat_power_grade": "",
-                })
-        result["picks"] = fallback_picks[:10]
-        logger.info(f"[FLOWX 스윙] Brain 없음 → 나이트워치 종목 {len(fallback_picks[:10])}개 대체")
-
-    # ETF도 비었으면 → 나이트워치 ETF 종목으로 대체
-    if not result.get("etf_picks") and 카테고리:
-        fallback_etf = []
-        for cat in 카테고리:
-            for stock in cat.get("종목", []):
-                if stock.get("ETF"):
-                    fallback_etf.append({
-                        "code": stock.get("코드", ""),
-                        "name": stock.get("이름", ""),
-                        "category": cat.get("분류", ""),
-                        "signal": "BUY",
-                        "entry": 0,
-                        "sl": 0,
-                        "tp": 0,
-                        "reason": cat.get("분류", ""),
-                        "holding_days": 3,
-                    })
-        result["etf_picks"] = fallback_etf
-        logger.info(f"[FLOWX 스윙] ETF 비어있음 → 나이트워치 ETF {len(fallback_etf)}개 대체")
+    # NXT fallback 불필요 — picks는 generate_swing_page_data 섹션 5b에서 항상 추가됨
 
     # market_comment 보강
     if not result.get("market_comment") or result["market_comment"] == "방향 불명확 — 현금이 포지션입니다":
