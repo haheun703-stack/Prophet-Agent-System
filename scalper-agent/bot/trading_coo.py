@@ -1355,6 +1355,18 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[COO] G7: 기준선 갱신 실패 (무시): {e}")
 
+        # ── 전쟁/휴전 시그널 갱신 (1일 1회) ──
+        try:
+            from data.war_signal import analyze_war_signal, format_war_signal_alert
+            ws = await asyncio.to_thread(analyze_war_signal)
+            logger.info(f"[COO] G7: 전쟁 시그널 — {ws.level_label} ({ws.signals_met}/4)")
+            # CEASEFIRE_LIKELY 이상이면 텔레그램 알림
+            alert_msg = format_war_signal_alert(ws)
+            if alert_msg and hasattr(self, '_bot') and self._bot:
+                await self._bot.send_message(alert_msg)
+        except Exception as e:
+            logger.warning(f"[COO] G7: 전쟁 시그널 갱신 실패 (무시): {e}")
+
         # ── g6_mode 경고 ──
         if self._g6_mode == "STALE":
             logger.warning("[COO] G7: STALE 데이터 — 선취매 주의")

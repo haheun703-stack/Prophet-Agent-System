@@ -177,6 +177,7 @@ class BrainReport:
     position_size_pct: int = 70
     position_size_reason: str = ""
     stock_narratives: list = field(default_factory=list)
+    war_signal: Dict = field(default_factory=dict)  # 전쟁/휴전 시그널
 
 
 # ═══════════════════════════════════════
@@ -1367,6 +1368,27 @@ def format_brain_telegram(report: BrainReport) -> str:
 
     lines.append("")
 
+    # Phase 5.5: 전쟁/휴전 시그널
+    try:
+        from data.war_signal import get_war_signal_for_brain
+        ws = get_war_signal_for_brain()
+        if ws and ws.get("level") != "UNKNOWN":
+            war_emoji = {"WAR_ONGOING": "🔴", "CEASEFIRE_WATCH": "🟡",
+                         "CEASEFIRE_LIKELY": "🟠", "CEASEFIRE_CONFIRMED": "🟢"
+                         }.get(ws["level"], "⚪")
+            axes = ws.get("axes", {})
+            ax_str = " ".join([
+                f"{'✅' if axes.get('oil') else '❌'}유가",
+                f"{'✅' if axes.get('vix') else '❌'}VIX",
+                f"{'✅' if axes.get('defense') else '❌'}방산",
+                f"{'✅' if axes.get('shipping') else '❌'}해운",
+            ])
+            lines.append(f"🪖 전쟁: {war_emoji} {ws['level_label']} ({ws['signals_met']}/4) | {ax_str}")
+            lines.append(f"  빅테크: {ws['bigtech_action']} | {ws['narrative']}")
+            lines.append("")
+    except Exception:
+        pass
+
     # Phase 6: 종합 판정
     lines.append(f"📋 종합: \"{report.overall_verdict}\"")
     lines.append(f"   투자 비중: {report.position_size_pct}% — {report.position_size_reason}")
@@ -1430,6 +1452,16 @@ def generate_brain_report() -> BrainReport:
     )
     logger.info(f"  [Phase 6] 판정: 비중 {pct}% | {verdict[:60]}")
 
+    # Phase 5.5: 전쟁/휴전 시그널
+    war_data = {}
+    try:
+        from data.war_signal import analyze_war_signal, get_war_signal_for_brain
+        ws_result = analyze_war_signal()
+        war_data = get_war_signal_for_brain()
+        logger.info(f"  [Phase 5.5] 전쟁: {war_data.get('level_label', '?')} ({war_data.get('signals_met', 0)}/4)")
+    except Exception as e:
+        logger.warning(f"  [Phase 5.5] 전쟁 시그널 수집 실패 (비차단): {e}")
+
     report = BrainReport(
         date=str(date.today()),
         generated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1442,6 +1474,7 @@ def generate_brain_report() -> BrainReport:
         position_size_pct=pct,
         position_size_reason=reason,
         stock_narratives=narratives,
+        war_signal=war_data,
     )
 
     logger.info("[Market Brain] 합성 완료")
