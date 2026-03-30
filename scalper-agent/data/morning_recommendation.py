@@ -1233,7 +1233,7 @@ def _step5_cross_validate(
                     tv_direct = 10     # 정상시장에서만 활용 (12→10 보수적)
                 elif _tv_sc >= 45:
                     tv_direct = 6      # (8→6 보수적)
-                sources.append("tv_early_acc")
+                sources.append(f"tv:EARLY_ACCUMULATION({_tv_sc:.0f})")
             elif _tv_pat == "GRADUAL_BUILDUP":
                 if _tv_sc >= 70:
                     tv_direct = 15

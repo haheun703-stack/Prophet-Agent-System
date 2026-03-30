@@ -274,6 +274,7 @@ class TradingCOO:
     # ─────────────────────────────────────────────
     def save_state(self):
         """그룹 상태를 coo_state.json에 원자적으로 저장."""
+        self.today = datetime.now().strftime("%Y-%m-%d")
         state = {
             "date": self.today,
             "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -318,6 +319,8 @@ class TradingCOO:
     # ─────────────────────────────────────────────
     def save_run_log(self):
         """실행 로그를 coo_run_log.json에 원자적으로 저장."""
+        # 자정 넘김 방지: 저장 시점의 실제 날짜 사용
+        self.today = datetime.now().strftime("%Y-%m-%d")
         log_data = {
             "date": self.today,
             "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1522,8 +1525,63 @@ class TradingCOO:
         # ── 그룹 상태 업데이트 ──
         self.update_group("G7", results)
 
+        # ── 전체 파이프라인 일일 리포트 (G7 완료 시 자동 발송) ──
+        try:
+            await self._send_daily_pipeline_report(context)
+        except Exception as e:
+            logger.warning(f"[COO] 일일 파이프라인 리포트 발송 실패: {e}")
+
         logger.info("[COO] ═══ G7 EVENING_BRAIN 완료 ═══")
         return results
+
+    # ─────────────────────────────────────────────
+    # 일일 파이프라인 리포트 (G7 완료 시 자동 발송)
+    # ─────────────────────────────────────────────
+    async def _send_daily_pipeline_report(self, context):
+        """G1~G7 전체 Stage 결과 요약 → 텔레그램 자동 발송."""
+        ok = 0
+        fail = 0
+        timeout = 0
+        fail_names = []
+
+        for gname, jobs in self.run_log.items():
+            for j in jobs:
+                s = j.get("success", False)
+                t = j.get("elapsed_sec", 0)
+                nm = j.get("name", "?")
+                if s:
+                    ok += 1
+                elif not s and isinstance(t, (int, float)) and t >= 290:
+                    timeout += 1
+                    fail_names.append(f"  {nm} (TIMEOUT {t:.0f}s)")
+                else:
+                    fail += 1
+                    fail_names.append(f"  {nm} (FAIL)")
+
+        total = ok + fail + timeout
+        icon = "✅" if fail == 0 and timeout == 0 else "⚠️" if timeout > 0 else "❌"
+
+        lines = [
+            f"{icon} COO 일일 파이프라인 리포트",
+            f"날짜: {self.today}",
+            f"총 {total}개 Stage: {ok} OK / {fail} FAIL / {timeout} TIMEOUT",
+        ]
+        if fail_names:
+            lines.append("")
+            lines.append("문제 Stage:")
+            lines.extend(fail_names)
+
+        msg = "\n".join(lines)
+
+        # 텔레그램 발송
+        if self.bot and hasattr(self.bot, "chat_id") and self.bot.chat_id:
+            try:
+                await context.bot.send_message(
+                    chat_id=self.bot.chat_id, text=msg)
+            except Exception as e:
+                logger.warning(f"[COO] 리포트 텔레그램 발송 실패: {e}")
+
+        logger.info(f"[COO] 일일 리포트: {ok}OK/{fail}FAIL/{timeout}TIMEOUT")
 
     # ─────────────────────────────────────────────
     # C19: FLOWX VIP 스윙 업로드
