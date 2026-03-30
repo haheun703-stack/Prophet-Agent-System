@@ -2769,23 +2769,81 @@ class BodyHunterBot:
             logger.error(f"체결 폴링 에러: {e}")
 
     async def _job_collect_minutes(self, context):
-        """장마감 후 분봉 수집 + 수급 분석 (15:40) — Silent: 로그만"""
+        """장마감 후 분봉 수집 + 수급 분석 (15:10) — 추천+보유+TV감지 종목만
+
+        전체 유니버스(2400+)는 KIS API rate limit 때문에 ~19시간 소요 → 불가.
+        핵심 종목만 수집: 추천(~8) + 보유(~5) + TV감지(~30) + MACD(~15) = ~50종목
+        → 약 3~5분 완료 가능.
+        """
         from datetime import date
         if not is_trading_day():
             return
-        logger.info("분봉 자동 수집 시작...")
+        logger.info("분봉 수집 시작 (핵심 종목)...")
         try:
             from data.kis_collector import collect_today_minutes, UNIVERSE
-            results = await asyncio.to_thread(collect_today_minutes)
-            log_event("COLLECT", f"분봉 수집 {len(results)}/{len(UNIVERSE)}종목")
-            logger.info(f"분봉 수집 완료: {len(results)}/{len(UNIVERSE)}종목 (로그만)")
+            import json as _json
+
+            # 핵심 종목 수집 대상 (중복 제거)
+            target_codes = set()
+            store = Path(__file__).resolve().parent.parent / "data_store"
+
+            # 1) 추천 종목
+            try:
+                rec = _json.loads((store / "recommendation.json").read_text("utf-8"))
+                for s in rec.get("stocks", []):
+                    code = s.get("code", "")
+                    if code:
+                        target_codes.add(code)
+            except Exception:
+                pass
+
+            # 2) 보유 종목
+            if hasattr(self, "auto_trader") and self.auto_trader:
+                try:
+                    for code in self.auto_trader.active_positions:
+                        target_codes.add(code)
+                except Exception:
+                    pass
+
+            # 3) TV 스캐너 감지 종목 (거래대금 이상)
+            try:
+                tv = _json.loads((store / "tv_scanner.json").read_text("utf-8"))
+                for item in (tv if isinstance(tv, list) else tv.get("stocks", [])):
+                    code = item.get("code", "") if isinstance(item, dict) else ""
+                    if code:
+                        target_codes.add(code)
+            except Exception:
+                pass
+
+            # 4) MACD 워치리스트
+            try:
+                macd = _json.loads((store / "macd_watchlist.json").read_text("utf-8"))
+                for item in (macd if isinstance(macd, list) else macd.get("stocks", [])):
+                    code = item.get("code", "") if isinstance(item, dict) else ""
+                    if code:
+                        target_codes.add(code)
+            except Exception:
+                pass
+
+            target_codes.discard("")
+            # 유니버스에 있는 종목만 필터
+            valid_codes = [c for c in target_codes if c in UNIVERSE]
+            logger.info(f"분봉 수집 대상: {len(valid_codes)}종목 (추천+보유+TV+MACD)")
+
+            if not valid_codes:
+                logger.warning("분봉 수집 대상 없음 — 스킵")
+                return
+
+            results = await asyncio.to_thread(collect_today_minutes, valid_codes)
+            log_event("COLLECT", f"분봉 수집 {len(results)}/{len(valid_codes)}종목")
+            logger.info(f"분봉 수집 완료: {len(results)}/{len(valid_codes)}종목")
 
             try:
                 from data.minute_supply_analyzer import analyze_minute_supply
                 signals = await asyncio.to_thread(
                     analyze_minute_supply, target_date=None, universe=UNIVERSE, top_n=20,
                 )
-                logger.info(f"수급 분석 완료: {len(signals or [])}종목 (로그만)")
+                logger.info(f"수급 분석 완료: {len(signals or [])}종목")
             except Exception as e:
                 logger.error(f"수급 분석 실패: {e}")
         except Exception as e:
