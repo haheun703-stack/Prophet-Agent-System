@@ -72,7 +72,7 @@ class RecommendedStock:
     regime_detail: str = ""            # "VOL2.5x+기관5D"
     # 거래대금 폭발 스캐너
     tv_ratio: float = 1.0             # 거래대금 비율 (20일 평균 대비)
-    tv_pattern: str = "NORMAL"        # EXPLOSION / QUIET_ACCUMULATION / GRADUAL_BUILDUP
+    tv_pattern: str = "NORMAL"        # EXPLOSION / QUIET_ACCUMULATION / EARLY_ACCUMULATION / GRADUAL_BUILDUP
     tv_score: float = 0.0             # TV 스캐너 점수 (0~100)
 
 
@@ -1223,6 +1223,13 @@ def _step5_cross_validate(
                     tv_direct = 20
                 elif _tv_sc >= 60:
                     tv_direct = 12
+            elif _tv_pat == "EARLY_ACCUMULATION":
+                # 선제 감지 — 아직 확정 아니지만 1일 앞서 포착
+                if _tv_sc >= 60:
+                    tv_direct = 12     # QA보다 낮지만 존재감 부여
+                elif _tv_sc >= 45:
+                    tv_direct = 8
+                sources.append("tv_early_acc")
             elif _tv_pat == "GRADUAL_BUILDUP":
                 if _tv_sc >= 70:
                     tv_direct = 15
@@ -1388,7 +1395,7 @@ def _step5_cross_validate(
     _cluster_map = tv_cluster_map or {}
     tv_only_picks = []
     for c in candidates[8:]:  # TOP 8 밖의 후보들
-        if c.tv_score >= 65 and c.tv_pattern in ("QUIET_ACCUMULATION", "EXPLOSION", "GRADUAL_BUILDUP"):
+        if c.tv_score >= 65 and c.tv_pattern in ("QUIET_ACCUMULATION", "EXPLOSION", "EARLY_ACCUMULATION", "GRADUAL_BUILDUP"):
             tv_only_picks.append(c)
 
     if tv_only_picks:
@@ -3524,7 +3531,7 @@ def run_war_mode_recommendation() -> RecommendationReport:
                 s.tv_pattern = tv.get("pattern", "NORMAL")
                 s.tv_score = tv.get("score", 0.0)
                 # 전쟁모드 TV 부스트 (최대 +5점)
-                if tv.get("pattern") in ("QUIET_ACCUMULATION", "EXPLOSION"):
+                if tv.get("pattern") in ("QUIET_ACCUMULATION", "EXPLOSION", "EARLY_ACCUMULATION"):
                     tv_boost = min(tv.get("score", 0) * 0.05, 5)
                     s.total_score += tv_boost
 

@@ -144,7 +144,16 @@ def _calc_tv_metrics(code: str) -> Optional[dict]:
 
 
 def _classify_pattern(tv_ratio: float, change_pct: float, tv_5d_trend: float) -> str:
-    """패턴 분류"""
+    """패턴 분류
+
+    시그널 지연 개선(v2): EARLY_ACCUMULATION 패턴 추가
+    기존: 2.0x 이상에서 QUIET_ACCUMULATION 감지 → 이미 2일째
+    개선: 1.3x~2.0x + 가격안정 → EARLY_ACCUMULATION (1일 선제 감지)
+
+    타임라인 비교:
+      기존: Day0 1.3x(NORMAL) → Day1 2.0x(QA감지) → Day2 아침 알림 → 이미 늦음
+      개선: Day0 1.3x(EA감지!) → Day1 아침 알림 → 1일 먼저 포착
+    """
     abs_change = abs(change_pct)
 
     # EXPLOSION: 거래대금 급증 + 가격도 크게 변동 (먼저 체크하여 QUIET_ACC와 겹침 방지)
@@ -158,6 +167,11 @@ def _classify_pattern(tv_ratio: float, change_pct: float, tv_5d_trend: float) ->
     # EXPLOSION(순수): 거래대금 급증이지만 가격 미분류 (위에서 안 걸린 나머지)
     if tv_ratio >= 3.0:
         return "EXPLOSION"
+
+    # EARLY_ACCUMULATION: 초기 매집 감지 — 1일 선제 포착
+    # 거래대금 1.3~2.0x + 가격 ±2% 이내 = 누군가 조용히 모으기 시작
+    if tv_ratio >= 1.3 and abs_change <= 2.0:
+        return "EARLY_ACCUMULATION"
 
     # GRADUAL_BUILDUP: 서서히 증가 (5일 추세)
     if tv_5d_trend > 0.15 and tv_ratio >= 1.5:
@@ -342,6 +356,7 @@ def save_tv_results(signals: list[TVSignal], path: Path = None):
         "patterns": {
             "EXPLOSION": sum(1 for s in signals if s.pattern == "EXPLOSION"),
             "QUIET_ACCUMULATION": sum(1 for s in signals if s.pattern == "QUIET_ACCUMULATION"),
+            "EARLY_ACCUMULATION": sum(1 for s in signals if s.pattern == "EARLY_ACCUMULATION"),
             "GRADUAL_BUILDUP": sum(1 for s in signals if s.pattern == "GRADUAL_BUILDUP"),
         },
         "signals": [asdict(s) for s in signals],
@@ -396,6 +411,7 @@ _PERSISTENCE_TABLE = {
     ("QUIET_ACCUMULATION", 80):  {1: 18, 2: 12, 3: 5},
     ("QUIET_ACCUMULATION", 70):  {1: 12, 2: 6,  3: 3},
     ("GRADUAL_BUILDUP", 70):     {1: 8,  2: 4,  3: 2},
+    ("EARLY_ACCUMULATION", 50):  {1: 10, 2: 5,  3: 2},  # 초기 매집 → 다음날 관찰 강화
 }
 
 
@@ -900,6 +916,7 @@ def _print_signals(signals: list[TVSignal], top: int = 0, pattern_filter: str = 
     _PATTERN_ICON = {
         "EXPLOSION": "BOOM",
         "QUIET_ACCUMULATION": "SILENT",
+        "EARLY_ACCUMULATION": "EARLY",
         "GRADUAL_BUILDUP": "TREND",
     }
 
@@ -923,7 +940,7 @@ def _print_signals(signals: list[TVSignal], top: int = 0, pattern_filter: str = 
 
     print(f"\n{'='*78}")
     print(f"  패턴 분포:")
-    for p in ["QUIET_ACCUMULATION", "EXPLOSION", "GRADUAL_BUILDUP"]:
+    for p in ["QUIET_ACCUMULATION", "EARLY_ACCUMULATION", "EXPLOSION", "GRADUAL_BUILDUP"]:
         cnt = sum(1 for s in signals if s.pattern == p)
         if cnt > 0:
             print(f"    {p}: {cnt}개")

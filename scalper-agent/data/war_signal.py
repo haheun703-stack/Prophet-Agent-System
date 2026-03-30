@@ -51,8 +51,13 @@ TICKERS = {
     "lmt":     "LMT",        # Lockheed Martin
     "rtx":     "RTX",        # RTX (Raytheon)
     "noc":     "NOC",        # Northrop Grumman
-    "bdi":     "BDRY",       # Breakwave Dry Bulk Shipping ETF (BDI 프록시)
+    "bdry":    "BDRY",       # Breakwave Dry Bulk Shipping ETF (BDI 프록시)
+    "bwet":    "BWET",       # Breakwave Tanker Shipping ETF (탱커 프록시)
 }
+
+# 탱커 vs 벌크 다이버전스 기준
+TANKER_DROP_PCT = -15.0     # BWET 피크 대비 15% 하락 → 호르무즈 해소
+BULK_RISE_PCT = 10.0         # BDRY 저점 대비 10% 상승 → 무역 정상화
 
 # 빅테크 ETF 후보 (CEASEFIRE 시 NXT 추가)
 BIGTECH_CANDIDATES = [
@@ -63,6 +68,31 @@ BIGTECH_CANDIDATES = [
     {"code": "QQQ", "name": "Invesco QQQ Trust", "type": "index",
      "note": "나스닥100, 가장 안전한 빅테크 노출"},
 ]
+
+# ═══════════════════════════════════════════
+#  한국 해운 관련주 워치리스트
+# ═══════════════════════════════════════════
+KOREA_SHIPPING_WATCHLIST = {
+    "tanker": [
+        {"code": "005880", "name": "대한해운", "note": "벌크+탱커 혼합, 유조선 보유"},
+        {"code": "028670", "name": "팬오션", "note": "벌크 1위 + 탱커 일부, BDI 민감"},
+        {"code": "044450", "name": "KSS해운", "note": "LPG/케미컬탱커 전문"},
+        {"code": "004020", "name": "현대미포조선", "note": "중형 탱커 건조, 수주잔고 호조"},
+    ],
+    "bulk": [
+        {"code": "028670", "name": "팬오션", "note": "벌크 1위, BDI 상관계수 0.8+"},
+        {"code": "005880", "name": "대한해운", "note": "벌크 운송 비중 高"},
+        {"code": "011200", "name": "HMM", "note": "컨테이너+벌크, 해운 대장주"},
+    ],
+    "shipbuilding": [
+        {"code": "009540", "name": "HD한국조선해양", "note": "세계 1위, LNG+탱커 수주"},
+        {"code": "042660", "name": "한화오션", "note": "해군 함정+상선, 방산 연동"},
+        {"code": "010140", "name": "삼성중공업", "note": "LNG선 + 해양플랜트"},
+    ],
+    "lng_carrier": [
+        {"code": "017960", "name": "한국카본", "note": "LNG 보냉재 독점, LNG선 수주 연동"},
+    ],
+}
 
 
 # ═══════════════════════════════════════════
@@ -88,9 +118,18 @@ class WarSignalResult:
     defense_detail: str = ""
     defense_data: Dict = field(default_factory=dict)
 
-    shipping_signal: bool = False  # BDI -20%+?
+    shipping_signal: bool = False  # 탱커↓ + 벌크↑ 다이버전스?
     shipping_current: float = 0.0
     shipping_detail: str = ""
+
+    # 탱커 vs 벌크 상세 추적
+    tanker_current: float = 0.0    # BWET 현재가
+    tanker_peak: float = 0.0       # BWET 60일 피크
+    tanker_chg_pct: float = 0.0    # BWET 피크 대비 변동률
+    bulk_current: float = 0.0      # BDRY 현재가
+    bulk_trough: float = 0.0       # BDRY 60일 저점
+    bulk_chg_pct: float = 0.0      # BDRY 저점 대비 변동률
+    tanker_bulk_divergence: str = ""  # 다이버전스 해석
 
     # 종합 판정
     signals_met: int = 0
@@ -223,23 +262,79 @@ def _check_defense(result: WarSignalResult) -> None:
 
 
 def _check_shipping(result: WarSignalResult) -> None:
-    """축4: 해운 정상화 감지 (BDRY ETF = BDI 프록시)."""
-    closes = _fetch_ticker_history(TICKERS["bdi"], 60)
-    if not closes or len(closes) < 10:
-        result.shipping_detail = "BDRY 데이터 수집 실패"
+    """축4: 해운 다이버전스 감지 (탱커 BWET ↓ + 벌크 BDRY ↑ = 호르무즈 해소).
+
+    전쟁 중: 탱커(BWET) ↑↑↑ (호르무즈 프리미엄) + 벌크(BDRY) ↓ (무역 위축)
+    휴전 시: 탱커(BWET) ↓↓↓ (프리미엄 소멸) + 벌크(BDRY) ↑ (무역 정상화)
+    → 이 다이버전스 반전이 가장 강력한 휴전 시그널
+    """
+    # ── 탱커 (BWET) 수집 ──
+    tanker_closes = _fetch_ticker_history(TICKERS["bwet"], 60)
+    tanker_ok = False
+    if tanker_closes and len(tanker_closes) >= 10:
+        tanker_ok = True
+        result.tanker_current = round(tanker_closes[-1], 2)
+        result.tanker_peak = round(max(tanker_closes), 2)
+        result.tanker_chg_pct = round(
+            ((tanker_closes[-1] - result.tanker_peak) / result.tanker_peak) * 100, 1
+        )
+
+    # ── 벌크 (BDRY) 수집 ──
+    bulk_closes = _fetch_ticker_history(TICKERS["bdry"], 60)
+    bulk_ok = False
+    if bulk_closes and len(bulk_closes) >= 10:
+        bulk_ok = True
+        result.bulk_current = round(bulk_closes[-1], 2)
+        result.bulk_trough = round(min(bulk_closes), 2)
+        result.bulk_chg_pct = round(
+            ((bulk_closes[-1] - result.bulk_trough) / result.bulk_trough) * 100, 1
+        ) if result.bulk_trough > 0 else 0.0
+
+    # ── 다이버전스 판정 ──
+    if not tanker_ok and not bulk_ok:
+        result.shipping_detail = "BWET/BDRY 모두 수집 실패"
         return
 
-    current = closes[-1]
-    peak_60d = max(closes)
-    result.shipping_current = round(current, 2)
+    # 기존 호환: shipping_current = BDRY 현재가
+    result.shipping_current = result.bulk_current
 
-    drop_pct = ((current - peak_60d) / peak_60d) * 100
+    # 탱커 하락 시그널 (피크 대비 -15%+)
+    tanker_dropping = tanker_ok and result.tanker_chg_pct <= TANKER_DROP_PCT
+    # 벌크 상승 시그널 (저점 대비 +10%+)
+    bulk_rising = bulk_ok and result.bulk_chg_pct >= BULK_RISE_PCT
 
-    if drop_pct <= SHIPPING_DROP_PCT:
+    # 다이버전스 해석
+    if tanker_dropping and bulk_rising:
         result.shipping_signal = True
-        result.shipping_detail = f"BDRY ${current:.1f} (60일 피크 대비 {drop_pct:.1f}%, 해운 정상화)"
+        result.tanker_bulk_divergence = "CEASEFIRE_REVERSAL"
+        result.shipping_detail = (
+            f"해운 다이버전스 반전! "
+            f"BWET ${result.tanker_current} ({result.tanker_chg_pct:+.1f}% 피크), "
+            f"BDRY ${result.bulk_current} ({result.bulk_chg_pct:+.1f}% 저점) "
+            f"→ 호르무즈 해소 시그널"
+        )
+    elif tanker_dropping:
+        result.shipping_signal = True  # 탱커 급락만으로도 시그널
+        result.tanker_bulk_divergence = "TANKER_UNWINDING"
+        result.shipping_detail = (
+            f"탱커 프리미엄 해소 중! "
+            f"BWET ${result.tanker_current} ({result.tanker_chg_pct:+.1f}% 피크), "
+            f"BDRY ${result.bulk_current} ({result.bulk_chg_pct:+.1f}% 저점)"
+        )
+    elif bulk_rising:
+        result.tanker_bulk_divergence = "BULK_RECOVERING"
+        result.shipping_detail = (
+            f"벌크 회복 중 (탱커는 유지): "
+            f"BWET ${result.tanker_current} ({result.tanker_chg_pct:+.1f}% 피크), "
+            f"BDRY ${result.bulk_current} ({result.bulk_chg_pct:+.1f}% 저점)"
+        )
     else:
-        result.shipping_detail = f"BDRY ${current:.1f} (60일 피크 대비 {drop_pct:.1f}%)"
+        result.tanker_bulk_divergence = "WAR_PREMIUM_ACTIVE"
+        result.shipping_detail = (
+            f"전쟁 프리미엄 유지: "
+            f"BWET ${result.tanker_current} ({result.tanker_chg_pct:+.1f}% 피크), "
+            f"BDRY ${result.bulk_current} ({result.bulk_chg_pct:+.1f}% 저점)"
+        )
 
 
 # ═══════════════════════════════════════════
@@ -386,6 +481,36 @@ def get_war_signal_for_brain() -> Dict:
             "defense": result.defense_signal,
             "shipping": result.shipping_signal,
         },
+        "shipping_detail": {
+            "tanker_bwet": result.tanker_current,
+            "tanker_peak_chg": result.tanker_chg_pct,
+            "bulk_bdry": result.bulk_current,
+            "bulk_trough_chg": result.bulk_chg_pct,
+            "divergence": result.tanker_bulk_divergence,
+        },
+    }
+
+
+def get_korea_shipping_watchlist() -> Dict:
+    """한국 해운 관련주 워치리스트 반환.
+
+    전쟁 중 → tanker/shipbuilding 유리
+    휴전 시 → bulk 반등 + tanker 하락
+    """
+    result = load_cached_war_signal()
+    action_map = {
+        "WAR_ONGOING":         {"favor": "tanker", "avoid": "bulk", "note": "전쟁 지속 → 탱커주 유리, 벌크 약세"},
+        "CEASEFIRE_WATCH":     {"favor": "tanker", "avoid": None, "note": "해소 조짐 → 탱커 유지, 벌크 관심"},
+        "CEASEFIRE_LIKELY":    {"favor": "bulk", "avoid": "tanker", "note": "휴전 가능 → 벌크 매수, 탱커 익절 준비"},
+        "CEASEFIRE_CONFIRMED": {"favor": "bulk", "avoid": "tanker", "note": "휴전 확인 → 벌크 적극 매수, 탱커 매도"},
+    }
+    level = result.level if result else "WAR_ONGOING"
+    action = action_map.get(level, action_map["WAR_ONGOING"])
+
+    return {
+        "level": level,
+        "action": action,
+        "watchlist": KOREA_SHIPPING_WATCHLIST,
     }
 
 
@@ -430,6 +555,23 @@ def format_war_signal_alert(result: WarSignalResult) -> Optional[str]:
         "",
         f"빅테크 액션: {result.bigtech_action}",
     ]
+
+    # 탱커/벌크 다이버전스 상세
+    if result.tanker_current or result.bulk_current:
+        lines.append("")
+        lines.append("📦 탱커 vs 벌크:")
+        if result.tanker_current:
+            lines.append(f"  BWET(탱커) ${result.tanker_current} ({result.tanker_chg_pct:+.1f}% 피크)")
+        if result.bulk_current:
+            lines.append(f"  BDRY(벌크) ${result.bulk_current} ({result.bulk_chg_pct:+.1f}% 저점)")
+        if result.tanker_bulk_divergence:
+            div_labels = {
+                "WAR_PREMIUM_ACTIVE": "전쟁 프리미엄 유지",
+                "BULK_RECOVERING": "벌크 회복 중",
+                "TANKER_UNWINDING": "탱커 프리미엄 해소",
+                "CEASEFIRE_REVERSAL": "다이버전스 반전! (강한 해소 시그널)",
+            }
+            lines.append(f"  → {div_labels.get(result.tanker_bulk_divergence, result.tanker_bulk_divergence)}")
 
     if result.bigtech_candidates:
         lines.append("")
