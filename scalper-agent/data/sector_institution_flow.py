@@ -133,7 +133,7 @@ def _read_investor_csv(code: str, days: int = 5) -> List[dict]:
             reader = csv.reader(f)
             header = next(reader)  # 첫 줄 스킵
             for row in reader:
-                if len(row) < 10:
+                if len(row) < 9:
                     continue
                 rows.append(row)
 
@@ -143,10 +143,10 @@ def _read_investor_csv(code: str, days: int = 5) -> List[dict]:
         for row in recent:
             try:
                 date_str = row[0].strip()
-                # 수량 기반 계산 (금액 컬럼 단위 변경에 안전)
-                inst_qty = _safe_float(row[5])     # 기관_수량
-                foreign_qty = _safe_float(row[8])  # 외국인_수량
-                close = _safe_float(row[9])        # 종가
+                # CSV: date,종가,전일대비,외국인_수량,기관_수량,개인_수량,외국인_금액,기관_금액,개인_금액
+                close = _safe_float(row[1])        # 종가
+                inst_qty = _safe_float(row[4])     # 기관_수량
+                foreign_qty = _safe_float(row[3])  # 외국인_수량
 
                 if close > 0:
                     # 수량 × 종가 → 억원

@@ -1498,11 +1498,7 @@ class TradingCOO:
                 self.bot._job_etf_flow(context),
             ))
 
-        # C22: FLOWX 퀀트 대시보드 통합 업로드 (5개 테이블)
-        stage3_jobs.append((
-            "C22_quant_dashboard",
-            self._job_quant_dashboard_upload(context),
-        ))
+        # C22: → Stage 3 이후 순차 실행 (C20/C21 완료 대기 필요)
 
         # C23: TRIX 다이버전스 사전 스캔 (다음날 모닝추천 캐시)
         stage3_jobs.append((
@@ -1521,6 +1517,16 @@ class TradingCOO:
             # C17 국적차트 TOP200 생성+업로드, C19 FLOWX 스윙 등 무거운 작업 포함
             s3 = await self.run_parallel_async(stage3_jobs, timeout_per_job=600)
             results.extend(s3)
+
+        # ── C22: 퀀트 대시보드 업로드 (C20/C21 완료 후 순차 실행) ──
+        try:
+            c22_result = await asyncio.wait_for(
+                self._job_quant_dashboard_upload(context), timeout=120
+            )
+            results.append({"name": "C22_quant_dashboard", "success": True, "result": c22_result, "elapsed_sec": 0})
+        except Exception as e:
+            logger.warning(f"[C22] 퀀트 대시보드 업로드 실패: {e}")
+            results.append({"name": "C22_quant_dashboard", "success": False, "error": str(e), "elapsed_sec": 0})
 
         # ── 그룹 상태 업데이트 ──
         self.update_group("G7", results)
