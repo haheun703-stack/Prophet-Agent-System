@@ -2094,6 +2094,12 @@ def run_evening_recommendation() -> RecommendationReport:
     # ── Step 5b-2: 섹터 기관 수급 부스트 (TIER2) ──
     try:
         from data.sector_institution_flow import get_sector_flow_boost
+        # code_to_sector 빌드 (_universe에서)
+        code_to_sector = {}
+        if '_universe' in dir():
+            for _c, _info in _universe.items():
+                if isinstance(_info, dict) and _info.get("sector"):
+                    code_to_sector[_c] = _info["sector"]
         inst_boost_count = 0
         for s in final_stocks:
             # 종목의 섹터 조회

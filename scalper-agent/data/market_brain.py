@@ -944,14 +944,14 @@ def _phase6_synthesis(
     if pts != 0:
         dir_kr = {"STRONG_BULL": "강세", "BULL": "약강세", "NEUTRAL": "중립",
                   "BEAR": "약세", "STRONG_BEAR": "강약세"}
-        reasons.append(f"매크로{dir_kr.get(macro.direction, '')}({pts:+d})")
+        reasons.append(f"매크로{dir_kr.get(macro.direction, '')}({int(pts):+d})")
 
     # 2. 리스크 조정
     risk_adj = {"LOW": 0, "MEDIUM": -10, "HIGH": -30, "EXTREME": -50}
     r_pts = risk_adj.get(risk.risk_level, 0)
     score += r_pts
     if r_pts < 0:
-        reasons.append(f"리스크{risk.risk_level}({r_pts:+d})")
+        reasons.append(f"리스크{risk.risk_level}({int(r_pts):+d})")
 
     # 3. 섹터 보너스
     hot_early = [s for s in sector.hot_sectors if s.get("cycle_position") == "초기"]
@@ -998,7 +998,7 @@ def _phase6_synthesis(
     n_cont = len(macro.contradictions)
     if n_cont > 0:
         score -= n_cont * 5
-        reasons.append(f"모순{n_cont}건({-n_cont*5:+d})")
+        reasons.append(f"모순{n_cont}건({int(-n_cont*5):+d})")
 
     # 7. 지수 기술적 분석 (FIX-05)
     if index_tech:
@@ -1131,7 +1131,7 @@ def _phase6_synthesis(
     except Exception:
         pass
 
-    size_reason = f"{label}({score:+d}) — " + " | ".join(reasons)
+    size_reason = f"{label}({int(round(score)):+d}) — " + " | ".join(reasons)
 
     # ── 종합 판정 문장 ──
     dir_kr = {"STRONG_BULL": "강세", "BULL": "약강세", "NEUTRAL": "중립",
