@@ -1410,12 +1410,13 @@ class TradingCOO:
             results.append(r12)
 
         # C13: ★ 이브닝 분석 (CRITICAL)
+        # 추천 파이프라인: Step1~5 합계 ~10분 (뉴스AI 120s + 사전감지 111s + Scoring 200s+)
         c13_ok = False
         if self.auto_trader:
             r13 = await self.run_job_safe_async(
                 "C13_evening_analysis",
                 self.auto_trader.job_evening_analysis(context),
-                timeout=600,
+                timeout=900,
             )
             results.append(r13)
             c13_ok = r13.success
@@ -1514,7 +1515,8 @@ class TradingCOO:
             ))
 
         if stage3_jobs:
-            s3 = await self.run_parallel_async(stage3_jobs, timeout_per_job=300)
+            # C17 국적차트 TOP200 생성+업로드, C19 FLOWX 스윙 등 무거운 작업 포함
+            s3 = await self.run_parallel_async(stage3_jobs, timeout_per_job=600)
             results.extend(s3)
 
         # ── 그룹 상태 업데이트 ──
@@ -1711,7 +1713,7 @@ class TradingCOO:
             r = await self.run_job_safe_async(
                 "C13_evening_analysis_retry",
                 self.auto_trader.job_evening_analysis(context),
-                timeout=600,
+                timeout=900,
             )
             if r.success:
                 logger.info("[COO] FALLBACK-C13: 재시도 성공!")

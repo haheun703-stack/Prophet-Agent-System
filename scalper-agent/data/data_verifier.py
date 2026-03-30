@@ -553,6 +553,17 @@ class DataVerifier:
             f"[DataVerifier] {status} — {passed}/{total} PASS, "
             f"CRITICAL FAIL: {critical_failures or 'none'}"
         )
+
+        # ── 결과 파일 자동 저장 (atomic write) ──
+        out_path = STORE_DIR / "data_verify_result.json"
+        tmp_path = out_path.with_suffix(".tmp")
+        try:
+            tmp_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp_path.replace(out_path)
+            logger.info(f"[DataVerifier] 결과 저장: {out_path}")
+        except Exception as e:
+            logger.warning(f"[DataVerifier] 결과 저장 실패: {e}")
+
         return result
 
     def get_failed_retry_jobs(self, result: dict) -> List[str]:
