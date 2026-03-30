@@ -2808,7 +2808,8 @@ class BodyHunterBot:
             # 3) TV 스캐너 감지 종목 (거래대금 이상)
             try:
                 tv = _json.loads((store / "tv_scanner.json").read_text("utf-8"))
-                for item in (tv if isinstance(tv, list) else tv.get("stocks", [])):
+                tv_list = tv if isinstance(tv, list) else tv.get("signals", tv.get("stocks", []))
+                for item in tv_list:
                     code = item.get("code", "") if isinstance(item, dict) else ""
                     if code:
                         target_codes.add(code)
@@ -2818,7 +2819,8 @@ class BodyHunterBot:
             # 4) MACD 워치리스트
             try:
                 macd = _json.loads((store / "macd_watchlist.json").read_text("utf-8"))
-                for item in (macd if isinstance(macd, list) else macd.get("stocks", [])):
+                macd_list = macd if isinstance(macd, list) else macd.get("watchlist", macd.get("stocks", []))
+                for item in macd_list:
                     code = item.get("code", "") if isinstance(item, dict) else ""
                     if code:
                         target_codes.add(code)
@@ -2840,10 +2842,12 @@ class BodyHunterBot:
 
             try:
                 from data.minute_supply_analyzer import analyze_minute_supply
+                # 수집된 종목만 수급 분석 (분봉 없는 종목은 CSV glob에서 자동 스킵)
+                collected_uni = {c: UNIVERSE[c] for c in results if c in UNIVERSE}
                 signals = await asyncio.to_thread(
-                    analyze_minute_supply, target_date=None, universe=UNIVERSE, top_n=20,
+                    analyze_minute_supply, target_date=None, universe=collected_uni, top_n=20,
                 )
-                logger.info(f"수급 분석 완료: {len(signals or [])}종목")
+                logger.info(f"수급 분석 완료: {len(signals or [])}/{len(collected_uni)}종목")
             except Exception as e:
                 logger.error(f"수급 분석 실패: {e}")
         except Exception as e:

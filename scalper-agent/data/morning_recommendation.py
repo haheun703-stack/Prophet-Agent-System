@@ -1225,10 +1225,14 @@ def _step5_cross_validate(
                     tv_direct = 12
             elif _tv_pat == "EARLY_ACCUMULATION":
                 # 선제 감지 — 아직 확정 아니지만 1일 앞서 포착
-                if _tv_sc >= 60:
-                    tv_direct = 12     # QA보다 낮지만 존재감 부여
+                # 백테스트: PANIC(3/25→3/27) 승률 0% → PANIC/SHOCK에서는 무력화
+                _cortex = regime_info.get("regime", "NORMAL") if regime_info else "NORMAL"
+                if _cortex in ("PANIC", "SHOCK"):
+                    tv_direct = 0  # 하락장에서 EA는 노이즈
+                elif _tv_sc >= 60:
+                    tv_direct = 10     # 정상시장에서만 활용 (12→10 보수적)
                 elif _tv_sc >= 45:
-                    tv_direct = 8
+                    tv_direct = 6      # (8→6 보수적)
                 sources.append("tv_early_acc")
             elif _tv_pat == "GRADUAL_BUILDUP":
                 if _tv_sc >= 70:
