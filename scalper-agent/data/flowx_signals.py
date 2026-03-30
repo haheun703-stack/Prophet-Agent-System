@@ -548,9 +548,6 @@ def _upsert_scoreboard(client, board: dict):
     try:
         # Supabase 스키마에 없는 컬럼 제거 (recent_closed 미존재)
         payload = {k: v for k, v in board.items() if k != "recent_closed"}
-        # scoreboard 테이블 트리거가 updated_at 참조 → 명시적 포함
-        from datetime import datetime, timezone
-        payload["updated_at"] = datetime.now(timezone.utc).isoformat()
         client.table("scoreboard").upsert(
             [payload], on_conflict="bot_type,period"
         ).execute()
