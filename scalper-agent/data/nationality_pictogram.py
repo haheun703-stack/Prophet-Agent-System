@@ -497,9 +497,16 @@ def generate_charts_batch(
 
             total_shares = get_total_shares(code, close_price)
 
-            # 날짜 정보 추출 (compare_nationality 내부에서 자동 결정)
-            from data.nationality_signal import _get_latest_data_date, _find_prev_trading_day
+            # 날짜 정보 추출 (파일 기반 fallback 포함)
+            from data.nationality_signal import (
+                _get_latest_data_date, _find_prev_trading_day,
+                _find_latest_snapshot_date,
+            )
             date_new = _get_latest_data_date()
+            # G6(16:30 T-1 수집) vs G7 NatChart(21:00 T 조회) 날짜 불일치 방지
+            fallback = _find_latest_snapshot_date()
+            if fallback and fallback != date_new:
+                date_new = fallback
             date_old = _find_prev_trading_day(date_new) if date_new else ""
 
             chart = generate_pictogram_chart(

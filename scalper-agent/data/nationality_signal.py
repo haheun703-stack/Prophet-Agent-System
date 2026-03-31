@@ -95,6 +95,21 @@ def _find_prev_trading_day(date_str: str, max_lookback: int = 7) -> Optional[str
     return None
 
 
+def _find_latest_snapshot_date(max_lookback: int = 7) -> Optional[str]:
+    """nationality/ 디렉토리에서 가장 최신 스냅샷 날짜 찾기 (파일 기반)
+
+    _get_latest_data_date()와 실제 수집 날짜가 다를 때 fallback으로 사용.
+    예: G6이 16:30(T-1)에 수집, G7 NatChart가 21:00(T)에 조회 → 날짜 불일치.
+    """
+    today = datetime.now()
+    for i in range(max_lookback):
+        d = (today - timedelta(days=i)).strftime("%Y%m%d")
+        snapshots = list(DATA_DIR.glob(f"*_{d}.csv"))
+        if len(snapshots) >= 5:  # 최소 5종목 이상 있어야 유효한 수집일
+            return d
+    return None
+
+
 # ═══════════════════════════════════════════
 # KRX 데이터 수집 (단일일 + 스냅샷 저장)
 # ═══════════════════════════════════════════
@@ -185,7 +200,15 @@ def compare_nationality(
 
     data_new = load_daily_snapshot(code, date_new)
     if not data_new:
-        return None
+        # Fallback: G6(16:30)이 T-1로 수집, G7 NatChart(21:00)가 T로 조회 → 불일치
+        # 실제 파일 기반으로 최신 날짜 재탐색
+        fallback_date = _find_latest_snapshot_date()
+        if fallback_date and fallback_date != date_new:
+            logger.debug(f"[국적] {code}: {date_new} 없음 → {fallback_date} fallback")
+            date_new = fallback_date
+            data_new = load_daily_snapshot(code, date_new)
+        if not data_new:
+            return None
 
     # 이전 영업일 스냅샷 찾기
     if not date_old:
