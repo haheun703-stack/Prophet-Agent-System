@@ -1544,10 +1544,10 @@ class TradingCOO:
             c22_result = await asyncio.wait_for(
                 self._job_quant_dashboard_upload(context), timeout=120
             )
-            results.append({"name": "C22_quant_dashboard", "success": True, "result": c22_result, "elapsed_sec": 0})
+            results.append(JobResult("C22_quant_dashboard", True, 0))
         except Exception as e:
             logger.warning(f"[C22] 퀀트 대시보드 업로드 실패: {e}")
-            results.append({"name": "C22_quant_dashboard", "success": False, "error": str(e), "elapsed_sec": 0})
+            results.append(JobResult("C22_quant_dashboard", False, 0, str(e)))
 
         # ── brain_report.json 갱신 safeguard ──
         # C13 실패 시에도 brain_report는 반드시 오늘 날짜로 갱신
