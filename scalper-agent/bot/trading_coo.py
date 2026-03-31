@@ -1565,6 +1565,12 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[COO] 일일 파이프라인 리포트 발송 실패: {e}")
 
+        # ── AUTO-RECOVERY: 핵심 파일 검증 + 실패 시 개별 복구 ──
+        try:
+            await self._post_g7_auto_recovery(context)
+        except Exception as e:
+            logger.error(f"[COO] AUTO-RECOVERY 실행 실패: {e}")
+
         logger.info("[COO] ═══ G7 EVENING_BRAIN 완료 ═══")
         return results
 
@@ -1872,6 +1878,200 @@ class TradingCOO:
                         f"{brain.regime} | 비중 {brain.position_size_pct}%")
         except Exception as e:
             logger.error(f"[COO] brain_report.json 독립 생성 실패: {e}")
+
+    # ─────────────────────────────────────────────
+    # G7 자동복구 시스템 (AUTO-RECOVERY)
+    # ─────────────────────────────────────────────
+    async def _post_g7_auto_recovery(self, context=None):
+        """G7 완료 후 핵심 데이터 파일 검증 + 실패 항목 자동 복구.
+
+        검증 대상 5개 (핵심 데이터만):
+        1. recommendation.json — 오늘 날짜 (C13)
+        2. brain_report.json   — 오늘 날짜 (C13 내부)
+        3. sector_flow.json    — 오늘 날짜 (C20)
+        4. etf_flow.json       — 오늘 날짜 (C21)
+        5. sector_momentum.json — 오늘 날짜 (C20 내부)
+
+        복구 전략: 개별 생성 함수를 직접 호출 (C13 전체 재실행 안 함)
+        """
+        import json
+        from pathlib import Path
+
+        logger.info("[COO] ══ AUTO-RECOVERY 시작 ══")
+
+        data_dir = Path(__file__).parent.parent / "data_store"
+        today = self.today  # "YYYY-MM-DD"
+
+        # ── 검증 대상 정의 ──
+        checks = [
+            {
+                "name": "recommendation.json",
+                "path": data_dir / "recommendation.json",
+                "date_key": "date",
+                "recover": self._recover_recommendation,
+            },
+            {
+                "name": "brain_report.json",
+                "path": data_dir / "brain_report.json",
+                "date_key": "date",
+                "recover": self._recover_brain_report,
+            },
+            {
+                "name": "sector_flow.json",
+                "path": data_dir / "sector_flow.json",
+                "date_key": "date",
+                "recover": self._recover_sector_flow,
+            },
+            {
+                "name": "etf_flow.json",
+                "path": data_dir / "etf_flow.json",
+                "date_key": "date",
+                "recover": self._recover_etf_flow,
+            },
+            {
+                "name": "sector_momentum.json",
+                "path": data_dir / "sector_momentum.json",
+                "date_key": "date",
+                "recover": self._recover_sector_momentum,
+            },
+        ]
+
+        # ── 1단계: 검증 ──
+        stale = []
+        fresh = []
+        for chk in checks:
+            ok = self._check_freshness(chk["path"], today, chk["date_key"])
+            if ok:
+                fresh.append(chk["name"])
+            else:
+                stale.append(chk)
+
+        logger.info(f"[AUTO-RECOVERY] 검증: {len(fresh)}개 정상 / "
+                     f"{len(stale)}개 미갱신")
+
+        if not stale:
+            logger.info("[AUTO-RECOVERY] 전체 정상 — 복구 불필요")
+            await self._send_recovery_alert(
+                context, fresh, [], [], "✅ 전체 정상")
+            return
+
+        # ── 2단계: 개별 복구 ──
+        recovered = []
+        failed = []
+        for chk in stale:
+            name = chk["name"]
+            logger.info(f"[AUTO-RECOVERY] {name} 복구 시도...")
+            try:
+                await chk["recover"]()
+                # 복구 후 재검증
+                if self._check_freshness(
+                        chk["path"], today, chk["date_key"]):
+                    recovered.append(name)
+                    logger.info(f"[AUTO-RECOVERY] {name} 복구 성공 ✅")
+                else:
+                    failed.append(name)
+                    logger.warning(
+                        f"[AUTO-RECOVERY] {name} 복구 실행됐지만 "
+                        f"여전히 미갱신 ❌")
+            except Exception as e:
+                failed.append(name)
+                logger.error(f"[AUTO-RECOVERY] {name} 복구 실패: {e}")
+
+        # ── 3단계: 결과 리포트 ──
+        if failed:
+            status = f"⚠️ {len(recovered)}복구 / {len(failed)}실패"
+        else:
+            status = f"✅ {len(recovered)}건 전량 복구"
+
+        logger.info(f"[AUTO-RECOVERY] 결과: {status}")
+        await self._send_recovery_alert(
+            context, fresh, recovered, failed, status)
+
+    def _check_freshness(self, path, today: str,
+                         date_key: str | None) -> bool:
+        """파일이 오늘 날짜인지 검증."""
+        import json
+        try:
+            if not path.exists():
+                return False
+
+            if date_key:
+                # JSON 내부 date 필드 확인
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                file_date = str(data.get(date_key, ""))
+                return file_date == today
+            else:
+                # mtime 기반 (당일 수정 여부)
+                import os
+                from datetime import datetime
+                mtime = os.path.getmtime(path)
+                file_date = datetime.fromtimestamp(mtime).strftime(
+                    "%Y-%m-%d")
+                return file_date == today
+        except Exception:
+            return False
+
+    async def _send_recovery_alert(self, context, fresh: list,
+                                   recovered: list, failed: list,
+                                   status: str):
+        """자동복구 결과 텔레그램 발송."""
+        lines = [
+            f"🔄 AUTO-RECOVERY 리포트",
+            f"날짜: {self.today}",
+            f"상태: {status}",
+            f"",
+            f"정상: {len(fresh)}개",
+        ]
+        if recovered:
+            lines.append(f"복구 성공: {', '.join(recovered)}")
+        if failed:
+            lines.append(f"❌ 복구 실패: {', '.join(failed)}")
+            lines.append(f"→ 수동 확인 필요!")
+
+        msg = "\n".join(lines)
+
+        if self.bot and hasattr(self.bot, "chat_id") and self.bot.chat_id:
+            try:
+                await context.bot.send_message(
+                    chat_id=self.bot.chat_id, text=msg)
+            except Exception as e:
+                logger.warning(
+                    f"[AUTO-RECOVERY] 텔레그램 발송 실패: {e}")
+
+        logger.info(f"[AUTO-RECOVERY] 리포트 발송 완료")
+
+    # ── 개별 복구 함수 ──
+
+    async def _recover_recommendation(self):
+        """recommendation.json 독립 복구 — 전체 이브닝 추천 파이프라인."""
+        from data.morning_recommendation import run_evening_recommendation
+        await asyncio.wait_for(
+            asyncio.to_thread(run_evening_recommendation),
+            timeout=1800,
+        )
+
+    async def _recover_brain_report(self):
+        """brain_report.json 독립 복구."""
+        from data.market_brain import generate_brain_report, save_brain_report
+        brain = await asyncio.to_thread(generate_brain_report)
+        await asyncio.to_thread(save_brain_report, brain)
+
+    async def _recover_sector_flow(self):
+        """sector_flow.json 독립 복구 — 분석+저장 내장."""
+        from data.sector_institution_flow import analyze_sector_flow
+        await asyncio.to_thread(analyze_sector_flow)
+
+    async def _recover_etf_flow(self):
+        """etf_flow.json 독립 복구 — 분석+저장 내장."""
+        from data.etf_fund_flow import analyze_etf_flow
+        await asyncio.to_thread(analyze_etf_flow)
+
+    async def _recover_sector_momentum(self):
+        """sector_momentum.json 독립 복구 — 분석+저장 내장."""
+        from data.sector_momentum import analyze_sectors
+        await asyncio.to_thread(analyze_sectors)
+
 
     # ═════════════════════════════════════════════
     # STEP 3-9: setup_schedule() — JobQueue 등록
