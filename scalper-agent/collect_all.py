@@ -103,11 +103,21 @@ def step2_supply_demand(codes: list, force: bool = False):
             collect_foreign_exhaustion,
             collect_short_balance,
             collect_short_volume,
+            _write_flow_marker,
         )
-        results["investor"] = len(collect_investor_flow(codes, 24, force))
-        results["foreign_exh"] = len(collect_foreign_exhaustion(codes, 24, force))
-        results["short_bal"] = len(collect_short_balance(codes, 24, force))
-        results["short_vol"] = len(collect_short_volume(codes, 24, force))
+        inv = collect_investor_flow(codes, 24, force)
+        fex = collect_foreign_exhaustion(codes, 24, force)
+        sbal = collect_short_balance(codes, 24, force)
+        svol = collect_short_volume(codes, 24, force)
+        results["investor"] = len(inv)
+        results["foreign_exh"] = len(fex)
+        results["short_bal"] = len(sbal)
+        results["short_vol"] = len(svol)
+        # AUTO-RECOVERY 검증용 마커 기록
+        _write_flow_marker({
+            "investor": inv, "foreign_exhaustion": fex,
+            "short_balance": sbal, "short_volume": svol,
+        })
         logger.info(f"[2/6] 수급 완료: {results} ({int(time.time()-t0)}초)")
     except Exception as e:
         logger.error(f"[2/6] 수급 실패: {e}")

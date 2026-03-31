@@ -1934,6 +1934,12 @@ class TradingCOO:
                 "date_key": "date",
                 "recover": self._recover_sector_momentum,
             },
+            {
+                "name": "investor_flow",
+                "path": data_dir / "flow" / "_last_update.json",
+                "date_key": "date",
+                "recover": self._recover_investor_flow,
+            },
         ]
 
         # ── 1단계: 검증 ──
@@ -2071,6 +2077,18 @@ class TradingCOO:
         """sector_momentum.json 독립 복구 — 분석+저장 내장."""
         from data.sector_momentum import analyze_sectors
         await asyncio.to_thread(analyze_sectors)
+
+    async def _recover_investor_flow(self):
+        """investor_flow 독립 복구 — KIS 토큰 재발급 + 수급 재수집.
+
+        flow_collector에 token.dat 자동 삭제 + 3회 재시도 로직이 있으므로
+        토큰 만료 시에도 자동 복구됨.
+        """
+        from data.flow_collector import collect_all_flow
+        await asyncio.wait_for(
+            asyncio.to_thread(collect_all_flow),
+            timeout=1200,  # 20분 (346종목 × 2세션)
+        )
 
 
     # ═════════════════════════════════════════════

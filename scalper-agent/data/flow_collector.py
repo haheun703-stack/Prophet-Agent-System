@@ -601,12 +601,38 @@ def collect_all_flow(
     print(f"  공매도 거래량: {len(short_vol)}종목")
     print(f"{'='*60}")
 
-    return {
+    result = {
         "investor": investor,
         "foreign_exhaustion": foreign_exh,
         "short_balance": short_bal,
         "short_volume": short_vol,
     }
+
+    # 수집 완료 마커 기록 → AUTO-RECOVERY 검증용
+    _write_flow_marker(result)
+
+    return result
+
+
+def _write_flow_marker(result: dict):
+    """수급 수집 완료 마커 파일 기록 (AUTO-RECOVERY 검증용)."""
+    import json
+    from datetime import date
+    marker = {
+        "date": date.today().strftime("%Y-%m-%d"),
+        "investor": len(result.get("investor", {})),
+        "foreign_exhaustion": len(result.get("foreign_exhaustion", {})),
+        "short_balance": len(result.get("short_balance", {})),
+        "short_volume": len(result.get("short_volume", {})),
+    }
+    marker_path = FLOW_DIR / "_last_update.json"
+    try:
+        with open(marker_path, "w", encoding="utf-8") as f:
+            json.dump(marker, f, ensure_ascii=False, indent=2)
+        logger.info(f"[FLOW] 마커 기록: investor={marker['investor']}, "
+                     f"foreign_exh={marker['foreign_exhaustion']}")
+    except Exception as e:
+        logger.warning(f"[FLOW] 마커 기록 실패: {e}")
 
 
 # ============================================================
