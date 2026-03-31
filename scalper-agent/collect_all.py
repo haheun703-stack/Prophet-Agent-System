@@ -478,16 +478,15 @@ def main():
     t_start = time.time()
 
     if args.sync_only:
-        step5_sync_stock_data_daily()
+        logger.info("sync_only 모드 — 현재 미지원 (step5 삭제됨)")
         return
 
     # 봇이 오늘 이미 수집했는지 체크
     bot_done = _check_bot_already_collected()
     if bot_done:
-        logger.info("봇이 이미 오늘 수집 완료 → parquet+sync만 실행")
+        logger.info("봇이 이미 오늘 수집 완료 → parquet만 실행")
         pq = step4_parquet_build()
-        sync = step5_sync_stock_data_daily()
-        _save_collect_result({"parquet": pq, "sync": sync, "skipped": "bot_done"})
+        _save_collect_result({"parquet": pq, "skipped": "bot_done"})
         elapsed = int(time.time() - t_start)
         logger.info(f"보완 수집 완료: {elapsed}초")
         return

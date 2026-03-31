@@ -117,6 +117,7 @@ class TradingCOO:
         self._tv_init_ok = True
         # G4 B3 모니터 마지막 실행 시간 (헬스체크용)
         self._last_monitor_run = datetime.now()
+        self._b3_fallback_count = 0  # B3 연속 실패 카운터 (무한루프 방지)
         # G6 데이터 파이프라인 모드 (NORMAL/STALE/DEGRADED)
         self._g6_mode = "NORMAL"
 
@@ -921,12 +922,18 @@ class TradingCOO:
         if positions_age < stale_threshold or log_age < stale_threshold:
             # 최소 하나가 최근 활동 있음 → 정상
             self._last_monitor_run = now
+            self._b3_fallback_count = 0
             return
 
+        # 연속 3회 이상 실패 시 더 이상 FALLBACK 시도 안 함 (로그 노이즈 방지)
+        if self._b3_fallback_count >= 3:
+            return  # 이미 경고 완료, 추가 시도 무의미
+
         # 둘 다 5분+ 정체
+        self._b3_fallback_count += 1
         elapsed_min = min(positions_age, log_age) / 60
-        logger.error(f"[COO] B3 모니터 {elapsed_min:.1f}분 미응답 — "
-                     "FALLBACK-B3 실행")
+        logger.warning(f"[COO] B3 모니터 {elapsed_min:.1f}분 미응답 — "
+                       f"FALLBACK-B3 실행 ({self._b3_fallback_count}/3)")
         await self._fallback_b3(context)
 
     async def _fallback_b3(self, context=None):

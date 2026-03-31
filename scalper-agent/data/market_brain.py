@@ -17,6 +17,7 @@ import re
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, date
 from pathlib import Path
+from typing import Dict
 
 logger = logging.getLogger("market_brain")
 

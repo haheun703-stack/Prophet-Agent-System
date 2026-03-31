@@ -2924,13 +2924,8 @@ class BodyHunterBot:
         except Exception as e:
             logger.error(f"Parquet 빌드 실패: {e}")
 
-        # 6. stock_data_daily 동기화
-        try:
-            from collect_all import step5_sync_stock_data_daily
-            sync_cnt = await asyncio.to_thread(step5_sync_stock_data_daily)
-            logger.info(f"stock_data_daily 동기화 완료: {sync_cnt}종목")
-        except Exception as e:
-            logger.error(f"stock_data_daily 동기화 실패: {e}")
+        # 6. stock_data_daily 동기화 — 함수 삭제됨(step5 → spacex_report로 변경)
+        sync_cnt = 0
 
         # 7. DC-08: 수집 시간 로깅 + 최종 기록 업데이트
         total_elapsed = int(time.time() - t0)

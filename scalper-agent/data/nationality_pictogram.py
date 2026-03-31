@@ -562,7 +562,7 @@ def upload_chart_to_supabase(
         logger.info(f"[NatChart] Supabase 업로드: {name} → {storage_path}")
         return image_url
     except Exception as e:
-        logger.warning(f"[NatChart] Supabase 업로드 실패: {e}")
+        logger.debug(f"[NatChart] Supabase 업로드 실패: {e}")
         return None
 
 
