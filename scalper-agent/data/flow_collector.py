@@ -47,20 +47,38 @@ def _get_kis_session() -> Optional[Tuple[str, dict]]:
     """KIS API 토큰+헤더 1회 생성, 전 종목에 재사용
 
     Returns: (base_url, headers_template) 또는 None (실패 시)
+
+    토큰 만료 시 token.dat 삭제 → mojito 강제 재발급 (3회 재시도).
     """
-    for attempt in range(2):
+    _scalper_dir = str(Path(__file__).resolve().parent.parent)
+
+    for attempt in range(3):
         try:
             from dotenv import load_dotenv
             load_dotenv()
             import mojito
             import requests as _req
 
-            broker = mojito.KoreaInvestment(
-                api_key=os.getenv("KIS_APP_KEY"),
-                api_secret=os.getenv("KIS_APP_SECRET"),
-                acc_no=os.getenv("KIS_ACC_NO"),
-                mock=False,
-            )
+            # 재시도 시 stale token.dat 삭제 → mojito가 새 토큰 발급
+            if attempt > 0:
+                token_path = Path(_scalper_dir) / "token.dat"
+                if token_path.exists():
+                    token_path.unlink()
+                    logger.info(f"[H3] stale token.dat 삭제 (attempt={attempt+1})")
+                time.sleep(3)
+
+            # mojito는 CWD의 token.dat 사용 → CWD를 scalper-agent로 고정
+            original_cwd = os.getcwd()
+            try:
+                os.chdir(_scalper_dir)
+                broker = mojito.KoreaInvestment(
+                    api_key=os.getenv("KIS_APP_KEY"),
+                    api_secret=os.getenv("KIS_APP_SECRET"),
+                    acc_no=os.getenv("KIS_ACC_NO"),
+                    mock=False,
+                )
+            finally:
+                os.chdir(original_cwd)
 
             token = broker.access_token
             if token and token.startswith("Bearer "):
@@ -69,7 +87,6 @@ def _get_kis_session() -> Optional[Tuple[str, dict]]:
             # H3: 토큰 즉시 검증 — None/빈문자열/짧은 토큰 거부
             if not token or len(token) < 10:
                 logger.warning(f"[H3] KIS 토큰 무효 (len={len(token) if token else 0}) — 재발급 시도")
-                time.sleep(2)
                 continue
 
             base_url = "https://openapi.koreainvestment.com:9443"
@@ -100,11 +117,10 @@ def _get_kis_session() -> Optional[Tuple[str, dict]]:
             return base_url, headers
 
         except Exception as e:
-            if attempt == 0:
-                logger.warning(f"[KIS] 세션 생성 실패 (1차): {e} — 2초 후 재시도")
-                time.sleep(2)
+            if attempt < 2:
+                logger.warning(f"[KIS] 세션 생성 실패 ({attempt+1}차): {e} — 재시도")
             else:
-                logger.critical(f"[KIS] 세션 생성 재시도도 실패: {e}")
+                logger.critical(f"[KIS] 세션 생성 3차 최종 실패: {e}")
 
     return None
 
