@@ -1350,6 +1350,18 @@ class TradingCOO:
 
         logger.info(f"[COO] G7 g6_mode={self._g6_mode}")
 
+        # ── KIS 토큰 사전 갱신 (C12/C13 KIS API 호출 전 토큰 확보) ──
+        try:
+            if self.auto_trader and hasattr(self.auto_trader, 'trader'):
+                await asyncio.to_thread(
+                    self.auto_trader.trader.ensure_fresh_token
+                )
+                logger.info("[COO] G7: KIS 토큰 사전 갱신 완료")
+            else:
+                logger.warning("[COO] G7: auto_trader 미연결 — KIS 토큰 갱신 스킵")
+        except Exception as e:
+            logger.warning(f"[COO] G7: KIS 토큰 갱신 실패 (무시): {e}")
+
         # ── 매크로 기준선 갱신 (1일 1회, 캐시 히트 시 스킵) ──
         try:
             from data.macro_baseline import fetch_all_baselines
@@ -1413,13 +1425,15 @@ class TradingCOO:
             results.append(r12)
 
         # C13: ★ 이브닝 분석 (CRITICAL)
-        # 추천 파이프라인: Step1~5 합계 ~10분 (뉴스AI 120s + 사전감지 111s + Scoring 200s+)
+        # 추천 파이프라인: Step1~6 합계 ~15분
+        # (뉴스AI 120s + 사전감지 85s + TV/MACD/TRIX 45s + Scoring 200s + KIS검증 60s)
+        # 3/31: 923초 소요 → 900초 TIMEOUT 발생 → 1800초로 확대
         c13_ok = False
         if self.auto_trader:
             r13 = await self.run_job_safe_async(
                 "C13_evening_analysis",
                 self.auto_trader.job_evening_analysis(context),
-                timeout=900,
+                timeout=1800,
             )
             results.append(r13)
             c13_ok = r13.success
@@ -1527,6 +1541,13 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[C22] 퀀트 대시보드 업로드 실패: {e}")
             results.append({"name": "C22_quant_dashboard", "success": False, "error": str(e), "elapsed_sec": 0})
+
+        # ── brain_report.json 갱신 safeguard ──
+        # C13 실패 시에도 brain_report는 반드시 오늘 날짜로 갱신
+        try:
+            await self._ensure_brain_report_today()
+        except Exception as e:
+            logger.warning(f"[COO] brain_report safeguard 실패: {e}")
 
         # ── 그룹 상태 업데이트 ──
         self.update_group("G7", results)
@@ -1777,7 +1798,7 @@ class TradingCOO:
             r = await self.run_job_safe_async(
                 "C13_evening_analysis_retry",
                 self.auto_trader.job_evening_analysis(context),
-                timeout=900,
+                timeout=1800,
             )
             if r.success:
                 logger.info("[COO] FALLBACK-C13: 재시도 성공!")
@@ -1803,6 +1824,47 @@ class TradingCOO:
             logger.warning(f"[COO] FALLBACK-C13 텔레그램 경고 실패: {e}")
 
         return recovered
+
+    # ─────────────────────────────────────────────
+    # brain_report.json 갱신 safeguard
+    # ─────────────────────────────────────────────
+    async def _ensure_brain_report_today(self):
+        """C13 실패 시에도 brain_report.json이 오늘 날짜로 갱신되도록 보장.
+
+        brain_report는 추천 파이프라인(C13) 내부에서 생성되므로
+        C13 TIMEOUT 시 brain_report도 미갱신됨.
+        이 safeguard가 G7 종료 직전에 체크하여 독립 생성.
+        """
+        import json
+        from pathlib import Path
+
+        brain_path = Path(__file__).parent.parent / "data_store" / "brain_report.json"
+
+        # 오늘 날짜 확인
+        needs_update = True
+        if brain_path.exists():
+            try:
+                with open(brain_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if data.get("date") == self.today:
+                    needs_update = False
+            except Exception:
+                pass
+
+        if not needs_update:
+            logger.info("[COO] brain_report.json 이미 오늘 날짜 — 스킵")
+            return
+
+        # 독립 생성
+        logger.info("[COO] brain_report.json 미갱신 감지 — 독립 생성 시작")
+        try:
+            from data.market_brain import generate_brain_report, save_brain_report
+            brain = await asyncio.to_thread(generate_brain_report)
+            await asyncio.to_thread(save_brain_report, brain)
+            logger.info(f"[COO] brain_report.json 독립 생성 완료: "
+                        f"{brain.regime} | 비중 {brain.position_size_pct}%")
+        except Exception as e:
+            logger.error(f"[COO] brain_report.json 독립 생성 실패: {e}")
 
     # ═════════════════════════════════════════════
     # STEP 3-9: setup_schedule() — JobQueue 등록

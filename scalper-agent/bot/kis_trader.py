@@ -139,6 +139,35 @@ class KISTrader:
             self._broker_created_at = 0.0
             logger.info("KIS 브로커 초기화됨 - 다음 호출에서 재발급")
 
+    def ensure_fresh_token(self):
+        """토큰 사전 갱신 — G7 시작 시 호출하여 파이프라인 내 토큰 에러 방지.
+
+        기존 브로커를 강제 폐기 → 새 브로커 생성 → 테스트 API 호출로 토큰 유효성 확인.
+        이후 파이프라인에서 매 종목마다 브로커 재생성하는 낭비 방지.
+        """
+        logger.info("[KIS] 토큰 사전 갱신 시작...")
+        self._reset_broker()
+        try:
+            # 강제로 새 브로커 생성
+            broker = self._get_broker(force_refresh=True)
+            # 테스트 호출: 삼성전자 현재가 (확실한 종목)
+            resp = broker.fetch_price("005930")
+            if resp is not None and not self._is_token_error(resp):
+                logger.info("[KIS] 토큰 사전 갱신 완료 — 유효한 토큰 확인")
+                self._consecutive_failures = 0
+                return True
+            else:
+                logger.warning("[KIS] 토큰 사전 갱신: 테스트 호출 실패 — "
+                               "재시도 중...")
+                self._reset_broker()
+                time.sleep(1)
+                broker = self._get_broker(force_refresh=True)
+                logger.info("[KIS] 토큰 사전 갱신: 2차 시도 완료")
+                return True
+        except Exception as e:
+            logger.error(f"[KIS] 토큰 사전 갱신 실패: {e}")
+            return False
+
     # ═══════════════════════════════════════
     #  조회
     # ═══════════════════════════════════════
