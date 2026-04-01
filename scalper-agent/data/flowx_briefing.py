@@ -377,6 +377,9 @@ def upload_morning_briefing(briefing: dict) -> bool:
         # full_report: 개인 텔레그램용 전체 본문 (FLOWX에는 비공개)
         full_report = _format_full_briefing(briefing)
 
+        # Supabase morning_briefings 실제 컬럼에 맞춤
+        # (warning, global_events, top_stocks, guardian_alerts,
+        #  raw_indicators, policy_content, macro_indicators → 미존재, full_report에 통합)
         row = {
             "date": briefing["date"],
             "market_status": briefing["market_status"],
@@ -384,15 +387,8 @@ def upload_morning_briefing(briefing: dict) -> bool:
             "kosdaq_close": briefing.get("kosdaq_close"),
             "us_summary": briefing.get("us_summary", ""),
             "kr_summary": briefing.get("kr_summary", ""),
-            "warning": briefing.get("warning", ""),
             "news_picks": json.dumps(briefing.get("news_picks", []), ensure_ascii=False),
             "sector_focus": json.dumps(briefing.get("sector_focus", []), ensure_ascii=False),
-            "global_events": json.dumps(briefing.get("global_events", []), ensure_ascii=False),
-            "top_stocks": json.dumps(briefing.get("top_stocks", []), ensure_ascii=False),
-            "guardian_alerts": json.dumps(briefing.get("guardian_alerts", []), ensure_ascii=False),
-            "raw_indicators": json.dumps(briefing.get("raw_indicators", {}), ensure_ascii=False),
-            "policy_content": json.dumps(briefing.get("policy_content", {}), ensure_ascii=False),
-            "macro_indicators": json.dumps(briefing.get("macro_indicators", {}), ensure_ascii=False),
             "full_report": full_report,
         }
 
