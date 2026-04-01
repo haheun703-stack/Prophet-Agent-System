@@ -62,16 +62,30 @@ def _calc_zscore(values: list, lookback: int = LOOKBACK) -> float:
 
 def _fetch_market_trading_data(market: str = "KOSPI",
                                 days: int = CALENDAR_DAYS) -> list:
-    """pykrx로 시장별 투자자 매매동향 가져오기.
+    """시장별 투자자 매매동향 가져오기.
 
-    _calc_market_flow() (market_brain.py) 패턴과 동일.
-    주말/공휴일에는 KRX 서버가 빈 응답을 줄 수 있으므로 최대 3일 전까지 재시도.
+    1차: pykrx API 시도
+    2차: 개별종목 investor CSV 집계 fallback
 
     Returns: [{"date": str, "inst": float, "foreign": float, "indiv": float}, ...]
     """
-    from pykrx import stock
+    # 1차: pykrx 시도
+    result = _fetch_via_pykrx(market, days)
+    if result:
+        return result
 
-    # 비거래일 대응: 오늘부터 최대 3일 전까지 시도
+    # 2차: CSV 집계 fallback
+    logger.info(f"[FlowZ] {market} pykrx 실패 → CSV 집계 fallback")
+    return _fetch_via_csv_aggregate(market, days)
+
+
+def _fetch_via_pykrx(market: str, days: int) -> list:
+    """pykrx API로 시장 수급 수집 (기존 방식)."""
+    try:
+        from pykrx import stock
+    except ImportError:
+        return []
+
     df = None
     for offset in range(4):
         end = date.today() - timedelta(days=offset)
@@ -89,13 +103,11 @@ def _fetch_market_trading_data(market: str = "KOSPI",
     if df is None or len(df) < MIN_DAYS:
         return []
 
-    # 컬럼명 매칭
     inst_col = "기관합계" if "기관합계" in df.columns else None
     foreign_col = "외국인합계" if "외국인합계" in df.columns else None
     indiv_col = "개인" if "개인" in df.columns else None
 
     if not inst_col or not foreign_col:
-        logger.warning(f"[FlowZ] {market} 컬럼 매칭 실패: {list(df.columns)}")
         return []
 
     result = []
@@ -107,6 +119,78 @@ def _fetch_market_trading_data(market: str = "KOSPI",
             "foreign": float(row.get(foreign_col, 0)),
             "indiv": float(row.get(indiv_col, 0)) if indiv_col else 0.0,
         })
+    return result
+
+
+def _fetch_via_csv_aggregate(market: str, days: int) -> list:
+    """개별종목 investor CSV를 시장별로 집계하여 수급 데이터 생성.
+
+    data_store/flow/{code}_investor.csv → universe.json 기준 시장 분류
+    → 날짜별 기관/외인/개인 금액 합산
+    """
+    import csv as csv_mod
+
+    flow_dir = DATA_DIR / "flow"
+    uni_path = DATA_DIR / "universe.json"
+
+    if not flow_dir.exists() or not uni_path.exists():
+        return []
+
+    try:
+        with open(uni_path, "r", encoding="utf-8") as f:
+            universe = json.load(f)
+    except Exception:
+        return []
+
+    # 해당 시장 종목 코드
+    target_codes = {
+        code for code, info in universe.items()
+        if info.get("market", "") == market
+    }
+    if not target_codes:
+        return []
+
+    # 날짜별 합산 {date_str: {inst, foreign, indiv}}
+    daily_sums = {}
+    loaded = 0
+
+    for csv_file in flow_dir.glob("*_investor.csv"):
+        code = csv_file.stem.replace("_investor", "")
+        if code not in target_codes:
+            continue
+
+        try:
+            with open(csv_file, "r", encoding="utf-8-sig") as f:
+                reader = csv_mod.DictReader(f)
+                for row in reader:
+                    dt = row.get("date", "")
+                    if not dt:
+                        continue
+                    if dt not in daily_sums:
+                        daily_sums[dt] = {"inst": 0.0, "foreign": 0.0, "indiv": 0.0}
+                    try:
+                        daily_sums[dt]["inst"] += float(row.get("기관_금액", 0) or 0)
+                        daily_sums[dt]["foreign"] += float(row.get("외국인_금액", 0) or 0)
+                        daily_sums[dt]["indiv"] += float(row.get("개인_금액", 0) or 0)
+                    except (ValueError, TypeError):
+                        continue
+            loaded += 1
+        except Exception:
+            continue
+
+    if not daily_sums or loaded < 10:
+        logger.warning(f"[FlowZ] {market} CSV 집계 실패: {loaded}종목")
+        return []
+
+    # 날짜순 정렬, 최근 days일
+    sorted_dates = sorted(daily_sums.keys())[-days:]
+    result = [
+        {"date": dt, **daily_sums[dt], "_source": "csv"}
+        for dt in sorted_dates
+    ]
+
+    logger.info(f"[FlowZ] {market} CSV 집계 완료: "
+                f"{loaded}종목, {len(result)}일")
     return result
 
 
@@ -198,15 +282,18 @@ def calc_market_zscore(lookback: int = LOOKBACK) -> dict:
         foreign_z = _calc_zscore(foreign_vals, lookback)
         indiv_z = _calc_zscore(indiv_vals, lookback)
 
-        # 억 단위 변환 (pykrx는 원 단위)
+        # 억 단위 변환
+        # pykrx: 원 단위 → /1e8, CSV: 백만원 단위 → /100
         last = data[-1]
+        is_csv = last.get("_source") == "csv"
+        div = 100.0 if is_csv else 1e8
         result[mkt_key] = {
             "inst_z": round(inst_z, 2),
             "foreign_z": round(foreign_z, 2),
             "indiv_z": round(indiv_z, 2),
-            "inst_raw_억": round(last["inst"] / 1e8, 0),
-            "foreign_raw_억": round(last["foreign"] / 1e8, 0),
-            "indiv_raw_억": round(last["indiv"] / 1e8, 0),
+            "inst_raw_억": round(last["inst"] / div, 0),
+            "foreign_raw_억": round(last["foreign"] / div, 0),
+            "indiv_raw_억": round(last["indiv"] / div, 0),
             "data_days": min(len(data), lookback),
         }
 

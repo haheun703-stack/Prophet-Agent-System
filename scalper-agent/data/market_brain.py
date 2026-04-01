@@ -301,18 +301,23 @@ def _calc_index_technicals() -> dict:
     실패 시 빈 dict → Phase 6에서 무시됨.
     """
     try:
-        from pykrx import stock
+        import yfinance as yf
         from datetime import timedelta
 
         end = date.today()
         start = end - timedelta(days=120)  # 60영업일 확보 위해 넉넉히
-        df = stock.get_index_ohlcv(
-            start.strftime("%Y%m%d"), end.strftime("%Y%m%d"), "1001"  # 코스피
+        df = yf.download(
+            "^KS11", start=start.strftime("%Y-%m-%d"),
+            end=end.strftime("%Y-%m-%d"), progress=False, auto_adjust=True,
         )
         if df is None or len(df) < 30:
             return {}
 
-        closes = df["종가"].values
+        # yfinance MultiIndex 컬럼 처리
+        import pandas as _pd
+        if isinstance(df.columns, _pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        closes = df["Close"].astype(float).values
         n = len(closes)
 
         # 이동평균
