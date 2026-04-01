@@ -449,8 +449,14 @@ def collect_short_balance(
     months: int = 24,
     force: bool = False,
 ) -> Dict[str, pd.DataFrame]:
-    """공매도 잔고 수집
+    """공매도 잔고 수집 — KRX 데이터 제공 중단 (2026-04~)
 
+    KRX에서 공매도 잔고 데이터를 더 이상 제공하지 않으므로
+    즉시 빈 결과를 반환합니다.
+    """
+    logger.info("[공매도] KRX 데이터 제공 중단 — 수집 스킵")
+    return {}
+    """(비활성) 원본 로직 보존
     pykrx 공매도 API 깨짐 (2026-03 기준)
     - 매 실행마다 probe(삼전 1건)로 API 복구 확인
     - 복구 시 자동 수집 재개
@@ -500,15 +506,10 @@ def collect_short_volume(
     months: int = 24,
     force: bool = False,
 ) -> Dict[str, pd.DataFrame]:
-    """공매도 거래량/거래대금 수집
-
-    pykrx 공매도 API 깨짐 (2026-03 기준) → 캐시 반환 모드
-    collect_short_balance에서 pykrx 복구 probe를 이미 수행하므로
-    여기서는 캐시만 반환 (잔고가 더 중요)
-
-    Returns: {code: DataFrame(date index)}
-    """
-    _ensure_dirs()
+    """공매도 거래량/거래대금 수집 — KRX 데이터 제공 중단 (2026-04~)"""
+    logger.info("[공매도] KRX 데이터 제공 중단 — 수집 스킵")
+    return {}
+    _ensure_dirs()  # 아래 원본 코드는 return으로 도달 불가 (보존용)
 
     results = {}
     cache_only = 0

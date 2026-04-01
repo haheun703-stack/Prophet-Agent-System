@@ -174,17 +174,19 @@ def analyze_short_interest(code: str, name: str = "") -> ShortAnalysis:
 def get_short_score(code: str, name: str = "") -> Tuple[float, str]:
     """morning_recommendation에서 호출 — score + 사유
 
+    KRX 공매도 데이터 제공 중단 (2026-04~) → 항상 0점/빈 사유 반환
     Returns:
-        (score: -8~+8, detail: str)
+        (score: 0, detail: "")
     """
-    result = analyze_short_interest(code, name)
-    return result.score_adjustment, result.detail
+    return 0.0, ""
 
 
 def is_short_building_danger(code: str) -> bool:
-    """숏빌딩 + HIGH 잔고 → 추천 제외용 Hard Filter"""
-    result = analyze_short_interest(code)
-    return result.short_trend == "BUILDING" and result.short_level == "HIGH"
+    """숏빌딩 + HIGH 잔고 → 추천 제외용 Hard Filter
+
+    KRX 공매도 데이터 제공 중단 (2026-04~) → 항상 False
+    """
+    return False
 
 
 # ═══════════════════════════════════════════════════
@@ -194,14 +196,10 @@ def is_short_building_danger(code: str) -> bool:
 def get_short_journal_data(universe_codes: List[str] = None) -> Dict:
     """Market Journal용 공매도 섹션 데이터
 
-    Returns:
-        {
-            "building_top5": [{"code", "name", "ratio", "trend_days"}],
-            "covering_top5": [{"code", "name", "ratio", "trend_days"}],
-            "high_short_count": int,
-        }
+    KRX 공매도 데이터 제공 중단 (2026-04~) → 빈 결과 반환
     """
-    if universe_codes is None:
+    return {"building_top5": [], "covering_top5": [], "high_short_count": 0}
+    if universe_codes is None:  # 아래 원본 코드는 도달 불가 (보존용)
         # 캐시 디렉토리에서 종목 코드 추출
         if not SHORT_DIR.exists():
             return {"building_top5": [], "covering_top5": [], "high_short_count": 0}
