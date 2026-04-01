@@ -367,9 +367,34 @@ def _build_countries_detail(code: str) -> tuple:
         return None, None, None
 
 
-def upload_nationality_flows() -> bool:
-    """nationality 변화 데이터 + prediction.json → Supabase nationality_flows 업로드
+def _find_all_nationality_codes() -> list[tuple[str, str]]:
+    """nationality CSV가 있는 전체 종목 코드 + 최신 날짜 반환
 
+    Returns:
+        [(code, latest_date_str), ...] — date_str은 "YYYYMMDD" 형태
+    """
+    import glob as _glob
+    nat_dir = Path(__file__).resolve().parent.parent / "data_store" / "nationality"
+    if not nat_dir.exists():
+        return []
+
+    # 종목별 최신 날짜 수집
+    code_dates: dict[str, str] = {}
+    for f in _glob.glob(str(nat_dir / "*.csv")):
+        parts = Path(f).stem.split("_")
+        if len(parts) >= 2 and parts[-1].isdigit() and len(parts[-1]) == 8:
+            code = "_".join(parts[:-1])
+            d = parts[-1]
+            if code not in code_dates or d > code_dates[code]:
+                code_dates[code] = d
+
+    return list(code_dates.items())
+
+
+def upload_nationality_flows() -> bool:
+    """nationality 변화 데이터 → Supabase nationality_flows 업로드
+
+    확장: prediction.json 종목(8개) + nationality CSV 전체 종목(~300개)
     countries JSONB: 텔레그램 픽토그램과 동일한 매수/매도 방향 포함
     """
     client = _get_client()
@@ -386,16 +411,32 @@ def upload_nationality_flows() -> bool:
         except Exception as e:
             logger.warning(f"nationality_prediction.json 로드 실패: {e}")
 
-    if not predictions:
-        logger.warning("nationality_prediction.json 없거나 비어있음 — 업로드 스킵")
+    # 2) nationality CSV 전체 종목 수집
+    all_codes = _find_all_nationality_codes()
+    if not all_codes and not predictions:
+        logger.warning("nationality 데이터 없음 — 업로드 스킵")
         return False
 
-    # 2) 각 종목: compare_nationality()로 변화 데이터 + prediction 병합
+    # universe에서 종목명 매핑
+    uni_path = Path(__file__).resolve().parent.parent / "data_store" / "universe.json"
+    name_map = {}
+    if uni_path.exists():
+        try:
+            uni = json.loads(uni_path.read_text("utf-8"))
+            for code, info in uni.items():
+                if isinstance(info, dict):
+                    name_map[code] = info.get("name", "")
+        except Exception:
+            pass
+
+    # 3) 전체 종목 빌드: prediction 종목 + CSV 전체 종목 통합
     today_str = str(date.today())
+    seen_codes = set()
     rows = []
+
+    # 3a) prediction 종목 (signal/score 있음)
     for code, pred in predictions.items():
         countries, date_new, date_old = _build_countries_detail(code)
-        # countries JSONB에 비교 기준일 포함
         countries_obj = {
             "date_new": date_new,
             "date_old": date_old,
@@ -410,21 +451,60 @@ def upload_nationality_flows() -> bool:
             "signal": pred.get("signal", ""),
             "score": round(pred.get("score", 0), 1),
         })
+        seen_codes.add(code)
+
+    # 3b) CSV 전체 종목 (prediction에 없는 것만 추가)
+    for code, latest_date in all_codes:
+        if code in seen_codes:
+            continue
+        countries, date_new, date_old = _build_countries_detail(code)
+        if not countries:
+            continue  # 비교 데이터 없으면 스킵
+        countries_obj = {
+            "date_new": date_new,
+            "date_old": date_old,
+            "items": countries,
+        }
+        # 간이 시그널: 순매수 국가 수 vs 순매도 국가 수
+        buy_count = sum(1 for c in countries if c["direction"] == "매수")
+        sell_count = sum(1 for c in countries if c["direction"] == "매도")
+        if buy_count >= sell_count + 3:
+            signal = "BUY"
+        elif sell_count >= buy_count + 3:
+            signal = "SELL"
+        else:
+            signal = "NEUTRAL"
+
+        rows.append({
+            "date": today_str,
+            "code": code,
+            "name": name_map.get(code, ""),
+            "countries": countries_obj,
+            "arch_scores": {},
+            "signal": signal,
+            "score": 0.0,
+        })
+        seen_codes.add(code)
 
     if not rows:
         logger.warning("nationality_flows 업로드할 데이터 없음")
         return False
 
-    # 3) Supabase upsert
+    # 4) Supabase upsert (50개씩 배치)
     try:
-        client.table("nationality_flows").upsert(
-            rows, on_conflict="date,code"
-        ).execute()
-        with_data = sum(1 for r in rows if r.get("countries"))
+        batch_size = 50
+        for i in range(0, len(rows), batch_size):
+            batch = rows[i:i + batch_size]
+            client.table("nationality_flows").upsert(
+                batch, on_conflict="date,code"
+            ).execute()
+        pred_count = len(predictions)
+        extra_count = len(rows) - pred_count
+        strong_buy = sum(1 for r in rows if r.get("signal") == "STRONG_BUY")
         logger.info(
-            f"[FLOWX] nationality_flows 업로드 완료: {len(rows)}종목 "
-            f"(변화데이터 {with_data}종목, "
-            f"STRONG_BUY: {sum(1 for r in rows if r.get('signal') == 'STRONG_BUY')})"
+            f"[FLOWX] nationality_flows 업로드 완료: "
+            f"{len(rows)}종목 (예측{pred_count} + X-ray{extra_count}) "
+            f"STRONG_BUY: {strong_buy}"
         )
         return True
     except Exception as e:
