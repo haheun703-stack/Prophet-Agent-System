@@ -1534,6 +1534,12 @@ class TradingCOO:
                 self._job_cto_accuracy_update(context),
             ))
 
+        # C25: 국적 수급 X-ray Supabase 업로드 (독립 경로)
+        stage3_jobs.append((
+            "C25_nationality_xray",
+            self._job_nationality_xray_upload(context),
+        ))
+
         if stage3_jobs:
             # C17 국적차트 TOP200 생성+업로드, C19 FLOWX 스윙 등 무거운 작업 포함
             s3 = await self.run_parallel_async(stage3_jobs, timeout_per_job=600)
@@ -1764,6 +1770,27 @@ class TradingCOO:
             logger.warning(f"[C24] CTO 정확도 업데이트 실패 (무시): {e}")
             return {"cto_accuracy": f"ERROR: {e}"}
 
+    async def _job_nationality_xray_upload(self, context=None) -> dict:
+        """C25: 국적 수급 X-ray Supabase 독립 업로드.
+
+        morning_recommendation 경로와 무관하게 G7에서 항상 실행.
+        nationality CSV 데이터가 있는 전 종목의 외국인 국적별 수급을 업로드.
+        실패 시 AUTO-RECOVERY에서 재시도.
+        """
+        try:
+            import asyncio
+            from data.upload_short import upload_nationality_flows
+            ok = await asyncio.to_thread(upload_nationality_flows)
+            if ok:
+                logger.info("[C25] 국적 X-ray 업로드 완료")
+                return {"nationality_xray": "OK"}
+            else:
+                logger.warning("[C25] 국적 X-ray 업로드 실패 (반환 False)")
+                return {"nationality_xray": "FAILED"}
+        except Exception as e:
+            logger.warning(f"[C25] 국적 X-ray 업로드 실패 (무시): {e}")
+            return {"nationality_xray": f"ERROR: {e}"}
+
     async def _job_nxt_early_collect(self, context=None) -> dict:
         """C4E: NXT 사전 데이터 수집 + 예비 알림 발송.
 
@@ -1950,6 +1977,12 @@ class TradingCOO:
                 "path": data_dir / "flow" / "_last_update.json",
                 "date_key": "date",
                 "recover": self._recover_investor_flow,
+            },
+            {
+                "name": "nationality_xray",
+                "path": data_dir / "nationality" / "_last_upload.json",
+                "date_key": "date",
+                "recover": self._recover_nationality_flows,
             },
         ]
 
@@ -2145,6 +2178,14 @@ class TradingCOO:
         from data.flow_collector import collect_all_flow
         await asyncio.to_thread(collect_all_flow)
 
+    async def _recover_nationality_flows(self):
+        """nationality_flows Supabase 업로드 독립 복구.
+
+        nationality CSV 데이터가 존재하면 Supabase에 재업로드.
+        성공 시 _last_upload.json 마커 파일 갱신.
+        """
+        from data.upload_short import upload_nationality_flows
+        await asyncio.to_thread(upload_nationality_flows)
 
     # ═════════════════════════════════════════════
     # STEP 3-9: setup_schedule() — JobQueue 등록

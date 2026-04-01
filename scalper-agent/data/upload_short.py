@@ -506,6 +506,22 @@ def upload_nationality_flows() -> bool:
             f"{len(rows)}종목 (예측{pred_count} + X-ray{extra_count}) "
             f"STRONG_BUY: {strong_buy}"
         )
+
+        # AUTO-RECOVERY freshness 체크용 마커 파일
+        marker_dir = Path(__file__).resolve().parent.parent / "data_store" / "nationality"
+        marker_dir.mkdir(parents=True, exist_ok=True)
+        marker_path = marker_dir / "_last_upload.json"
+        try:
+            marker_path.write_text(json.dumps({
+                "date": today_str,
+                "count": len(rows),
+                "pred_count": pred_count,
+                "xray_count": extra_count,
+                "timestamp": datetime.now().isoformat(),
+            }, ensure_ascii=False), encoding="utf-8")
+        except Exception as me:
+            logger.warning(f"nationality _last_upload.json 저장 실패: {me}")
+
         return True
     except Exception as e:
         logger.error(f"[FLOWX] nationality_flows 업로드 실패: {e}")
