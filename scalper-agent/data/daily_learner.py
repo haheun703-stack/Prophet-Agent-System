@@ -1208,15 +1208,16 @@ def brain_performance_check() -> dict:
     pct = brain.get("position_size_pct", 70)
     verdict = brain.get("overall_verdict", "")
 
-    # 오늘 코스피 등락률 (pykrx)
+    # 오늘 코스피 등락률 (yfinance — pykrx 1.2.4 IndexTicker 버그 우회)
     try:
-        from pykrx import stock
-        today_str = date.today().strftime("%Y%m%d")
-        yesterday = (date.today() - timedelta(days=7)).strftime("%Y%m%d")
-        df = stock.get_index_ohlcv(yesterday, today_str, "1001")
-        if df is not None and len(df) >= 2:
-            kospi_today = df["종가"].iloc[-1]
-            kospi_prev = df["종가"].iloc[-2]
+        import yfinance as yf
+        kdf = yf.download("^KS11", period="5d", progress=False)
+        # yfinance MultiIndex 컬럼 처리
+        if isinstance(kdf.columns, __import__("pandas").MultiIndex):
+            kdf.columns = kdf.columns.get_level_values(0)
+        if kdf is not None and len(kdf) >= 2:
+            kospi_today = float(kdf["Close"].iloc[-1])
+            kospi_prev = float(kdf["Close"].iloc[-2])
             kospi_chg = (kospi_today / kospi_prev - 1) * 100
         else:
             kospi_chg = 0.0

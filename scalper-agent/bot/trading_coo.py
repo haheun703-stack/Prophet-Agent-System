@@ -2056,7 +2056,14 @@ class TradingCOO:
                 with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 file_date = str(data.get(date_key, ""))
-                return file_date == today
+                if file_date == today:
+                    return True
+                # fallback: timestamp 필드에서 날짜 추출
+                # (recommendation.json 등 date 키 없이 timestamp만 있는 경우)
+                ts = data.get("timestamp", "")
+                if ts and str(ts)[:10] == today:
+                    return True
+                return False
             else:
                 # mtime 기반 (당일 수정 여부)
                 import os
