@@ -566,7 +566,9 @@ def generate_vip_content() -> dict:
 # ═══════════════════════════════════════════════════
 
 def upload_vip_content(content: dict) -> bool:
-    """vip_content 테이블에 upsert"""
+    """vip_content 테이블에 upsert
+    NOTE: Supabase에 vip_content 테이블 미생성 시 로컬 저장만 수행
+    """
     client = _get_client()
     if not client:
         return False
@@ -593,7 +595,11 @@ def upload_vip_content(content: dict) -> bool:
         logger.info(f"[FLOWX VIP] Supabase 업로드 완료: {content['date']}")
         return True
     except Exception as e:
-        logger.error(f"[FLOWX VIP] 업로드 실패: {e}")
+        err_str = str(e)
+        if "PGRST205" in err_str or "schema cache" in err_str:
+            logger.warning(f"[FLOWX VIP] vip_content 테이블 미존재 — 로컬 저장만 완료")
+        else:
+            logger.error(f"[FLOWX VIP] 업로드 실패: {e}")
         return False
 
 

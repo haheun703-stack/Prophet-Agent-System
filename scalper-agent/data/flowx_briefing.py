@@ -384,8 +384,6 @@ def upload_morning_briefing(briefing: dict) -> bool:
             "kosdaq_close": briefing.get("kosdaq_close"),
             "us_summary": briefing.get("us_summary", ""),
             "kr_summary": briefing.get("kr_summary", ""),
-            "cross_regime": briefing.get("cross_regime", "NORMAL"),
-            "cross_regime_detail": briefing.get("cross_regime_detail", ""),
             "warning": briefing.get("warning", ""),
             "news_picks": json.dumps(briefing.get("news_picks", []), ensure_ascii=False),
             "sector_focus": json.dumps(briefing.get("sector_focus", []), ensure_ascii=False),
