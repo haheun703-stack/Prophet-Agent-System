@@ -1571,6 +1571,17 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[COO] 일일 파이프라인 리포트 발송 실패: {e}")
 
+        # ── G7 후 데이터 재검증 (G6 시점 미생성 데이터 포함) ──
+        try:
+            if self.bot:
+                import asyncio
+                r = await asyncio.wait_for(
+                    self.bot._job_verify_data(context), timeout=120
+                )
+                logger.info("[COO] G7 후 데이터 재검증 완료")
+        except Exception as e:
+            logger.warning(f"[COO] G7 후 재검증 실패 (무시): {e}")
+
         # ── AUTO-RECOVERY: 핵심 파일 검증 + 실패 시 개별 복구 ──
         try:
             await self._post_g7_auto_recovery(context)
