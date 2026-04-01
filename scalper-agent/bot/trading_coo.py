@@ -1717,7 +1717,7 @@ class TradingCOO:
                 scan_trix_divergence, save_trix_cache,
             )
 
-            signals = await asyncio.to_thread(scan_trix_divergence, 10)
+            signals = await asyncio.to_thread(scan_trix_divergence, None, 10)
             if signals:
                 # 캐시 형식: {code: {info}}
                 cache_data = {}
@@ -1882,22 +1882,33 @@ class TradingCOO:
     # ─────────────────────────────────────────────
     # G7 자동복구 시스템 (AUTO-RECOVERY)
     # ─────────────────────────────────────────────
+    # 개별 복구 타임아웃 (초) — 5분이면 충분, 그 이상은 실패 처리
+    _RECOVERY_TIMEOUT = 300
+    # 전체 AUTO-RECOVERY 총 타임아웃 (초) — 10분 초과 시 나머지 스킵
+    _RECOVERY_TOTAL_TIMEOUT = 600
+
     async def _post_g7_auto_recovery(self, context=None):
         """G7 완료 후 핵심 데이터 파일 검증 + 실패 항목 자동 복구.
 
-        검증 대상 5개 (핵심 데이터만):
+        검증 대상 6개 (핵심 데이터만):
         1. recommendation.json — 오늘 날짜 (C13)
         2. brain_report.json   — 오늘 날짜 (C13 내부)
         3. sector_flow.json    — 오늘 날짜 (C20)
         4. etf_flow.json       — 오늘 날짜 (C21)
         5. sector_momentum.json — 오늘 날짜 (C20 내부)
+        6. investor_flow       — 오늘 날짜
 
-        복구 전략: 개별 생성 함수를 직접 호출 (C13 전체 재실행 안 함)
+        복구 전략:
+        - 개별 생성 함수를 직접 호출 (C13 전체 재실행 안 함)
+        - 개별 타임아웃 5분 / 전체 타임아웃 10분
+        - 병렬 실행으로 속도 향상
         """
         import json
         from pathlib import Path
+        import time
 
         logger.info("[COO] ══ AUTO-RECOVERY 시작 ══")
+        recovery_start = time.monotonic()
 
         data_dir = Path(__file__).parent.parent / "data_store"
         today = self.today  # "YYYY-MM-DD"
@@ -1961,33 +1972,72 @@ class TradingCOO:
                 context, fresh, [], [], "✅ 전체 정상")
             return
 
-        # ── 2단계: 개별 복구 ──
-        recovered = []
-        failed = []
-        for chk in stale:
+        # ── 2단계: 병렬 복구 (개별 5분 / 전체 10분 타임아웃) ──
+        async def _run_one(chk):
+            """개별 복구 실행 + 타임아웃 + 재검증."""
             name = chk["name"]
             logger.info(f"[AUTO-RECOVERY] {name} 복구 시도...")
             try:
-                await chk["recover"]()
-                # 복구 후 재검증
+                await asyncio.wait_for(
+                    chk["recover"](),
+                    timeout=self._RECOVERY_TIMEOUT,
+                )
                 if self._check_freshness(
                         chk["path"], today, chk["date_key"]):
-                    recovered.append(name)
                     logger.info(f"[AUTO-RECOVERY] {name} 복구 성공 ✅")
+                    return ("ok", name)
                 else:
-                    failed.append(name)
                     logger.warning(
                         f"[AUTO-RECOVERY] {name} 복구 실행됐지만 "
                         f"여전히 미갱신 ❌")
+                    return ("fail", name)
+            except asyncio.TimeoutError:
+                logger.error(
+                    f"[AUTO-RECOVERY] {name} 타임아웃 "
+                    f"({self._RECOVERY_TIMEOUT}초) ❌")
+                return ("fail", name)
             except Exception as e:
-                failed.append(name)
                 logger.error(f"[AUTO-RECOVERY] {name} 복구 실패: {e}")
+                return ("fail", name)
+
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(*[_run_one(chk) for chk in stale],
+                               return_exceptions=True),
+                timeout=self._RECOVERY_TOTAL_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            elapsed = time.monotonic() - recovery_start
+            logger.error(
+                f"[AUTO-RECOVERY] 전체 타임아웃 "
+                f"({self._RECOVERY_TOTAL_TIMEOUT}초, "
+                f"경과 {elapsed:.0f}초) — 나머지 스킵")
+            results = []
+
+        recovered = []
+        failed = []
+        for r in results:
+            if isinstance(r, Exception):
+                failed.append("(예외)")
+            elif isinstance(r, tuple):
+                if r[0] == "ok":
+                    recovered.append(r[1])
+                else:
+                    failed.append(r[1])
+
+        # 전체 타임아웃으로 결과 못 받은 항목 → 실패 처리
+        reported = set(recovered) | set(failed)
+        for chk in stale:
+            if chk["name"] not in reported:
+                failed.append(chk["name"])
 
         # ── 3단계: 결과 리포트 ──
+        elapsed = time.monotonic() - recovery_start
         if failed:
-            status = f"⚠️ {len(recovered)}복구 / {len(failed)}실패"
+            status = (f"⚠️ {len(recovered)}복구 / {len(failed)}실패 "
+                      f"({elapsed:.0f}초)")
         else:
-            status = f"✅ {len(recovered)}건 전량 복구"
+            status = f"✅ {len(recovered)}건 전량 복구 ({elapsed:.0f}초)"
 
         logger.info(f"[AUTO-RECOVERY] 결과: {status}")
         await self._send_recovery_alert(
@@ -2050,12 +2100,12 @@ class TradingCOO:
     # ── 개별 복구 함수 ──
 
     async def _recover_recommendation(self):
-        """recommendation.json 독립 복구 — 전체 이브닝 추천 파이프라인."""
+        """recommendation.json 독립 복구 — 전체 이브닝 추천 파이프라인.
+
+        외부에서 _RECOVERY_TIMEOUT(5분)으로 타임아웃 제어.
+        """
         from data.morning_recommendation import run_evening_recommendation
-        await asyncio.wait_for(
-            asyncio.to_thread(run_evening_recommendation),
-            timeout=1800,
-        )
+        await asyncio.to_thread(run_evening_recommendation)
 
     async def _recover_brain_report(self):
         """brain_report.json 독립 복구."""
@@ -2083,12 +2133,10 @@ class TradingCOO:
 
         flow_collector에 token.dat 자동 삭제 + 3회 재시도 로직이 있으므로
         토큰 만료 시에도 자동 복구됨.
+        외부에서 _RECOVERY_TIMEOUT(5분)으로 타임아웃 제어.
         """
         from data.flow_collector import collect_all_flow
-        await asyncio.wait_for(
-            asyncio.to_thread(collect_all_flow),
-            timeout=1200,  # 20분 (346종목 × 2세션)
-        )
+        await asyncio.to_thread(collect_all_flow)
 
 
     # ═════════════════════════════════════════════
