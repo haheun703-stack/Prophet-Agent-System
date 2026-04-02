@@ -111,7 +111,8 @@ def record_trade_close(trade_id: str, code: str, name: str,
                        entry_price: int, exit_price: int,
                        total_score: float, sources: list,
                        close_reason: str, hold_days: int,
-                       expected_return: float, rr_ratio: float):
+                       expected_return: float, rr_ratio: float,
+                       source: str = "morning"):
     """트레이드 종료 시 기록"""
     actual_pnl = (exit_price - entry_price) / entry_price * 100 if entry_price > 0 else 0
 
@@ -131,6 +132,7 @@ def record_trade_close(trade_id: str, code: str, name: str,
         "prediction_error": round(actual_pnl - expected_return, 2),
         "rr_ratio": round(rr_ratio, 2),
         "category": _categorize(close_reason, actual_pnl),
+        "source": source,
     }
 
     log = load_trade_log()

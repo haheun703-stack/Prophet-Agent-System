@@ -472,17 +472,18 @@ class TradingCOO:
     # run_g1: G1 MORNING_PREP (08:00~08:50)
     # ─────────────────────────────────────────────
     async def run_g1(self, context=None):
-        """G1 MORNING_PREP — 10개 잡 병렬 실행.
+        """G1 MORNING_PREP — 11개 잡 병렬 실행.
 
         전부 non-critical → 개별 실패해도 계속 진행.
         결과를 update_group + morning_state.json 영속화.
 
-        잡 목록 (A1~A10):
+        잡 목록 (A1~A10 + A5P):
           A1  job_us_market_check    — 미국시장 체크 (AutoTrader)
           A2  _job_policy_scan       — 정책 트래커 (TelegramBot)
           A3  _job_global_event_scan — 해외 이벤트 (TelegramBot)
           A4  job_nxt_morning_sell   — NXT 아침 매도 (AutoTrader)
           A5  _job_dart_refresh      — DART 공시 (TelegramBot)
+          A5P _job_nxt_paper_morning_close — NXT Paper 아침 청산 (COO)
           A6  _job_options_expiry_alert — 옵션 만기 (TelegramBot)
           A7  _job_position_guardian — 포지션 가디언 (TelegramBot)
           A8  job_premium_levels     — 프리미엄 레벨 (AutoTrader)
@@ -508,6 +509,12 @@ class TradingCOO:
             ])
         else:
             logger.warning("[COO] auto_trader 미연결 — A1/A4/A8 스킵")
+
+        # NXT Paper 아침 청산 (COO 자체 잡)
+        jobs.append((
+            "A5P_nxt_paper_morning_close",
+            self._job_nxt_paper_morning_close(context),
+        ))
 
         # TelegramBot 잡 (7개)
         if self.bot:
@@ -1336,7 +1343,7 @@ class TradingCOO:
         3-Stage 실행:
         - Stage 1: C8+C10+C11 병렬 (신호기록 / 스윙선정 / 브레인배분)
         - Stage 2: C12→C13 순차 (일간학습 → ★이브닝분석 CRITICAL)
-        - Stage 3: C14~C24 병렬 (클로징/선취매/MACD/TRIX/국적/헬스/스윙/수급/ETF/퀀트대시/CTO정확도)
+        - Stage 3: C14~C27 병렬 (클로징/선취매/MACD/TRIX/국적/헬스/스윙/수급/ETF/퀀트대시/CTO정확도/NXT Paper/Paper리포트)
 
         g6_mode 분기:
         - NORMAL: 전체 실행
@@ -1541,6 +1548,18 @@ class TradingCOO:
         stage3_jobs.append((
             "C25_nationality_xray",
             self._job_nationality_xray_upload(context),
+        ))
+
+        # C26: NXT Paper Trading 등록
+        stage3_jobs.append((
+            "C26_nxt_paper_register",
+            self._job_nxt_paper_register(context),
+        ))
+
+        # C27: Paper Trading 일일 성적표
+        stage3_jobs.append((
+            "C27_paper_daily_report",
+            self._job_paper_daily_report(context),
         ))
 
         if stage3_jobs:
@@ -1798,6 +1817,166 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[C25] 국적 X-ray 업로드 실패 (무시): {e}")
             return {"nationality_xray": f"ERROR: {e}"}
+
+    # ─────────────────────────────────────────────
+    # A5P: NXT Paper 아침 청산 (G1)
+    # ─────────────────────────────────────────────
+    async def _job_nxt_paper_morning_close(self, context=None) -> dict:
+        """NXT paper 포지션 → 익일 시가 기준 청산."""
+        try:
+            from data.paper_portfolio import PaperPortfolio
+            portfolio = PaperPortfolio()
+            closed = []
+            today = datetime.now().strftime("%Y-%m-%d")
+
+            for code in list(portfolio.positions.keys()):
+                pos = portfolio.positions[code]
+                if pos.get("source") != "nxt":
+                    continue
+                # NXT는 전일 등록 → 익일 아침 청산
+                if pos.get("entry_date", "") >= today:
+                    continue  # 오늘 등록된 건 스킵
+
+                # 시가 조회
+                open_price = pos["entry_price"]
+                if self.auto_trader and hasattr(self.auto_trader, 'trader'):
+                    try:
+                        p = await asyncio.to_thread(
+                            self.auto_trader.trader.fetch_price, code
+                        )
+                        if p.get("success") and p.get("open", 0) > 0:
+                            open_price = p["open"]
+                    except Exception:
+                        pass
+
+                result = portfolio.close_position(code, open_price, "NXT_MORNING_SELL")
+                if result:
+                    closed.append(f"{pos['name']} {result['pnl_pct']:+.1f}%")
+
+            if closed:
+                logger.info(f"[A5P] NXT Paper 아침 청산: {', '.join(closed)}")
+            return {"nxt_paper_morning_close": len(closed)}
+        except Exception as e:
+            logger.warning(f"[A5P] NXT Paper 아침 청산 실패 (무시): {e}")
+            return {"nxt_paper_morning_close": f"ERROR: {e}"}
+
+    # ─────────────────────────────────────────────
+    # C26: NXT Paper Trading 등록 (G7 Stage 3)
+    # ─────────────────────────────────────────────
+    async def _job_nxt_paper_register(self, context=None) -> dict:
+        """nightwatch_report.json에서 NXT 추천 → PaperPortfolio 등록."""
+        try:
+            from data.paper_portfolio import PaperPortfolio
+            report_path = DATA_STORE / "nightwatch_report.json"
+            if not report_path.exists():
+                logger.info("[C26] nightwatch_report.json 없음 — 스킵")
+                return {"nxt_paper_register": "NO_REPORT"}
+
+            with open(report_path, "r", encoding="utf-8") as f:
+                report = json.load(f)
+
+            # 오늘 날짜 리포트인지 확인
+            report_date = report.get("date", "")
+            today = datetime.now().strftime("%Y-%m-%d")
+            if report_date != today:
+                logger.info(f"[C26] 리포트 날짜 불일치 ({report_date}) — 스킵")
+                return {"nxt_paper_register": "STALE_REPORT"}
+
+            verdict = report.get("verdict", "")
+            if verdict not in ("BUY", "WATCH"):
+                logger.info(f"[C26] NXT verdict={verdict} — Paper 등록 스킵")
+                return {"nxt_paper_register": f"VERDICT_{verdict}"}
+
+            targets = report.get("nxt_targets", [])
+            if not targets:
+                logger.info("[C26] NXT 추천 종목 없음")
+                return {"nxt_paper_register": "NO_TARGETS"}
+
+            portfolio = PaperPortfolio()
+            registered = []
+
+            for t in targets:
+                code = t.get("code", "")
+                name = t.get("name", code)
+                if not code or code in portfolio.positions:
+                    continue
+
+                # 현재가 (장마감 가격) 조회
+                entry = 0
+                if self.auto_trader and hasattr(self.auto_trader, 'trader'):
+                    try:
+                        p = await asyncio.to_thread(
+                            self.auto_trader.trader.fetch_price, code
+                        )
+                        if p.get("success") and p.get("current_price", 0) > 0:
+                            entry = p["current_price"]
+                    except Exception:
+                        pass
+
+                if entry <= 0:
+                    continue
+
+                # NXT 포지션 크기: 가용 자금의 40%
+                shares = max(1, int(portfolio.cash * 0.4 / entry))
+
+                # TP/SL: NXT 기본값 (+3% / -2.5%)
+                tp = int(entry * 1.03)
+                sl = int(entry * 0.975)
+
+                ok = portfolio.open_position(
+                    code, name, entry, shares, "nxt", tp, sl, time_stop_days=1,
+                )
+                if ok:
+                    registered.append(name)
+
+            if registered:
+                logger.info(f"[C26] NXT Paper 등록: {', '.join(registered)}")
+            return {"nxt_paper_register": len(registered), "names": registered}
+        except Exception as e:
+            logger.warning(f"[C26] NXT Paper 등록 실패 (무시): {e}")
+            return {"nxt_paper_register": f"ERROR: {e}"}
+
+    # ─────────────────────────────────────────────
+    # C27: Paper Trading 일일 성적표 (G7 Stage 3)
+    # ─────────────────────────────────────────────
+    async def _job_paper_daily_report(self, context=None) -> dict:
+        """일일 Paper Trading 성적표 → 텔레그램 발송."""
+        try:
+            from data.paper_portfolio import PaperPortfolio
+            portfolio = PaperPortfolio()
+
+            # MTM 갱신
+            if self.auto_trader and hasattr(self.auto_trader, 'trader'):
+                await asyncio.to_thread(
+                    portfolio.mark_to_market, self.auto_trader.trader
+                )
+
+            # 일일 스냅샷 저장
+            snapshot = portfolio.record_daily_snapshot()
+
+            # 일일 성적표 텔레그램 발송
+            report = portfolio.get_daily_report()
+            alert_fn = getattr(self.auto_trader, "_send_alert", None) if self.auto_trader else None
+            if alert_fn:
+                await asyncio.to_thread(alert_fn, report)
+                logger.info("[C27] Paper Trading 일일 성적표 발송")
+
+            # 14일차 이상이면 2주 종합 리포트 추가 발송
+            day_count = portfolio.get_day_count()
+            if day_count >= 14:
+                two_week = portfolio.format_two_week_report()
+                if alert_fn:
+                    await asyncio.to_thread(alert_fn, two_week)
+                    logger.info("[C27] Paper Trading 2주 종합 리포트 발송")
+
+            return {
+                "paper_daily_report": "OK",
+                "day": day_count,
+                "total_value": snapshot.get("total_value", 0),
+            }
+        except Exception as e:
+            logger.warning(f"[C27] Paper Trading 리포트 실패 (무시): {e}")
+            return {"paper_daily_report": f"ERROR: {e}"}
 
     async def _job_nxt_early_collect(self, context=None) -> dict:
         """C4E: NXT 사전 데이터 수집 + 예비 알림 발송.

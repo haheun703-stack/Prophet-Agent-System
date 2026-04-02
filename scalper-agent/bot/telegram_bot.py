@@ -3451,7 +3451,7 @@ class BodyHunterBot:
     # ── PAPER 트레이딩 자동 추적 ────────────────────────
 
     async def _job_paper_register(self, context):
-        """09:05 PAPER 종목 자동 등록 — Silent: 로그만"""
+        """09:05 PAPER 종목 자동 등록 — TradeTracker + PaperPortfolio 동시 등록"""
         from datetime import date
         if not is_trading_day():
             return
@@ -3462,6 +3462,38 @@ class BodyHunterBot:
             if names:
                 log_event("PAPER", f"{len(names)}종목 추적 시작: {', '.join(names)}")
                 logger.info(f"[PAPER] {len(names)}종목 추적 시작: {', '.join(names)} (로그만)")
+
+            # PaperPortfolio 연동 — 모닝 추천 등록
+            try:
+                from data.paper_portfolio import PaperPortfolio
+                portfolio = PaperPortfolio()
+                from data.trade_object import load_trade_objects
+                trade_objs = load_trade_objects()
+                pp_count = 0
+                for to in (trade_objs or []):
+                    if to.rr_verdict == "REJECT":
+                        continue
+                    if to.code in portfolio.positions:
+                        continue
+                    entry = to.entry_price
+                    if self.trader:
+                        try:
+                            p = self.trader.fetch_price(to.code)
+                            if p.get("success") and p.get("open", 0) > 0:
+                                entry = p["open"]
+                        except Exception:
+                            pass
+                    shares = max(1, int(portfolio.cash * 0.3 / max(entry, 1)))
+                    ok = portfolio.open_position(
+                        to.code, to.name, entry, shares, "morning",
+                        to.target_price, to.stop_loss, to.time_stop_days,
+                    )
+                    if ok:
+                        pp_count += 1
+                if pp_count:
+                    logger.info(f"[PaperPortfolio] 모닝 {pp_count}종목 등록")
+            except Exception as e:
+                logger.warning(f"[PaperPortfolio] 모닝 등록 실패: {e}")
         except Exception as e:
             logger.error(f"PAPER 등록 실패: {e}")
 
@@ -3481,6 +3513,34 @@ class BodyHunterBot:
                 self._closing_data["paper_events"].extend(events)
                 log_event("PAPER", f"TP/SL 이벤트 {len(events)}건", events)
                 logger.info(f"[PAPER] TP/SL 이벤트 {len(events)}건 (마감리포트에 통합)")
+
+            # PaperPortfolio TP/SL 체크
+            try:
+                from data.paper_portfolio import PaperPortfolio
+                portfolio = PaperPortfolio()
+                pp_closed = []
+                for code in list(portfolio.positions.keys()):
+                    pos = portfolio.positions[code]
+                    try:
+                        p = self.trader.fetch_price(code)
+                        if not p.get("success"):
+                            continue
+                        high = p.get("high", 0)
+                        low = p.get("low", 0)
+                        tp = pos.get("tp", 0)
+                        sl = pos.get("sl", 0)
+                        if tp > 0 and high >= tp:
+                            portfolio.close_position(code, tp, "TARGET")
+                            pp_closed.append(f"{pos['name']} TARGET")
+                        elif sl > 0 and low <= sl:
+                            portfolio.close_position(code, sl, "STOP")
+                            pp_closed.append(f"{pos['name']} STOP")
+                    except Exception:
+                        pass
+                if pp_closed:
+                    logger.info(f"[PaperPortfolio] 장중 청산: {', '.join(pp_closed)}")
+            except Exception as e:
+                logger.warning(f"[PaperPortfolio] 장중 체크 실패: {e}")
         except Exception as e:
             logger.warning(f"PAPER 가격체크 실패: {e}")
 
@@ -3497,6 +3557,25 @@ class BodyHunterBot:
                 self._closing_data["paper_events"].extend(events)
                 log_event("PAPER", f"EOD 시간손절 {len(events)}건", events)
                 logger.info(f"PAPER EOD: {len(events)}건 시간손절 (마감리포트에 통합)")
+
+            # PaperPortfolio 시간손절
+            try:
+                from data.paper_portfolio import PaperPortfolio
+                portfolio = PaperPortfolio()
+                for code in list(portfolio.positions.keys()):
+                    pos = portfolio.positions[code]
+                    hold = portfolio._calc_hold_days(pos["entry_date"])
+                    if hold >= pos.get("time_stop_days", 5):
+                        close_price = pos["entry_price"]
+                        try:
+                            p = self.trader.fetch_price(code)
+                            if p.get("success") and p.get("current_price", 0) > 0:
+                                close_price = p["current_price"]
+                        except Exception:
+                            pass
+                        portfolio.close_position(code, close_price, "TIME_STOP")
+            except Exception as e:
+                logger.warning(f"[PaperPortfolio] EOD 실패: {e}")
         except Exception as e:
             logger.error(f"PAPER EOD 실패: {e}")
 
