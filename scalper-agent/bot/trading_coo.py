@@ -783,18 +783,20 @@ class TradingCOO:
         # ── 2) 5개 잡 병렬 실행 ──
         jobs: List[Tuple[str, Coroutine]] = []
 
-        # TelegramBot 잡 (4개)
+        # TelegramBot 잡 (3개 병렬 + B2 백그라운드)
         if self.bot:
             jobs.extend([
                 ("B1_war_startup",
                  self.bot._job_war_startup(context)),
-                ("B2_tick_polling",
-                 self.bot._job_start_tick_polling(context)),
                 ("B5_paper_register",
                  self.bot._job_paper_register(context)),
                 ("B6_tv_init",
                  self.bot._job_intraday_tv_init(context)),
             ])
+            # B2 tick_polling: 장중 6시간 연속 실행 → 백그라운드 task
+            asyncio.create_task(self.bot._job_start_tick_polling(context))
+            results.append(JobResult("B2_tick_polling", True, 0))
+            logger.info("[COO] B2 tick_polling 백그라운드 시작")
         else:
             logger.warning("[COO] bot 미연결 — B1/B2/B5/B6 스킵")
 
@@ -1046,11 +1048,12 @@ class TradingCOO:
             results.extend(par_results)
 
         # ── 4) C1 _job_collect_minutes (non-critical) ──
+        # KIS API rate limit으로 50종목 수집 시 600초 초과 가능 → 900초
         if self.bot:
             r = await self.run_job_safe_async(
                 "C1_collect_minutes",
                 self.bot._job_collect_minutes(context),
-                timeout=600,
+                timeout=900,
             )
             results.append(r)
             if not r.success:

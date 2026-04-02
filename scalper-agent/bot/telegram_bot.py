@@ -2898,14 +2898,23 @@ class BodyHunterBot:
         except Exception as e:
             logger.error(f"국적별 수급 실패: {e}")
 
-        # 4. 수집 기록
+        # 4. ETF OHLCV 수집 (21종목)
+        etf_cnt = 0
+        try:
+            from data.etf_universe import collect_etf_daily
+            etf_cnt = await asyncio.to_thread(collect_etf_daily)
+            logger.info(f"ETF 일봉 수집 완료: {etf_cnt}종목")
+        except Exception as e:
+            logger.error(f"ETF 일봉 수집 실패: {e}")
+
+        # 5. 수집 기록
         try:
             import json as _json
             collect_info = {
                 "date": date.today().strftime("%Y-%m-%d"), "source": "bot",
                 "time": datetime.now().strftime("%H:%M:%S"),
                 "steps": {"daily": pykrx_cnt, "flow": len(r1) if r1 else 0,
-                           "nationality": 8, "parquet": 0, "sync": 0},
+                           "nationality": 8, "etf": etf_cnt, "parquet": 0, "sync": 0},
             }
             lc_path = Path(__file__).parent.parent / "data_store" / "_last_collect.json"
             with open(lc_path, "w", encoding="utf-8") as f:
