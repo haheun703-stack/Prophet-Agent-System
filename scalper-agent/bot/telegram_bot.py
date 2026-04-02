@@ -1870,17 +1870,34 @@ class BodyHunterBot:
     # ═══════════════════════════════════════
 
     async def cmd_paper(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """PAPER 트레이딩 현황 조회 + 2주 리뷰 통계"""
+        """PAPER 트레이딩 현황 조회 — PaperPortfolio + TradeTracker 통합"""
         if not self._is_authorized(update):
             return
         try:
-            from data.trade_tracker import TradeTracker
-            tracker = TradeTracker()
-            msg = tracker.get_paper_dashboard(kis=self.trader)
+            # PaperPortfolio (메인)
+            from data.paper_portfolio import PaperPortfolio
+            portfolio = PaperPortfolio()
+            portfolio.mark_to_market(self.trader)
+            msg = portfolio.get_daily_report()
+
+            # 2주 통계가 있으면 PASS/FAIL 판정도 표시
+            stats = portfolio.get_two_week_stats()
+            if stats.get("total", 0) >= 5:
+                result = portfolio.check_pass_fail()
+                msg += f"\n\n판정: {result['verdict']} ({result['passed']}/5)"
+
             for chunk in _split_message(msg):
                 await update.message.reply_text(chunk)
         except Exception as e:
-            await update.message.reply_text(f"❌ PAPER 현황 조회 실패: {e}")
+            # PaperPortfolio 실패 시 기존 TradeTracker fallback
+            try:
+                from data.trade_tracker import TradeTracker
+                tracker = TradeTracker()
+                msg = tracker.get_paper_dashboard(kis=self.trader)
+                for chunk in _split_message(msg):
+                    await update.message.reply_text(chunk)
+            except Exception as e2:
+                await update.message.reply_text(f"PAPER 현황 조회 실패: {e2}")
 
     # ═══════════════════════════════════════
     #  JARVIS BRAIN 자본 배분
