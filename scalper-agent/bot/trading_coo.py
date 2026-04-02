@@ -1961,13 +1961,13 @@ class TradingCOO:
                 await asyncio.to_thread(alert_fn, report)
                 logger.info("[C27] Paper Trading 일일 성적표 발송")
 
-            # 14일차 이상이면 2주 종합 리포트 추가 발송
+            # 7일차 이상이면 주간 종합 리포트 추가 발송
             day_count = portfolio.get_day_count()
-            if day_count >= 14:
+            if day_count >= 7 and day_count % 7 == 0:
                 two_week = portfolio.format_two_week_report()
                 if alert_fn:
                     await asyncio.to_thread(alert_fn, two_week)
-                    logger.info("[C27] Paper Trading 2주 종합 리포트 발송")
+                    logger.info(f"[C27] Paper Trading Week{day_count//7} 종합 리포트 발송")
 
             return {
                 "paper_daily_report": "OK",

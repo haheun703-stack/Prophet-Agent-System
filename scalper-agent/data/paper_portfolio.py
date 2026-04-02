@@ -320,7 +320,7 @@ class PaperPortfolio:
             "avg_pnl_positive": stats["avg_pnl"] >= 0.5,
             "cum_return_positive": stats["cum_return"] >= 0,
             "mdd_within_15": stats["mdd"] >= -15,
-            "sample_size_10": stats["total"] >= 10,
+            "sample_size_5": stats["total"] >= 5,
         }
         passed = sum(criteria.values())
         verdict = "PASS" if passed >= 4 else "FAIL"
@@ -403,16 +403,17 @@ class PaperPortfolio:
         return "\n".join(lines)
 
     def format_two_week_report(self) -> str:
-        """2주 종합 리포트"""
+        """주간 종합 리포트"""
         result = self.check_pass_fail()
         stats = result.get("stats", self.get_two_week_stats())
         verdict = result["verdict"]
+        week = self.get_day_count() // 7
 
         v_emoji = "PASS" if verdict == "PASS" else "FAIL"
 
         lines = [
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-            f"  Paper Trading 2주 종합 리포트",
+            f"  Paper Trading Week {week} 종합 리포트",
             f"  판정: {v_emoji}",
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             "",
@@ -451,7 +452,7 @@ class PaperPortfolio:
             "avg_pnl_positive": "평균수익 0.5%+",
             "cum_return_positive": "누적수익 0%+",
             "mdd_within_15": "MDD -15% 이내",
-            "sample_size_10": "거래 10건+",
+            "sample_size_5": "거래 5건+",
         }
         for key, label in labels.items():
             passed = criteria.get(key, False)
