@@ -754,25 +754,18 @@ def _calc_korea_strength() -> Tuple[float, Dict]:
     score = 0.0
     detail = {}
 
-    # ── (1) 기관/외인 순매수 (pykrx) ──
+    # ── (1) 기관/외인 순매수 (FlowZ CSV fallback 연동) ──
     try:
-        from pykrx import stock as pykrx_stock
-        from datetime import date, timedelta as td
+        from data.flow_zscore import _fetch_market_trading_data
 
-        today = date.today()
-        week_ago = (today - td(days=10)).strftime("%Y%m%d")
-        today_str = today.strftime("%Y%m%d")
+        data = _fetch_market_trading_data("KOSPI", 15)
+        if data and len(data) >= 1:
+            latest = data[-1]
+            is_csv = latest.get("_source") == "csv"
+            # pykrx: 원 단위(/1e8=억), CSV: 백만원 단위(/100=억)
+            div = 100.0 if is_csv else 1e8
 
-        # 기관/외인 매매동향 (KOSPI)
-        tv_df = pykrx_stock.get_market_trading_value_by_date(
-            week_ago, today_str, "KOSPI"
-        )
-        if tv_df is not None and len(tv_df) >= 1:
-            latest = tv_df.iloc[-1]
-
-            # 기관 순매수 (원 → 억원)
-            inst_raw = latest.get("기관합계", 0)
-            inst_buy = inst_raw / 1_0000_0000 if abs(inst_raw) > 1000 else inst_raw
+            inst_buy = latest.get("inst", 0) / div
             if inst_buy >= 3000:
                 score += 1.5
             elif inst_buy >= 1000:
@@ -783,9 +776,7 @@ def _calc_korea_strength() -> Tuple[float, Dict]:
                 score -= 0.5
             detail["기관순매수"] = f"{inst_buy:+,.0f}억"
 
-            # 외인 순매수
-            for_raw = latest.get("외국인합계", 0)
-            for_buy = for_raw / 1_0000_0000 if abs(for_raw) > 1000 else for_raw
+            for_buy = latest.get("foreign", 0) / div
             if for_buy >= 2000:
                 score += 1.0
             elif for_buy >= 500:
@@ -801,16 +792,20 @@ def _calc_korea_strength() -> Tuple[float, Dict]:
 
     # ── (3) 코스피 기술적 위치 + (5) 거래대금 활력 ──
     try:
-        from pykrx import stock as pykrx_stock
+        import yfinance as yf
         from datetime import date, timedelta as td
+        import pandas as _pd
 
         today = date.today()
-        start_90 = (today - td(days=120)).strftime("%Y%m%d")
-        today_str = today.strftime("%Y%m%d")
-
-        idx_df = pykrx_stock.get_index_ohlcv(start_90, today_str, "1001")
+        start_d = today - td(days=120)
+        idx_df = yf.download(
+            "^KS11", start=start_d.strftime("%Y-%m-%d"),
+            end=today.strftime("%Y-%m-%d"), progress=False, auto_adjust=True,
+        )
         if idx_df is not None and len(idx_df) >= 60:
-            closes = idx_df["종가"]
+            if isinstance(idx_df.columns, _pd.MultiIndex):
+                idx_df.columns = idx_df.columns.get_level_values(0)
+            closes = idx_df["Close"].astype(float)
             current = closes.iloc[-1]
             ma5 = closes.iloc[-5:].mean()
             ma20 = closes.iloc[-20:].mean()
@@ -831,10 +826,11 @@ def _calc_korea_strength() -> Tuple[float, Dict]:
             else:
                 detail["기술적위치"] = "중립"
 
-            # 거래대금 활력
-            if "거래대금" in idx_df.columns and len(idx_df) >= 20:
-                tv_today = idx_df["거래대금"].iloc[-1]
-                tv_avg20 = idx_df["거래대금"].iloc[-20:].mean()
+            # 거래대금 활력 (Volume 기반 비율)
+            if "Volume" in idx_df.columns and len(idx_df) >= 20:
+                vol = idx_df["Volume"].astype(float)
+                tv_today = vol.iloc[-1]
+                tv_avg20 = vol.iloc[-20:].mean()
                 if tv_avg20 > 0:
                     tv_ratio = tv_today / tv_avg20
                     if tv_ratio >= 1.5:

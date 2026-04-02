@@ -617,60 +617,52 @@ def _phase3_sector(history: dict, rotation_detail: list = None) -> SectorAssessm
 
 def _calc_market_flow() -> dict:
     """코스피 투자자별 매매동향 5일 → 기관/외인 수급 판정.
+    FlowZ CSV fallback 연동 (pykrx 장애 대응).
     Returns: {"bull": bool, "bear": bool, "retail_panic": bool, "detail": str}
     """
     try:
-        from pykrx import stock
-        from datetime import timedelta
+        from data.flow_zscore import _fetch_market_trading_data
 
-        end = date.today()
-        start = end - timedelta(days=14)  # 5영업일 확보
-
-        df = stock.get_market_trading_value_by_date(
-            start.strftime("%Y%m%d"), end.strftime("%Y%m%d"), "KOSPI"
-        )
-        if df is None or len(df) < 3:
+        data = _fetch_market_trading_data("KOSPI", 20)
+        if not data or len(data) < 3:
             return {}
 
-        # 최근 5일 (영업일)
-        recent = df.tail(5)
-        inst_col = "기관합계" if "기관합계" in recent.columns else None
-        foreign_col = "외국인합계" if "외국인합계" in recent.columns else None
-        retail_col = "개인" if "개인" in recent.columns else None
+        # pykrx: 원, CSV: 백만원 → 억 변환
+        is_csv = data[-1].get("_source") == "csv"
+        div = 100.0 if is_csv else 1e8
 
-        if not inst_col or not foreign_col:
-            # 컬럼명 다를 수 있음
-            return {}
+        # 최근 5일
+        recent = data[-5:]
 
-        inst_5d = recent[inst_col].sum()
-        foreign_5d = recent[foreign_col].sum()
-        retail_today = recent[retail_col].iloc[-1] if retail_col else 0
+        inst_5d = sum(d.get("inst", 0) for d in recent)
+        foreign_5d = sum(d.get("foreign", 0) for d in recent)
+        retail_today = recent[-1].get("indiv", 0)
 
         # 연속 매수일 카운트
         inst_consec_buy = 0
-        foreign_consec_buy = 0
-        for _, row in recent.iloc[::-1].iterrows():
-            if row[inst_col] > 0:
+        for d in reversed(recent):
+            if d.get("inst", 0) > 0:
                 inst_consec_buy += 1
             else:
                 break
-        for _, row in recent.iloc[::-1].iterrows():
-            if row[foreign_col] > 0:
+        foreign_consec_buy = 0
+        for d in reversed(recent):
+            if d.get("foreign", 0) > 0:
                 foreign_consec_buy += 1
             else:
                 break
 
         bull = inst_consec_buy >= 3 and foreign_consec_buy >= 3
-        # 기관+외인 동반 순매도 3일
+
         inst_consec_sell = 0
-        foreign_consec_sell = 0
-        for _, row in recent.iloc[::-1].iterrows():
-            if row[inst_col] < 0:
+        for d in reversed(recent):
+            if d.get("inst", 0) < 0:
                 inst_consec_sell += 1
             else:
                 break
-        for _, row in recent.iloc[::-1].iterrows():
-            if row[foreign_col] < 0:
+        foreign_consec_sell = 0
+        for d in reversed(recent):
+            if d.get("foreign", 0) < 0:
                 foreign_consec_sell += 1
             else:
                 break
@@ -678,12 +670,12 @@ def _calc_market_flow() -> dict:
 
         # 개인만 순매수 + 기관/외인 매도 = 위험
         retail_panic = (retail_today > 0 and
-                        recent[inst_col].iloc[-1] < 0 and
-                        recent[foreign_col].iloc[-1] < 0)
+                        recent[-1].get("inst", 0) < 0 and
+                        recent[-1].get("foreign", 0) < 0)
 
         parts = []
-        parts.append(f"기관{inst_5d/1e8:+,.0f}억(5D)")
-        parts.append(f"외인{foreign_5d/1e8:+,.0f}억(5D)")
+        parts.append(f"기관{inst_5d/div:+,.0f}억(5D)")
+        parts.append(f"외인{foreign_5d/div:+,.0f}억(5D)")
         if bull:
             parts.append("동반매수")
         elif bear:
