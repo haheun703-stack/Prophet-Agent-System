@@ -1432,15 +1432,15 @@ class TradingCOO:
             results.append(r12)
 
         # C13: ★ 이브닝 분석 (CRITICAL)
-        # 추천 파이프라인: Step1~6 합계 ~15분
-        # (뉴스AI 120s + 사전감지 85s + TV/MACD/TRIX 45s + Scoring 200s + KIS검증 60s)
-        # 3/31: 923초 소요 → 900초 TIMEOUT 발생 → 1800초로 확대
+        # 추천 파이프라인: Step1~6 합계 ~25분
+        # Step5 Soft Scoring이 300+종목 처리 시 ~20분 소요 (TV잔존+거래대금이상 종목 추가)
+        # 4/2: 1800초(30분) 타임아웃 → 2700초(45분) 확대
         c13_ok = False
         if self.auto_trader:
             r13 = await self.run_job_safe_async(
                 "C13_evening_analysis",
                 self.auto_trader.job_evening_analysis(context),
-                timeout=1800,
+                timeout=2700,
             )
             results.append(r13)
             c13_ok = r13.success
@@ -1849,7 +1849,7 @@ class TradingCOO:
             r = await self.run_job_safe_async(
                 "C13_evening_analysis_retry",
                 self.auto_trader.job_evening_analysis(context),
-                timeout=1800,
+                timeout=2700,
             )
             if r.success:
                 logger.info("[COO] FALLBACK-C13: 재시도 성공!")
