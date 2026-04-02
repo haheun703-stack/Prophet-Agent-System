@@ -1574,7 +1574,6 @@ class TradingCOO:
         # ── G7 후 데이터 재검증 (G6 시점 미생성 데이터 포함) ──
         try:
             if self.bot:
-                import asyncio
                 r = await asyncio.wait_for(
                     self.bot._job_verify_data(context), timeout=120
                 )
@@ -1677,7 +1676,6 @@ class TradingCOO:
         G7 C11(BRAIN)이 캐시를 즉시 재사용하여 pykrx 재호출 불필요.
         """
         try:
-            import asyncio
             from data.flow_zscore import calc_market_zscore, save_flow_zscore
 
             result = await asyncio.to_thread(calc_market_zscore)
@@ -1707,7 +1705,6 @@ class TradingCOO:
         2-Layer 판단 활성화.
         """
         try:
-            import asyncio
             from data.macro_baseline import fetch_all_baselines
 
             baselines = await asyncio.to_thread(fetch_all_baselines)
@@ -1729,7 +1726,6 @@ class TradingCOO:
         다음날 모닝추천 Step 2.6에서 캐시(3시간 TTL) 즉시 재사용.
         """
         try:
-            import asyncio
             from strategies.trix_divergence import (
                 scan_trix_divergence, save_trix_cache,
             )
@@ -1767,7 +1763,6 @@ class TradingCOO:
     async def _job_cto_accuracy_update(self, context=None) -> dict:
         """CTO 시그널 소스별 정확도 계산 (recommendation_history 기반)."""
         try:
-            import asyncio
             result = await asyncio.to_thread(self.cto.calc_signal_accuracy)
             top_sources = sorted(
                 result.items(), key=lambda x: -x[1].get("accuracy_pct", 0)
@@ -1789,7 +1784,6 @@ class TradingCOO:
         실패 시 AUTO-RECOVERY에서 재시도.
         """
         try:
-            import asyncio
             from data.upload_short import upload_nationality_flows
             ok = await asyncio.to_thread(upload_nationality_flows)
             if ok:
@@ -1811,7 +1805,6 @@ class TradingCOO:
         """
         try:
             from data.nightwatch import collect_nxt_early_data, format_nxt_pre_alert
-            import asyncio
 
             data = await asyncio.to_thread(collect_nxt_early_data)
             logger.info(f"[C4E] NXT 사전 수집 완료: {data.get('collected_at', '')}")
