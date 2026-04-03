@@ -789,6 +789,7 @@ class TradingCOO:
 
         # ── 2) 5개 잡 병렬 실행 ──
         jobs: List[Tuple[str, Coroutine]] = []
+        pre_results = []
 
         # TelegramBot 잡 (3개 병렬 + B2 백그라운드)
         if self.bot:
@@ -802,7 +803,7 @@ class TradingCOO:
             ])
             # B2 tick_polling: 장중 6시간 연속 실행 → 백그라운드 task
             asyncio.create_task(self.bot._job_start_tick_polling(context))
-            results.append(JobResult("B2_tick_polling", True, 0))
+            pre_results.append(JobResult("B2_tick_polling", True, 0))
             logger.info("[COO] B2 tick_polling 백그라운드 시작")
         else:
             logger.warning("[COO] bot 미연결 — B1/B2/B5/B6 스킵")
@@ -823,7 +824,7 @@ class TradingCOO:
             return []
 
         # 개별 타임아웃 120초
-        results = await self.run_parallel_async(jobs, timeout_per_job=120)
+        results = pre_results + await self.run_parallel_async(jobs, timeout_per_job=120)
 
         # ── 3) B6 실패 여부 기록 ──
         b6_results = [r for r in results if r.name == "B6_tv_init"]
