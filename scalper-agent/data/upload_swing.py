@@ -845,6 +845,18 @@ def _build_fib_stocks() -> list:
     return result[:50]
 
 
+def _build_fib_leaders() -> list:
+    """시총 상위 30 대형주 피보나치 레벨 (하락률 무관, 무조건 표시).
+    fib_leaders.json에서 로드. 없으면 빈 리스트.
+    """
+    data = _load_json("fib_leaders.json")
+    if not data:
+        return []
+    if isinstance(data, list):
+        return data[:30]
+    return []
+
+
 def _enrich_with_macro(result: dict) -> dict:
     """기존 스윙 데이터에 매크로/섹터/카테고리 융합
 
@@ -1290,6 +1302,8 @@ def upload_dashboard_swing(swing_data: dict) -> bool:
             "nxt_rationale": _build_nxt_rationale(nxt),
             # 피보나치 눌림목 종목 (퀀트 대시보드 대체)
             "fib_stocks": _build_fib_stocks(),
+            # 대형주 피보나치 (시총 상위 30)
+            "fib_leaders": _build_fib_leaders(),
         }
 
         # alloc_* 합계 100% 보정
