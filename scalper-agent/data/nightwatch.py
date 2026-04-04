@@ -1827,6 +1827,11 @@ def save_nightwatch_report(report: NightwatchReport):
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     report_dict = asdict(report)
 
+    # date 필드 보장 (C26 Paper Trading 날짜 체크용)
+    if "date" not in report_dict:
+        ts = report_dict.get("timestamp", "")
+        report_dict["date"] = ts[:10] if len(ts) >= 10 else datetime.now().strftime("%Y-%m-%d")
+
     # 최신 리포트 저장 (atomic write)
     tmp = REPORT_PATH.with_suffix(".tmp")
     with open(tmp, "w", encoding="utf-8") as f:

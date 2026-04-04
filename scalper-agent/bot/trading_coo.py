@@ -1855,22 +1855,43 @@ class TradingCOO:
         try:
             from data.paper_portfolio import PaperPortfolio
             report_path = DATA_STORE / "nightwatch_report.json"
-            if not report_path.exists():
-                logger.info("[C26] nightwatch_report.json 없음 — 스킵")
-                return {"nxt_paper_register": "NO_REPORT"}
 
-            with open(report_path, "r", encoding="utf-8") as f:
-                report = json.load(f)
-
-            # 오늘 날짜 리포트인지 확인 (date 키 없으면 timestamp에서 추출)
-            report_date = report.get("date", "")
-            if not report_date:
-                ts = report.get("timestamp", "")
-                report_date = ts[:10] if len(ts) >= 10 else ""
             today = datetime.now().strftime("%Y-%m-%d")
-            if report_date != today:
-                logger.info(f"[C26] 리포트 날짜 불일치 ({report_date}) — 스킵")
-                return {"nxt_paper_register": "STALE_REPORT"}
+
+            # nightwatch_decide(16:35)와 경쟁 상태 방어: 최대 2회 시도
+            report = None
+            for attempt in range(2):
+                if not report_path.exists():
+                    if attempt == 0:
+                        logger.info("[C26] nightwatch_report.json 없음 — 30초 후 재시도")
+                        await asyncio.sleep(30)
+                        continue
+                    logger.info("[C26] nightwatch_report.json 없음 — 스킵")
+                    return {"nxt_paper_register": "NO_REPORT"}
+
+                with open(report_path, "r", encoding="utf-8") as f:
+                    report = json.load(f)
+
+                # date 필드 우선, 없으면 timestamp에서 추출
+                report_date = report.get("date", "")
+                if not report_date:
+                    ts = report.get("timestamp", "")
+                    report_date = ts[:10] if len(ts) >= 10 else ""
+
+                if report_date == today:
+                    break  # 오늘 리포트 확인 완료
+
+                if attempt == 0:
+                    logger.info(f"[C26] 리포트 날짜 불일치 ({report_date} ≠ {today}) "
+                                f"— nightwatch 완료 대기 30초")
+                    await asyncio.sleep(30)
+                else:
+                    logger.info(f"[C26] 리포트 날짜 불일치 ({report_date} ≠ {today}) "
+                                f"— 재시도 후에도 stale, 스킵")
+                    return {"nxt_paper_register": "STALE_REPORT"}
+
+            if not report:
+                return {"nxt_paper_register": "NO_REPORT"}
 
             # Paper Trading은 관망이어도 타겟 있으면 등록 (추적 목적)
             # signal 키 사용 (verdict 키는 nightwatch에 없음)
@@ -1879,6 +1900,9 @@ class TradingCOO:
             logger.info(f"[C26] NXT signal={signal} ({signal_text}), score={report.get('total_score', '?')}")
 
             targets = report.get("nxt_targets", [])
+            if not isinstance(targets, list):
+                logger.warning(f"[C26] nxt_targets 타입 이상: {type(targets)} — 스킵")
+                return {"nxt_paper_register": "INVALID_TARGETS"}
             if not targets:
                 logger.info("[C26] NXT 추천 종목 없음")
                 return {"nxt_paper_register": "NO_TARGETS"}
