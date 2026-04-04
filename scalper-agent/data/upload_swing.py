@@ -842,7 +842,7 @@ def _build_fib_stocks() -> list:
     for r in result:
         del r["_sort"]
 
-    return result[:30]
+    return result[:50]
 
 
 def _enrich_with_macro(result: dict) -> dict:
