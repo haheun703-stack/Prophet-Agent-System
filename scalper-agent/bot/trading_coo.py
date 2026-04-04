@@ -2079,7 +2079,7 @@ class TradingCOO:
             brain = await asyncio.to_thread(generate_brain_report)
             await asyncio.to_thread(save_brain_report, brain)
             logger.info(f"[COO] brain_report.json 독립 생성 완료: "
-                        f"{brain.regime} | 비중 {brain.position_size_pct}%")
+                        f"{brain.overall_verdict} | 비중 {brain.position_size_pct}%")
         except Exception as e:
             logger.error(f"[COO] brain_report.json 독립 생성 실패: {e}")
 
