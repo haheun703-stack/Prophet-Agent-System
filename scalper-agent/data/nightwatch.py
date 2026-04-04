@@ -1809,8 +1809,20 @@ def run_nightwatch() -> NightwatchReport:
     )
     report.reentry_signals = reentry
 
+    # 5.5단: 채권자경단 v2 (7대 글로벌 리스크 신호)
+    logger.info("[NIGHTWATCH] [5.5단] 채권자경단 v2 수집...")
+    try:
+        bond_vig = collect_bond_vigilante_v2()
+        logger.info(f"[NIGHTWATCH] 채권자경단: {bond_vig.get('summary', {}).get('verdict', '?')} "
+                     f"(G={bond_vig.get('summary', {}).get('green', 0)} "
+                     f"Y={bond_vig.get('summary', {}).get('yellow', 0)} "
+                     f"R={bond_vig.get('summary', {}).get('red', 0)})")
+    except Exception as e:
+        logger.warning(f"[NIGHTWATCH] 채권자경단 수집 실패 (무시): {e}")
+        bond_vig = {}
+
     # 저장
-    save_nightwatch_report(report)
+    save_nightwatch_report(report, bond_vigilante=bond_vig)
     logger.info(f"[NIGHTWATCH] 완료 | {report.signal} {report.signal_text} | "
                 f"점수: {report.total_score:+.1f} | "
                 f"섹터: {report.selection_reason} | "
@@ -1820,9 +1832,146 @@ def run_nightwatch() -> NightwatchReport:
 
 
 # ═══════════════════════════════════════════════════
+#  [채권 자경단 v2] 7대 시크릿 신호 수집
+# ═══════════════════════════════════════════════════
+def collect_bond_vigilante_v2() -> dict:
+    """채권자경단 v2: 7대 글로벌 리스크 신호 수집.
+    nightwatch_report.json의 bond_vigilante 필드에 저장.
+    """
+    import yfinance as yf
+    from datetime import timedelta
+
+    end = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+    start = (datetime.now() - timedelta(days=40)).strftime("%Y-%m-%d")
+    result = {"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "signals": {}}
+
+    def _fetch(ticker: str) -> dict:
+        try:
+            df = yf.download(ticker, start=start, end=end, progress=False)
+            if df.empty:
+                return {}
+            if hasattr(df.columns, 'levels'):
+                df.columns = df.columns.get_level_values(0)
+            last = df.iloc[-1]
+            prev = df.iloc[-2] if len(df) > 1 else last
+            close = float(last['Close'])
+            prev_close = float(prev['Close'])
+            chg_pct = ((close - prev_close) / prev_close * 100) if prev_close else 0
+            ma20 = float(df['Close'].tail(20).mean()) if len(df) >= 20 else close
+            return {"value": round(close, 2), "chg_pct": round(chg_pct, 2),
+                    "ma20": round(ma20, 2), "date": df.index[-1].strftime("%Y-%m-%d")}
+        except Exception:
+            return {}
+
+    try:
+        # 1) MOVE Index (채권 공포)
+        move = _fetch("^MOVE")
+        if move:
+            v = move["value"]
+            level = "안전" if v < 100 else ("경계" if v < 120 else "위험")
+            move["level"] = level
+            move["signal"] = "GREEN" if v < 100 else ("YELLOW" if v < 120 else "RED")
+            result["signals"]["move"] = move
+
+        # 2) VIX 기간구조
+        vix = _fetch("^VIX")
+        vix3m = _fetch("^VIX3M")
+        if vix and vix3m:
+            ratio = round(vix["value"] / vix3m["value"], 3) if vix3m["value"] else 1.0
+            structure = "BACKWARDATION" if ratio > 1.0 else "CONTANGO"
+            signal = "RED" if ratio > 1.05 else ("YELLOW" if ratio > 0.98 else "GREEN")
+            result["signals"]["vix_term"] = {
+                "vix": vix["value"], "vix3m": vix3m["value"],
+                "ratio": ratio, "structure": structure, "signal": signal,
+            }
+
+        # 3) Copper/Gold 비율
+        gold = _fetch("GC=F")
+        copper = _fetch("HG=F")
+        if gold and copper and gold["value"] > 0:
+            ratio = round((copper["value"] * 1000) / gold["value"], 4)
+            signal = "GREEN" if copper["chg_pct"] > gold["chg_pct"] else (
+                "RED" if copper["chg_pct"] < gold["chg_pct"] - 1 else "YELLOW")
+            result["signals"]["cu_au"] = {
+                "gold": gold["value"], "copper": copper["value"],
+                "ratio": ratio, "signal": signal,
+                "gold_chg": gold["chg_pct"], "copper_chg": copper["chg_pct"],
+            }
+
+        # 4) JPY 캐리 트레이드
+        jpy = _fetch("JPY=X")
+        if jpy:
+            # JPY=X 상승 = 엔약세 = 캐리ON
+            signal = "GREEN" if jpy["chg_pct"] > 0.1 else (
+                "RED" if jpy["chg_pct"] < -0.3 else "YELLOW")
+            carry = "ON" if jpy["chg_pct"] > 0.1 else ("OFF" if jpy["chg_pct"] < -0.3 else "NEUTRAL")
+            jpy["carry"] = carry
+            jpy["signal"] = signal
+            result["signals"]["jpy_carry"] = jpy
+
+        # 5) VVIX (스마트머니 헷지)
+        vvix = _fetch("^VVIX")
+        if vvix:
+            vs_ma = round((vvix["value"] / vvix["ma20"] - 1) * 100, 1) if vvix["ma20"] else 0
+            signal = "GREEN" if vs_ma < -5 else ("RED" if vs_ma > 10 else "YELLOW")
+            vvix["vs_ma20_pct"] = vs_ma
+            vvix["signal"] = signal
+            result["signals"]["vvix"] = vvix
+
+        # 6) 신용 스프레드 (HYG/LQD 프록시)
+        hyg = _fetch("HYG")
+        lqd = _fetch("LQD")
+        if hyg and lqd and lqd["value"] > 0:
+            ratio = round(hyg["value"] / lqd["value"], 4)
+            # HYG/LQD 상승 = 스프레드 축소 = RISK-ON
+            signal = "GREEN" if hyg["chg_pct"] > lqd["chg_pct"] + 0.05 else (
+                "RED" if hyg["chg_pct"] < lqd["chg_pct"] - 0.1 else "YELLOW")
+            result["signals"]["credit_spread"] = {
+                "hyg": hyg["value"], "lqd": lqd["value"],
+                "ratio": ratio, "signal": signal,
+                "hyg_chg": hyg["chg_pct"], "lqd_chg": lqd["chg_pct"],
+            }
+
+        # 7) BTC 야간 센티먼트
+        btc = _fetch("BTC-USD")
+        if btc:
+            signal = "GREEN" if btc["chg_pct"] > 1.0 else (
+                "RED" if btc["chg_pct"] < -2.0 else "YELLOW")
+            btc["signal"] = signal
+            result["signals"]["btc"] = btc
+
+        # 종합 판정
+        signals = result["signals"]
+        green = sum(1 for s in signals.values() if isinstance(s, dict) and s.get("signal") == "GREEN")
+        red = sum(1 for s in signals.values() if isinstance(s, dict) and s.get("signal") == "RED")
+        yellow = len(signals) - green - red
+
+        if red >= 3:
+            verdict = "회피"
+        elif red >= 2 or green < 3:
+            verdict = "경계"
+        elif green >= 5:
+            verdict = "적극 매수"
+        else:
+            verdict = "조건부 매수"
+
+        result["summary"] = {
+            "green": green, "yellow": yellow, "red": red,
+            "verdict": verdict, "total": len(signals),
+        }
+        logger.info(f"[채권자경단v2] {verdict} | GREEN={green} YELLOW={yellow} RED={red}")
+
+    except Exception as e:
+        logger.warning(f"[채권자경단v2] 수집 실패 (무시): {e}")
+        result["summary"] = {"green": 0, "yellow": 0, "red": 0, "verdict": "수집실패", "total": 0}
+
+    return result
+
+
+# ═══════════════════════════════════════════════════
 #  저장 / 로드
 # ═══════════════════════════════════════════════════
-def save_nightwatch_report(report: NightwatchReport):
+def save_nightwatch_report(report: NightwatchReport, bond_vigilante: dict = None):
     """리포트 JSON 저장 + 히스토리 누적"""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     report_dict = asdict(report)
@@ -1831,6 +1980,10 @@ def save_nightwatch_report(report: NightwatchReport):
     if "date" not in report_dict:
         ts = report_dict.get("timestamp", "")
         report_dict["date"] = ts[:10] if len(ts) >= 10 else datetime.now().strftime("%Y-%m-%d")
+
+    # 채권자경단 v2 데이터 병합 (nxt_rationale 프론트 표시용)
+    if bond_vigilante:
+        report_dict["bond_vigilante"] = bond_vigilante
 
     # 최신 리포트 저장 (atomic write)
     tmp = REPORT_PATH.with_suffix(".tmp")

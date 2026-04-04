@@ -701,6 +701,72 @@ def _build_warnings(nxt: dict, macro_report: dict) -> list:
     return warnings
 
 
+def _build_nxt_rationale(nxt: dict) -> dict:
+    """채권자경단 v2 데이터 → 프론트 표시용 nxt_rationale JSONB 생성.
+    nightwatch_report.json의 bond_vigilante 필드에서 읽음.
+    """
+    bv = nxt.get("bond_vigilante", {})
+    if not bv or not bv.get("signals"):
+        return {}
+
+    signals = bv["signals"]
+    summary = bv.get("summary", {})
+
+    # 지표별 한국어 매핑
+    _이름 = {
+        "move": "MOVE 채권공포",
+        "vix_term": "VIX 기간구조",
+        "cu_au": "구리/금 비율",
+        "jpy_carry": "엔 캐리트레이드",
+        "vvix": "VVIX 스마트머니",
+        "credit_spread": "신용스프레드",
+        "btc": "BTC 야간심리",
+    }
+    _신호색 = {"GREEN": "안전", "YELLOW": "경계", "RED": "위험"}
+
+    indicators = []
+    for key, name in _이름.items():
+        sig = signals.get(key, {})
+        if not sig:
+            continue
+        signal = sig.get("signal", "YELLOW")
+        # 지표별 핵심 수치
+        if key == "move":
+            detail = f"{sig.get('value', 0)}"
+        elif key == "vix_term":
+            detail = f"VIX {sig.get('vix', 0)} / VIX3M {sig.get('vix3m', 0)} ({sig.get('structure', '')})"
+        elif key == "cu_au":
+            detail = f"구리 {sig.get('copper_chg', 0):+.1f}% vs 금 {sig.get('gold_chg', 0):+.1f}%"
+        elif key == "jpy_carry":
+            detail = f"JPY {sig.get('value', 0)} ({sig.get('carry', '')})"
+        elif key == "vvix":
+            detail = f"{sig.get('value', 0)} (MA20 대비 {sig.get('vs_ma20_pct', 0):+.1f}%)"
+        elif key == "credit_spread":
+            detail = f"HYG {sig.get('hyg_chg', 0):+.2f}% vs LQD {sig.get('lqd_chg', 0):+.2f}%"
+        elif key == "btc":
+            detail = f"${sig.get('value', 0):,.0f} ({sig.get('chg_pct', 0):+.1f}%)"
+        else:
+            detail = ""
+
+        indicators.append({
+            "key": key,
+            "name": name,
+            "signal": signal,
+            "signal_label": _신호색.get(signal, "경계"),
+            "detail": detail,
+        })
+
+    return {
+        "timestamp": bv.get("timestamp", ""),
+        "verdict": summary.get("verdict", ""),
+        "green": summary.get("green", 0),
+        "yellow": summary.get("yellow", 0),
+        "red": summary.get("red", 0),
+        "total": summary.get("total", 0),
+        "indicators": indicators,
+    }
+
+
 def _enrich_with_macro(result: dict) -> dict:
     """기존 스윙 데이터에 매크로/섹터/카테고리 융합
 
@@ -1142,6 +1208,8 @@ def upload_dashboard_swing(swing_data: dict) -> bool:
             "liquidity_score": liquidity.get("liquidity_score", 0) or 0,
             # 메타
             "market_comment": swing_data.get("market_comment", ""),
+            # 채권자경단 v2 (NXT 추천 근거)
+            "nxt_rationale": _build_nxt_rationale(nxt),
         }
 
         # alloc_* 합계 100% 보정
