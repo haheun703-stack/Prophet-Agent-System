@@ -54,6 +54,35 @@ def _get_client():
     return _supabase
 
 
+def _fetch_closing_prices(codes: list) -> dict:
+    """NXT 종목 종가 일괄 조회 (pykrx OHLCV).
+    Returns: {code: {"close": int, "chg_pct": float}} 또는 빈 dict
+    """
+    if not codes:
+        return {}
+    result = {}
+    try:
+        from pykrx import stock as pykrx_stock
+        from data.trading_calendar import last_trading_day
+        last_day = last_trading_day()
+        d = last_day.strftime("%Y%m%d")
+        for code in codes:
+            try:
+                df = pykrx_stock.get_market_ohlcv(d, d, code)
+                if not df.empty:
+                    row = df.iloc[-1]
+                    result[code] = {
+                        "close": int(row["종가"]),
+                        "chg_pct": round(float(row.get("등락률", 0)), 2),
+                    }
+            except Exception:
+                pass
+        logger.info(f"[NXT] 종가 조회: {len(result)}/{len(codes)}건 성공 ({d})")
+    except Exception as e:
+        logger.warning(f"[NXT] 종가 조회 실패 (무시): {e}")
+    return result
+
+
 # ═══════════════════════════════════════
 #  BRAIN 역방향 등급 필터
 # ═══════════════════════════════════════
@@ -253,6 +282,11 @@ def generate_swing_page_data() -> dict:
     nxt_targets = nxt_data.get("nxt_targets", [])
     nxt_codes = {p["code"] for p in picks}  # KRX와 중복 방지
 
+    # NXT 종목 종가 일괄 조회
+    nxt_new_codes = [t.get("code", "") for t in nxt_targets
+                     if t.get("code", "") and t.get("code", "") not in nxt_codes]
+    nxt_prices = _fetch_closing_prices(nxt_new_codes)
+
     for t in nxt_targets:
         code = t.get("code", "")
         if code in nxt_codes:
@@ -276,6 +310,18 @@ def generate_swing_page_data() -> dict:
             "commodity_etf_oil": "원유 ETF",
         }
 
+        # 종가 기반 진입가/TP/SL 계산 (NXT: TP+3%, SL-2.5%)
+        price_info = nxt_prices.get(code, {})
+        close_price = price_info.get("close", 0)
+        chg_pct = price_info.get("chg_pct", 0)
+        entry = close_price
+        tp = int(entry * 1.03) if entry > 0 else 0
+        sl = int(entry * 0.975) if entry > 0 else 0
+        rr = round((tp - entry) / (entry - sl), 1) if entry > 0 and entry > sl else 0
+        # NXT 스코어: supply_score(0~100) 기반
+        supply_sc = t.get("supply_score", 0)
+        nxt_score = round(supply_sc * 0.7 + (20 if tier <= 1 else 10), 1)
+
         picks.append({
             "code": code,
             "name": name,
@@ -284,28 +330,28 @@ def generate_swing_page_data() -> dict:
             "star": star,
             "action": "매수" if star else "관심매수",
             "grade": f"Tier{tier}",
-            "score": 0,
+            "score": nxt_score,
             "sector": _분류명.get(sector_key, sector_key),
-            "rr_ratio": 0,
-            "entry": 0,
-            "sl": 0,
-            "tp": 0,
-            "entry_price": 0,
-            "target_price": 0,
-            "stop_price": 0,
-            "hold_days": 3,
+            "rr_ratio": rr,
+            "entry": entry,
+            "sl": sl,
+            "tp": tp,
+            "entry_price": entry,
+            "target_price": tp,
+            "stop_price": sl,
+            "hold_days": 1,
             "conviction": "HIGH" if tier <= 1 else "MEDIUM",
             "conviction_label": "확신 높음" if tier <= 1 else "보통",
             "reason": _분류명.get(sector_key, "야간 신호"),
             "catalyst": _분류명.get(sector_key, "야간 신호"),
             "reasons": [f"NXT Tier{tier}", _분류명.get(sector_key, "")],
-            "close": 0,
-            "chg_pct": 0,
+            "close": close_price,
+            "chg_pct": round(chg_pct, 2),
             "rsi": 0,
             "vol_ratio": 0,
             "source": "NXT",
             "is_etf": is_etf,
-            "supply_score": t.get("supply_score", 0),
+            "supply_score": supply_sc,
             "fib_position": "",
             "fib_upside_pct": 0,
             "fib_downside_pct": 0,
@@ -1002,6 +1048,33 @@ def upload_dashboard_swing(swing_data: dict) -> bool:
         alloc_pct = alloc.get("allocation_pct", {})
         raw = nxt.get("raw_indicators", {})
         macro = nxt.get("macro_conditions", {})
+
+        # allocation_pct 미존재 시 position_size_pct에서 파생
+        if not alloc_pct:
+            pct = alloc.get("position_size_pct", 0)
+            regime = alloc.get("effective_regime", "관망")
+            cash = 100 - pct
+            # 전쟁/방어 시 gold/inverse 비중 확보
+            if regime in ("방어", "최소") and pct > 0:
+                gold = min(10, pct // 5)
+                inverse = min(10, pct // 5)
+                swing = pct - gold - inverse
+            elif regime == "관망":
+                gold, inverse, swing = 0, 0, 0
+            else:
+                gold = min(5, pct // 10)
+                inverse = 0
+                swing = pct - gold
+            alloc_pct = {
+                "bh_swing": max(0, swing),
+                "gold_etf": gold,
+                "inverse_etf": inverse,
+                "group_etf": 0,
+                "small_cap": 0,
+                "cash": cash,
+            }
+            logger.info(f"[SWING] allocation 파생: {regime}({pct}%) → "
+                        f"swing={swing} gold={gold} inv={inverse} cash={cash}")
 
         # NXT targets에서 supply_score 포함
         nxt_targets = nxt.get("nxt_targets", [])
