@@ -767,6 +767,84 @@ def _build_nxt_rationale(nxt: dict) -> dict:
     }
 
 
+def _build_fib_stocks() -> list:
+    """bottom_scan.json → 피보나치 눌림목 종목 (프론트 패널용).
+    fib_zone별 그룹핑, DEEP 우선, 최대 30종목.
+    """
+    data = _load_json("bottom_scan.json")
+    if not data:
+        return []
+
+    # bottom_scan.json은 리스트
+    if isinstance(data, dict):
+        stocks = data.get("stocks", [])
+    else:
+        stocks = data
+
+    if not stocks:
+        return []
+
+    # fib_zone 정렬 우선순위 (깊은 하락 먼저)
+    _zone_order = {"DEEP": 0, "MID": 1, "MILD": 2, "SHALLOW": 3}
+
+    _zone_label = {
+        "DEEP": "50%+ 하락 (바닥 매수 구간)",
+        "MID": "40~50% 하락 (중간 눌림)",
+        "MILD": "30~40% 하락 (1차 눌림)",
+        "SHALLOW": "15~30% 하락 (얕은 조정)",
+    }
+
+    result = []
+    for s in stocks:
+        zone = s.get("fib_zone", "SHALLOW")
+        price = s.get("price", 0)
+        fib_382 = s.get("fib_382", 0)
+        fib_500 = s.get("fib_500", 0)
+        fib_618 = s.get("fib_618", 0)
+
+        # 현재가 대비 피보나치 레벨 위치 판정
+        if price <= fib_382:
+            fib_status = "38.2% 아래 (깊은 하락)"
+        elif price <= fib_500:
+            fib_status = "38.2%~50% 사이"
+        elif price <= fib_618:
+            fib_status = "50%~61.8% 사이"
+        else:
+            fib_status = "61.8% 위 (회복 중)"
+
+        result.append({
+            "code": s.get("code", ""),
+            "name": s.get("name", ""),
+            "sector": s.get("sector", ""),
+            "cap": s.get("cap", 0),
+            "price": price,
+            "w52h": s.get("w52h", 0),
+            "w52l": s.get("w52l", 0),
+            "drop": round(s.get("drop", 0), 1),
+            "fib_zone": zone,
+            "fib_zone_label": _zone_label.get(zone, zone),
+            "fib_382": fib_382,
+            "fib_500": fib_500,
+            "fib_618": fib_618,
+            "fib_status": fib_status,
+            "target": s.get("target_peace", 0),
+            "upside": round(s.get("upside", 0), 1),
+            "per": round(s.get("per", 0), 1),
+            "pbr": round(s.get("pbr", 0), 2),
+            "frgn": round(s.get("frgn", 0), 1),
+            "_sort": (_zone_order.get(zone, 9), s.get("drop", 0)),
+        })
+
+    # DEEP 우선 + 같은 zone 내에서 drop이 큰 순 (더 많이 빠진 것 먼저)
+    result.sort(key=lambda x: (x["_sort"][0], x["_sort"][1]))
+
+    # _sort 제거 + 최대 30종목
+    for r in result:
+        del r["_sort"]
+
+    return result[:30]
+
+
 def _enrich_with_macro(result: dict) -> dict:
     """기존 스윙 데이터에 매크로/섹터/카테고리 융합
 
@@ -1210,6 +1288,8 @@ def upload_dashboard_swing(swing_data: dict) -> bool:
             "market_comment": swing_data.get("market_comment", ""),
             # 채권자경단 v2 (NXT 추천 근거)
             "nxt_rationale": _build_nxt_rationale(nxt),
+            # 피보나치 눌림목 종목 (퀀트 대시보드 대체)
+            "fib_stocks": _build_fib_stocks(),
         }
 
         # alloc_* 합계 100% 보정
