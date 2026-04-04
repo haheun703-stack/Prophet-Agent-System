@@ -1055,19 +1055,10 @@ class TradingCOO:
                 parallel_jobs, timeout_per_job=120)
             results.extend(par_results)
 
-        # ── 4) C1 _job_collect_minutes (non-critical) ──
-        # KIS API rate limit으로 50종목 수집 시 600초 초과 가능 → 900초
-        if self.bot:
-            r = await self.run_job_safe_async(
-                "C1_collect_minutes",
-                self.bot._job_collect_minutes(context),
-                timeout=900,
-            )
-            results.append(r)
-            if not r.success:
-                logger.warning("[COO] C1 분봉 수집 실패 — 스킵")
-        else:
-            logger.warning("[COO] bot 미연결 — C1 스킵")
+        # ── 4) C1 _job_collect_minutes — 비활성화 (2026-04-04) ──
+        # 장중 tick_polling이 실시간 처리, 저장 분봉은 검증 시 항상 FAIL → 낭비
+        # 실매매 전환 시 필요하면 재활성화
+        logger.info("[COO] C1 분봉 수집 — 비활성화 상태 (스킵)")
 
         # ── 그룹 상태 업데이트 ──
         self.update_group("G5", results)
@@ -1568,15 +1559,10 @@ class TradingCOO:
             s3 = await self.run_parallel_async(stage3_jobs, timeout_per_job=600)
             results.extend(s3)
 
-        # ── C22: 퀀트 대시보드 업로드 (C20/C21 완료 후 순차 실행) ──
-        try:
-            c22_result = await asyncio.wait_for(
-                self._job_quant_dashboard_upload(context), timeout=120
-            )
-            results.append(JobResult("C22_quant_dashboard", True, 0))
-        except Exception as e:
-            logger.warning(f"[C22] 퀀트 대시보드 업로드 실패: {e}")
-            results.append(JobResult("C22_quant_dashboard", False, 0, str(e)))
+        # ── C22: 퀀트 대시보드 업로드 — 비활성화 (2026-04-04) ──
+        # FLOWX 웹 프론트엔드 미구축 → 업로드해도 보는 사람 없음 → 낭비
+        # FLOWX Phase C STEP 4 완료 시 재활성화
+        logger.info("[COO] C22 퀀트 대시보드 — 비활성화 상태 (스킵)")
 
         # ── brain_report.json 갱신 safeguard ──
         # C13 실패 시에도 brain_report는 반드시 오늘 날짜로 갱신

@@ -445,15 +445,14 @@ CHECKLIST = {
     "investor_flow":  {"description": "투자자 수급 CSV",        "priority": PRIORITY_CRITICAL},
     "tv_scanner":     {"description": "거래대금 스캐너",         "priority": PRIORITY_HIGH},      # 16:45+ 추천 파이프라인에서 생성
     "brain_report":   {"description": "Market Brain 리포트",    "priority": PRIORITY_HIGH},      # 16:45+ 추천 파이프라인에서 생성
-    "minute_candles": {"description": "1분봉 CSV",             "priority": PRIORITY_HIGH},
-    "minute_5min":    {"description": "5분봉 CSV",             "priority": PRIORITY_HIGH},
+    # minute_candles / minute_5min — 비활성화 (2026-04-04): C1 분봉 수집 비활성화로 항상 FAIL → 제거
     "nationality":    {"description": "KRX 국적별 수급",       "priority": PRIORITY_HIGH},
     "nightwatch":     {"description": "NIGHTWATCH 리포트",     "priority": PRIORITY_HIGH},
     "sector_history": {"description": "섹터 히스토리",          "priority": PRIORITY_HIGH},
     "sector_relay":   {"description": "섹터/그룹 릴레이",       "priority": PRIORITY_HIGH},
     "guardian":       {"description": "Position Guardian",     "priority": PRIORITY_HIGH},
     "insights":       {"description": "학습 인사이트",          "priority": PRIORITY_HIGH},
-    "short_selling":  {"description": "공매도 잔고",            "priority": PRIORITY_MEDIUM},
+    # short_selling — 비활성화 (2026-04-04): pykrx API 장애 38일+ → 제거
     "news_sentiment": {"description": "뉴스 AI 감성분석",      "priority": PRIORITY_MEDIUM},
     "options_signal": {"description": "옵션 심리 (P/C Ratio)", "priority": PRIORITY_MEDIUM},
     "dart_disclosure":{"description": "DART 공시",             "priority": PRIORITY_LOW},
@@ -465,8 +464,7 @@ CHECKLIST = {
 RETRY_MAP = {
     "daily_ohlcv":    "_job_collect_daily",
     "investor_flow":  "_job_collect_daily",
-    "minute_candles": "_job_collect_minutes",
-    "minute_5min":    "_job_collect_minutes",
+    # minute_candles / minute_5min — 비활성화
     "nightwatch":     "job_nightwatch_collect",
     "tv_scanner":     "_job_record_signals",
     "sector_history": "_job_record_signals",
@@ -493,15 +491,14 @@ class DataVerifier:
         details["investor_flow"] = _verify_investor_flow(t)
         details["tv_scanner"] = _verify_tv_scanner(t)
         details["brain_report"] = _verify_brain_report(t)
-        details["minute_candles"] = _verify_minute_candles(t)
-        details["minute_5min"] = _verify_minute_5min(t)
+        # minute_candles / minute_5min — 비활성화 (C1 제거)
         details["nationality"] = _verify_nationality(t)
         details["nightwatch"] = _verify_nightwatch(t)
         details["sector_history"] = _verify_sector_history(t)
         details["sector_relay"] = _verify_sector_relay(t)
         details["guardian"] = _verify_guardian(t)
         details["insights"] = _verify_insights(t)
-        details["short_selling"] = _verify_short_selling(t)
+        # short_selling — 비활성화 (pykrx API 장애)
         details["news_sentiment"] = _verify_news_sentiment(t)
         details["options_signal"] = _verify_options_signal(t)
         details["dart_disclosure"] = _verify_dart_disclosure()
