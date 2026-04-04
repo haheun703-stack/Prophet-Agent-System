@@ -137,7 +137,7 @@ REGIME_THRESHOLDS = {
     "caution_today_return": -0.02, # 당일 -2% → CAUTION
     "vix_high": 25,                # VIX 25+ → SHOCK 조건
     "vix_normal": 20,              # VIX 20 미만 → 정상 복귀 조건
-    "recovery_vol_mult": 0.7,      # 거래량 20일평균 대비 배수 (1.0→0.7 완화: 12일 PANIC 갇힘 방지)
+    "recovery_vol_mult": 0.5,      # 거래량 20일평균 대비 배수 (1.0→0.5 완화: PANIC 후 저거래량 반등 허용)
     "consecutive_down_panic": 3,   # 3일 연속 -1.5% → PANIC
     "consecutive_down_return": -0.015,
 }
@@ -240,7 +240,7 @@ def _collect_regime_inputs() -> dict:
         if universe:
             foreign_today = 0
             for code in list(universe.keys())[:100]:  # 상위 100종목만 (속도)
-                flow_file = FLOW_DIR / f"{code}.csv"
+                flow_file = FLOW_DIR / f"{code}_investor.csv"
                 if not flow_file.exists():
                     continue
                 try:
