@@ -40,8 +40,14 @@ from enum import Enum
 
 import pandas as pd
 import numpy as np
+from dotenv import load_dotenv
 
 from data.extend_parquet_data import load_daily
+
+# .env 로드 (FINNHUB_API_KEY 등)
+_env_path = Path(__file__).resolve().parent.parent.parent / ".env"
+if _env_path.exists():
+    load_dotenv(_env_path)
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +137,7 @@ REGIME_THRESHOLDS = {
     "caution_today_return": -0.02, # 당일 -2% → CAUTION
     "vix_high": 25,                # VIX 25+ → SHOCK 조건
     "vix_normal": 20,              # VIX 20 미만 → 정상 복귀 조건
-    "recovery_vol_mult": 1.0,      # 거래량 20일평균 대비 배수
+    "recovery_vol_mult": 0.7,      # 거래량 20일평균 대비 배수 (1.0→0.7 완화: 12일 PANIC 갇힘 방지)
     "consecutive_down_panic": 3,   # 3일 연속 -1.5% → PANIC
     "consecutive_down_return": -0.015,
 }
@@ -241,7 +247,7 @@ def _collect_regime_inputs() -> dict:
                     df = pd.read_csv(flow_file, index_col=0)
                     if len(df) < 1:
                         continue
-                    for col in ["외국인계", "외인순매수", "외국인"]:
+                    for col in ["외국인_금액", "외국인계", "외인순매수", "외국인"]:
                         if col in df.columns:
                             foreign_today += float(df[col].iloc[-1])
                             break
@@ -319,12 +325,15 @@ def detect_regime() -> RegimeState:
         else:
             new_regime = Regime.RECOVERY_EARLY
     elif current == Regime.RECOVERY_CONFIRMED:
-        if md["kospi_close"] > md["kospi_20ma"] and md["vix"] < RT["vix_normal"]:
+        # VIX=0이면 데이터 미수신 → VIX 조건 면제
+        vix_ok = md["vix"] < RT["vix_normal"] if md["vix"] > 0 else True
+        if md["kospi_close"] > md["kospi_20ma"] and vix_ok:
             new_regime = Regime.NORMAL
         else:
             new_regime = Regime.RECOVERY_CONFIRMED
     elif current == Regime.SHOCK:
-        if today_ret > 0 and md["vix"] < RT["vix_high"]:
+        vix_ok_shock = md["vix"] < RT["vix_high"] if md["vix"] > 0 else True
+        if today_ret > 0 and vix_ok_shock:
             new_regime = Regime.CAUTION
         else:
             new_regime = Regime.SHOCK
