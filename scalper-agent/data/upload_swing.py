@@ -1333,12 +1333,115 @@ def upload_dashboard_swing(swing_data: dict) -> bool:
 
 
 # ═══════════════════════════════════════
+#  피보나치 종가 자동 갱신
+# ═══════════════════════════════════════
+
+def refresh_fib_prices():
+    """bottom_scan.json + fib_leaders.json 종가 갱신 (매일 C19 전 자동 실행)."""
+    from pykrx import stock as pykrx_stock
+    from data.trading_calendar import last_trading_day
+    import time
+
+    last_day = last_trading_day()
+    d = last_day.strftime("%Y%m%d")
+    start_52w = (last_day.replace(year=last_day.year - 1)).strftime("%Y%m%d")
+
+    for filename in ["bottom_scan.json", "fib_leaders.json"]:
+        path = STORE_DIR / filename
+        if not path.exists():
+            continue
+
+        try:
+            data = json.loads(path.read_text("utf-8"))
+            if not isinstance(data, list) or not data:
+                continue
+
+            updated = 0
+            for s in data:
+                code = s.get("code", "")
+                if not code:
+                    continue
+                try:
+                    df = pykrx_stock.get_market_ohlcv(d, d, code)
+                    if df.empty:
+                        continue
+
+                    new_price = int(df.iloc[0]["종가"])
+                    w52h = s.get("w52h", 0)
+
+                    s["price"] = new_price
+                    s["drop"] = round((new_price / w52h - 1) * 100, 2) if w52h > 0 else 0
+
+                    # fib_zone 재판정 (bottom_scan만)
+                    if "fib_zone" in s:
+                        drop_abs = abs(s["drop"])
+                        if drop_abs >= 50:
+                            s["fib_zone"] = "DEEP"
+                        elif drop_abs >= 40:
+                            s["fib_zone"] = "MID"
+                        elif drop_abs >= 30:
+                            s["fib_zone"] = "MILD"
+                        else:
+                            s["fib_zone"] = "SHALLOW"
+
+                        _zone_label = {
+                            "DEEP": "50%+ 하락 (바닥 매수 구간)",
+                            "MID": "40~50% 하락 (중간 눌림)",
+                            "MILD": "30~40% 하락 (1차 눌림)",
+                            "SHALLOW": "15~30% 하락 (얕은 조정)",
+                        }
+                        s["fib_zone_label"] = _zone_label.get(s["fib_zone"], s["fib_zone"])
+
+                    # fib_status 재판정
+                    fib_382 = s.get("fib_382", 0)
+                    fib_500 = s.get("fib_500", 0)
+                    fib_618 = s.get("fib_618", 0)
+                    if fib_382 and new_price <= fib_382:
+                        s["fib_status"] = "38.2% 아래 (깊은 하락)"
+                    elif fib_500 and new_price <= fib_500:
+                        s["fib_status"] = "38.2%~50% 사이"
+                    elif fib_618 and new_price <= fib_618:
+                        s["fib_status"] = "50%~61.8% 사이"
+                    elif w52h and new_price <= w52h * 0.9:
+                        s["fib_status"] = "61.8% 위 (회복 중)"
+                    else:
+                        s["fib_status"] = "고점 근접"
+
+                    # upside 재계산
+                    target = s.get("target_peace", s.get("target", 0))
+                    if target and new_price > 0:
+                        s["upside"] = round((target / new_price - 1) * 100, 2)
+
+                    updated += 1
+                except Exception:
+                    continue
+
+                if updated % 50 == 0 and updated > 0:
+                    time.sleep(0.5)
+
+            # 저장
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
+            tmp.replace(path)
+            logger.info(f"[FIB] {filename} 종가 갱신: {updated}/{len(data)}종목 ({d})")
+
+        except Exception as e:
+            logger.warning(f"[FIB] {filename} 갱신 실패: {e}")
+
+
+# ═══════════════════════════════════════
 #  메인 진입점
 # ═══════════════════════════════════════
 
 def run_flowx_swing_upload() -> bool:
     """FLOWX 스윙 페이지 데이터 생성 + Supabase 업로드 (swing_signals + dashboard_swing)"""
     try:
+        # 0) 피보나치 종가 갱신 (bottom_scan + fib_leaders)
+        try:
+            refresh_fib_prices()
+        except Exception as e:
+            logger.warning(f"[FIB] 종가 갱신 실패 (무시): {e}")
+
         data = generate_swing_page_data()
 
         # 1) 기존 swing_signals 업로드 (유지)
