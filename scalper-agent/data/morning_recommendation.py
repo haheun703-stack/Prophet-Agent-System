@@ -74,6 +74,13 @@ class RecommendedStock:
     tv_ratio: float = 1.0             # 거래대금 비율 (20일 평균 대비)
     tv_pattern: str = "NORMAL"        # EXPLOSION / QUIET_ACCUMULATION / EARLY_ACCUMULATION / GRADUAL_BUILDUP
     tv_score: float = 0.0             # TV 스캐너 점수 (0~100)
+    # 피보나치 레벨 분석
+    fib_adj: float = 0.0              # 피보나치 점수 가감 (-10 ~ +20)
+    fib_position: str = ""            # 위치 설명 ("0.618 지지 부근" 등)
+    fib_upside_pct: float = 0.0       # 상방 여력 (%)
+    fib_downside_pct: float = 0.0     # 하방 지지까지 (%)
+    sl_fib: int = 0                   # 피보나치 기반 손절가
+    tp_fib: int = 0                   # 피보나치 기반 목표가
 
 
 @dataclass
@@ -952,13 +959,15 @@ def _step5_cross_validate(
     # ── 학습 인사이트 로드 (피드백 루프) ──
     _brain_insights = _load_brain_insights()
 
-    # CORTEX 체제별 점수 배수
+    # CORTEX 체제 — 참고 정보 전용 (점수 차단 X)
+    # v4.1: 패닉/충격에서도 추천을 차단하지 않음
+    # → 대신 피보나치 레벨로 매수 기회 계산
     regime_multipliers = {
         "NORMAL": 1.0,
-        "CAUTION": 0.85,
-        "SHOCK": 0.6,
-        "PANIC": 0.3,
-        "RECOVERY_EARLY": 1.2,      # 줍줍 부스트
+        "CAUTION": 1.0,
+        "SHOCK": 1.0,
+        "PANIC": 1.0,
+        "RECOVERY_EARLY": 1.15,      # 줍줍 소폭 부스트
         "RECOVERY_CONFIRMED": 1.1,
     }
     regime = regime_info.get("regime", "NORMAL")
@@ -1017,6 +1026,8 @@ def _step5_cross_validate(
             logger.info(f"NORMAL 7SECRET 파워: {np_cnt}/{len(norm_codes)}종목")
     except Exception as e:
         logger.warning(f"NORMAL 7SECRET 파워 실패 (무시): {e}")
+
+    _fib_cache = {}  # 피보나치 분석 캐시 (코드별 1회만)
 
     candidates = []
     for code in all_codes:
@@ -1311,6 +1322,22 @@ def _step5_cross_validate(
             sources.append(f"brain({brain_adj:+.1f})")
         raw_total += brain_adj
 
+        # ── 피보나치 레벨 점수 ──────────────
+        _fib = _fib_cache.get(code)
+        if _fib is None:
+            try:
+                from data.fibonacci_analyzer import fib_score_adjustment
+                _fib = fib_score_adjustment(code, name)
+                _fib_cache[code] = _fib
+            except Exception as e:
+                logger.debug(f"  [FIB] {name} 분석 실패: {e}")
+                _fib = {"fib_adj": 0}
+                _fib_cache[code] = _fib
+        fib_adj = _fib.get("fib_adj", 0)
+        if abs(fib_adj) >= 1:
+            sources.append(f"fib({fib_adj:+.0f})")
+        raw_total += fib_adj
+
         # CORTEX 체제 배수 적용
         total = raw_total * regime_mult
 
@@ -1334,13 +1361,14 @@ def _step5_cross_validate(
                 logger.info(f"  [TV Floor] {name}: {total:.1f}→{tv_floor:.1f} ({_tv_pattern} {_tv_score:.0f})")
                 total = tv_floor
 
-        # 진입/SL/TP: premove → MACD Phase2 → bargain(고점80%복구) → 간단 계산
-        # 줍줍 종목은 고점의 80% 복구를 TP로 설정
+        # 진입/SL/TP: 피보나치 우선 → premove → MACD → bargain → 기본값
         bargain_tp = int(b_info["pre_war_high"] * 0.8) if b_info.get("pre_war_high") else 0
+        _fib_sl = _fib.get("sl_fib", 0) if _fib else 0
+        _fib_tp = _fib.get("tp_fib", 0) if _fib else 0
         entry = int(p_info.get("entry") or m_info.get("entry") or close)
-        sl = int(p_info.get("sl") or m_info.get("sl") or close * 0.95)
-        tp = int(p_info.get("tp") or m_info.get("tp") or bargain_tp or close * 1.10)
-        sl_source = p_info.get("sl_source", "ATR")
+        sl = int(_fib_sl or p_info.get("sl") or m_info.get("sl") or close * 0.95)
+        tp = int(_fib_tp or p_info.get("tp") or m_info.get("tp") or bargain_tp or close * 1.10)
+        sl_source = "FIB" if _fib_sl else p_info.get("sl_source", "ATR")
 
         # 신뢰도 (교차수 + 기술점수 기반)
         if cross >= 2 and t_info.get("score", 0) >= 3.0:
@@ -1381,6 +1409,12 @@ def _step5_cross_validate(
             tv_ratio=_tv_ratio,
             tv_pattern=_tv_pattern,
             tv_score=_tv_score,
+            fib_adj=fib_adj,
+            fib_position=_fib.get("fib_position", "") if _fib else "",
+            fib_upside_pct=_fib.get("upside_pct", 0) if _fib else 0,
+            fib_downside_pct=_fib.get("downside_pct", 0) if _fib else 0,
+            sl_fib=_fib_sl,
+            tp_fib=_fib_tp,
         )
         candidates.append(rec)
 
@@ -2647,6 +2681,14 @@ def format_recommendation(report: RecommendationReport, max_budget: int = 0) -> 
         lines.append(
             f"   SL: {s.sl:,} → TP: {s.tp:,}"
         )
+        # 피보나치 레벨 표시
+        if getattr(s, "fib_position", ""):
+            _fib_parts = [f"📐 {s.fib_position}"]
+            if s.fib_upside_pct > 0:
+                _fib_parts.append(f"상방+{s.fib_upside_pct:.1f}%")
+            if s.fib_downside_pct > 0:
+                _fib_parts.append(f"하방-{s.fib_downside_pct:.1f}%")
+            lines.append(f"   {' | '.join(_fib_parts)}")
 
         # 점수 분해 (투명하게)
         score_parts = []
@@ -2912,6 +2954,12 @@ def save_recommendation(report: RecommendationReport):
             "tv_ratio": getattr(s, "tv_ratio", 1.0),
             "tv_pattern": getattr(s, "tv_pattern", "NORMAL"),
             "tv_score": getattr(s, "tv_score", 0.0),
+            "fib_adj": getattr(s, "fib_adj", 0.0),
+            "fib_position": getattr(s, "fib_position", ""),
+            "fib_upside_pct": getattr(s, "fib_upside_pct", 0.0),
+            "fib_downside_pct": getattr(s, "fib_downside_pct", 0.0),
+            "sl_fib": getattr(s, "sl_fib", 0),
+            "tp_fib": getattr(s, "tp_fib", 0),
         })
 
     data = {

@@ -432,11 +432,71 @@ def _check_price_crack(code: str, name: str, entry: int = 0, sl: int = 0) -> Gua
 # ═══════════════════════════════════════════
 # 시그널 가중치: 수급이 가장 중요 (선행 지표)
 SIGNAL_WEIGHTS = {
-    "SUPPLY_DRAIN": 0.35,    # 수급 이탈 (가장 중요 - 원인)
-    "TV_FADEOUT": 0.25,      # 거래대금 고갈 (선행)
-    "MOMENTUM_DEATH": 0.20,  # 모멘텀 소멸 (동행)
-    "PRICE_CRACK": 0.20,     # 가격 구조 (후행이지만 확인용)
+    "SUPPLY_DRAIN": 0.30,    # 수급 이탈 (가장 중요 - 원인)
+    "TV_FADEOUT": 0.20,      # 거래대금 고갈 (선행)
+    "MOMENTUM_DEATH": 0.15,  # 모멘텀 소멸 (동행)
+    "PRICE_CRACK": 0.15,     # 가격 구조 (후행이지만 확인용)
+    "FIB_BREAK": 0.20,       # 피보나치 지지선 이탈 (구조적 판단)
 }
+
+
+def _check_fib_support(code: str, name: str, current_price: int = 0) -> Optional[GuardianSignal]:
+    """피보나치 지지선 이탈 체크 — 구조적 가격 위치 판단"""
+    try:
+        from data.fibonacci_analyzer import fib_analyze
+        result = fib_analyze(code, name)
+        if not result:
+            return None
+
+        score = 0
+        details = []
+        cp = current_price or result.current_price
+
+        # 1. 0.618 지지선 아래로 이탈 → 위험
+        for lv in result.retracement_levels:
+            if lv.ratio == 0.618 and cp < lv.price:
+                score += 30
+                details.append(f"0.618지지({lv.price:,}) 이탈")
+                break
+            elif lv.ratio == 0.786 and cp < lv.price:
+                score += 45
+                details.append(f"0.786지지({lv.price:,}) 이탈 — 바닥 임박")
+                break
+            elif lv.ratio == 0.5 and cp < lv.price:
+                score += 15
+                details.append(f"0.5지지({lv.price:,}) 이탈")
+                break
+
+        # 2. 스윙 저점 이탈 → 구조 붕괴
+        if cp < result.swing_low:
+            score += 50
+            details.append(f"스윙저점({result.swing_low:,}) 이탈!")
+
+        # 3. 상방 여력이 충분하면 위험도 감소
+        if result.upside_pct > 10:
+            score -= 15
+            details.append(f"상방여력+{result.upside_pct:.0f}%")
+
+        # 4. 피보나치 타겟 부근이면 익절 신호
+        for lv in result.extension_levels:
+            if lv.ratio >= 1.272:
+                dist = abs(cp - lv.price) / cp * 100 if cp > 0 else 999
+                if dist < 3:
+                    score += 20
+                    details.append(f"{lv.ratio}타겟({lv.price:,}) 접근 — 익절 검토")
+                    break
+
+        score = max(0, min(100, score))
+        severity = _score_to_severity(score)
+        return GuardianSignal(
+            name="FIB_BREAK",
+            score=score,
+            severity=severity,
+            detail=" | ".join(details) if details else f"위치: {result.position_label}",
+        )
+    except Exception as e:
+        logger.debug(f"피보나치 체크 실패({code}): {e}")
+        return None
 
 
 def _evaluate_etf_position(
@@ -552,6 +612,11 @@ def evaluate_position(
 
     signals = [sig1, sig2, sig3, sig4]
 
+    # 5번째 시그널: 피보나치 지지선 이탈 체크
+    sig5 = _check_fib_support(code, name, current_price)
+    if sig5:
+        signals.append(sig5)
+
     # 가중 평균 위험도 + AI Eye 보정
     risk_score = sum(
         s.score * SIGNAL_WEIGHTS.get(s.name, 0.25)
@@ -565,8 +630,21 @@ def evaluate_position(
     if entry > 0 and current_price > 0:
         pnl_pct = (current_price - entry) / entry * 100
 
-    # TP1 도달 체크
-    if tp1 > 0 and current_price >= tp1:
+    # 피보나치 TP 업그레이드: fib_tp가 있으면 더 높은 값으로 갱신
+    _fib_tp1 = tp1
+    try:
+        from data.fibonacci_analyzer import fib_score_adjustment
+        _fib = fib_score_adjustment(code, name)
+        if _fib.get("tp_fib", 0) > 0:
+            _fib_tp1 = max(tp1, _fib["tp_fib"]) if tp1 > 0 else _fib["tp_fib"]
+    except Exception:
+        pass
+
+    # TP1 도달 체크 (피보나치 TP 포함)
+    if _fib_tp1 > 0 and current_price >= _fib_tp1:
+        action = "TAKE_PROFIT"
+        key_reason = f"TP({_fib_tp1:,}) 도달! 절반 익절 권장"
+    elif tp1 > 0 and current_price >= tp1:
         action = "TAKE_PROFIT"
         key_reason = f"TP1({tp1:,}) 도달! 절반 익절 권장"
     # 최종 액션 결정

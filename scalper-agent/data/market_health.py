@@ -99,20 +99,22 @@ REGIME_RULES = {
         "partial_tp": False,                         # 전량 청산
     },
     Regime.CAUTION: {
-        "new_buy": True, "capital_use": 0.7,
-        "sl_atr_mult": 0.6, "sl_max_pct": 0.06,   # 약간 완화
+        "new_buy": True, "capital_use": 0.85,
+        "sl_atr_mult": 0.6, "sl_max_pct": 0.06,
         "tp_atr_mult": 1.8,
         "partial_tp": False,
     },
     Regime.SHOCK: {
-        "new_buy": False, "capital_use": 0.5,
-        "sl_atr_mult": 0.7, "sl_max_pct": 0.07,   # v2: 넓은 SL
+        # v4.1: 매수 차단 해제 — 피보나치 레벨로 매수 기회 계산
+        "new_buy": True, "capital_use": 0.7,
+        "sl_atr_mult": 0.7, "sl_max_pct": 0.07,
         "tp_atr_mult": 2.0,
-        "partial_tp": True,                          # 반분할
+        "partial_tp": True,
     },
     Regime.PANIC: {
-        "new_buy": False, "capital_use": 0.3,
-        "sl_atr_mult": 0.8, "sl_max_pct": 0.08,   # 가장 넓은 SL
+        # v4.1: 매수 차단 해제 — 공포 = 매수 기회
+        "new_buy": True, "capital_use": 0.6,
+        "sl_atr_mult": 0.8, "sl_max_pct": 0.08,
         "tp_atr_mult": 2.0,
         "partial_tp": True,
     },
