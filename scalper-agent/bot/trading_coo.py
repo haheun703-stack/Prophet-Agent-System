@@ -1862,17 +1862,21 @@ class TradingCOO:
             with open(report_path, "r", encoding="utf-8") as f:
                 report = json.load(f)
 
-            # 오늘 날짜 리포트인지 확인
+            # 오늘 날짜 리포트인지 확인 (date 키 없으면 timestamp에서 추출)
             report_date = report.get("date", "")
+            if not report_date:
+                ts = report.get("timestamp", "")
+                report_date = ts[:10] if len(ts) >= 10 else ""
             today = datetime.now().strftime("%Y-%m-%d")
             if report_date != today:
                 logger.info(f"[C26] 리포트 날짜 불일치 ({report_date}) — 스킵")
                 return {"nxt_paper_register": "STALE_REPORT"}
 
-            verdict = report.get("verdict", "")
-            if verdict not in ("BUY", "WATCH"):
-                logger.info(f"[C26] NXT verdict={verdict} — Paper 등록 스킵")
-                return {"nxt_paper_register": f"VERDICT_{verdict}"}
+            # Paper Trading은 관망이어도 타겟 있으면 등록 (추적 목적)
+            # signal 키 사용 (verdict 키는 nightwatch에 없음)
+            signal = report.get("signal", report.get("verdict", ""))
+            signal_text = report.get("signal_text", "")
+            logger.info(f"[C26] NXT signal={signal} ({signal_text}), score={report.get('total_score', '?')}")
 
             targets = report.get("nxt_targets", [])
             if not targets:
