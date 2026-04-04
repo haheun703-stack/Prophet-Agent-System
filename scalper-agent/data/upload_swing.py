@@ -219,12 +219,18 @@ def generate_swing_page_data() -> dict:
             "score": score,
             "sector": sector,
             "rr_ratio": rr,
+            # 지시서 호환 필드 (entry/sl/tp)
+            "entry": int(entry) if entry else 0,
+            "sl": int(sl) if sl else 0,
+            "tp": int(tp) if tp else 0,
+            # 기존 필드 (하위 호환)
             "entry_price": int(entry) if entry else 0,
             "target_price": int(tp) if tp else 0,
             "stop_price": int(sl) if sl else 0,
             "hold_days": to.get("expected_hold_days", s.get("hold_days", 3)),
             "conviction": conviction,
             "conviction_label": _확신.get(conviction, "보통"),
+            "reason": _build_catalyst(s),
             "catalyst": _build_catalyst(s),
             "reasons": s.get("reasons", []),
             "close": s.get("close", 0),
@@ -232,6 +238,13 @@ def generate_swing_page_data() -> dict:
             "rsi": round(s.get("rsi", 0), 1),
             "vol_ratio": round(s.get("vol_ratio", 0), 1),
             "source": s.get("source", ""),
+            # 피보나치 레벨
+            "fib_position": s.get("fib_position", ""),
+            "fib_upside_pct": round(s.get("fib_upside_pct", 0), 1),
+            "fib_downside_pct": round(s.get("fib_downside_pct", 0), 1),
+            "sl_fib": s.get("sl_fib", 0),
+            "tp_fib": s.get("tp_fib", 0),
+            "fib_adj": round(s.get("fib_adj", 0), 1),
         }
         picks.append(pick)
 
@@ -274,12 +287,16 @@ def generate_swing_page_data() -> dict:
             "score": 0,
             "sector": _분류명.get(sector_key, sector_key),
             "rr_ratio": 0,
+            "entry": 0,
+            "sl": 0,
+            "tp": 0,
             "entry_price": 0,
             "target_price": 0,
             "stop_price": 0,
             "hold_days": 3,
             "conviction": "HIGH" if tier <= 1 else "MEDIUM",
             "conviction_label": "확신 높음" if tier <= 1 else "보통",
+            "reason": _분류명.get(sector_key, "야간 신호"),
             "catalyst": _분류명.get(sector_key, "야간 신호"),
             "reasons": [f"NXT Tier{tier}", _분류명.get(sector_key, "")],
             "close": 0,
@@ -289,10 +306,17 @@ def generate_swing_page_data() -> dict:
             "source": "NXT",
             "is_etf": is_etf,
             "supply_score": t.get("supply_score", 0),
+            "fib_position": "",
+            "fib_upside_pct": 0,
+            "fib_downside_pct": 0,
+            "sl_fib": 0,
+            "tp_fib": 0,
+            "fib_adj": 0,
         })
 
-    # picks 정렬: star 먼저, 그 다음 score 순
+    # picks 정렬: star 먼저, 그 다음 score 순 → 최대 10종목 (지시서 기준)
     picks.sort(key=lambda x: (-int(x.get("star", False)), -x.get("score", 0)))
+    picks = picks[:10]
 
     logger.info(
         f"[FLOWX 스윙] picks: KRX {sum(1 for p in picks if p.get('category')=='KRX')}개 + "
@@ -316,6 +340,7 @@ def generate_swing_page_data() -> dict:
             "reason": e.get("reason", ""),
             "holding_days": e.get("holding_days", 5),
         })
+    etf_picks = etf_picks[:5]  # 최대 5종목 (지시서 기준)
 
     # ── 7) 모델 포트폴리오 (학습 데이터 기반) ──
     portfolio = _build_portfolio_stats(brain_pct, len(picks))
@@ -1007,7 +1032,7 @@ def upload_dashboard_swing(swing_data: dict) -> bool:
             "regime": alloc.get("effective_regime", alloc.get("regime", "NORMAL")),
             "regime_severity": alloc.get("severity", 0),
             "regime_desc": alloc.get("description", ""),
-            # 자산 배분
+            # 자산 배분 (합계 100% 보정)
             "alloc_swing": alloc_pct.get("bh_swing", 0),
             "alloc_gold_etf": alloc_pct.get("gold_etf", 0),
             "alloc_inverse": alloc_pct.get("inverse_etf", 0),
@@ -1045,6 +1070,16 @@ def upload_dashboard_swing(swing_data: dict) -> bool:
             # 메타
             "market_comment": swing_data.get("market_comment", ""),
         }
+
+        # alloc_* 합계 100% 보정
+        alloc_sum = (row["alloc_swing"] + row["alloc_gold_etf"] + row["alloc_inverse"]
+                     + row["alloc_group_etf"] + row["alloc_small_cap"] + row["alloc_cash"])
+        if alloc_sum != 100 and alloc_sum > 0:
+            diff = 100 - alloc_sum
+            row["alloc_cash"] = max(0, row["alloc_cash"] + diff)
+            logger.info(f"[DASHBOARD] alloc 합계 {alloc_sum}→100 보정 (cash {diff:+d})")
+        elif alloc_sum == 0:
+            row["alloc_cash"] = 100
 
         client.table("dashboard_swing").upsert(
             row, on_conflict="date"
