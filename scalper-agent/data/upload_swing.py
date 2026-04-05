@@ -18,7 +18,7 @@ BRAIN 역방향 등급 필터:
 import json
 import logging
 import os
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 logger = logging.getLogger("flowx_swing")
@@ -1101,6 +1101,187 @@ def _build_fx_monitor() -> dict:
     return result
 
 
+def _build_sector_rotation() -> dict:
+    """섹터 로테이션 맵 — 피보나치 + 수급 + 모멘텀 기반 자금 흐름 예측.
+
+    bottom_scan.json + fib_leaders.json + 투자자 CSV + pykrx 등락률 →
+    섹터별 종합 점수 계산 → 로테이션 단계(선도/추격/대기/후발) 판정.
+    """
+    import pandas as pd
+    from collections import defaultdict
+
+    bs = _load_json("bottom_scan.json")
+    fl_raw = _load_json("fib_leaders.json")
+    fl = fl_raw if isinstance(fl_raw, list) else []
+    if isinstance(bs, dict):
+        bs = bs.get("stocks", [])
+
+    if not bs and not fl:
+        return {}
+
+    # 전체 종목 합치기 (중복 제거)
+    all_stocks = {}
+    for s in (bs if isinstance(bs, list) else []) + fl:
+        code = s.get("code", "")
+        if code and code not in all_stocks:
+            all_stocks[code] = s
+
+    if not all_stocks:
+        return {}
+
+    # 등락률 + 수급: investor CSV에서 한 번에 추출
+    chg_dict = {}
+    flow_dict = {}  # code -> {inst_3d, frgn_3d}
+    flow_dir = STORE_DIR / "flow"
+    for code in all_stocks:
+        csv_path = flow_dir / f"{code}_investor.csv"
+        if csv_path.exists():
+            try:
+                df = pd.read_csv(csv_path)
+                df.columns = [c.strip() for c in df.columns]
+                if len(df) >= 2:
+                    # 등락률: 종가 기반 전일 대비
+                    last_row = df.iloc[-1]
+                    prev_row = df.iloc[-2]
+                    c_last = float(last_row.get("종가", 0) or 0)
+                    c_prev = float(prev_row.get("종가", 0) or 0)
+                    if c_prev > 0 and c_last > 0:
+                        chg_dict[code] = round((c_last / c_prev - 1) * 100, 2)
+                if len(df) >= 3:
+                    last3 = df.tail(3)
+                    flow_dict[code] = {
+                        "inst_3d": int(last3["기관_금액"].sum()),
+                        "frgn_3d": int(last3["외국인_금액"].sum()),
+                    }
+            except Exception:
+                pass
+
+    # 섹터별 집계
+    sector_agg = defaultdict(lambda: {
+        "count": 0, "total_cap": 0,
+        "deep": 0, "mid": 0, "mild": 0, "shallow": 0,
+        "drop_sum": 0, "upside_sum": 0,
+        "chg_list": [], "inst_3d_sum": 0, "frgn_3d_sum": 0,
+        "dual_buy_3d": 0, "stocks": [],
+    })
+
+    for code, s in all_stocks.items():
+        sector = s.get("sector", "기타") or "기타"
+        sd = sector_agg[sector]
+        sd["count"] += 1
+        sd["total_cap"] += s.get("cap", 0)
+        sd["drop_sum"] += s.get("drop", 0)
+        sd["upside_sum"] += s.get("upside", 0)
+
+        zone = s.get("fib_zone", "")
+        if zone == "DEEP": sd["deep"] += 1
+        elif zone == "MID": sd["mid"] += 1
+        elif zone == "MILD": sd["mild"] += 1
+        elif zone == "SHALLOW": sd["shallow"] += 1
+
+        if code in chg_dict:
+            sd["chg_list"].append(chg_dict[code])
+
+        fl_data = flow_dict.get(code)
+        if fl_data:
+            sd["inst_3d_sum"] += fl_data["inst_3d"]
+            sd["frgn_3d_sum"] += fl_data["frgn_3d"]
+            if fl_data["inst_3d"] > 0 and fl_data["frgn_3d"] > 0:
+                sd["dual_buy_3d"] += 1
+
+        sd["stocks"].append(s.get("name", code))
+
+    # 섹터별 점수 계산
+    sectors = []
+    for sector, sd in sector_agg.items():
+        if sd["count"] < 3:
+            continue
+
+        avg_drop = round(sd["drop_sum"] / sd["count"], 1)
+        avg_upside = round(sd["upside_sum"] / sd["count"], 1)
+        avg_chg = round(sum(sd["chg_list"]) / len(sd["chg_list"]), 2) if sd["chg_list"] else 0
+        net_flow = sd["inst_3d_sum"] + sd["frgn_3d_sum"]
+        net_flow_억 = round(net_flow / 100)
+
+        # 종합 점수
+        momentum = round(avg_chg * 10, 1)  # 직전 거래일 모멘텀
+        flow_score = round(min(30, max(-30, net_flow / 10000)), 1)  # 수급 (±30 상한)
+        dual_bonus = sd["dual_buy_3d"] * 10  # 쌍매수 보너스
+        total = round(momentum + flow_score + dual_bonus, 1)
+
+        # 경고 플래그: 모멘텀만 있고 수급 없으면
+        warning = ""
+        if momentum > 20 and abs(net_flow) < 5000:
+            warning = "개인 주도 상승 (수급 미확인)"
+
+        up_count = sum(1 for c in sd["chg_list"] if c > 0)
+        down_count = sum(1 for c in sd["chg_list"] if c <= 0)
+
+        cap_조 = round(sd["total_cap"] / 10000, 1) if sd["total_cap"] >= 10000 else 0
+        cap_억 = sd["total_cap"] if sd["total_cap"] < 10000 else 0
+
+        sectors.append({
+            "sector": sector,
+            "count": sd["count"],
+            "total_score": total,
+            "momentum": momentum,
+            "flow_score": flow_score,
+            "dual_bonus": dual_bonus,
+            "avg_chg": avg_chg,
+            "avg_drop": avg_drop,
+            "avg_upside": avg_upside,
+            "net_flow_억": net_flow_억,
+            "dual_buy_3d": sd["dual_buy_3d"],
+            "up_count": up_count,
+            "down_count": down_count,
+            "deep": sd["deep"],
+            "mid": sd["mid"],
+            "mild": sd["mild"],
+            "shallow": sd["shallow"],
+            "cap_조": cap_조,
+            "cap_억": cap_억,
+            "warning": warning,
+        })
+
+    # 종합 점수 순 정렬
+    sectors.sort(key=lambda x: x["total_score"], reverse=True)
+
+    # 로테이션 단계 판정
+    for i, s in enumerate(sectors):
+        score = s["total_score"]
+        if score >= 50:
+            s["stage"] = "선도"
+            s["stage_num"] = 1
+            s["stage_color"] = "GREEN"
+        elif score >= 20:
+            s["stage"] = "추격"
+            s["stage_num"] = 2
+            s["stage_color"] = "GREEN"
+        elif score >= 0:
+            s["stage"] = "대기"
+            s["stage_num"] = 3
+            s["stage_color"] = "YELLOW"
+        else:
+            s["stage"] = "후발"
+            s["stage_num"] = 4
+            s["stage_color"] = "RED"
+
+    result = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "total_sectors": len(sectors),
+        "total_stocks": len(all_stocks),
+        "sectors": sectors,
+    }
+
+    logger.info(f"[ROTATION] 섹터 로테이션 맵: {len(sectors)}섹터 "
+                f"(선도 {sum(1 for s in sectors if s['stage']=='선도')}, "
+                f"추격 {sum(1 for s in sectors if s['stage']=='추격')}, "
+                f"대기 {sum(1 for s in sectors if s['stage']=='대기')}, "
+                f"후발 {sum(1 for s in sectors if s['stage']=='후발')})")
+
+    return result
+
+
 def _enrich_with_macro(result: dict) -> dict:
     """기존 스윙 데이터에 매크로/섹터/카테고리 융합
 
@@ -1550,6 +1731,8 @@ def upload_dashboard_swing(swing_data: dict) -> bool:
             "fib_leaders": _build_fib_leaders(),
             # 달러-환율 모니터 (DXY/환율/VIX/외국인 흐름)
             "fx_monitor": _build_fx_monitor(),
+            # 섹터 로테이션 맵 (피보나치+수급+모멘텀)
+            "sector_rotation": _build_sector_rotation(),
         }
 
         # alloc_* 합계 100% 보정
