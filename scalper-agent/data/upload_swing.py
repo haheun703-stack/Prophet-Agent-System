@@ -857,6 +857,250 @@ def _build_fib_leaders() -> list:
     return []
 
 
+def _build_fx_monitor() -> dict:
+    """달러-환율 모니터 — DXY/USD-KRW/VIX + 외국인 자금흐름 신호.
+    yfinance로 수집, 환율↔KOSPI 상관관계 계산.
+    """
+    import pandas as pd
+    try:
+        import yfinance as yf
+    except ImportError:
+        logger.warning("[FX] yfinance 미설치")
+        return {}
+
+    result = {"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M")}
+
+    try:
+        # ── 1) DXY 달러인덱스 ──
+        dxy_tk = yf.Ticker("DX-Y.NYB")
+        dxy_df = dxy_tk.history(period="1mo")
+        if len(dxy_df) >= 2:
+            dxy_val = round(float(dxy_df.iloc[-1]["Close"]), 2)
+            dxy_prev = round(float(dxy_df.iloc[-2]["Close"]), 2)
+            dxy_ma5 = round(float(dxy_df["Close"].tail(5).mean()), 2)
+            dxy_ma20 = round(float(dxy_df["Close"].tail(20).mean()), 2) if len(dxy_df) >= 20 else dxy_ma5
+            dxy_chg = round((dxy_val / dxy_prev - 1) * 100, 2) if dxy_prev > 0 else 0
+
+            if dxy_ma5 < dxy_ma20:
+                dxy_trend = "약세"
+            elif dxy_ma5 > dxy_ma20 * 1.005:
+                dxy_trend = "강세"
+            else:
+                dxy_trend = "횡보"
+
+            result["dxy"] = {
+                "value": dxy_val, "prev": dxy_prev, "chg_1d": dxy_chg,
+                "ma5": dxy_ma5, "ma20": dxy_ma20, "trend": dxy_trend,
+            }
+
+        # ── 2) USD/KRW 환율 ──
+        fx_tk = yf.Ticker("KRW=X")
+        fx_df = fx_tk.history(period="1mo")
+        if len(fx_df) >= 2:
+            fx_val = round(float(fx_df.iloc[-1]["Close"]), 1)
+            fx_prev = round(float(fx_df.iloc[-2]["Close"]), 1)
+            fx_ma5 = round(float(fx_df["Close"].tail(5).mean()), 1)
+            fx_ma20 = round(float(fx_df["Close"].tail(20).mean()), 1) if len(fx_df) >= 20 else fx_ma5
+            fx_chg = round((fx_val / fx_prev - 1) * 100, 2) if fx_prev > 0 else 0
+
+            if fx_val < fx_ma5:
+                fx_trend = "원강세"
+            elif fx_val > fx_ma5 * 1.003:
+                fx_trend = "원약세"
+            else:
+                fx_trend = "횡보"
+
+            result["usdkrw"] = {
+                "value": fx_val, "prev": fx_prev, "chg_1d": fx_chg,
+                "ma5": fx_ma5, "ma20": fx_ma20, "trend": fx_trend,
+            }
+
+        # ── 3) VIX 구조 ──
+        vix_val, vix3m_val = 0.0, 0.0
+        for ticker, key in [("^VIX", "vix"), ("^VIX3M", "vix3m")]:
+            try:
+                tk = yf.Ticker(ticker)
+                df = tk.history(period="5d")
+                if len(df) >= 1:
+                    val = round(float(df.iloc[-1]["Close"]), 2)
+                    if key == "vix":
+                        vix_val = val
+                    else:
+                        vix3m_val = val
+            except Exception:
+                pass
+
+        if vix_val > 0 and vix3m_val > 0:
+            structure = "CONTANGO" if vix_val < vix3m_val else "BACKWARDATION"
+            ratio = round(vix_val / vix3m_val, 3)
+            result["vix_structure"] = {
+                "vix": vix_val, "vix3m": vix3m_val,
+                "ratio": ratio, "structure": structure,
+                "label": "정상(안전)" if structure == "CONTANGO" else "역전(패닉)",
+            }
+
+        # ── 4) 환율↔KOSPI 상관관계 (최근 15일) ──
+        try:
+            kospi_tk = yf.Ticker("^KS11")
+            kospi_df = kospi_tk.history(period="1mo")
+
+            if len(fx_df) >= 5 and len(kospi_df) >= 5:
+                # 날짜 기준 매칭
+                fx_dict = {}
+                for idx, row in fx_df.iterrows():
+                    fx_dict[idx.strftime("%Y-%m-%d")] = float(row["Close"])
+
+                matches, total = 0, 0
+                prev_fx_v, prev_k_v = None, None
+
+                for idx, row in kospi_df.tail(15).iterrows():
+                    dt = idx.strftime("%Y-%m-%d")
+                    fx_v = fx_dict.get(dt)
+                    k_v = float(row["Close"])
+
+                    if fx_v and prev_fx_v and prev_k_v:
+                        fx_up = fx_v > prev_fx_v   # 원약세
+                        k_up = k_v > prev_k_v       # KOSPI 상승
+                        # 역상관 = 환율↑ & KOSPI↓ 또는 환율↓ & KOSPI↑
+                        if fx_up != k_up:
+                            matches += 1
+                        total += 1
+
+                    if fx_v:
+                        prev_fx_v = fx_v
+                    prev_k_v = k_v
+
+                corr_pct = round(matches / total * 100) if total > 0 else 0
+                result["correlation"] = {
+                    "matches": matches, "total": total,
+                    "pct": corr_pct,
+                    "label": f"최근 {total}일 중 {matches}일 역상관 ({corr_pct}%)",
+                }
+        except Exception as e:
+            logger.warning(f"[FX] 상관관계 계산 실패: {e}")
+
+        # ── 5) 외국인 자금 흐름 (삼성전자 CSV 대용) ──
+        try:
+            csv_path = STORE_DIR / "flow" / "005930_investor.csv"
+            if csv_path.exists():
+                inv_df = pd.read_csv(csv_path)
+                if len(inv_df) >= 3:
+                    last3 = inv_df.tail(3)
+                    frgn_today = int(last3.iloc[-1].get("외국인_금액", 0) or 0)
+                    frgn_3d = int(last3["외국인_금액"].sum())
+
+                    # 연속 매수/매도 일수
+                    streak = 0
+                    direction = ""
+                    for i in range(len(inv_df) - 1, max(len(inv_df) - 20, -1), -1):
+                        val = int(inv_df.iloc[i].get("외국인_금액", 0) or 0)
+                        if streak == 0:
+                            direction = "매수" if val > 0 else "매도"
+                            streak = 1
+                        elif (direction == "매수" and val > 0) or (direction == "매도" and val <= 0):
+                            streak += 1
+                        else:
+                            break
+
+                    # 신호 판정
+                    if frgn_today > 0 and streak <= 2:
+                        signal = "순매수전환"
+                        signal_color = "GREEN"
+                    elif direction == "매수" and streak >= 3:
+                        signal = f"{streak}일연속매수"
+                        signal_color = "GREEN"
+                    elif direction == "매도" and streak >= 5:
+                        signal = f"{streak}일연속매도"
+                        signal_color = "RED"
+                    elif direction == "매도":
+                        signal = f"{streak}일매도중"
+                        signal_color = "YELLOW"
+                    else:
+                        signal = "중립"
+                        signal_color = "YELLOW"
+
+                    result["foreign_flow"] = {
+                        "proxy": "삼성전자",
+                        "today": frgn_today,          # 백만원
+                        "today_억": round(frgn_today / 100),
+                        "sum_3d": frgn_3d,
+                        "sum_3d_억": round(frgn_3d / 100),
+                        "streak": streak,
+                        "direction": direction,
+                        "signal": signal,
+                        "signal_color": signal_color,
+                    }
+        except Exception as e:
+            logger.warning(f"[FX] 외국인 흐름 로드 실패: {e}")
+
+        # ── 6) 종합 판정 ──
+        dxy_info = result.get("dxy", {})
+        fx_info = result.get("usdkrw", {})
+        vix_info = result.get("vix_structure", {})
+        flow_info = result.get("foreign_flow", {})
+
+        bullish = 0  # 외국인 유입 방향 점수
+        bearish = 0
+
+        # DXY 약세 = 원강세 = 외국인 유입
+        if dxy_info.get("trend") == "약세":
+            bullish += 2
+        elif dxy_info.get("trend") == "강세":
+            bearish += 2
+
+        # 환율 원강세 = 외국인 유입
+        if fx_info.get("trend") == "원강세":
+            bullish += 2
+        elif fx_info.get("trend") == "원약세":
+            bearish += 2
+
+        # VIX CONTANGO = 안전 = 이머징 선호
+        if vix_info.get("structure") == "CONTANGO":
+            bullish += 1
+        elif vix_info.get("structure") == "BACKWARDATION":
+            bearish += 2
+
+        # 외국인 흐름
+        if flow_info.get("signal_color") == "GREEN":
+            bullish += 2
+        elif flow_info.get("signal_color") == "RED":
+            bearish += 2
+
+        total_score = bullish - bearish
+        if total_score >= 4:
+            verdict = "외국인 유입 강력"
+            verdict_color = "GREEN"
+        elif total_score >= 2:
+            verdict = "외국인 유입 가능"
+            verdict_color = "GREEN"
+        elif total_score >= 0:
+            verdict = "중립 (관망)"
+            verdict_color = "YELLOW"
+        elif total_score >= -2:
+            verdict = "외국인 유출 우려"
+            verdict_color = "YELLOW"
+        else:
+            verdict = "외국인 유출 경고"
+            verdict_color = "RED"
+
+        result["verdict"] = {
+            "text": verdict,
+            "color": verdict_color,
+            "bullish": bullish,
+            "bearish": bearish,
+            "score": total_score,
+        }
+
+        logger.info(f"[FX] 달러-환율 모니터: {verdict} (점수 {total_score}, "
+                     f"DXY {dxy_info.get('trend','?')} / FX {fx_info.get('trend','?')} / "
+                     f"VIX {vix_info.get('structure','?')})")
+
+    except Exception as e:
+        logger.error(f"[FX] 달러-환율 모니터 빌드 실패: {e}")
+
+    return result
+
+
 def _enrich_with_macro(result: dict) -> dict:
     """기존 스윙 데이터에 매크로/섹터/카테고리 융합
 
@@ -1304,6 +1548,8 @@ def upload_dashboard_swing(swing_data: dict) -> bool:
             "fib_stocks": _build_fib_stocks(),
             # 대형주 피보나치 (시총 상위 30)
             "fib_leaders": _build_fib_leaders(),
+            # 달러-환율 모니터 (DXY/환율/VIX/외국인 흐름)
+            "fx_monitor": _build_fx_monitor(),
         }
 
         # alloc_* 합계 100% 보정
