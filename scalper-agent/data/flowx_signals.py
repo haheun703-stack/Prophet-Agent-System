@@ -80,17 +80,17 @@ def _score_to_grade(total_score: float, confidence: str = "LOW",
 def _determine_signal_type(grade: str, inst_support: bool,
                            volume_ratio: float,
                            tv_pattern: str = "NORMAL") -> str:
-    """등급+기관+거래대금 -> FORCE_BUY/BUY/WATCH/AVOID"""
+    """등급+기관+거래대금 -> STRONG_PICK/PICK/WATCH/AVOID"""
     top_grades = ("AAA", "AA", "A")
     buy_grades = ("AAA", "AA", "A", "BBB")
 
     if tv_pattern == "QUIET_ACCUMULATION" and grade in top_grades \
        and volume_ratio >= 2.0:
-        return "FORCE_BUY"
+        return "STRONG_PICK"
     if grade in top_grades and inst_support and volume_ratio >= 1.5:
-        return "FORCE_BUY"
+        return "STRONG_PICK"
     if grade in buy_grades and (inst_support or volume_ratio >= 1.3):
-        return "BUY"
+        return "PICK"
     if grade in (*buy_grades, "BB"):
         return "WATCH"
     return "AVOID"
@@ -147,11 +147,11 @@ def log_quant_signals(rec_data: dict = None) -> int:
         )
 
         # AVOID/WATCH 제외 — BUY 계열만 업로드
-        if signal_type not in ("FORCE_BUY", "BUY"):
+        if signal_type not in ("STRONG_PICK", "PICK"):
             continue
 
-        # FORCE_BUY → BUY (Supabase CHECK 제약)
-        db_signal_type = "BUY"
+        # STRONG_PICK → PICK (Supabase CHECK 제약)
+        db_signal_type = "PICK"
 
         entry = s.get("entry", s.get("close", 0))
 

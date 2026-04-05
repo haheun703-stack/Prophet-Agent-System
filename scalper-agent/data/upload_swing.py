@@ -235,7 +235,7 @@ def generate_swing_page_data() -> dict:
 
         # 한국어 레이블
         _확신 = {"HIGH": "확신 높음", "MEDIUM": "보통", "LOW": "낮음"}
-        _행동 = "매수" if star else ("관심매수" if score >= 40 else "관찰")
+        _행동 = "포착" if star else ("관심" if score >= 40 else "관찰")
 
         pick = {
             "code": code,
@@ -328,7 +328,7 @@ def generate_swing_page_data() -> dict:
             "category": "NXT",
             "category_label": "야간 매매",
             "star": star,
-            "action": "매수" if star else "관심매수",
+            "action": "포착" if star else "관심",
             "grade": f"Tier{tier}",
             "score": nxt_score,
             "sector": _분류명.get(sector_key, sector_key),
@@ -620,7 +620,7 @@ def _build_action_guide(macro_regime: str, nxt_score: float) -> list:
         # 강한 하락 신호
         guide = [
             {"시간": "09:00~09:15", "행동": "시장 방향 확인 → 인버스/금 ETF 먼저 진입"},
-            {"시간": "09:15~09:30", "행동": "원유/에너지주 → 많이 빠졌으면 조금씩 분할 매수"},
+            {"시간": "09:15~09:30", "행동": "원유/에너지주 → 많이 빠졌으면 조금씩 분할 진입"},
             {"시간": "09:30~10:00", "행동": "방어주(통신/제약) 진입 검토"},
             {"시간": "10:00~11:00", "행동": "TV 스캔 결과 확인 후 추가 조정"},
             {"시간": "종일", "행동": "인버스 보유 유지 (보험 역할)"},
@@ -629,7 +629,7 @@ def _build_action_guide(macro_regime: str, nxt_score: float) -> list:
         # 약한 하락 / 중립
         guide = [
             {"시간": "09:00~09:15", "행동": "전날 추천종목 갭 확인"},
-            {"시간": "09:15~10:00", "행동": "1/3씩 분할 매수 (한 번에 몰빵 금지)"},
+            {"시간": "09:15~10:00", "행동": "1/3씩 분할 진입 (한 번에 몰빵 금지)"},
             {"시간": "10:00~11:00", "행동": "거래량 터지는 종목 실시간 확인"},
             {"시간": "14:00~15:00", "행동": "당일 손절선 확인 → 다음날 전략 준비"},
         ]

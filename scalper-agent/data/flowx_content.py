@@ -542,7 +542,7 @@ def generate_vip_content() -> dict:
     # 요약 통계
     content["summary"] = {
         "total_stocks": len(content["panel_1_stocks"]),
-        "force_buy": sum(1 for s in content["panel_1_stocks"] if s["signal"] == "FORCE_BUY"),
+        "strong_pick": sum(1 for s in content["panel_1_stocks"] if s["signal"] == "STRONG_PICK"),
         "accumulation_detected": len(content["panel_5_accumulation"]),
         "exit_alerts": sum(1 for a in content["panel_8_alerts"] if a["action"] == "EXIT"),
         "reduce_alerts": sum(1 for a in content["panel_8_alerts"] if a["action"] == "REDUCE"),
@@ -736,7 +736,7 @@ def format_telegram_vip(content: dict) -> str:
     lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
     lines.append(
         f"종목 {s.get('total_stocks', 0)} | "
-        f"FORCE_BUY {s.get('force_buy', 0)} | "
+        f"STRONG_PICK {s.get('strong_pick', 0)} | "
         f"매집 {s.get('accumulation_detected', 0)} | "
         f"적중률 {s.get('overall_hit_rate', 0)}%"
     )
@@ -837,7 +837,7 @@ def _print_content(content: dict):
     s = content.get("summary", {})
     print(f"\n{'='*70}")
     print(f"  종목 {s.get('total_stocks', 0)} | "
-          f"FORCE_BUY {s.get('force_buy', 0)} | "
+          f"STRONG_PICK {s.get('strong_pick', 0)} | "
           f"매집 {s.get('accumulation_detected', 0)} | "
           f"EXIT {s.get('exit_alerts', 0)} | "
           f"적중률 {s.get('overall_hit_rate', 0)}%")

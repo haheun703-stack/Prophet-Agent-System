@@ -107,20 +107,20 @@ def _score_to_grade(total_score: float, confidence: str, nat_power_grade: str) -
 
 def _determine_signal_type(grade: str, inst_support: bool, volume_ratio: float,
                            tv_pattern: str = "NORMAL") -> str:
-    """signal_type 결정 (FORCE_BUY / BUY / WATCH / AVOID)
+    """signal_type 결정 (STRONG_PICK / PICK / WATCH / AVOID)
 
-    tv_pattern이 QUIET_ACCUMULATION이면 FORCE_BUY 조건 완화:
-    조용한 매집 + A등급 이상 + 거래대금 2x+ → FORCE_BUY (기관 미동반이어도)
+    tv_pattern이 QUIET_ACCUMULATION이면 STRONG_PICK 조건 완화:
+    조용한 매집 + A등급 이상 + 거래대금 2x+ → STRONG_PICK (기관 미동반이어도)
     """
     # 조용한 매집 특별 규칙
     if tv_pattern == "QUIET_ACCUMULATION" and grade in ("AAA", "AA", "A") and volume_ratio >= 2.0:
-        return "FORCE_BUY"
+        return "STRONG_PICK"
 
     # 기존 로직
     if grade in ("AAA", "AA", "A") and inst_support and volume_ratio >= 1.5:
-        return "FORCE_BUY"
+        return "STRONG_PICK"
     elif grade in ("AAA", "AA", "A", "BBB") and (inst_support or volume_ratio >= 1.3):
-        return "BUY"
+        return "PICK"
     elif grade in ("AAA", "AA", "A", "BBB", "BB"):
         return "WATCH"
     else:
@@ -280,13 +280,13 @@ def upload_short_signals(rows: list) -> bool:
         ).execute()
 
         # 요약 출력
-        force_buy = sum(1 for r in rows if r.get("signal_type") == "FORCE_BUY")
-        buy = sum(1 for r in rows if r.get("signal_type") == "BUY")
+        strong_pick = sum(1 for r in rows if r.get("signal_type") == "STRONG_PICK")
+        pick = sum(1 for r in rows if r.get("signal_type") == "PICK")
         watch = sum(1 for r in rows if r.get("signal_type") == "WATCH")
         avoid = sum(1 for r in rows if r.get("signal_type") == "AVOID")
         logger.info(
             f"[FLOWX] 단기시그널 업로드 완료: {len(rows)}개 종목\n"
-            f"  FORCE_BUY: {force_buy} | BUY: {buy} | WATCH: {watch} | AVOID: {avoid}"
+            f"  STRONG_PICK: {strong_pick} | PICK: {pick} | WATCH: {watch} | AVOID: {avoid}"
         )
         return True
     except Exception as e:
@@ -555,7 +555,7 @@ def _apply_flowx_filter(signals: list) -> list:
     기준:
     - grade A 이상 (AAA, AA, A)
     - total_score 65점 이상
-    - signal_type FORCE_BUY 또는 BUY만
+    - signal_type STRONG_PICK 또는 PICK만
     - 기관 미동반(inst_support=False)이면 score 75+ 이어야 통과
     """
     filtered = []
@@ -567,7 +567,7 @@ def _apply_flowx_filter(signals: list) -> list:
         if s["total_score"] < 65:
             continue
         # 시그널 필터: BUY 계열만
-        if s["signal_type"] not in ("FORCE_BUY", "BUY"):
+        if s["signal_type"] not in ("STRONG_PICK", "PICK"):
             continue
         # 기관 미동반 시 75점 이상만
         if not s["inst_support"] and s["total_score"] < 75:
