@@ -172,7 +172,6 @@ def log_quant_signals(rec_data: dict = None) -> int:
             "signal_date": today_str,
             "multiplier": 1.0,
             "memo": ", ".join(s.get("sources", [])[:3]),
-            "sources": s.get("sources", []),
         })
 
     if not rows:
@@ -234,7 +233,6 @@ def log_daytrading_signal(code: str, name: str, entry_price: int,
         "signal_date": date.today().isoformat(),
         "multiplier": multiplier,
         "memo": memo,
-        "sources": sources or [],
     }
 
     try:

@@ -1766,14 +1766,38 @@ def upload_dashboard_swing(swing_data: dict) -> bool:
 # ═══════════════════════════════════════
 
 def refresh_fib_prices():
-    """bottom_scan.json + fib_leaders.json 종가 갱신 (매일 C19 전 자동 실행)."""
-    from pykrx import stock as pykrx_stock
-    from data.trading_calendar import last_trading_day
-    import time
+    """bottom_scan.json + fib_leaders.json 종가 갱신 (매일 C19 전 자동 실행).
 
-    last_day = last_trading_day()
-    d = last_day.strftime("%Y%m%d")
-    start_52w = (last_day.replace(year=last_day.year - 1)).strftime("%Y%m%d")
+    pykrx 개별호출 → CSV 종가 읽기로 전환 (API 호출 0건, 타임아웃 방지).
+    data_store/flow/{code}_investor.csv 마지막 행의 종가 사용.
+    """
+    import csv
+
+    flow_dir = STORE_DIR / "flow"
+
+    # 1) CSV에서 종가 일괄 로드 (코드 → 종가 dict)
+    price_map: dict[str, int] = {}
+    if flow_dir.exists():
+        for csv_path in flow_dir.glob("*_investor.csv"):
+            code = csv_path.stem.replace("_investor", "")
+            try:
+                with open(csv_path, "r", encoding="utf-8") as f:
+                    reader = csv.DictReader(f)
+                    last_row = None
+                    for row in reader:
+                        last_row = row
+                    if last_row and "종가" in last_row:
+                        price_val = last_row["종가"]
+                        if price_val:
+                            price_map[code] = int(float(price_val))
+            except Exception:
+                continue
+
+    if not price_map:
+        logger.warning("[FIB] CSV 종가 로드 실패 — flow 데이터 없음")
+        return
+
+    logger.info(f"[FIB] CSV 종가 {len(price_map)}종목 로드 완료")
 
     for filename in ["bottom_scan.json", "fib_leaders.json"]:
         path = STORE_DIR / filename
@@ -1788,71 +1812,62 @@ def refresh_fib_prices():
             updated = 0
             for s in data:
                 code = s.get("code", "")
-                if not code:
+                if not code or code not in price_map:
                     continue
-                try:
-                    df = pykrx_stock.get_market_ohlcv(d, d, code)
-                    if df.empty:
-                        continue
 
-                    new_price = int(df.iloc[0]["종가"])
-                    w52h = s.get("w52h", 0)
+                new_price = price_map[code]
+                w52h = s.get("w52h", 0)
 
-                    s["price"] = new_price
-                    s["drop"] = round((new_price / w52h - 1) * 100, 2) if w52h > 0 else 0
+                s["price"] = new_price
+                s["drop"] = round((new_price / w52h - 1) * 100, 2) if w52h > 0 else 0
 
-                    # fib_zone 재판정 (bottom_scan만)
-                    if "fib_zone" in s:
-                        drop_abs = abs(s["drop"])
-                        if drop_abs >= 50:
-                            s["fib_zone"] = "DEEP"
-                        elif drop_abs >= 40:
-                            s["fib_zone"] = "MID"
-                        elif drop_abs >= 30:
-                            s["fib_zone"] = "MILD"
-                        else:
-                            s["fib_zone"] = "SHALLOW"
-
-                        _zone_label = {
-                            "DEEP": "50%+ 하락 (바닥 매수 구간)",
-                            "MID": "40~50% 하락 (중간 눌림)",
-                            "MILD": "30~40% 하락 (1차 눌림)",
-                            "SHALLOW": "15~30% 하락 (얕은 조정)",
-                        }
-                        s["fib_zone_label"] = _zone_label.get(s["fib_zone"], s["fib_zone"])
-
-                    # fib_status 재판정
-                    fib_382 = s.get("fib_382", 0)
-                    fib_500 = s.get("fib_500", 0)
-                    fib_618 = s.get("fib_618", 0)
-                    if fib_382 and new_price <= fib_382:
-                        s["fib_status"] = "38.2% 아래 (깊은 하락)"
-                    elif fib_500 and new_price <= fib_500:
-                        s["fib_status"] = "38.2%~50% 사이"
-                    elif fib_618 and new_price <= fib_618:
-                        s["fib_status"] = "50%~61.8% 사이"
-                    elif w52h and new_price <= w52h * 0.9:
-                        s["fib_status"] = "61.8% 위 (회복 중)"
+                # fib_zone 재판정 (bottom_scan만)
+                if "fib_zone" in s:
+                    drop_abs = abs(s["drop"])
+                    if drop_abs >= 50:
+                        s["fib_zone"] = "DEEP"
+                    elif drop_abs >= 40:
+                        s["fib_zone"] = "MID"
+                    elif drop_abs >= 30:
+                        s["fib_zone"] = "MILD"
                     else:
-                        s["fib_status"] = "고점 근접"
+                        s["fib_zone"] = "SHALLOW"
 
-                    # upside 재계산
-                    target = s.get("target_peace", s.get("target", 0))
-                    if target and new_price > 0:
-                        s["upside"] = round((target / new_price - 1) * 100, 2)
+                    _zone_label = {
+                        "DEEP": "50%+ 하락 (바닥 매수 구간)",
+                        "MID": "40~50% 하락 (중간 눌림)",
+                        "MILD": "30~40% 하락 (1차 눌림)",
+                        "SHALLOW": "15~30% 하락 (얕은 조정)",
+                    }
+                    s["fib_zone_label"] = _zone_label.get(s["fib_zone"], s["fib_zone"])
 
-                    updated += 1
-                except Exception:
-                    continue
+                # fib_status 재판정
+                fib_382 = s.get("fib_382", 0)
+                fib_500 = s.get("fib_500", 0)
+                fib_618 = s.get("fib_618", 0)
+                if fib_382 and new_price <= fib_382:
+                    s["fib_status"] = "38.2% 아래 (깊은 하락)"
+                elif fib_500 and new_price <= fib_500:
+                    s["fib_status"] = "38.2%~50% 사이"
+                elif fib_618 and new_price <= fib_618:
+                    s["fib_status"] = "50%~61.8% 사이"
+                elif w52h and new_price <= w52h * 0.9:
+                    s["fib_status"] = "61.8% 위 (회복 중)"
+                else:
+                    s["fib_status"] = "고점 근접"
 
-                if updated % 50 == 0 and updated > 0:
-                    time.sleep(0.5)
+                # upside 재계산
+                target = s.get("target_peace", s.get("target", 0))
+                if target and new_price > 0:
+                    s["upside"] = round((target / new_price - 1) * 100, 2)
+
+                updated += 1
 
             # 저장
             tmp = path.with_suffix(".tmp")
             tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), "utf-8")
             tmp.replace(path)
-            logger.info(f"[FIB] {filename} 종가 갱신: {updated}/{len(data)}종목 ({d})")
+            logger.info(f"[FIB] {filename} 종가 갱신: {updated}/{len(data)}종목 (CSV)")
 
         except Exception as e:
             logger.warning(f"[FIB] {filename} 갱신 실패: {e}")
