@@ -234,8 +234,8 @@ class KISTrader:
                 with self._lock:
                     self._consecutive_failures += 1
                 err_str = str(e).lower()
-                if attempt == 0 and ("token" in err_str or "auth" in err_str or "401" in err_str):
-                    logger.warning(f"잔고 조회 예외(토큰): {e} - 재발급 후 재시도")
+                if attempt == 0 and ("token" in err_str or "auth" in err_str or "401" in err_str or "tr_cont" in err_str):
+                    logger.warning(f"잔고 조회 예외(토큰/세션): {e} - 재발급 후 재시도")
                     self._reset_broker()
                     time.sleep(0.5)
                     continue
