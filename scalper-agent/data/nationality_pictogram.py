@@ -533,7 +533,10 @@ def upload_chart_to_supabase(
     image_bytes: BytesIO,
     metadata: dict,
 ) -> Optional[str]:
-    """Supabase Storage 업로드 + nationality_charts 테이블 upsert"""
+    """Supabase Storage 업로드 + nationality_charts 테이블 upsert
+
+    httpx 직접 호출 방식 (supabase-py Storage 400 에러 회피)
+    """
     import os
     url = os.getenv("SUPABASE_URL")
     key = os.getenv("SUPABASE_KEY")
@@ -541,20 +544,27 @@ def upload_chart_to_supabase(
         return None
 
     try:
-        from supabase import create_client
-        client = create_client(url, key)
+        import httpx
 
-        # Storage 업로드
         storage_path = f"{date_str}/{code}.png"
         image_bytes.seek(0)
-        client.storage.from_("nationality-charts").upload(
-            storage_path,
-            image_bytes.read(),
-            {"content-type": "image/png", "upsert": "true"},
-        )
+        data = image_bytes.read()
+
+        # Storage 업로드 (httpx 직접 — x-upsert 헤더 명시)
+        storage_url = f"{url}/storage/v1/object/nationality-charts/{storage_path}"
+        headers = {
+            "apikey": key,
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "image/png",
+            "x-upsert": "true",
+        }
+        resp = httpx.post(storage_url, content=data, headers=headers, timeout=30)
+        if resp.status_code not in (200, 201):
+            logger.warning(f"[NatChart] Storage 업로드 실패 {code}: {resp.status_code}")
+
         image_url = f"{url}/storage/v1/object/public/nationality-charts/{storage_path}"
 
-        # 테이블 upsert
+        # 테이블 upsert (httpx 직접)
         row = {
             "date": f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:]}",
             "code": code,
@@ -562,9 +572,16 @@ def upload_chart_to_supabase(
             "image_url": image_url,
             **metadata,
         }
-        client.table("nationality_charts").upsert(
-            row, on_conflict="date,code"
-        ).execute()
+        rest_url = f"{url}/rest/v1/nationality_charts"
+        rest_headers = {
+            "apikey": key,
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            "Prefer": "resolution=merge-duplicates",
+        }
+        resp2 = httpx.post(rest_url, json=row, headers=rest_headers, timeout=15)
+        if resp2.status_code not in (200, 201):
+            logger.warning(f"[NatChart] 테이블 upsert 실패 {code}: {resp2.status_code}")
 
         logger.info(f"[NatChart] Supabase 업로드: {name} → {storage_path}")
         return image_url
