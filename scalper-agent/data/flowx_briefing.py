@@ -392,13 +392,10 @@ def upload_morning_briefing(briefing: dict) -> bool:
             "full_report": full_report,
         }
 
-        # upsert 트리거 updated_at 충돌 우회 → delete+insert
-        try:
-            client.table("morning_briefings").delete().eq(
-                "date", briefing["date"]).execute()
-        except Exception:
-            pass
-        client.table("morning_briefings").insert([row]).execute()
+        # upsert로 변경 (delete+insert → 트랜잭션 부재 데이터 손실 방지)
+        client.table("morning_briefings").upsert(
+            [row], on_conflict="date"
+        ).execute()
 
         logger.info(f"[FLOWX] 모닝 브리핑 업로드 완료: {briefing['date']}")
         return True

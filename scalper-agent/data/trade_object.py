@@ -352,7 +352,7 @@ class PositionSizer:
         # 슬롯 캡
         slots = max(1, MAX_POSITIONS - current_positions)
         slot_cap = int(usable / slots)
-        if position_krw > slot_cap:
+        if position_krw > slot_cap and entry > 0:
             shares = slot_cap // entry
             position_krw = shares * entry
 
