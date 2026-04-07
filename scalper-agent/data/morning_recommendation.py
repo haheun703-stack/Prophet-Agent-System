@@ -1148,17 +1148,19 @@ def _step5_cross_validate(
             sources.append(f"opp:{sector}({opp_bonus:+.0f})")
 
         # ── 로테이션: 다음 섹터 보너스 / 반전 페널티 ──
+        # 학습 피드백: sector_hot/rotation 적중률 0%, avg -6% → 후행 지표
+        # hot_early/staging만 소폭 보너스, hot_mid는 이미 늦음
         rotation_bonus = 0.0
         if rot_info:
             rot_src = rot_info.get("rotation_source", "")
             if rot_src == "hot_early":
-                rotation_bonus = 15.0   # HOT 초기 소부장 → 확인된 모멘텀, 최우선
+                rotation_bonus = 8.0    # HOT 초기 (15→8 축소, 후행 위험)
             elif rot_src == "staging":
-                rotation_bonus = 8.0    # 스테이징 섹터 → 미확인 모멘텀, 보수적
+                rotation_bonus = 5.0    # 스테이징 (8→5)
             elif rot_src == "hot_mid":
-                rotation_bonus = 5.0    # HOT 중기 → 아직 기회 있음
+                rotation_bonus = 0.0    # HOT 중기 → 이미 늦음 (5→0)
             elif rot_src == "reversal_exit":
-                rotation_bonus = -20.0  # 반전 → 신규 매수 금지 수준
+                rotation_bonus = -20.0  # 반전 유지
 
         # ── OR bias 보정 (ICT Opening Range) ──
         or_bias_adj = 0.0
@@ -1220,20 +1222,25 @@ def _step5_cross_validate(
             _tv_score = _tv_sc
 
             # TV 기본 점수 (패턴별 차등)
+            # 학습 피드백 (10일 21건): QUIET_ACC 90+→적중 0%, 85→75%, 72-82→50%
+            # 과열 매집(90+)은 이미 상승 완료 → 점수 대폭 축소
+            # EXPLOSION(70)은 적중 0%, avg -10% → 함정 시그널
             if _tv_pat == "QUIET_ACCUMULATION":
-                if _tv_sc >= 80:
-                    tv_direct = 35     # 강 매집 → 릴레이급 대우
+                if _tv_sc >= 90:
+                    tv_direct = 10     # 과열 매집 → 이미 상승 완료 (35→10)
+                elif _tv_sc >= 83:
+                    tv_direct = 25     # 최적 구간 유지
                 elif _tv_sc >= 70:
-                    tv_direct = 25
+                    tv_direct = 20     # 초기 매집 (25→20)
                 elif _tv_sc >= 60:
-                    tv_direct = 15
+                    tv_direct = 12     # 약한 매집 (15→12)
             elif _tv_pat == "EXPLOSION":
                 if _tv_sc >= 80:
-                    tv_direct = 30
+                    tv_direct = 8      # 이미 폭발 후 → 함정 (30→8)
                 elif _tv_sc >= 70:
-                    tv_direct = 20
+                    tv_direct = 5      # 함정 위험 (20→5)
                 elif _tv_sc >= 60:
-                    tv_direct = 12
+                    tv_direct = 3      # 약한 폭발 (12→3)
             elif _tv_pat == "EARLY_ACCUMULATION":
                 # 선제 감지 — 아직 확정 아니지만 1일 앞서 포착
                 # 백테스트: PANIC(3/25→3/27) 승률 0% → PANIC/SHOCK에서는 무력화
@@ -1338,25 +1345,43 @@ def _step5_cross_validate(
             sources.append(f"fib({fib_adj:+.0f})")
         raw_total += fib_adj
 
+        # ── 과신호 소프트캡 (학습: 점수대별 적중률 역전 현상) ──
+        # <80: 38%, 80-100: 50%, 100-120: 50%, 120+: 0%
+        # 80점 이상부터 점진적 압축: 80 + (초과분 * 0.25)
+        # 예: 150점 → 80 + 70*0.25 = 97.5 / 100점 → 80 + 20*0.25 = 85
+        if raw_total > 80:
+            excess = raw_total - 80
+            compressed = excess * 0.25  # 초과분 75% 압축
+            old_raw = raw_total
+            raw_total = 80 + compressed
+            sources.append(f"softcap(-{old_raw - raw_total:.0f})")
+            logger.info(f"  [소프트캡] {name}: {old_raw:.0f}→{raw_total:.0f}")
+
+        # ── 수급 미검증 페널티 (학습: 수급 없는 TV신호 적중률 낮음) ──
+        # TV 점수가 높은데 국적/수급 시그널이 없으면 감점
+        has_flow = abs(nat_sc) >= 3 or abs(nat_power_sc) >= 5
+        if tv_direct >= 15 and not has_flow:
+            no_flow_pen = tv_direct * 0.3  # TV 점수의 30% 감점
+            raw_total -= no_flow_pen
+            sources.append(f"no_flow(-{no_flow_pen:.0f})")
+
         # CORTEX 체제 배수 적용
         total = raw_total * regime_mult
 
         # ── TV 강매집 최소 점수 보장 ──────────────
-        # PANIC/SHOCK에서도 기관 매집 시그널(QUIET_ACC 80+, EXPLOSION 80+)은
-        # regime_mult로 점수가 0 이하로 내려가지 않도록 최소 점수 보장
-        # → TV 전용 슬롯(3개)에서 후보 유지 + 기관 수급 시그널 보존
-        if _tv_pattern == "QUIET_ACCUMULATION" and _tv_score >= 80:
-            tv_floor = max(20.0, tv_direct * 0.6)  # 최소 20점 (강매집)
+        # PANIC/SHOCK에서도 기관 매집 시그널은 최소 점수 보장
+        # 단, QUIET_ACC 90+와 EXPLOSION은 과열이므로 floor 축소
+        if _tv_pattern == "QUIET_ACCUMULATION" and 80 <= _tv_score < 90:
+            tv_floor = max(15.0, tv_direct * 0.5)  # 최적 구간만 보장
             if total < tv_floor:
                 logger.info(f"  [TV Floor] {name}: {total:.1f}→{tv_floor:.1f} (QUIET_ACC {_tv_score:.0f})")
                 total = tv_floor
-        elif _tv_pattern == "EXPLOSION" and _tv_score >= 80:
-            tv_floor = max(15.0, tv_direct * 0.5)  # 최소 15점 (폭발)
-            if total < tv_floor:
-                logger.info(f"  [TV Floor] {name}: {total:.1f}→{tv_floor:.1f} (EXPLOSION {_tv_score:.0f})")
-                total = tv_floor
-        elif _tv_pattern in ("QUIET_ACCUMULATION", "EXPLOSION") and _tv_score >= 70:
-            tv_floor = 8.0  # 최소 8점 (중간 강도)
+        elif _tv_pattern == "QUIET_ACCUMULATION" and _tv_score >= 90:
+            pass  # 과열 매집 → floor 없음 (자연 점수만)
+        elif _tv_pattern == "EXPLOSION" and _tv_score >= 70:
+            pass  # EXPLOSION → floor 없음 (함정 위험)
+        elif _tv_pattern in ("QUIET_ACCUMULATION",) and _tv_score >= 70:
+            tv_floor = 5.0  # 초기 매집 최소 보장
             if total < tv_floor:
                 logger.info(f"  [TV Floor] {name}: {total:.1f}→{tv_floor:.1f} ({_tv_pattern} {_tv_score:.0f})")
                 total = tv_floor
