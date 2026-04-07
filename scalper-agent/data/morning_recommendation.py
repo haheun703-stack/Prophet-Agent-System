@@ -1029,6 +1029,57 @@ def _step5_cross_validate(
 
     _fib_cache = {}  # 피보나치 분석 캐시 (코드별 1회만)
 
+    # ── 쌍매수 연속 + 대형주 수급 캐시 (루프 밖에서 1회 로드) ──
+    _flow_cache = {}  # {code: {"consec": int, "today_frgn": float, "today_inst": float}}
+    _uni_caps = {}    # {code: cap_억}
+    try:
+        import csv as _csv_mod
+        _flow_dir = Path(__file__).resolve().parent.parent / "data_store" / "flow"
+        # universe에서 시총 정보 가져오기
+        import json as _json_mod
+        _uni_path = Path(__file__).resolve().parent.parent / "data_store" / "universe.json"
+        _uni_caps = {}
+        if _uni_path.exists():
+            with open(_uni_path, "r", encoding="utf-8") as _uf:
+                _uni_data = _json_mod.load(_uf)
+                _uni_caps = {k: v.get("cap_억", 0) for k, v in _uni_data.items()} if isinstance(_uni_data, dict) else {}
+
+        for _fc_code in all_codes:
+            _fp = _flow_dir / f"{_fc_code}_investor.csv"
+            if not _fp.exists():
+                continue
+            try:
+                with open(_fp, "r", encoding="utf-8-sig") as _ff:
+                    reader = _csv_mod.DictReader(_ff)
+                    rows = list(reader)
+                if len(rows) < 2:
+                    continue
+                # 최근 5일 역순 탐색 — 연속 쌍매수 일수 카운트
+                consec = 0
+                today_frgn = 0.0
+                today_inst = 0.0
+                for idx, row in enumerate(reversed(rows[-5:])):
+                    fv = float(row.get("외국인_금액", 0) or 0)
+                    iv = float(row.get("기관_금액", 0) or 0)
+                    if idx == 0:
+                        today_frgn = fv  # 백만원 단위
+                        today_inst = iv
+                    if fv > 0 and iv > 0:
+                        consec += 1
+                    else:
+                        break  # 연속 끊김
+                _flow_cache[_fc_code] = {
+                    "consec": consec,
+                    "today_frgn": today_frgn,  # 백만원
+                    "today_inst": today_inst,   # 백만원
+                }
+            except Exception:
+                pass
+        _fc_cnt = sum(1 for v in _flow_cache.values() if v["consec"] >= 2)
+        logger.info(f"[수급캐시] {len(_flow_cache)}종목 로드, 쌍매수2일+: {_fc_cnt}종목")
+    except Exception as _e:
+        logger.warning(f"[수급캐시] 로드 실패 (무시): {_e}")
+
     candidates = []
     for code in all_codes:
         r_info = relay.get("stocks", {}).get(code, {})
@@ -1311,6 +1362,58 @@ def _step5_cross_validate(
             trix_sc = min(base * tx["div_strength"], 25)
             sources.append(f"trix({tx['div_strength']:.2f})")
 
+        # ── 쌍매수 연속 보너스 (학습: 쌍매수 2일+연속 = 가장 확실한 급등 신호) ──
+        doublebuy_sc = 0.0
+        _fc = _flow_cache.get(code)
+        if _fc:
+            _consec = _fc["consec"]
+            if _consec >= 3:
+                doublebuy_sc = 18.0   # 3일+ 연속 쌍매수 → 강력
+                cross += 1
+                sources.append(f"doublebuy({_consec}D:+18)")
+            elif _consec >= 2:
+                doublebuy_sc = 12.0   # 2일 연속 쌍매수
+                cross += 1
+                sources.append(f"doublebuy({_consec}D:+12)")
+            elif _consec == 1:
+                # 오늘만 쌍매수 — 금액 규모에 따라 차등
+                _today_sum = abs(_fc["today_frgn"]) + abs(_fc["today_inst"])
+                if _today_sum >= 50000:  # 500억+ (백만원 단위)
+                    doublebuy_sc = 8.0
+                    sources.append("doublebuy(1D:+8)")
+                elif _today_sum >= 10000:  # 100억+
+                    doublebuy_sc = 5.0
+                    sources.append("doublebuy(1D:+5)")
+
+        # ── 대형주 수급 감지 (학습: 시총1조+ TV미감지 수급 급등 놓침) ──
+        # TV 스캐너에 안 잡히는 대형주의 외인/기관 대량매수 감지
+        largecap_sc = 0.0
+        _cap = _uni_caps.get(code, 0)
+        if _cap >= 10000 and _fc and tv_direct == 0:  # 시총 1조+ & TV 미감지
+            _frgn_b = abs(_fc["today_frgn"]) / 100  # 억원 변환
+            _inst_b = abs(_fc["today_inst"]) / 100
+            _is_frgn_buy = _fc["today_frgn"] > 0
+            _is_inst_buy = _fc["today_inst"] > 0
+            _max_flow = max(_frgn_b if _is_frgn_buy else 0,
+                           _inst_b if _is_inst_buy else 0)
+            # 매수 금액 규모별 점수
+            if _max_flow >= 1000:      # 1000억+ 대량매수
+                largecap_sc = 20.0
+            elif _max_flow >= 500:     # 500억+
+                largecap_sc = 15.0
+            elif _max_flow >= 100:     # 100억+
+                largecap_sc = 8.0
+            elif _max_flow >= 50:      # 50억+
+                largecap_sc = 4.0
+            # 쌍매수 배수
+            if largecap_sc > 0 and _is_frgn_buy and _is_inst_buy:
+                largecap_sc *= 1.3
+                largecap_sc = round(largecap_sc, 1)
+            if largecap_sc > 0:
+                _flow_label = f"F{_frgn_b:+.0f}I{_inst_b:+.0f}"
+                sources.append(f"largecap_flow({_flow_label}:+{largecap_sc:.0f})")
+                cross += 1
+
         # ── 합산 ──────────────────────────────
         raw_total = (relay_sc + premove_sc + tech_sc + bargain_sc + cross_bonus
                      + nat_sc + news_pen + obv_pen + rel_pen
@@ -1319,7 +1422,9 @@ def _step5_cross_validate(
                      + nat_power_sc   # 7 SECRET 파워
                      + tv_direct      # TV 강신호 직접 점수
                      + short_sc       # 공매도 잔고 점수
-                     + trix_sc)       # TRIX 다이버전스 점수
+                     + trix_sc        # TRIX 다이버전스 점수
+                     + doublebuy_sc   # 쌍매수 연속 보너스
+                     + largecap_sc)   # 대형주 수급 감지
 
         # ── 브레인 학습 가중치 적용 ──────────────
         brain_adj = _apply_brain_adjustment(
