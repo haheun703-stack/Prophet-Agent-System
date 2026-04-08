@@ -2726,8 +2726,9 @@ class BodyHunterBot:
 
         # ── 프리클로즈 스캔 (14:30 스캔 + 14:50 리포트) ──
         jq.run_daily(self._job_preclose_scan, time=kst_time(14, 30))
-        jq.run_daily(self._send_preclose_brief, time=kst_time(14, 50))
-        logger.info("프리클로즈 등록: 14:30 스캔 + 14:50 리포트")
+        # 4/8: 프리클로즈 브리프 텔레그램 알림 비활성화 (알림 축소)
+        # jq.run_daily(self._send_preclose_brief, time=kst_time(14, 50))
+        logger.info("프리클로즈 등록: 14:30 스캔 (14:50 리포트 알림 OFF)")
 
         # COO_MANAGED: G5 — FLOWX DAYTRADING 일괄 청산
         # jq.run_daily(self._job_flowx_close_daytrading, time=kst_time(15, 20))

@@ -1271,19 +1271,8 @@ class TradingCOO:
                            "전일 Parquet/CSV 기반 운용")
             self._g6_mode = "STALE"
 
-        # (d) 텔레그램 경고
-        try:
-            alert_fn = getattr(self.auto_trader, "_send_alert", None)
-            if alert_fn:
-                if recovered:
-                    msg = "⚠️ 일봉수집: 재시도 성공"
-                else:
-                    msg = ("⚠️ 일봉수집 실패\n"
-                           "전일 데이터 기반 운용\n"
-                           "내일 추천 정확도 저하 가능")
-                await asyncio.to_thread(alert_fn, msg)
-        except Exception as e:
-            logger.warning(f"[COO] FALLBACK-C3 텔레그램 경고 실패: {e}")
+        # (d) 텔레그램 경고 — 4/8 비활성화 (알림 축소)
+        logger.info(f"[COO] C3 일봉수집 {'성공' if recovered else '실패'} (텔레그램 OFF)")
 
         return recovered
 
@@ -1317,19 +1306,8 @@ class TradingCOO:
                          "DEGRADED 모드, 선취매 비활성")
             self._g6_mode = "DEGRADED"
 
-        # (c) 텔레그램 경고
-        try:
-            alert_fn = getattr(self.auto_trader, "_send_alert", None)
-            if alert_fn:
-                if recovered:
-                    msg = "⚠️ 데이터 검증: 재시도 성공"
-                else:
-                    msg = ("🚨 데이터 검증 실패\n"
-                           "DEGRADED 모드 — 선취매 비활성\n"
-                           "수동 확인 필요")
-                await asyncio.to_thread(alert_fn, msg)
-        except Exception as e:
-            logger.warning(f"[COO] FALLBACK-C7 텔레그램 경고 실패: {e}")
+        # (c) 텔레그램 경고 — 4/8 비활성화 (알림 축소)
+        logger.info(f"[COO] C7 데이터검증 {'성공' if recovered else '실패→DEGRADED'} (텔레그램 OFF)")
 
         return recovered
 
@@ -1391,10 +1369,10 @@ class TradingCOO:
             from data.war_signal import analyze_war_signal, format_war_signal_alert
             ws = await asyncio.to_thread(analyze_war_signal)
             logger.info(f"[COO] G7: 전쟁 시그널 — {ws.level_label} ({ws.signals_met}/4)")
-            # CEASEFIRE_LIKELY 이상이면 텔레그램 알림
-            alert_msg = format_war_signal_alert(ws)
-            if alert_msg and hasattr(self, '_bot') and self._bot:
-                await self._bot.send_message(alert_msg)
+            # CEASEFIRE_LIKELY 이상이면 텔레그램 알림 — 4/8 비활성화 (알림 축소)
+            # alert_msg = format_war_signal_alert(ws)
+            # if alert_msg and hasattr(self, '_bot') and self._bot:
+            #     await self._bot.send_message(alert_msg)
         except Exception as e:
             logger.warning(f"[COO] G7: 전쟁 시그널 갱신 실패 (무시): {e}")
 
@@ -1468,14 +1446,8 @@ class TradingCOO:
                     logger.info("[COO] FALLBACK-C13: 재시도 성공!")
                 else:
                     logger.warning("[COO] FALLBACK-C13: 재시도 실패 — 전일 recommendation.json 유지")
-                    # 텔레그램 경고
-                    try:
-                        alert_fn = getattr(self.auto_trader, "_send_alert", None)
-                        if alert_fn:
-                            await asyncio.to_thread(alert_fn,
-                                "🚨 이브닝분석 실패\n전일 recommendation.json 유지\n내일 추천 정확도 저하 가능")
-                    except Exception:
-                        pass
+                    # 텔레그램 경고 — 4/8 비활성화 (알림 축소)
+                    logger.warning("[COO] C13 이브닝분석 실패 (텔레그램 OFF)")
                 return r2, r2.success
             c13_task = asyncio.create_task(_run_c13_with_fallback())
 
@@ -1483,12 +1455,13 @@ class TradingCOO:
         logger.info("[COO] G7 Stage 3: C14~C29 병렬 (C13과 동시 진행)")
         stage3_jobs = []
 
-        # C14: 클로징 브리프
-        if self.bot:
-            stage3_jobs.append((
-                "C14_closing_brief",
-                self.bot._send_daily_closing(context),
-            ))
+        # C14: 클로징 브리프 — 4/8 비활성화 (알림 축소)
+        # if self.bot:
+        #     stage3_jobs.append((
+        #         "C14_closing_brief",
+        #         self.bot._send_daily_closing(context),
+        #     ))
+        logger.info("[COO] C14 클로징 브리프 (텔레그램 OFF)")
 
         # C15: 선취매 — DEGRADED면 스킵
         if self._g6_mode != "DEGRADED" and self.auto_trader:
@@ -1623,11 +1596,12 @@ class TradingCOO:
         # ── 그룹 상태 업데이트 ──
         self.update_group("G7", results)
 
-        # ── 전체 파이프라인 일일 리포트 (G7 완료 시 자동 발송) ──
-        try:
-            await self._send_daily_pipeline_report(context)
-        except Exception as e:
-            logger.warning(f"[COO] 일일 파이프라인 리포트 발송 실패: {e}")
+        # ── 전체 파이프라인 일일 리포트 — 4/8 비활성화 (알림 축소) ──
+        # try:
+        #     await self._send_daily_pipeline_report(context)
+        # except Exception as e:
+        #     logger.warning(f"[COO] 일일 파이프라인 리포트 발송 실패: {e}")
+        logger.info("[COO] 일일 파이프라인 리포트 (텔레그램 OFF)")
 
         # ── G7 후 데이터 재검증 (G6 시점 미생성 데이터 포함) ──
         try:
@@ -2018,12 +1992,9 @@ class TradingCOO:
             # 일일 스냅샷 저장
             snapshot = portfolio.record_daily_snapshot()
 
-            # 일일 성적표 텔레그램 발송
+            # 일일 성적표 텔레그램 발송 — 4/8 비활성화 (알림 축소, 웹에서 확인)
             report = portfolio.get_daily_report()
-            alert_fn = getattr(self.auto_trader, "_send_alert", None) if self.auto_trader else None
-            if alert_fn:
-                await asyncio.to_thread(alert_fn, report)
-                logger.info("[C27] Paper Trading 일일 성적표 발송")
+            logger.info(f"[C27] Paper Trading 일일 성적표 생성 (텔레그램 OFF)")
 
             # 7일차 이상이면 주간 종합 리포트 추가 발송
             day_count = portfolio.get_day_count()
@@ -2051,13 +2022,9 @@ class TradingCOO:
             summary = result.get("summary", {})
             stealth_count = summary.get("stealth_count", 0)
 
-            # 잠복 종목 5개 이상이면 텔레그램 알림
+            # 잠복 종목 5개 이상이면 텔레그램 알림 — 4/8 비활성화 (알림 축소)
             if stealth_count >= 5:
-                alert_fn = getattr(self.auto_trader, "_send_alert", None) if self.auto_trader else None
-                if alert_fn:
-                    msg = format_stealth_alert(result)
-                    await asyncio.to_thread(alert_fn, msg)
-                    logger.info(f"[C28] 선매집 탐지 알림 발송 (잠복 {stealth_count}건)")
+                logger.info(f"[C28] 선매집 탐지: 잠복 {stealth_count}건 (텔레그램 OFF)")
 
             logger.info(
                 f"[C28] 선매집 스캔 완료: "
