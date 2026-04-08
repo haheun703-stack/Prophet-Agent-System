@@ -2033,6 +2033,23 @@ def collect_foreign_night_signals() -> dict:
         "CPNG": ("쿠팡",        "",       "유통"),
     }
 
+    # 섹터 프록시: US ETF/종목 → 연관 한국 종목 (ADR 없는 핵심 섹터 추적용)
+    SECTOR_PROXY_MAP = {
+        # 반도체
+        "SOXX": ("반도체ETF",  "반도체",  [("삼성전자", "005930"), ("SK하이닉스", "000660")]),
+        "NVDA": ("엔비디아",   "반도체",  [("삼성전자", "005930"), ("SK하이닉스", "000660")]),
+        "MU":   ("마이크론",   "반도체",  [("삼성전자", "005930"), ("SK하이닉스", "000660")]),
+        # 방산
+        "ITA":  ("방산ETF",    "방산",    [("한화에어로", "012450"), ("한국항공우주", "047810"), ("LIG넥스원", "079550")]),
+        "LMT":  ("록히드마틴", "방산",    [("한화에어로", "012450"), ("한국항공우주", "047810")]),
+        "RTX":  ("RTX",        "방산",    [("LIG넥스원", "079550"), ("한화시스템", "272210")]),
+        # 건설
+        "XHB":  ("주택건설ETF","건설",    [("현대건설", "000720"), ("GS건설", "006360"), ("대우건설", "047040")]),
+        "ITB":  ("주택건설ETF2","건설",   [("현대건설", "000720"), ("DL이앤씨", "375500")]),
+        # 2차전지
+        "LIT":  ("리튬ETF",    "2차전지", [("삼성SDI", "006400"), ("LG에너지", "373220"), ("에코프로비엠", "247540")]),
+    }
+
     end = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
     start = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d")
 
@@ -2113,6 +2130,80 @@ def collect_foreign_night_signals() -> dict:
     if holdings:
         movers = ", ".join(f"{h['kr_name']}{h['chg_pct']:+.1f}%" for h in holdings[:3])
         logger.info(f"[6단] ADR 상위: {movers}")
+
+    # --- 섹터 프록시 추적 (반도체/방산/건설/2차전지) ---
+    sector_proxies = []
+    try:
+        proxy_tickers = list(SECTOR_PROXY_MAP.keys())
+        all_proxy_str = " ".join(proxy_tickers)
+        df_proxy = yf.download(all_proxy_str, start=start, end=end, progress=False, group_by='ticker')
+        for us_ticker, (us_name, sector, kr_stocks) in SECTOR_PROXY_MAP.items():
+            try:
+                if len(proxy_tickers) == 1:
+                    df_t = df_proxy
+                else:
+                    df_t = df_proxy[us_ticker] if us_ticker in df_proxy.columns.get_level_values(0) else None
+                if df_t is None or df_t.empty or len(df_t.dropna(subset=['Close'])) < 2:
+                    continue
+                df_t = df_t.dropna(subset=['Close'])
+                last = df_t.iloc[-1]
+                prev = df_t.iloc[-2]
+                close_val = float(last['Close'])
+                prev_val = float(prev['Close'])
+                if prev_val == 0:
+                    continue
+                chg = round((close_val - prev_val) / prev_val * 100, 2)
+                sector_proxies.append({
+                    "us_ticker": us_ticker,
+                    "us_name": us_name,
+                    "sector": sector,
+                    "chg_pct": chg,
+                    "close": round(close_val, 2),
+                    "kr_stocks": [{"name": n, "code": c} for n, c in kr_stocks],
+                })
+            except Exception as e:
+                logger.debug(f"[6단] 프록시 {us_ticker} 파싱 실패: {e}")
+    except Exception as e:
+        logger.warning(f"[6단] 섹터 프록시 일괄 수집 실패: {e}")
+
+    # 섹터별 평균 → 섹터 요약 생성
+    sector_summary = {}
+    for sp in sector_proxies:
+        sec = sp["sector"]
+        if sec not in sector_summary:
+            sector_summary[sec] = {"chg_list": [], "kr_stocks": set()}
+        sector_summary[sec]["chg_list"].append(sp["chg_pct"])
+        for ks in sp["kr_stocks"]:
+            sector_summary[sec]["kr_stocks"].add((ks["name"], ks["code"]))
+
+    sector_result = []
+    for sec, info in sector_summary.items():
+        avg = round(sum(info["chg_list"]) / len(info["chg_list"]), 2)
+        if avg >= 2.0:
+            verdict = "강세"
+        elif avg >= 0.5:
+            verdict = "매수세"
+        elif avg <= -2.0:
+            verdict = "급락"
+        elif avg <= -0.5:
+            verdict = "매도세"
+        else:
+            verdict = "보합"
+        sector_result.append({
+            "sector": sec,
+            "avg_chg_pct": avg,
+            "verdict": verdict,
+            "kr_stocks": [{"name": n, "code": c} for n, c in info["kr_stocks"]],
+            "proxies": [{"ticker": sp["us_ticker"], "name": sp["us_name"], "chg_pct": sp["chg_pct"]}
+                        for sp in sector_proxies if sp["sector"] == sec],
+        })
+
+    sector_result.sort(key=lambda x: abs(x["avg_chg_pct"]), reverse=True)
+    result["sector_proxies"] = sector_proxies
+    result["sector_summary"] = sector_result
+    if sector_result:
+        top_sec = ", ".join(f"{s['sector']}{s['avg_chg_pct']:+.1f}%" for s in sector_result[:3])
+        logger.info(f"[6단] 섹터 프록시: {top_sec}")
 
     result["ewy"] = ewy
     result["flkr"] = flkr
@@ -2679,14 +2770,25 @@ def format_nightwatch_report(report: NightwatchReport) -> str:
         # 한국 ADR 종목별 변동
         top_h = fn.get("top_holdings", [])
         if top_h:
-            lines.append("  -- 종목별 야간 변동 --")
+            lines.append("  -- ADR 종목별 --")
             for h in top_h:
-                arrow = "+" if h["chg_pct"] > 0 else ""
                 code_str = f"({h['krx_code']})" if h.get("krx_code") else ""
                 lines.append(
                     f"  {h['kr_name']}{code_str} [{h['sector']}] "
-                    f"{arrow}{h['chg_pct']:.2f}% ${h['close']}"
+                    f"{h['chg_pct']:+.2f}% ${h['close']}"
                 )
+        # 섹터 프록시 (반도체/방산/건설/2차전지)
+        sec_sum = fn.get("sector_summary", [])
+        if sec_sum:
+            lines.append("  -- 섹터 프록시 --")
+            for ss in sec_sum:
+                kr_names = ", ".join(k["name"] for k in ss["kr_stocks"][:3])
+                proxy_detail = " / ".join(f"{p['ticker']}{p['chg_pct']:+.1f}%" for p in ss["proxies"])
+                lines.append(
+                    f"  [{ss['sector']}] {ss['avg_chg_pct']:+.2f}% {ss['verdict']}"
+                    f" ({proxy_detail})"
+                )
+                lines.append(f"    -> {kr_names}")
         lines.append("")
 
     if report.recommended_sectors:
