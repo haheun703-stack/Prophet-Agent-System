@@ -1807,9 +1807,23 @@ def upload_dashboard_swing(swing_data: dict) -> bool:
         elif alloc_sum == 0:
             row["alloc_cash"] = 100
 
-        client.table("dashboard_swing").upsert(
-            row, on_conflict="date"
-        ).execute()
+        try:
+            client.table("dashboard_swing").upsert(
+                row, on_conflict="date"
+            ).execute()
+        except Exception as upsert_err:
+            # 컬럼 미존재 시 해당 필드 제거 후 재시도
+            err_str = str(upsert_err)
+            if "does not exist" in err_str:
+                for col in ["stealth_stocks"]:
+                    if col in err_str and col in row:
+                        logger.warning(f"[DASHBOARD] {col} 컬럼 미존재 → 제거 후 재시도")
+                        del row[col]
+                client.table("dashboard_swing").upsert(
+                    row, on_conflict="date"
+                ).execute()
+            else:
+                raise
 
         logger.info(
             f"[DASHBOARD] 스윙 업로드 완료: {row['regime']} | "
