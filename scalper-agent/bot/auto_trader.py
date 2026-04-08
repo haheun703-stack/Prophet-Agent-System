@@ -689,6 +689,16 @@ class AutoTrader:
             )
             return
 
+        # 4/8: 방어/경계 레짐 → 최대 1종목 (학습: 방어장에서 2종목 동시진입 시 승률 급락)
+        if brain_regime in ("CAUTIOUS", "DEFENSIVE", "방어", "경계"):
+            original_max = max_pos
+            max_pos = min(max_pos, 1)
+            if max_pos < original_max:
+                await _send(
+                    f"🛡️ BRAIN [{brain_regime}모드]"
+                    f" — 방어레짐 진입 캡 {original_max}→{max_pos}"
+                )
+
         # 포지션 수 캡 (cross_signal)
         cross = brain_alloc.get("cross_signal", {})
         if cross.get("max_positions_cap") is not None:
@@ -1163,9 +1173,9 @@ class AutoTrader:
                                     "etf_category": watch.get("etf_category", ""),
                                     "holding_days": watch.get("holding_days", 10),
                                 }
-                                # MOMENTUM: 타이트 SL (-3.5%)
+                                # MOMENTUM: SL (-4.5%) — 4/8: -3.5%→-4.5% 완화 (변동성 여유)
                                 if watch.get("regime") == "MOMENTUM":
-                                    mtm_sl = int(cp * 0.965)
+                                    mtm_sl = int(cp * 0.955)
                                     self._positions[code]["stop_loss"] = max(mtm_sl, watch["sl"])
                                 self._save_positions()
                                 try:
@@ -1274,6 +1284,11 @@ class AutoTrader:
         if brain_alloc.get("_block_all_buys"):
             await _send(f"🚫 BRAIN 관망모드 — day mode 매수 중단")
             return
+
+        # 4/8: 방어/경계 레짐 → 최대 1종목
+        _day_regime = brain_alloc.get("effective_regime", "")
+        if _day_regime in ("CAUTIOUS", "DEFENSIVE", "방어", "경계"):
+            max_pos = min(max_pos, 1)
 
         cross = brain_alloc.get("cross_signal", {})
         if cross.get("max_positions_cap") is not None:

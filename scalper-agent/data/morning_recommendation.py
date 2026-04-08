@@ -1519,12 +1519,12 @@ def _step5_cross_validate(
         raw_total += fib_adj
 
         # ── 과신호 소프트캡 (학습: 점수대별 적중률 역전 현상) ──
-        # <80: 38%, 80-100: 50%, 100-120: 50%, 120+: 0%
-        # 80점 이상부터 점진적 압축: 80 + (초과분 * 0.25)
-        # 예: 150점 → 80 + 70*0.25 = 97.5 / 100점 → 80 + 20*0.25 = 85
+        # 4/8 학습 결과: 80+점=37% / 50~80점=78% → 고점수가 오히려 부진
+        # 80점 이상부터 점진적 압축: 80 + (초과분 * 0.12)
+        # 예: 150점 → 80 + 70*0.12 = 88.4 / 100점 → 80 + 20*0.12 = 82.4
         if raw_total > 80:
             excess = raw_total - 80
-            compressed = excess * 0.25  # 초과분 75% 압축
+            compressed = excess * 0.12  # 초과분 88% 압축 (4/8: 0.25→0.12)
             old_raw = raw_total
             raw_total = 80 + compressed
             sources.append(f"softcap(-{old_raw - raw_total:.0f})")
@@ -1541,18 +1541,34 @@ def _step5_cross_validate(
         # CORTEX 체제 배수 적용
         total = raw_total * regime_mult
 
-        # ── TV 강매집 최소 점수 보장 ──────────────
-        # PANIC/SHOCK에서도 기관 매집 시그널은 최소 점수 보장
-        # 단, QUIET_ACC 90+와 EXPLOSION은 과열이므로 floor 축소
-        if _tv_pattern == "QUIET_ACCUMULATION" and 80 <= _tv_score < 90:
-            tv_floor = max(15.0, tv_direct * 0.5)  # 최적 구간만 보장
+        # ── TV 강매집 최소 점수 보장 + 과열 페널티 ──────────────
+        # 4/8 학습: QUIET_ACC(85)=75%적중+3.9% / QUIET_ACC(90+)=0%적중
+        #           EXPLOSION(70)=25%적중-4.1% / EXPLOSION(75)=33%적중+1.6%
+        if _tv_pattern == "QUIET_ACCUMULATION" and 83 <= _tv_score <= 87:
+            # ★ 최적 구간: 75% 적중 — 적극 보장
+            tv_floor = max(18.0, tv_direct * 0.6)
+            if total < tv_floor:
+                logger.info(f"  [TV Floor] {name}: {total:.1f}→{tv_floor:.1f} (QUIET_ACC {_tv_score:.0f} 최적구간)")
+                total = tv_floor
+        elif _tv_pattern == "QUIET_ACCUMULATION" and _tv_score >= 90:
+            # ★ 과열 매집: 0% 적중 → 명시적 페널티 (4/8 신규)
+            _overheat_pen = 10.0
+            total -= _overheat_pen
+            sources.append(f"tv_overheat(-{_overheat_pen:.0f})")
+            logger.info(f"  [TV 과열] {name}: QUIET_ACC({_tv_score:.0f}) 과열 페널티 -{_overheat_pen}")
+        elif _tv_pattern == "EXPLOSION" and 70 <= _tv_score < 75:
+            # ★ EXPLOSION 70~74: 25% 적중, -4.1% → 페널티 (4/8 신규)
+            _expl_pen = 8.0
+            total -= _expl_pen
+            sources.append(f"expl_weak(-{_expl_pen:.0f})")
+            logger.info(f"  [TV 약폭발] {name}: EXPLOSION({_tv_score:.0f}) 약신호 페널티 -{_expl_pen}")
+        elif _tv_pattern == "EXPLOSION" and _tv_score >= 75:
+            pass  # EXPLOSION 75+: 33% 적중 — floor 없음, 자연 점수만
+        elif _tv_pattern == "QUIET_ACCUMULATION" and 80 <= _tv_score < 83:
+            tv_floor = max(12.0, tv_direct * 0.4)  # 보통 구간
             if total < tv_floor:
                 logger.info(f"  [TV Floor] {name}: {total:.1f}→{tv_floor:.1f} (QUIET_ACC {_tv_score:.0f})")
                 total = tv_floor
-        elif _tv_pattern == "QUIET_ACCUMULATION" and _tv_score >= 90:
-            pass  # 과열 매집 → floor 없음 (자연 점수만)
-        elif _tv_pattern == "EXPLOSION" and _tv_score >= 70:
-            pass  # EXPLOSION → floor 없음 (함정 위험)
         elif _tv_pattern in ("QUIET_ACCUMULATION",) and _tv_score >= 70:
             tv_floor = 5.0  # 초기 매집 최소 보장
             if total < tv_floor:
