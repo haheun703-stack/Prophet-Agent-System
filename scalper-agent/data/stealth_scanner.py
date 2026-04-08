@@ -152,8 +152,7 @@ def _analyze_stock(code: str, info: dict, csv_path: Path) -> dict | None:
     """개별 종목 flow CSV 분석 → 선매집 감지 결과 또는 None"""
     try:
         with open(csv_path, "r", encoding="utf-8") as f:
-            reader = csv.reader(f)
-            header = next(reader)
+            reader = csv.DictReader(f)
             rows = list(reader)
     except Exception:
         return None
@@ -164,25 +163,22 @@ def _analyze_stock(code: str, info: dict, csv_path: Path) -> dict | None:
     # 최근 LOOKBACK_DAYS 행만
     recent = rows[-LOOKBACK_DAYS:]
 
-    # 컬럼 인덱스: ,기관_금액,기타법인_금액,개인_금액,외국인_금액,...,종가,전일대비
-    # idx: 0=날짜, 1=기관_금액, 2=기타법인, 3=개인, 4=외인_금액, ..., 9=종가, 10=전일대비
     def safe_float(val, default=0.0):
         try:
-            return float(val) if val and val.strip() else default
+            return float(val) if val and str(val).strip() else default
         except (ValueError, TypeError):
             return default
 
-    # 기관/외인 순매수 시계열 추출
+    # 기관/외인 순매수 시계열 추출 (DictReader — 헤더 자동 매핑)
     inst_series = []  # 기관 순매수 (백만원)
     frgn_series = []  # 외인 순매수 (백만원)
     close_series = []  # 종가
 
     for row in recent:
-        if len(row) < 10:
-            continue
-        inst = safe_float(row[1])
-        frgn = safe_float(row[4])
-        close = safe_float(row[9])
+        # 두 가지 CSV 포맷 대응 (로컬 vs VPS)
+        inst = safe_float(row.get("기관_금액", 0))
+        frgn = safe_float(row.get("외국인_금액", 0))
+        close = safe_float(row.get("종가", 0))
         inst_series.append(inst)
         frgn_series.append(frgn)
         close_series.append(close)
