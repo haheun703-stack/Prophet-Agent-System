@@ -419,7 +419,7 @@ def build_watchbox() -> Dict:
         if code in candidates:
             # 이미 있으면 점수 대폭 부스트 + 추천TOP 태그 추가
             c = candidates[code]
-            _boost = max(20, rec_score_val * 0.2)  # 최소 20점, 130점추천이면 26점
+            _boost = 10  # 고정 10점 — 박스 진입은 보장하되 1등 강제는 안 함
             c.score += _boost
             c.score = round(c.score, 1)
             if "추천TOP" not in c.sources:
