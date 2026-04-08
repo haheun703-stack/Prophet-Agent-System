@@ -1443,25 +1443,44 @@ class TradingCOO:
         # C13: ★ 이브닝 분석 (CRITICAL)
         # 추천 파이프라인: Step1~6 합계 ~25분
         # Step5 Soft Scoring이 300+종목 처리 시 ~20분 소요 (TV잔존+거래대금이상 종목 추가)
-        # 4/2: 1800초(30분) 타임아웃 → 2700초(45분) 확대
+        # 4/8: C13을 백그라운드로 분리 — Stage 3과 병렬 실행 (블로킹 방지)
         c13_ok = False
+        c13_task = None
         if self.auto_trader:
-            r13 = await self.run_job_safe_async(
-                "C13_evening_analysis",
-                self.auto_trader.job_evening_analysis(context),
-                timeout=2700,
-            )
-            results.append(r13)
-            c13_ok = r13.success
+            async def _run_c13_with_fallback():
+                """C13 실행 + 실패 시 FALLBACK (백그라운드)."""
+                r = await self.run_job_safe_async(
+                    "C13_evening_analysis",
+                    self.auto_trader.job_evening_analysis(context),
+                    timeout=2700,
+                )
+                if r.success:
+                    return r, True
+                # FALLBACK: 1분 대기 후 재시도 (기존 3분→1분 단축)
+                logger.error("[COO] ★ C13 이브닝분석 실패 — FALLBACK-C13 가동 (백그라운드)")
+                await asyncio.sleep(60)
+                r2 = await self.run_job_safe_async(
+                    "C13_evening_analysis_retry",
+                    self.auto_trader.job_evening_analysis(context),
+                    timeout=1800,
+                )
+                if r2.success:
+                    logger.info("[COO] FALLBACK-C13: 재시도 성공!")
+                else:
+                    logger.warning("[COO] FALLBACK-C13: 재시도 실패 — 전일 recommendation.json 유지")
+                    # 텔레그램 경고
+                    try:
+                        alert_fn = getattr(self.auto_trader, "_send_alert", None)
+                        if alert_fn:
+                            await asyncio.to_thread(alert_fn,
+                                "🚨 이브닝분석 실패\n전일 recommendation.json 유지\n내일 추천 정확도 저하 가능")
+                    except Exception:
+                        pass
+                return r2, r2.success
+            c13_task = asyncio.create_task(_run_c13_with_fallback())
 
-            if not c13_ok:
-                logger.error("[COO] ★ C13 이브닝분석 실패 — FALLBACK-C13 가동")
-                recovered = await self._fallback_evening_analysis(context)
-                if recovered:
-                    c13_ok = True
-
-        # ── Stage 3: C14~C23 병렬 (300s) ──
-        logger.info("[COO] G7 Stage 3: C14~C23 병렬")
+        # ── Stage 3: C14~C27 병렬 — C13과 동시 진행 ──
+        logger.info("[COO] G7 Stage 3: C14~C27 병렬 (C13과 동시 진행)")
         stage3_jobs = []
 
         # C14: 클로징 브리프
@@ -1571,6 +1590,17 @@ class TradingCOO:
             # C17 국적차트 TOP200 생성+업로드, C19 FLOWX 스윙 등 무거운 작업 포함
             s3 = await self.run_parallel_async(stage3_jobs, timeout_per_job=600)
             results.extend(s3)
+
+        # ── C13 백그라운드 태스크 합류 (최대 60초 대기) ──
+        if c13_task is not None:
+            try:
+                c13_result, c13_ok = await asyncio.wait_for(c13_task, timeout=60)
+                results.append(c13_result)
+                logger.info(f"[COO] C13 백그라운드 합류: {'성공' if c13_ok else '실패'}")
+            except asyncio.TimeoutError:
+                logger.warning("[COO] C13 백그라운드 아직 진행 중 — 대기 포기, Stage 3 이후 작업 계속")
+            except Exception as e:
+                logger.warning(f"[COO] C13 백그라운드 합류 에러: {e}")
 
         # ── C22: 퀀트 대시보드 업로드 — 비활성화 (2026-04-04) ──
         # FLOWX 웹 프론트엔드 미구축 → 업로드해도 보는 사람 없음 → 낭비
