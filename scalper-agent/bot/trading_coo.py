@@ -1554,6 +1554,12 @@ class TradingCOO:
             self._job_paper_daily_report(context),
         ))
 
+        # C28: 기관 선매집 탐지 스캔
+        stage3_jobs.append((
+            "C28_stealth_scan",
+            self._job_stealth_scan(context),
+        ))
+
         if stage3_jobs:
             # C17 국적차트 TOP200 생성+업로드, C19 FLOWX 스윙 등 무거운 작업 포함
             s3 = await self.run_parallel_async(stage3_jobs, timeout_per_job=600)
@@ -1992,6 +1998,33 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[C27] Paper Trading 리포트 실패 (무시): {e}")
             return {"paper_daily_report": f"ERROR: {e}"}
+
+    async def _job_stealth_scan(self, context=None) -> dict:
+        """C28: 기관 선매집 탐지 스캔 → stealth_scan.json 생성 + 텔레그램 알림."""
+        try:
+            from data.stealth_scanner import scan_stealth_accumulation, format_stealth_alert
+
+            result = await asyncio.to_thread(scan_stealth_accumulation)
+            summary = result.get("summary", {})
+            stealth_count = summary.get("stealth_count", 0)
+
+            # 잠복 종목 5개 이상이면 텔레그램 알림
+            if stealth_count >= 5:
+                alert_fn = getattr(self.auto_trader, "_send_alert", None) if self.auto_trader else None
+                if alert_fn:
+                    msg = format_stealth_alert(result)
+                    await asyncio.to_thread(alert_fn, msg)
+                    logger.info(f"[C28] 선매집 탐지 알림 발송 (잠복 {stealth_count}건)")
+
+            logger.info(
+                f"[C28] 선매집 스캔 완료: "
+                f"잠복 {stealth_count} / 움직임 {summary.get('moving_count', 0)} / "
+                f"이미상승 {summary.get('surged_count', 0)}"
+            )
+            return {"stealth_scan": "OK", "stealth_count": stealth_count}
+        except Exception as e:
+            logger.warning(f"[C28] 선매집 스캔 실패 (무시): {e}")
+            return {"stealth_scan": f"ERROR: {e}"}
 
     async def _job_nxt_early_collect(self, context=None) -> dict:
         """C4E: NXT 사전 데이터 수집 + 예비 알림 발송.

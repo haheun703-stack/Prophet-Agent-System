@@ -1900,6 +1900,24 @@ class BodyHunterBot:
                 await update.message.reply_text(f"PAPER 현황 조회 실패: {e2}")
 
     # ═══════════════════════════════════════
+    #  기관 선매집 탐지
+    # ═══════════════════════════════════════
+
+    async def cmd_stealth(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """기관/외인 선매집 잠복 종목 스캔"""
+        if not self._is_authorized(update):
+            return
+        try:
+            await update.message.reply_text("🔍 선매집 탐지 스캔 중...")
+            from data.stealth_scanner import scan_stealth_accumulation, format_stealth_alert
+            result = scan_stealth_accumulation()
+            msg = format_stealth_alert(result)
+            for chunk in _split_message(msg):
+                await update.message.reply_text(chunk)
+        except Exception as e:
+            await update.message.reply_text(f"선매집 스캔 실패: {e}")
+
+    # ═══════════════════════════════════════
     #  JARVIS BRAIN 자본 배분
     # ═══════════════════════════════════════
 
@@ -2301,6 +2319,8 @@ class BodyHunterBot:
             r"^NXT실행$": self.cmd_nxt_run,
             r"^선취매$": self.cmd_predawn,
             r"^페이퍼$": self.cmd_paper,
+            r"^선매집$": self.cmd_stealth,
+            r"^잠복$": self.cmd_stealth,
             # ── 온디맨드 명령어 (하루 5~7개 체제) ──
             r"^포트$": self.cmd_port,
             r"^ㅍ$": self.cmd_port,

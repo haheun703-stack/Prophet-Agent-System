@@ -1080,6 +1080,21 @@ def _step5_cross_validate(
     except Exception as _e:
         logger.warning(f"[수급캐시] 로드 실패 (무시): {_e}")
 
+    # ── 선매집 캐시 (stealth_scan.json → 잠복 종목 보너스) ──
+    _stealth_cache = {}  # {code: score}
+    try:
+        _stealth_path = Path(__file__).resolve().parent.parent / "data_store" / "stealth_scan.json"
+        if _stealth_path.exists():
+            import json as _json_mod2
+            _sd = _json_mod2.loads(_stealth_path.read_text("utf-8"))
+            for _s in _sd.get("stealth", []):
+                _stealth_cache[_s["code"]] = _s.get("score", 0)
+            for _s in _sd.get("moving", []):
+                _stealth_cache[_s["code"]] = _s.get("score", 0)
+            logger.info(f"[선매집캐시] {len(_stealth_cache)}종목 로드 (잠복+움직임)")
+    except Exception as _e2:
+        logger.warning(f"[선매집캐시] 로드 실패 (무시): {_e2}")
+
     candidates = []
     for code in all_codes:
         r_info = relay.get("stocks", {}).get(code, {})
@@ -1414,6 +1429,20 @@ def _step5_cross_validate(
                 sources.append(f"largecap_flow({_flow_label}:+{largecap_sc:.0f})")
                 cross += 1
 
+        # ── 선매집 잠복 보너스 (학습: 기관 연속매수 + 가격횡보 = 스프링 장전) ──
+        stealth_sc = 0.0
+        _stl = _stealth_cache.get(code, 0)
+        if _stl >= 100:
+            stealth_sc = 15.0   # 100점+ 잠복종목 → 강력 보너스
+            sources.append(f"stealth({_stl}:+15)")
+            cross += 1
+        elif _stl >= 70:
+            stealth_sc = 10.0   # 70점+ → 보너스
+            sources.append(f"stealth({_stl}:+10)")
+        elif _stl >= 50:
+            stealth_sc = 5.0    # 50점+ → 약한 보너스
+            sources.append(f"stealth({_stl}:+5)")
+
         # ── 합산 ──────────────────────────────
         raw_total = (relay_sc + premove_sc + tech_sc + bargain_sc + cross_bonus
                      + nat_sc + news_pen + obv_pen + rel_pen
@@ -1424,7 +1453,8 @@ def _step5_cross_validate(
                      + short_sc       # 공매도 잔고 점수
                      + trix_sc        # TRIX 다이버전스 점수
                      + doublebuy_sc   # 쌍매수 연속 보너스
-                     + largecap_sc)   # 대형주 수급 감지
+                     + largecap_sc    # 대형주 수급 감지
+                     + stealth_sc)    # 선매집 잠복 보너스
 
         # ── 브레인 학습 가중치 적용 ──────────────
         brain_adj = _apply_brain_adjustment(

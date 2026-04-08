@@ -1282,6 +1282,66 @@ def _build_sector_rotation() -> dict:
     return result
 
 
+def _build_stealth_stocks() -> dict:
+    """기관 선매집 탐지 결과 → 대시보드 JSONB.
+
+    stealth_scan.json 로드. 없으면 실시간 스캔 실행.
+    잠복(stealth) + 움직임(moving) 상위만 전달.
+    """
+    scan_path = STORE_DIR / "stealth_scan.json"
+
+    # 캐시 로드 (당일 데이터면 재사용)
+    data = _load_json("stealth_scan.json")
+    if data:
+        ts = data.get("timestamp", "")
+        from datetime import date as _d
+        today_str = _d.today().strftime("%Y-%m-%d")
+        if ts.startswith(today_str):
+            return _format_stealth_for_dashboard(data)
+
+    # 캐시 없거나 오래됨 → 실시간 스캔
+    try:
+        from data.stealth_scanner import scan_stealth_accumulation
+        data = scan_stealth_accumulation()
+        return _format_stealth_for_dashboard(data)
+    except Exception as e:
+        logger.warning(f"[선매집] 스캔 실패: {e}")
+        # 오래된 캐시라도 반환
+        if data:
+            return _format_stealth_for_dashboard(data)
+        return {}
+
+
+def _format_stealth_for_dashboard(data: dict) -> dict:
+    """스캔 결과 → 대시보드용 JSONB 경량화"""
+    stealth = data.get("stealth", [])[:30]
+    moving = data.get("moving", [])[:15]
+
+    # 프론트에 필요한 필드만 전달
+    def _slim(item):
+        return {
+            "code": item.get("code", ""),
+            "name": item.get("name", ""),
+            "sector": item.get("sector", ""),
+            "score": item.get("score", 0),
+            "pattern": item.get("pattern", ""),
+            "dual_buy": item.get("dual_buy", False),
+            "inst_avg": item.get("inst_avg", 0),
+            "frgn_avg": item.get("frgn_avg", 0),
+            "chg_5d": item.get("chg_5d", 0),
+            "close": item.get("close", 0),
+            "cap": item.get("cap", 0),
+            "category": item.get("category", ""),
+        }
+
+    return {
+        "timestamp": data.get("timestamp", ""),
+        "stealth": [_slim(s) for s in stealth],
+        "moving": [_slim(m) for m in moving],
+        "summary": data.get("summary", {}),
+    }
+
+
 def _enrich_with_macro(result: dict) -> dict:
     """기존 스윙 데이터에 매크로/섹터/카테고리 융합
 
@@ -1733,6 +1793,8 @@ def upload_dashboard_swing(swing_data: dict) -> bool:
             "fx_monitor": _build_fx_monitor(),
             # 섹터 로테이션 맵 (피보나치+수급+모멘텀)
             "sector_rotation": _build_sector_rotation(),
+            # 기관 선매집 탐지 (잠복+움직임 종목)
+            "stealth_stocks": _build_stealth_stocks(),
         }
 
         # alloc_* 합계 100% 보정
