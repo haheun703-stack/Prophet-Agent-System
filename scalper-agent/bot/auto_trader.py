@@ -2375,6 +2375,18 @@ class AutoTrader:
         except Exception as e:
             logger.warning(f"[BRAIN] data_store 동기화 실패: {e}")
 
+        # brain_report.json 독립 생성 (C13 타임아웃과 무관하게 보장)
+        try:
+            from data.market_brain import generate_brain_report, save_brain_report
+            brain = await asyncio.to_thread(generate_brain_report)
+            await asyncio.to_thread(save_brain_report, brain)
+            logger.info(
+                f"[BRAIN] brain_report.json 독립 생성 완료: "
+                f"{brain.overall_verdict[:50]} | 비중 {brain.position_size_pct}%"
+            )
+        except Exception as e:
+            logger.warning(f"[BRAIN] brain_report.json 독립 생성 실패: {e}")
+
     async def job_brain_allocation(self, context):
         """16:36 - BRAIN 자본 배분 백업 스케줄 (NIGHTWATCH 실패 대비)"""
         if not is_trading_day():

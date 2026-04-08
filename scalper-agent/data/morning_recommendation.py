@@ -1772,6 +1772,28 @@ def run_evening_recommendation() -> RecommendationReport:
     logger.info("저녁 추천 파이프라인 시작 (Soft Scoring v2)")
     logger.info("=" * 50)
     t_start = time.time()
+    PIPELINE_TOTAL_TIMEOUT = 900  # 15분 총 타임아웃
+
+    def _check_pipeline_timeout(step_name: str, report_obj, partial_stocks=None):
+        """파이프라인 총 경과 시간 체크 — 15분 초과 시 부분 저장 후 리턴"""
+        elapsed = time.time() - t_start
+        if elapsed < PIPELINE_TOTAL_TIMEOUT:
+            return None  # 계속 진행
+        logger.warning(
+            f"[TIMEOUT] 파이프라인 총 {elapsed:.0f}s 경과 ({step_name} 진입 전) "
+            f"— 15분 초과, 부분 저장 후 종료"
+        )
+        report_obj.warning = (
+            f"파이프라인 타임아웃 ({elapsed:.0f}s) — {step_name} 이후 단계 스킵"
+        )
+        if partial_stocks:
+            report_obj.stocks = partial_stocks
+        try:
+            save_recommendation(report_obj)
+            logger.info(f"[TIMEOUT] 부분 저장 완료: {len(report_obj.stocks)}종목")
+        except Exception as e:
+            logger.error(f"[TIMEOUT] 부분 저장 실패: {e}")
+        return report_obj
 
     report = RecommendationReport(
         stage="evening",
@@ -1978,6 +2000,36 @@ def run_evening_recommendation() -> RecommendationReport:
             pass
         return report
 
+    # ── 종목 수 캡 (80개) — Step 3~5 처리 시간 폭증 방지 ──
+    PIPELINE_STOCK_CAP = 80
+    if len(all_codes_set) > PIPELINE_STOCK_CAP:
+        logger.warning(
+            f"[CAP] 분석 대상 {len(all_codes_set)}종목 → {PIPELINE_STOCK_CAP}개 제한 "
+            f"(relay/premove 우선)"
+        )
+        # 우선순위: relay > premove > rotation > HOT섹터 > MACD/TRIX/bargain/war
+        priority_codes = set()
+        # 1순위: relay + premove (핵심)
+        for code, info in relay_result.get("stocks", {}).items():
+            priority_codes.add(code)
+        for code, info in premove_result.get("stocks", {}).items():
+            priority_codes.add(code)
+        # 2순위: rotation (reversal_exit 제외)
+        for code, info in rotation_stocks.items():
+            if info.get("rotation_source") != "reversal_exit":
+                priority_codes.add(code)
+
+        # 우선 종목 먼저, 나머지는 뒤에
+        prioritized = []
+        rest = []
+        for item in all_codes_set:
+            if item[0] in priority_codes:
+                prioritized.append(item)
+            else:
+                rest.append(item)
+        all_codes_set = set(prioritized + rest[:PIPELINE_STOCK_CAP - len(prioritized)])
+        logger.info(f"[CAP] 최종: {len(all_codes_set)}종목 (우선 {len(prioritized)}, 추가 {len(all_codes_set) - len(prioritized)})")
+
     codes_names = list(all_codes_set)
 
     # Step 3: 기술 분석 (market_chg 전달 → 상대강도 계산)
@@ -1985,6 +2037,11 @@ def run_evening_recommendation() -> RecommendationReport:
     logger.info(f"[Step 3/6] 기술 분석 ({len(codes_names)}종목, 시장 {market_chg:+.1f}%)...")
     tech_result = _step3_tech_filter(codes_names, market_chg=market_chg)
     logger.info(f"  → 완료 ({time.time()-t0:.0f}s)")
+
+    # ── 타임아웃 가드: Step 4 진입 전 ──
+    _timeout_result = _check_pipeline_timeout("Step4(뉴스AI)", report)
+    if _timeout_result:
+        return _timeout_result
 
     # Step 4: 뉴스AI - 전종목 분석 (타임아웃 방어)
     t0 = time.time()
@@ -2007,6 +2064,11 @@ def run_evening_recommendation() -> RecommendationReport:
         if code not in news_result:
             news_result[code] = {"sentiment": "NEUTRAL", "reason": "미분석", "score": 0}
     logger.info(f"  → 완료 ({time.time()-t0:.0f}s, 분석={len(news_result)}건)")
+
+    # ── 타임아웃 가드: Step 5a 진입 전 ──
+    _timeout_result = _check_pipeline_timeout("Step5a(수급)", report)
+    if _timeout_result:
+        return _timeout_result
 
     # Step 5a: 네이버 수급 검증 (외국인/기관 5일 누적 순매매)
     #   기존 nationality_signal.py는 KRX 국적별 데이터 3종목만 존재 → 사실상 미작동
@@ -2117,9 +2179,14 @@ def run_evening_recommendation() -> RecommendationReport:
                     logger.warning(f"[Step 5a.5] TV 풀스캔 타임아웃 ({TV_SCAN_TIMEOUT}s) - 스킵")
                     tv_signals = {}
         # TV 스캐너에서 잡힌 종목도 교차검증 대상에 추가 (code 기반 dedup)
+        # TV 추가 시에도 전체 캡 유지 (100개 — TV 강신호는 별도 여유)
+        TV_ADD_CAP = 100
         tv_added = 0
         existing_codes = {code for code, _ in all_codes_set}
-        for code, tv_sig in tv_signals.items():
+        for code, tv_sig in sorted(tv_signals.items(), key=lambda x: x[1].score, reverse=True):
+            if len(all_codes_set) >= TV_ADD_CAP:
+                logger.info(f"[Step 5a.5] TV 추가 캡 도달 ({TV_ADD_CAP}종목) — 나머지 스킵")
+                break
             if tv_sig.score >= 60 and code not in existing_codes:
                 all_codes_set.add((code, tv_sig.name))
                 codes_names.append((code, tv_sig.name))
@@ -2200,6 +2267,11 @@ def run_evening_recommendation() -> RecommendationReport:
         logger.info(f"[Step 5b] 레짐: {mtm_count}/{len(regime_signals)} MOMENTUM ({time.time()-t_regime:.0f}s)")
     except Exception as e:
         logger.warning(f"레짐 감지 실패 (무시): {e}")
+
+    # ── 타임아웃 가드: Step 5 교차검증 진입 전 ──
+    _timeout_result = _check_pipeline_timeout("Step5(교차검증)", report)
+    if _timeout_result:
+        return _timeout_result
 
     # Step 5: Soft Scoring 교차검증 (로테이션 종목 포함)
     t0 = time.time()
@@ -2473,6 +2545,11 @@ def run_evening_recommendation() -> RecommendationReport:
             logger.info(f"[Step 5d] ETF 추천: {len(etf_recs)}종목")
     except Exception as e:
         logger.warning(f"[ETF 추천] 실패 (무시): {e}")
+
+    # ── 타임아웃 가드: Step 6 진입 전 ──
+    _timeout_result = _check_pipeline_timeout("Step6(KIS검증)", report, final_stocks)
+    if _timeout_result:
+        return _timeout_result
 
     # Step 6: KIS API 가격 교차검증 (타임아웃 방어)
     KIS_VERIFY_TIMEOUT = 60  # 1분
