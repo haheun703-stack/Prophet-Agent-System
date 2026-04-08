@@ -1918,6 +1918,24 @@ class BodyHunterBot:
             await update.message.reply_text(f"선매집 스캔 실패: {e}")
 
     # ═══════════════════════════════════════
+    #  주목 종목 박스
+    # ═══════════════════════════════════════
+
+    async def cmd_watchbox(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """시나리오별 주목 종목 박스 출력"""
+        if not self._is_authorized(update):
+            return
+        try:
+            from data.watchbox import build_watchbox, format_watchbox_telegram
+            await update.message.reply_text("📦 주목 종목 박스 생성 중...")
+            result = build_watchbox()
+            msg = format_watchbox_telegram(result)
+            for chunk in _split_message(msg):
+                await update.message.reply_text(chunk)
+        except Exception as e:
+            await update.message.reply_text(f"주목 종목 박스 실패: {e}")
+
+    # ═══════════════════════════════════════
     #  미국장 야간 필터
     # ═══════════════════════════════════════
 
@@ -2359,6 +2377,9 @@ class BodyHunterBot:
             r"^미국장$": self.cmd_us_overnight,
             r"^미국$": self.cmd_us_overnight,
             r"^US$": self.cmd_us_overnight,
+            r"^주목$": self.cmd_watchbox,
+            r"^박스$": self.cmd_watchbox,
+            r"^ㅈ$": self.cmd_watchbox,
             # ── 온디맨드 명령어 (하루 5~7개 체제) ──
             r"^포트$": self.cmd_port,
             r"^ㅍ$": self.cmd_port,

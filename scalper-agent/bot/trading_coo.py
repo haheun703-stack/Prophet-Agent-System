@@ -1342,7 +1342,7 @@ class TradingCOO:
         3-Stage 실행:
         - Stage 1: C8+C10+C11 병렬 (신호기록 / 스윙선정 / 브레인배분)
         - Stage 2: C12→C13 순차 (일간학습 → ★이브닝분석 CRITICAL)
-        - Stage 3: C14~C27 병렬 (클로징/선취매/MACD/TRIX/국적/헬스/스윙/수급/ETF/퀀트대시/CTO정확도/NXT Paper/Paper리포트)
+        - Stage 3: C14~C29 병렬 (클로징/선취매/MACD/TRIX/국적/헬스/스윙/수급/ETF/퀀트대시/CTO정확도/NXT Paper/Paper리포트/선매집/주목박스)
 
         g6_mode 분기:
         - NORMAL: 전체 실행
@@ -1480,7 +1480,7 @@ class TradingCOO:
             c13_task = asyncio.create_task(_run_c13_with_fallback())
 
         # ── Stage 3: C14~C27 병렬 — C13과 동시 진행 ──
-        logger.info("[COO] G7 Stage 3: C14~C27 병렬 (C13과 동시 진행)")
+        logger.info("[COO] G7 Stage 3: C14~C29 병렬 (C13과 동시 진행)")
         stage3_jobs = []
 
         # C14: 클로징 브리프
@@ -1584,6 +1584,12 @@ class TradingCOO:
         stage3_jobs.append((
             "C28_stealth_scan",
             self._job_stealth_scan(context),
+        ))
+
+        # C29: 주목 종목 박스 생성 + Supabase 업로드
+        stage3_jobs.append((
+            "C29_watchbox",
+            self._job_watchbox(context),
         ))
 
         if stage3_jobs:
@@ -2062,6 +2068,33 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[C28] 선매집 스캔 실패 (무시): {e}")
             return {"stealth_scan": f"ERROR: {e}"}
+
+    async def _job_watchbox(self, context=None) -> dict:
+        """C29: 주목 종목 박스 생성 → watchbox.json + Supabase 업로드 + 텔레그램 알림."""
+        try:
+            from data.watchbox import build_watchbox, format_watchbox_telegram, upload_watchbox_supabase
+
+            result = await asyncio.to_thread(build_watchbox)
+            total = result.get("total_count", 0)
+
+            # Supabase 업로드 (실패해도 계속)
+            try:
+                await asyncio.to_thread(upload_watchbox_supabase, result)
+            except Exception as e:
+                logger.warning(f"[C29] Supabase 업로드 실패 (무시): {e}")
+
+            # 텔레그램 알림
+            if total > 0:
+                alert_fn = getattr(self.auto_trader, "_send_alert", None) if self.auto_trader else None
+                if alert_fn:
+                    msg = format_watchbox_telegram(result)
+                    await asyncio.to_thread(alert_fn, msg)
+
+            logger.info(f"[C29] 주목 종목 박스 생성 완료 ({total}종목)")
+            return {"watchbox": "OK", "count": total}
+        except Exception as e:
+            logger.warning(f"[C29] 주목 종목 박스 실패 (무시): {e}")
+            return {"watchbox": f"ERROR: {e}"}
 
     async def _job_us_overnight_filter(self, context=None) -> dict:
         """A11: 미국장 야간 필터 — US 데이터 수집 → 갭 예측 → 진입 모드 결정."""
