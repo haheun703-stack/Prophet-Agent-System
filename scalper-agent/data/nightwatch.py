@@ -100,6 +100,8 @@ class NightwatchReport:
     selection_reason: str = ""
     # 진입 재개 시그널 (전쟁 장기화 감시)
     reentry_signals: Dict = field(default_factory=dict)
+    # 6단: 외국인 야간 추적
+    foreign_night: Dict = field(default_factory=dict)
     # 원본 데이터
     raw_indicators: Dict = field(default_factory=dict)
 
@@ -1821,6 +1823,38 @@ def run_nightwatch() -> NightwatchReport:
         logger.warning(f"[NIGHTWATCH] 채권자경단 수집 실패 (무시): {e}")
         bond_vig = {}
 
+    # 6단: 외국인 야간 추적 (EWY/FLKR + 점수 보정)
+    logger.info("[NIGHTWATCH] [6단] 외국인 야간 추적...")
+    foreign_night = {}
+    try:
+        foreign_night = collect_foreign_night_signals()
+        fn_adj = foreign_night.get("score_adj", 0.0)
+        if abs(fn_adj) > 0:
+            old_score = report.total_score
+            report.total_score = max(-10.0, min(10.0, report.total_score + fn_adj))
+            logger.info(f"[NIGHTWATCH] 외국인 야간 보정: {fn_adj:+.1f} "
+                        f"({old_score:+.1f} → {report.total_score:+.1f})")
+            # 시그널 재판정
+            t = report.total_score
+            if t >= 6:
+                report.signal, report.signal_text = "🟢🟢", "강한 매수"
+            elif t >= 3:
+                report.signal, report.signal_text = "🟢", "매수 고려"
+            elif t >= -1:
+                report.signal, report.signal_text = "🟡", "관망"
+            elif t >= -4:
+                report.signal, report.signal_text = "🔴", "진입 금지"
+            elif t >= -7:
+                report.signal, report.signal_text = "💀", "전체 포지션 점검"
+            else:
+                report.signal, report.signal_text = "☠️", "인버스 강력"
+        report.foreign_night = foreign_night
+        logger.info(f"[NIGHTWATCH] 외국인 야간: EWY {foreign_night.get('ewy', {}).get('chg_pct', 0):+.2f}% "
+                     f"FLKR {foreign_night.get('flkr', {}).get('chg_pct', 0):+.2f}% "
+                     f"보정 {fn_adj:+.1f}")
+    except Exception as e:
+        logger.warning(f"[NIGHTWATCH] 외국인 야간 추적 실패 (무시): {e}")
+
     # 저장
     save_nightwatch_report(report, bond_vigilante=bond_vig)
     logger.info(f"[NIGHTWATCH] 완료 | {report.signal} {report.signal_text} | "
@@ -1964,6 +1998,125 @@ def collect_bond_vigilante_v2() -> dict:
     except Exception as e:
         logger.warning(f"[채권자경단v2] 수집 실패 (무시): {e}")
         result["summary"] = {"green": 0, "yellow": 0, "red": 0, "verdict": "수집실패", "total": 0}
+
+    return result
+
+
+# ═══════════════════════════════════════════════════
+#  [6단] 외국인 야간 추적 (EWY/FLKR)
+# ═══════════════════════════════════════════════════
+def collect_foreign_night_signals() -> dict:
+    """미국 상장 한국 ETF(EWY/FLKR)의 야간 등락으로 외국인 센티먼트 추적.
+
+    Returns:
+        dict: {
+            "ewy": {"close": float, "prev_close": float, "chg_pct": float, "volume": int},
+            "flkr": {"close": float, "prev_close": float, "chg_pct": float, "volume": int},
+            "avg_chg_pct": float,  # EWY/FLKR 평균 변동률
+            "score_adj": float,    # NXT 점수 보정 (-1.5 ~ +1.5)
+            "verdict": str,        # 요약 판정
+        }
+    """
+    import yfinance as yf
+
+    end = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+    start = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d")
+
+    result = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "ewy": {}, "flkr": {},
+        "avg_chg_pct": 0.0, "score_adj": 0.0, "verdict": "수집실패",
+    }
+
+    def _fetch_etf(ticker: str) -> dict:
+        try:
+            df = yf.download(ticker, start=start, end=end, progress=False)
+            if df.empty or len(df) < 2:
+                return {}
+            if hasattr(df.columns, 'levels'):
+                df.columns = df.columns.get_level_values(0)
+            last = df.iloc[-1]
+            prev = df.iloc[-2]
+            close = float(last['Close'])
+            prev_close = float(prev['Close'])
+            chg_pct = ((close - prev_close) / prev_close * 100) if prev_close else 0
+            volume = int(last.get('Volume', 0))
+            return {
+                "close": round(close, 2),
+                "prev_close": round(prev_close, 2),
+                "chg_pct": round(chg_pct, 2),
+                "volume": volume,
+                "date": df.index[-1].strftime("%Y-%m-%d"),
+            }
+        except Exception as e:
+            logger.warning(f"[6단] {ticker} 수집 실패: {e}")
+            return {}
+
+    ewy = _fetch_etf("EWY")
+    flkr = _fetch_etf("FLKR")
+
+    result["ewy"] = ewy
+    result["flkr"] = flkr
+
+    # 평균 변동률 계산 (EWY 가중 70%, FLKR 30% — EWY가 유동성 훨씬 큼)
+    chg_values = []
+    weights = []
+    if ewy.get("chg_pct") is not None:
+        chg_values.append(ewy["chg_pct"])
+        weights.append(0.7)
+    if flkr.get("chg_pct") is not None:
+        chg_values.append(flkr["chg_pct"])
+        weights.append(0.3)
+
+    if not chg_values:
+        logger.warning("[6단] EWY/FLKR 모두 수집 실패")
+        return result
+
+    # 가중 평균
+    if len(chg_values) == 1:
+        avg_chg = chg_values[0]
+    else:
+        avg_chg = sum(c * w for c, w in zip(chg_values, weights)) / sum(weights)
+
+    result["avg_chg_pct"] = round(avg_chg, 2)
+
+    # 점수 보정 (NQ 직접 보정과 유사한 구간제)
+    # ±2.0% 이상: ±1.5점 (강한 외국인 방향)
+    # ±1.0% 이상: ±1.0점
+    # ±0.5% 이상: ±0.5점
+    # 그 외: 0점
+    abs_chg = abs(avg_chg)
+    if abs_chg >= 2.0:
+        adj = 1.5
+    elif abs_chg >= 1.0:
+        adj = 1.0
+    elif abs_chg >= 0.5:
+        adj = 0.5
+    else:
+        adj = 0.0
+
+    score_adj = adj if avg_chg > 0 else -adj
+    result["score_adj"] = round(score_adj, 1)
+
+    # 판정
+    if avg_chg >= 2.0:
+        result["verdict"] = "외국인 강매수"
+    elif avg_chg >= 1.0:
+        result["verdict"] = "외국인 매수 우세"
+    elif avg_chg >= 0.5:
+        result["verdict"] = "외국인 소폭 매수"
+    elif avg_chg <= -2.0:
+        result["verdict"] = "외국인 강매도"
+    elif avg_chg <= -1.0:
+        result["verdict"] = "외국인 매도 우세"
+    elif avg_chg <= -0.5:
+        result["verdict"] = "외국인 소폭 매도"
+    else:
+        result["verdict"] = "외국인 중립"
+
+    logger.info(f"[6단] EWY {ewy.get('chg_pct', 'N/A'):+.2f}% | "
+                f"FLKR {flkr.get('chg_pct', 'N/A'):+.2f}% | "
+                f"평균 {avg_chg:+.2f}% | 보정 {score_adj:+.1f} | {result['verdict']}")
 
     return result
 
@@ -2448,6 +2601,22 @@ def format_nightwatch_report(report: NightwatchReport) -> str:
             lines.append("  -> 아직 진입 대기 (현금 유지)")
         else:
             lines.append(f"  -> 진입 대기 (0/{min_req} 충족, 현금 유지)")
+        lines.append("")
+
+    # [6단] 외국인 야간 추적
+    fn = report.foreign_night
+    if fn and fn.get("verdict"):
+        lines.append("[6단] 외국인 야간 추적")
+        ewy = fn.get("ewy", {})
+        flkr = fn.get("flkr", {})
+        avg = fn.get("avg_chg_pct", 0)
+        adj = fn.get("score_adj", 0)
+        if ewy.get("chg_pct") is not None:
+            lines.append(f"  EWY: {ewy['chg_pct']:+.2f}% (${ewy.get('close', 'N/A')})")
+        if flkr.get("chg_pct") is not None:
+            lines.append(f"  FLKR: {flkr['chg_pct']:+.2f}% (${flkr.get('close', 'N/A')})")
+        lines.append(f"  평균: {avg:+.2f}% | 보정: {adj:+.1f}점")
+        lines.append(f"  => {fn['verdict']}")
         lines.append("")
 
     if report.recommended_sectors:
