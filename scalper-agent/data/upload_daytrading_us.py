@@ -19,8 +19,8 @@ def upload_us_overnight(report: dict) -> bool:
         return False
 
     try:
-        from data.upload_swing import _get_supabase_client
-        client = _get_supabase_client()
+        from data.upload_swing import _get_client
+        client = _get_client()
         if not client:
             logger.error("Supabase 클라이언트 없음")
             return False
