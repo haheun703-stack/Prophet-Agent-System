@@ -2006,7 +2006,7 @@ def collect_bond_vigilante_v2() -> dict:
 #  [6단] 외국인 야간 추적 (EWY/FLKR)
 # ═══════════════════════════════════════════════════
 def collect_foreign_night_signals() -> dict:
-    """미국 상장 한국 ETF(EWY/FLKR)의 야간 등락으로 외국인 센티먼트 추적.
+    """미국 상장 한국 ETF(EWY/FLKR) + 한국 ADR 개별종목 야간 등락으로 외국인 센티먼트 추적.
 
     Returns:
         dict: {
@@ -2015,9 +2015,23 @@ def collect_foreign_night_signals() -> dict:
             "avg_chg_pct": float,  # EWY/FLKR 평균 변동률
             "score_adj": float,    # NXT 점수 보정 (-1.5 ~ +1.5)
             "verdict": str,        # 요약 판정
+            "top_holdings": list,  # 한국 ADR 종목별 변동 (abs(chg) 내림차순)
         }
     """
     import yfinance as yf
+
+    # 한국 ADR 매핑: US티커 → (한국명, KRX코드, 섹터)
+    KR_ADR_MAP = {
+        "KB":  ("KB금융",       "105560", "금융"),
+        "SHG": ("신한지주",     "055550", "금융"),
+        "WF":  ("우리금융",     "316140", "금융"),
+        "PKX": ("POSCO홀딩스",  "005490", "철강"),
+        "SKM": ("SK텔레콤",     "017670", "통신"),
+        "KT":  ("KT",           "030200", "통신"),
+        "LPL": ("LG디스플레이", "034220", "디스플레이"),
+        "KEP": ("한국전력",     "015760", "전력"),
+        "CPNG": ("쿠팡",        "",       "유통"),
+    }
 
     end = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
     start = (datetime.now() - timedelta(days=10)).strftime("%Y-%m-%d")
@@ -2026,6 +2040,7 @@ def collect_foreign_night_signals() -> dict:
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "ewy": {}, "flkr": {},
         "avg_chg_pct": 0.0, "score_adj": 0.0, "verdict": "수집실패",
+        "top_holdings": [],
     }
 
     def _fetch_etf(ticker: str) -> dict:
@@ -2054,6 +2069,50 @@ def collect_foreign_night_signals() -> dict:
 
     ewy = _fetch_etf("EWY")
     flkr = _fetch_etf("FLKR")
+
+    # --- 한국 ADR 개별종목 추적 ---
+    adr_tickers = list(KR_ADR_MAP.keys())
+    holdings = []
+    try:
+        all_tickers = " ".join(adr_tickers)
+        df_all = yf.download(all_tickers, start=start, end=end, progress=False, group_by='ticker')
+        for us_ticker, (kr_name, krx_code, sector) in KR_ADR_MAP.items():
+            try:
+                if len(adr_tickers) == 1:
+                    df_t = df_all
+                else:
+                    df_t = df_all[us_ticker] if us_ticker in df_all.columns.get_level_values(0) else None
+                if df_t is None or df_t.empty or len(df_t.dropna(subset=['Close'])) < 2:
+                    continue
+                df_t = df_t.dropna(subset=['Close'])
+                last = df_t.iloc[-1]
+                prev = df_t.iloc[-2]
+                close_val = float(last['Close'])
+                prev_val = float(prev['Close'])
+                if prev_val == 0:
+                    continue
+                chg = round((close_val - prev_val) / prev_val * 100, 2)
+                vol = int(last.get('Volume', 0)) if last.get('Volume') is not None else 0
+                holdings.append({
+                    "us_ticker": us_ticker,
+                    "kr_name": kr_name,
+                    "krx_code": krx_code,
+                    "sector": sector,
+                    "close": round(close_val, 2),
+                    "chg_pct": chg,
+                    "volume": vol,
+                })
+            except Exception as e:
+                logger.debug(f"[6단] ADR {us_ticker} 파싱 실패: {e}")
+    except Exception as e:
+        logger.warning(f"[6단] ADR 일괄 수집 실패: {e}")
+
+    # abs(chg) 내림차순 정렬 — 변동 큰 종목이 위로
+    holdings.sort(key=lambda x: abs(x["chg_pct"]), reverse=True)
+    result["top_holdings"] = holdings
+    if holdings:
+        movers = ", ".join(f"{h['kr_name']}{h['chg_pct']:+.1f}%" for h in holdings[:3])
+        logger.info(f"[6단] ADR 상위: {movers}")
 
     result["ewy"] = ewy
     result["flkr"] = flkr
@@ -2617,6 +2676,17 @@ def format_nightwatch_report(report: NightwatchReport) -> str:
             lines.append(f"  FLKR: {flkr['chg_pct']:+.2f}% (${flkr.get('close', 'N/A')})")
         lines.append(f"  평균: {avg:+.2f}% | 보정: {adj:+.1f}점")
         lines.append(f"  => {fn['verdict']}")
+        # 한국 ADR 종목별 변동
+        top_h = fn.get("top_holdings", [])
+        if top_h:
+            lines.append("  -- 종목별 야간 변동 --")
+            for h in top_h:
+                arrow = "+" if h["chg_pct"] > 0 else ""
+                code_str = f"({h['krx_code']})" if h.get("krx_code") else ""
+                lines.append(
+                    f"  {h['kr_name']}{code_str} [{h['sector']}] "
+                    f"{arrow}{h['chg_pct']:.2f}% ${h['close']}"
+                )
         lines.append("")
 
     if report.recommended_sectors:
