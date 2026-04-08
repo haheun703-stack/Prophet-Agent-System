@@ -1095,6 +1095,22 @@ def _step5_cross_validate(
     except Exception as _e2:
         logger.warning(f"[선매집캐시] 로드 실패 (무시): {_e2}")
 
+    # ── US 야간 필터 캐시 (us_overnight_result.json → 진입 모드) ──
+    _us_mode = "NORMAL"
+    _us_relay_codes = set()
+    try:
+        _us_path = Path(__file__).resolve().parent.parent / "data_store" / "us_overnight_result.json"
+        if _us_path.exists():
+            import json as _json_mod3
+            _us = _json_mod3.loads(_us_path.read_text("utf-8"))
+            _us_mode = _us.get("mode", "NORMAL")
+            # 릴레이 종목 코드 추출
+            for _rp in _us.get("relay_picks", []):
+                _us_relay_codes.add(_rp.get("kr_code", ""))
+            logger.info(f"[US모드] {_us_mode} | 릴레이 {len(_us_relay_codes)}종목")
+    except Exception as _e3:
+        logger.warning(f"[US모드] 로드 실패 (무시): {_e3}")
+
     candidates = []
     for code in all_codes:
         r_info = relay.get("stocks", {}).get(code, {})
@@ -1443,6 +1459,13 @@ def _step5_cross_validate(
             stealth_sc = 5.0    # 50점+ → 약한 보너스
             sources.append(f"stealth({_stl}:+5)")
 
+        # ── US→KR 릴레이 보너스 (미국장 강세 종목의 한국 수혜주) ──
+        us_relay_sc = 0.0
+        if code in _us_relay_codes:
+            us_relay_sc = 10.0
+            sources.append("us_relay(+10)")
+            cross += 1
+
         # ── 합산 ──────────────────────────────
         raw_total = (relay_sc + premove_sc + tech_sc + bargain_sc + cross_bonus
                      + nat_sc + news_pen + obv_pen + rel_pen
@@ -1454,7 +1477,22 @@ def _step5_cross_validate(
                      + trix_sc        # TRIX 다이버전스 점수
                      + doublebuy_sc   # 쌍매수 연속 보너스
                      + largecap_sc    # 대형주 수급 감지
-                     + stealth_sc)    # 선매집 잠복 보너스
+                     + stealth_sc     # 선매집 잠복 보너스
+                     + us_relay_sc)   # US→KR 릴레이 보너스
+
+        # ── US 모드 조정 ──────────────────────
+        # DEFENSIVE: 전체 점수 20% 감점 (보수적 진입)
+        # HALT: 0점 강제 (진입 금지)
+        # AGGRESSIVE: 10% 가점 (적극 진입)
+        if _us_mode == "HALT":
+            raw_total = 0.0
+            sources.append("US_HALT(=0)")
+        elif _us_mode == "DEFENSIVE":
+            raw_total *= 0.8
+            sources.append("US_DEF(x0.8)")
+        elif _us_mode == "AGGRESSIVE":
+            raw_total *= 1.1
+            sources.append("US_AGG(x1.1)")
 
         # ── 브레인 학습 가중치 적용 ──────────────
         brain_adj = _apply_brain_adjustment(

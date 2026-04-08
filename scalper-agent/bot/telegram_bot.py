@@ -1918,6 +1918,41 @@ class BodyHunterBot:
             await update.message.reply_text(f"선매집 스캔 실패: {e}")
 
     # ═══════════════════════════════════════
+    #  미국장 야간 필터
+    # ═══════════════════════════════════════
+
+    async def cmd_us_overnight(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """미국장 야간 분석 결과 — 진입 모드/갭 예측/릴레이 종목"""
+        if not self._is_authorized(update):
+            return
+        try:
+            import json as _json
+            from pathlib import Path as _Path
+
+            result_path = _Path(__file__).parent.parent / "data_store" / "us_overnight_result.json"
+
+            if result_path.exists():
+                report = _json.loads(result_path.read_text("utf-8"))
+                from data.us_overnight_filter import build_telegram_message
+                msg = build_telegram_message(report)
+            else:
+                # 캐시 없으면 실시간 수집 + 분석
+                await update.message.reply_text("🇺🇸 미국장 분석 중...")
+                from data.us_market_collector import collect_us_overnight
+                from data.us_overnight_filter import run as run_us_filter, build_telegram_message
+                collect_us_overnight()
+                report = run_us_filter()
+                if not report:
+                    await update.message.reply_text("미국장 데이터 수집 실패")
+                    return
+                msg = build_telegram_message(report)
+
+            for chunk in _split_message(msg):
+                await update.message.reply_text(chunk)
+        except Exception as e:
+            await update.message.reply_text(f"미국장 분석 실패: {e}")
+
+    # ═══════════════════════════════════════
     #  JARVIS BRAIN 자본 배분
     # ═══════════════════════════════════════
 
@@ -2321,6 +2356,9 @@ class BodyHunterBot:
             r"^페이퍼$": self.cmd_paper,
             r"^선매집$": self.cmd_stealth,
             r"^잠복$": self.cmd_stealth,
+            r"^미국장$": self.cmd_us_overnight,
+            r"^미국$": self.cmd_us_overnight,
+            r"^US$": self.cmd_us_overnight,
             # ── 온디맨드 명령어 (하루 5~7개 체제) ──
             r"^포트$": self.cmd_port,
             r"^ㅍ$": self.cmd_port,

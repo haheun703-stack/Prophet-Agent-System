@@ -472,12 +472,12 @@ class TradingCOO:
     # run_g1: G1 MORNING_PREP (08:00~08:50)
     # ─────────────────────────────────────────────
     async def run_g1(self, context=None):
-        """G1 MORNING_PREP — 11개 잡 병렬 실행.
+        """G1 MORNING_PREP — 12개 잡 병렬 실행.
 
         전부 non-critical → 개별 실패해도 계속 진행.
         결과를 update_group + morning_state.json 영속화.
 
-        잡 목록 (A1~A10 + A5P):
+        잡 목록 (A1~A11 + A5P):
           A1  job_us_market_check    — 미국시장 체크 (AutoTrader)
           A2  _job_policy_scan       — 정책 트래커 (TelegramBot)
           A3  _job_global_event_scan — 해외 이벤트 (TelegramBot)
@@ -489,6 +489,7 @@ class TradingCOO:
           A8  job_premium_levels     — 프리미엄 레벨 (AutoTrader)
           A9  _job_rebuild_universe  — 유니버스 리빌드 (TelegramBot)
           A10 _job_premove_scan      — 사전감지 (TelegramBot)
+          A11 _job_us_overnight_filter — 미국장 야간 필터 (COO)
         """
         logger.info("[COO] ═══ G1 MORNING_PREP 시작 ═══")
         self.group_status["G1"] = GroupStatus.RUNNING
@@ -514,6 +515,12 @@ class TradingCOO:
         jobs.append((
             "A5P_nxt_paper_morning_close",
             self._job_nxt_paper_morning_close(context),
+        ))
+
+        # 미국장 야간 필터 (COO 자체 잡)
+        jobs.append((
+            "A11_us_overnight_filter",
+            self._job_us_overnight_filter(context),
         ))
 
         # TelegramBot 잡 (7개)
@@ -543,7 +550,7 @@ class TradingCOO:
             self.save_state()
             return []
 
-        # 10개 잡 병렬 실행 — 개별 타임아웃 300초 (5분)
+        # 12개 잡 병렬 실행 — 개별 타임아웃 300초 (5분)
         results = await self.run_parallel_async(jobs, timeout_per_job=300)
 
         # 그룹 상태 업데이트 + 로그 저장
@@ -2025,6 +2032,50 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[C28] 선매집 스캔 실패 (무시): {e}")
             return {"stealth_scan": f"ERROR: {e}"}
+
+    async def _job_us_overnight_filter(self, context=None) -> dict:
+        """A11: 미국장 야간 필터 — US 데이터 수집 → 갭 예측 → 진입 모드 결정."""
+        try:
+            from data.us_market_collector import collect_us_overnight
+            from data.us_overnight_filter import run as run_us_filter
+            from data.us_overnight_filter import build_telegram_message
+            from data.upload_daytrading_us import upload_us_overnight
+
+            # 1) US 데이터 수집
+            us_data = await asyncio.to_thread(collect_us_overnight)
+            if not us_data:
+                logger.warning("[A11] US 데이터 수집 실패")
+                return {"us_filter": "NO_DATA"}
+
+            # 2) 필터 실행 (수집된 데이터 기반)
+            report = await asyncio.to_thread(run_us_filter)
+            if not report:
+                logger.warning("[A11] US 필터 실행 실패")
+                return {"us_filter": "FILTER_FAIL"}
+
+            mode = report.get("mode", "NORMAL")
+
+            # 3) 텔레그램 알림
+            alert_fn = getattr(self.auto_trader, "_send_alert", None) if self.auto_trader else None
+            if alert_fn:
+                msg = build_telegram_message(report)
+                await asyncio.to_thread(alert_fn, msg)
+
+            # 4) Supabase 업로드 (실패해도 무시)
+            try:
+                await asyncio.to_thread(upload_us_overnight, report)
+            except Exception as ue:
+                logger.warning(f"[A11] US 업로드 실패 (무시): {ue}")
+
+            logger.info(
+                f"[A11] US 야간 필터 완료: 모드={mode} | "
+                f"갭={report.get('gap_signal')} ({report.get('gap_est_pct', 0):+.1f}%) | "
+                f"위험={report.get('risk_level', 0)}/5"
+            )
+            return {"us_filter": "OK", "us_mode": mode}
+        except Exception as e:
+            logger.warning(f"[A11] US 야간 필터 실패 (무시): {e}")
+            return {"us_filter": f"ERROR: {e}"}
 
     async def _job_nxt_early_collect(self, context=None) -> dict:
         """C4E: NXT 사전 데이터 수집 + 예비 알림 발송.
