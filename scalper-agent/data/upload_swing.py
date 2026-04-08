@@ -847,14 +847,27 @@ def _build_fib_stocks() -> list:
 
 def _build_fib_leaders() -> list:
     """시총 상위 30 대형주 피보나치 레벨 (하락률 무관, 무조건 표시).
-    fib_leaders.json에서 로드. 없으면 빈 리스트.
+    fib_leaders.json에서 로드. fib_zone 미존재 시 drop 기반 자동 계산.
     """
     data = _load_json("fib_leaders.json")
     if not data:
         return []
-    if isinstance(data, list):
-        return data[:30]
-    return []
+    items = data[:30] if isinstance(data, list) else []
+    # fib_zone 보정: 비어있으면 drop 기반 자동 부여
+    for s in items:
+        if not s.get("fib_zone"):
+            drop = abs(s.get("drop", 0))
+            if drop >= 50:
+                s["fib_zone"] = "DEEP"
+            elif drop >= 40:
+                s["fib_zone"] = "MID"
+            elif drop >= 30:
+                s["fib_zone"] = "MILD"
+            elif drop >= 15:
+                s["fib_zone"] = "SHALLOW"
+            else:
+                s["fib_zone"] = "NEAR_HIGH"
+    return items
 
 
 def _build_fx_monitor() -> dict:
