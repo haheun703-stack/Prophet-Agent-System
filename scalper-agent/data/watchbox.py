@@ -299,10 +299,14 @@ def build_watchbox() -> Dict:
             score += 5
             sources.append("피보나치")
 
-        # 추천 종목 보너스
+        # 추천 종목 보너스 (점수 비례 — 100점 이상이면 강한 가점)
         if code in rec_stocks:
             rec_score = rec_stocks[code].get("total_score", 0)
-            if rec_score > 50:
+            if rec_score >= 100:
+                _rec_bonus = 15 + (rec_score - 100) * 0.1  # 100점=15, 130점=18
+                score += _rec_bonus
+                sources.append(f"추천({rec_score:.0f})")
+            elif rec_score > 50:
                 score += 8
                 sources.append(f"추천({rec_score:.0f})")
 
@@ -403,6 +407,46 @@ def build_watchbox() -> Dict:
             cap=cap,
             sources=sources,
         )
+
+    # ── 2c. 모닝추천 TOP2 강제 포함 ──
+    # 추천 1~2위는 어떤 시나리오든 반드시 박스에 포함 (점수 부스트로 슬롯 경쟁 보장)
+    rec_top = sorted(rec_stocks.values(), key=lambda x: x.get("total_score", 0), reverse=True)[:2]
+    for rt in rec_top:
+        code = rt.get("code", "")
+        if not code:
+            continue
+        rec_score_val = rt.get("total_score", 0)
+        if code in candidates:
+            # 이미 있으면 점수 대폭 부스트 + 추천TOP 태그 추가
+            c = candidates[code]
+            _boost = max(20, rec_score_val * 0.2)  # 최소 20점, 130점추천이면 26점
+            c.score += _boost
+            c.score = round(c.score, 1)
+            if "추천TOP" not in c.sources:
+                c.sources.insert(0, "추천TOP")
+            c.memo = "모닝추천 상위"
+            logger.info(f"[WatchBox] 추천TOP 부스트: {c.name}({code}) +{_boost:.0f} → {c.score}")
+        else:
+            name = rt.get("name", "")
+            scenario = _match_scenario(name, rt.get("sector", ""))
+            if not scenario:
+                scenario = "수급포착"
+
+            flow_info = _read_investor_csv(code)
+            supply_status = flow_info.get("supply_status", "")
+
+            candidates[code] = WatchboxStock(
+                code=code,
+                name=name,
+                scenario=scenario,
+                price=rt.get("close", 0),
+                score=round(rec_score_val * 0.3, 1),
+                sector=rt.get("sector", ""),
+                supply_status=supply_status,
+                sources=["추천TOP", f"추천({rec_score_val:.0f})"],
+                memo="모닝추천 상위",
+            )
+            logger.info(f"[WatchBox] 추천TOP 신규: {name}({code}) score={rec_score_val:.0f}")
 
     # ── 3. 시나리오별 정렬 + 슬롯 할당 ──
     result_scenarios: Dict[str, List[Dict]] = {}
