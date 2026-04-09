@@ -39,6 +39,7 @@ from foreign_accumulation_scanner import (
     load_investor_flow,
     LOOKBACK_DAYS,
 )
+from sector_etf_map import get_etf_for_stock, aggregate_etf_from_picks
 
 
 # ─────────────────────────────────────────────
@@ -77,6 +78,22 @@ MCAP_BONUS = [
 
 MIN_FINAL_SCORE = 60.0  # 최종 점수 컷오프
 
+# ETF 브랜드 접두사 — 단타 픽에서 제외 (ETF 섹션 따로 집계하므로)
+ETF_BRAND_PREFIXES = (
+    "TIGER", "KODEX", "KBSTAR", "ACE", "PLUS", "KOSEF", "HANARO", "SOL",
+    "ARIRANG", "TREX", "FOCUS", "HK", "PARA", "마이티", "히어로즈",
+    "RISE", "KCGI", "WOORI", "WON", "WON드림",
+)
+
+
+def is_etf(name: str) -> bool:
+    """종목명이 ETF 브랜드로 시작하는지."""
+    if not name:
+        return False
+    name_upper = name.strip().upper()
+    return any(name_upper.startswith(p.upper()) for p in ETF_BRAND_PREFIXES)
+
+
 # ─────────────────────────────────────────────
 # 트랙 A (대형주) 설정
 # ─────────────────────────────────────────────
@@ -105,6 +122,9 @@ def scan_large_caps(
 
     for code, info in uni.items():
         if not isinstance(info, dict):
+            continue
+        # ETF 제외 (따로 섹션으로 집계)
+        if is_etf(info.get("name", "")):
             continue
         mcap = info.get("cap_억", 0) or 0
         if mcap < min_mcap:
@@ -270,6 +290,10 @@ def apply_daytrading_filters(
         sector = info.get("sector", "-")
         mcap = c.get("mcap_억", 0)
 
+        # [필터 0] ETF 제외 (단타 픽에서 ETF 배제)
+        if is_etf(info.get("name", "") or c.get("name", "")):
+            continue
+
         # [필터 1] 기본 점수 컷오프
         if c["score"] < base_cutoff:
             continue
@@ -326,6 +350,9 @@ def apply_daytrading_filters(
         if ewy_bonus > 0:
             reasons.append("EWY +10% 대형주 수혜")
 
+        # 섹터 ETF 대안 매핑 (주린이 분산진입용)
+        etf_alt = get_etf_for_stock(c.get("name", ""), sector)
+
         filtered.append({
             **c,
             "sector": sector,
@@ -341,29 +368,55 @@ def apply_daytrading_filters(
             "sl": sl,
             "upside_to_tp1_pct": round((tp1 / close - 1) * 100, 1) if close else 0,
             "key_reasons": " + ".join(reasons),
+            "etf_alt_code": etf_alt["code"],
+            "etf_alt_name": etf_alt["name"],
+            "etf_alt_theme": etf_alt["theme"],
         })
 
     filtered.sort(key=lambda x: x["final_score"], reverse=True)
     return filtered
 
 
-def format_flowx_post(picks: list[dict], ewy_signal: dict) -> str:
-    """FLOWX 게시용 포맷 — 깔끔한 리스트"""
+def _mode_title(mode: str) -> tuple[str, str]:
+    """모드별 제목 + 설명 반환."""
+    if mode == "preview":
+        return (
+            "📢 내일 단타 프리뷰",
+            "(국장 마감 기준 · 최종 확정은 내일 07:30)",
+        )
+    else:
+        return (
+            "🎯 오늘 단타 TOP픽 확정",
+            "(미국장 + 외국인 바스켓 반영 완료)",
+        )
+
+
+def format_flowx_post(picks: list[dict], ewy_signal: dict, mode: str = "confirmed") -> str:
+    """FLOWX 게시용 포맷 — 깔끔한 리스트 + ETF 대안 + 모드별 제목."""
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    title, subtitle = _mode_title(mode)
 
     lines = [
-        f"🎯 단타 TOP {len(picks)} · 내일~3일 매집 포착",
-        f"📅 {now}",
-        f"━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"{title} · TOP {len(picks)}",
+        f"📅 {now} {subtitle}",
+        "━━━━━━━━━━━━━━━━━━━━━━━━",
     ]
 
-    # EWY 시그널 1줄 요약
-    ewy_1d = ewy_signal.get("ewy_1d", 0)
-    ks200_5d = ewy_signal.get("ks200_5d", 0)
-    if abs(ewy_1d) > 0.01 or abs(ks200_5d) > 0.01:
-        lines.append(f"🌍 외인 바스켓: EWY {ewy_1d:+.2f}% | KS200 5D {ks200_5d:+.2f}%")
-        lines.append("")
+    # EWY 시그널 (confirmed 모드만)
+    if mode == "confirmed":
+        ewy_1d = ewy_signal.get("ewy_1d", 0)
+        ks200_1d = ewy_signal.get("ks200_1d", 0)
+        if abs(ewy_1d) > 0.01 or abs(ks200_1d) > 0.01:
+            lines.append(f"🌍 외인 바스켓: EWY {ewy_1d:+.2f}% | KS200 야간 {ks200_1d:+.2f}%")
+            if ewy_1d >= 5.0:
+                lines.append("🔥 외국인 한국 폭발매수 — 적극 진입 모드")
+            elif ewy_1d >= 2.0:
+                lines.append("✅ 외국인 한국 매수우세 — 정상 진입")
+            elif ewy_1d <= -2.0:
+                lines.append("⚠️ 외국인 한국 매도 — 신중 진입")
+            lines.append("")
 
+    # 개별 종목
     for i, p in enumerate(picks, 1):
         rank_emoji = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣"][min(i-1, 6)]
 
@@ -371,15 +424,64 @@ def format_flowx_post(picks: list[dict], ewy_signal: dict) -> str:
         lines.append(f"   💰 현재가 {p['close_end']:,}원 · 시총 {int(p['mcap_억']):,}억")
         lines.append(f"   🎯 진입 {p['entry_low']:,}~{p['entry_high']:,} · 목표 {p['tp1']:,} (+{p['upside_to_tp1_pct']:.1f}%)")
         lines.append(f"   📊 {p['key_reasons']}")
+        # 🔗 ETF 대안
+        etf_code = p.get("etf_alt_code", "")
+        etf_name = p.get("etf_alt_name", "")
+        etf_theme = p.get("etf_alt_theme", "")
+        if etf_code:
+            lines.append(f"   🔗 ETF 대안: {etf_name} ({etf_code}) [{etf_theme}]")
         lines.append(f"   ⭐ 점수 {p['final_score']:.0f} (기본 {p['score']:.0f} + 섹터 {p['sector_bonus']} + 시총 {p['mcap_bonus']} + EWY {p['ewy_bonus']})")
         lines.append("")
 
+    # 🔗 ETF 집계 섹션 (주린이가 분산진입할 수 있도록)
+    etf_agg = aggregate_etf_from_picks(picks)
+    if etf_agg:
+        lines.append("━━━━━━━━━━━━━━━━━━━━━━━━")
+        lines.append("🔗 <b>오늘의 섹터 ETF TOP 3</b> (개별 종목 대신 분산진입)")
+        for i, e in enumerate(etf_agg[:3], 1):
+            stocks_str = ", ".join(e["stocks"][:3])
+            lines.append(
+                f"  {i}. {e['name']} ({e['code']}) [{e['theme']}] "
+                f"— {e['stock_count']}종목: {stocks_str}"
+            )
+
     lines.append("━━━━━━━━━━━━━━━━━━━━━━━━")
-    lines.append("📌 선정 기준: 외국인 선행 매집 + 기관 합류 + EWY 바스켓 수혜")
-    lines.append("📌 매수 판단: 퐝가님 직접 (자동매매 없음)")
+    lines.append("📌 선정: 외국인 선행매집 + 기관 합류 + EWY 바스켓 수혜")
+    if mode == "preview":
+        lines.append("📌 내일 아침 07:30 미국장 반영 후 최종 확정")
+        lines.append("⏰ NXT 야간 매수 가능 (17:00~20:00)")
+    else:
+        lines.append("⏰ 09:00 개장 ~ 09:30 사이 진입 권장")
     lines.append("⚠️ 투자 책임: 본인")
 
     return "\n".join(lines)
+
+
+def format_telegram_message(picks: list[dict], ewy_signal: dict, mode: str = "confirmed") -> str:
+    """
+    텔레그램 송출용 HTML 메시지 (FLOWX와 거의 동일하지만 약간 간소).
+    Telegram parse_mode='HTML'.
+    """
+    # FLOWX 포맷 재활용 (이미 HTML <b> 포함)
+    return format_flowx_post(picks, ewy_signal, mode)
+
+
+def send_telegram(message: str) -> bool:
+    """텔레그램 전송. 실패 시 False 반환."""
+    try:
+        # 프로젝트 루트의 telegram_bot 모듈 사용
+        from bot.telegram_bot import send_telegram_message
+        send_telegram_message(message, parse_mode="HTML")
+        return True
+    except Exception as e:
+        print(f"⚠️ 텔레그램 전송 실패(1차): {e}")
+        try:
+            from bot.telegram_bot import send_message
+            send_message(message)
+            return True
+        except Exception as e2:
+            print(f"⚠️ 텔레그램 전송 실패(2차): {e2}")
+            return False
 
 
 def main():
@@ -389,16 +491,35 @@ def main():
     parser.add_argument("--scan-top", type=int, default=30, help="트랙 B scanner TOP N (기본 30)")
     parser.add_argument("--save", action="store_true", help="JSON 저장")
     parser.add_argument("--flowx-format", action="store_true", help="FLOWX 포맷 출력")
+    parser.add_argument(
+        "--mode",
+        choices=["preview", "confirmed"],
+        default="confirmed",
+        help="preview(16:45 국장마감 프리뷰) | confirmed(07:30 미국장반영 확정)",
+    )
+    parser.add_argument("--send-telegram", action="store_true", help="텔레그램 송출")
     args = parser.parse_args()
 
-    print("🎯 단타 TOP 픽 시작 (Dual Track)")
+    print(f"🎯 단타 TOP 픽 시작 (Dual Track · mode={args.mode})")
     print()
 
     universe = load_universe()
     insights = load_insights()
-    ewy_signal = load_ewy_signal()
-    print(f"🌍 EWY 시그널: {ewy_signal.get('source','-')} | "
-          f"EWY {ewy_signal.get('ewy_1d',0):+.2f}% | KS200 5D {ewy_signal.get('ks200_5d',0):+.2f}%")
+
+    # preview 모드: EWY 시그널 무시 (미국장 아직 안 열림)
+    if args.mode == "preview":
+        ewy_signal = {
+            "ewy_1d": 0,
+            "ewy_5d": 0,
+            "ks200_1d": 0,
+            "ks200_5d": 0,
+            "source": "preview_no_us",
+        }
+        print("📢 프리뷰 모드 — 미국장 데이터 무시 (국장 마감 수급만)")
+    else:
+        ewy_signal = load_ewy_signal()
+        print(f"🌍 EWY 시그널: {ewy_signal.get('source','-')} | "
+              f"EWY {ewy_signal.get('ewy_1d',0):+.2f}% | KS200 5D {ewy_signal.get('ks200_5d',0):+.2f}%")
     print()
 
     # ─── 트랙 A: 대형주 (시총 2조+, ±15% 완화) ───
@@ -455,6 +576,7 @@ def main():
     if args.save:
         out = {
             "updated": datetime.now().isoformat(),
+            "mode": args.mode,
             "ewy_signal": ewy_signal,
             "config": {
                 "scan_top": args.scan_top,
@@ -472,9 +594,20 @@ def main():
     if args.flowx_format:
         print()
         print("━" * 80)
-        print("📤 FLOWX 게시용 포맷:")
+        print(f"📤 FLOWX 게시용 포맷 ({args.mode}):")
         print("━" * 80)
-        print(format_flowx_post(picks, ewy_signal))
+        print(format_flowx_post(picks, ewy_signal, mode=args.mode))
+
+    # 텔레그램 송출
+    if args.send_telegram:
+        print()
+        print("📤 텔레그램 송출 중...")
+        msg = format_telegram_message(picks, ewy_signal, mode=args.mode)
+        ok = send_telegram(msg)
+        if ok:
+            print("✅ 텔레그램 송출 완료")
+        else:
+            print("❌ 텔레그램 송출 실패")
 
     return picks
 
