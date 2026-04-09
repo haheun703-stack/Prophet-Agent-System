@@ -596,11 +596,12 @@ def collect_daily_pykrx(codes: list, months: int = 24, force: bool = False,
                 if df is not None and len(df) > 20:
                     if len(df.columns) == 6:
                         df.columns = ["시가", "고가", "저가", "종가", "거래량", "등락률"]
-                    # C2: 원자적 쓰기 (tmp → rename)
+                    # C2: 원자적 쓰기 (tmp → replace) — Windows/Linux 모두 atomic overwrite
+                    # Path.rename()은 Windows에서 대상 존재 시 실패 → Path.replace() 사용
                     csv_tmp = DAILY_DIR / f"{code}.csv.tmp"
                     csv_path = DAILY_DIR / f"{code}.csv"
                     df.to_csv(csv_tmp)
-                    csv_tmp.rename(csv_path)
+                    csv_tmp.replace(csv_path)
                     return True
                 time.sleep(0.15)
                 return False
