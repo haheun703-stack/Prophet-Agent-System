@@ -477,7 +477,7 @@ class TradingCOO:
         전부 non-critical → 개별 실패해도 계속 진행.
         결과를 update_group + morning_state.json 영속화.
 
-        잡 목록 (A1~A11 + A5P):
+        잡 목록 (A1~A12 + A5P):
           A1  job_us_market_check    — 미국시장 체크 (AutoTrader)
           A2  _job_policy_scan       — 정책 트래커 (TelegramBot)
           A3  _job_global_event_scan — 해외 이벤트 (TelegramBot)
@@ -490,6 +490,7 @@ class TradingCOO:
           A9  _job_rebuild_universe  — 유니버스 리빌드 (TelegramBot)
           A10 _job_premove_scan      — 사전감지 (TelegramBot)
           A11 _job_us_overnight_filter — 미국장 야간 필터 (COO)
+          A12 _job_daytrading_picks(confirmed) — 단타 TOP픽 확정 (A11 후 순차, 07:35)
         """
         logger.info("[COO] ═══ G1 MORNING_PREP 시작 ═══")
         self.group_status["G1"] = GroupStatus.RUNNING
@@ -552,6 +553,18 @@ class TradingCOO:
 
         # 12개 잡 병렬 실행 — 개별 타임아웃 300초 (5분)
         results = await self.run_parallel_async(jobs, timeout_per_job=300)
+
+        # ── A12: 단타 TOP픽 확정 (미국장 반영 · A11 후 순차) ──
+        # A11이 EWY/KS200 데이터를 us_market_overnight.json에 저장 후 실행
+        try:
+            a12 = await self.run_job_safe_async(
+                "A12_daytrading_picks_confirmed",
+                self._job_daytrading_picks(context, mode="confirmed"),
+                timeout=300,
+            )
+            results.append(a12)
+        except Exception as e:
+            logger.warning(f"[COO] A12 단타 확정 실패 (무시): {e}")
 
         # 그룹 상태 업데이트 + 로그 저장
         self.update_group("G1", results)
@@ -1565,6 +1578,14 @@ class TradingCOO:
             self._job_watchbox(context),
         ))
 
+        # C30: 단타 TOP픽 프리뷰 (16:45 · 국장 마감 기준)
+        # 미국장 미개장 → EWY 시그널 0, NXT 야간매수용
+        # 07:30 G1 A12에서 미국장 반영 확정 재발행
+        stage3_jobs.append((
+            "C30_daytrading_picks_preview",
+            self._job_daytrading_picks(context, mode="preview"),
+        ))
+
         if stage3_jobs:
             # C17 국적차트 TOP200 생성+업로드, C19 FLOWX 스윙 등 무거운 작업 포함
             s3 = await self.run_parallel_async(stage3_jobs, timeout_per_job=600)
@@ -2106,6 +2127,116 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[A11] US 야간 필터 실패 (무시): {e}")
             return {"us_filter": f"ERROR: {e}"}
+
+    async def _job_daytrading_picks(self, context=None, mode: str = "confirmed") -> dict:
+        """단타 TOP픽 Hybrid 발행.
+
+        mode="preview"   : G7 16:45 국장마감 프리뷰 (미국장 무시, NXT 야간매수용)
+        mode="confirmed" : G1 07:35 미국장 반영 확정 (EWY 바스켓 반영, 09:00 진입용)
+
+        실행: scalper-agent/tools/daytrading_picks.py
+        출력: data_store/daytrading_picks.json + FLOWX 포맷 + 텔레그램
+        """
+        try:
+            from tools.daytrading_picks import (
+                scan_large_caps,
+                scan_universe,
+                apply_daytrading_filters,
+                format_flowx_post,
+                format_telegram_message,
+                load_insights,
+                load_ewy_signal,
+                load_universe,
+                LARGE_CAP_MIN_FINAL,
+                MIN_FINAL_SCORE,
+                OUT_PATH,
+            )
+
+            universe = load_universe()
+            insights = load_insights()
+
+            # preview: EWY 시그널 무시 (미국장 미개장)
+            if mode == "preview":
+                ewy_signal = {
+                    "ewy_1d": 0,
+                    "ewy_5d": 0,
+                    "ks200_1d": 0,
+                    "ks200_5d": 0,
+                    "source": "preview_no_us",
+                }
+            else:
+                ewy_signal = await asyncio.to_thread(load_ewy_signal)
+
+            # 트랙 A (대형주)
+            large_cands = await asyncio.to_thread(scan_large_caps)
+            large_filtered = apply_daytrading_filters(
+                large_cands, universe, ewy_signal, insights,
+                min_final_score=LARGE_CAP_MIN_FINAL,
+            )
+            picks_a = large_filtered[:3]
+            for p in picks_a:
+                p["track"] = "A_대형주"
+
+            # 트랙 B (중소형주)
+            small_cands = await asyncio.to_thread(scan_universe, 30)
+            small_filtered = apply_daytrading_filters(
+                small_cands, universe, ewy_signal, insights,
+                min_final_score=MIN_FINAL_SCORE,
+            )
+            a_codes = {p["code"] for p in picks_a}
+            small_filtered = [p for p in small_filtered if p["code"] not in a_codes]
+            picks_b = small_filtered[:4]
+            for p in picks_b:
+                p["track"] = "B_중소형주"
+
+            picks = picks_a + picks_b
+
+            # JSON 저장
+            out = {
+                "updated": datetime.now().isoformat(),
+                "mode": mode,
+                "ewy_signal": ewy_signal,
+                "picks": picks,
+            }
+            try:
+                OUT_PATH.write_text(
+                    json.dumps(out, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            except Exception as se:
+                logger.warning(f"[DAYTRADING:{mode}] JSON 저장 실패 (무시): {se}")
+
+            # Supabase 업로드 (있으면)
+            try:
+                from data.upload_daytrading_picks import upload_daytrading_picks
+                await asyncio.to_thread(upload_daytrading_picks, out)
+            except ImportError:
+                pass  # 업로더 미존재 — 무시
+            except Exception as ue:
+                logger.warning(f"[DAYTRADING:{mode}] Supabase 업로드 실패 (무시): {ue}")
+
+            # 텔레그램 송출
+            if picks:
+                msg = format_telegram_message(picks, ewy_signal, mode=mode)
+                alert_fn = getattr(self.auto_trader, "_send_alert", None) if self.auto_trader else None
+                if alert_fn:
+                    await asyncio.to_thread(alert_fn, msg)
+                    logger.info(f"[DAYTRADING:{mode}] 텔레그램 송출 완료 ({len(picks)}종목)")
+                else:
+                    logger.warning(f"[DAYTRADING:{mode}] alert_fn 없음 — 텔레그램 스킵")
+            else:
+                logger.warning(f"[DAYTRADING:{mode}] 픽 0개 — 텔레그램 스킵")
+
+            return {
+                "daytrading": "OK",
+                "mode": mode,
+                "count": len(picks),
+                "track_a": len(picks_a),
+                "track_b": len(picks_b),
+            }
+        except Exception as e:
+            logger.warning(f"[DAYTRADING:{mode}] 실패 (무시): {e}")
+            return {"daytrading": f"ERROR: {e}", "mode": mode}
 
     async def _job_nxt_early_collect(self, context=None) -> dict:
         """C4E: NXT 사전 데이터 수집 + 예비 알림 발송.
