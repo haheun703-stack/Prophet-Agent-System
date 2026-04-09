@@ -60,17 +60,27 @@ def estimate_gap(us: dict) -> dict:
     KOSPI/KOSDAQ 다음날 갭 방향 + 크기 추정.
 
     핵심 가중치:
-      나스닥 등락   40%
-      SOXX 등락    30%
-      S&P500 등락  20%
-      VIX 조정    -10% (공포↑ → 갭 축소)
+      나스닥 등락         35%
+      SOXX 등락          25%
+      S&P500 등락        15%
+      EWY (한국 ETF)     15% — 외국인 한국 바스켓 직접 신호
+      KS200 야간선물     10% — 차익거래 직접 힌트
+      VIX 조정          -10% (공포↑ → 갭 축소)
     """
-    nq  = us.get("nasdaq_change") or 0
-    sox = us.get("soxx_change")   or 0
-    sp  = us.get("sp500_change")  or 0
-    vix = us.get("vix")           or 20
+    nq   = us.get("nasdaq_change")  or 0
+    sox  = us.get("soxx_change")    or 0
+    sp   = us.get("sp500_change")   or 0
+    ewy  = us.get("ewy_change")     or 0
+    ks   = us.get("ks200_change")   or 0
+    vix  = us.get("vix")            or 20
 
-    raw = (nq * 0.40) + (sox * 0.30) + (sp * 0.20)
+    raw = (
+        (nq  * 0.35) +
+        (sox * 0.25) +
+        (sp  * 0.15) +
+        (ewy * 0.15) +
+        (ks  * 0.10)
+    )
 
     # VIX 조정: 25 이상이면 갭 크기 축소
     vix_penalty = max(0, (vix - 20) * 0.05)
@@ -88,6 +98,76 @@ def estimate_gap(us: dict) -> dict:
         "gap_est_pct": round(adjusted, 2),
         "gap_raw":     round(raw, 2),
         "vix_penalty": round(vix_penalty, 3),
+        "ewy_contrib": round(ewy * 0.15, 2),
+        "ks200_contrib": round(ks * 0.10, 2),
+    }
+
+
+def foreign_basket_score(us: dict) -> dict:
+    """
+    외국인 바스켓 지표(EWY/SSNLF/KS200) 기반 리스크 조정 점수.
+
+    반환:
+      - adjustment: 리스크 점수에 더할 값 (음수=완화, 양수=강화)
+      - signals: 메시지에 표시할 시그널 리스트
+      - ewy_mode_hint: 'BULL' | 'BEAR' | 'NEUTRAL'
+    """
+    ewy_1d = us.get("ewy_change")     or 0
+    ewy_5d = us.get("ewy_change_5d")  or 0
+    ks_1d  = us.get("ks200_change")   or 0
+    ks_5d  = us.get("ks200_change_5d") or 0
+
+    adjustment = 0
+    signals = []
+
+    # ── EWY 1일 (가장 강력한 실시간 신호) ────────────
+    if ewy_1d >= 5.0:
+        adjustment -= 20  # 리스크 대거 완화
+        signals.append(f"🔥 EWY {ewy_1d:+.1f}% 외국인 한국 폭발매수")
+    elif ewy_1d >= 2.0:
+        adjustment -= 10
+        signals.append(f"✅ EWY {ewy_1d:+.1f}% 외국인 한국 매수우세")
+    elif ewy_1d >= 0.5:
+        adjustment -= 3
+    elif ewy_1d <= -3.0:
+        adjustment += 20  # 리스크 대거 강화
+        signals.append(f"🚨 EWY {ewy_1d:+.1f}% 외국인 한국 대탈출")
+    elif ewy_1d <= -1.5:
+        adjustment += 10
+        signals.append(f"⚠️ EWY {ewy_1d:+.1f}% 외국인 한국 매도")
+
+    # ── EWY 5일 누적 (중기 방향) ─────────────────────
+    if ewy_5d >= 8.0:
+        adjustment -= 8
+        signals.append(f"📈 EWY 5D {ewy_5d:+.1f}% 중기 매수세 강력")
+    elif ewy_5d <= -5.0:
+        adjustment += 8
+        signals.append(f"📉 EWY 5D {ewy_5d:+.1f}% 중기 매도세")
+
+    # ── KS200 야간선물 (차익거래 직접 힌트) ──────────
+    if ks_1d >= 2.0:
+        adjustment -= 5
+        signals.append(f"✅ KS200 야간 {ks_1d:+.1f}% 차익거래 매수")
+    elif ks_1d <= -2.0:
+        adjustment += 5
+        signals.append(f"⚠️ KS200 야간 {ks_1d:+.1f}% 차익거래 매도")
+
+    # ── EWY 모드 힌트 ──────────────────────────────
+    if ewy_1d >= 2.0 or ewy_5d >= 5.0:
+        ewy_mode_hint = "BULL"
+    elif ewy_1d <= -2.0 or ewy_5d <= -4.0:
+        ewy_mode_hint = "BEAR"
+    else:
+        ewy_mode_hint = "NEUTRAL"
+
+    return {
+        "adjustment":    adjustment,
+        "signals":       signals,
+        "ewy_mode_hint": ewy_mode_hint,
+        "ewy_1d":        ewy_1d,
+        "ewy_5d":        ewy_5d,
+        "ks200_1d":      ks_1d,
+        "ks200_5d":      ks_5d,
     }
 
 
@@ -165,15 +245,34 @@ def decide_mode(us: dict, gap: dict) -> dict:
     # 위험 플래그 가산
     risk_score += len(risk_flags) * 5
 
+    # ── 외국인 바스켓 점수 반영 ──────────────────────
+    basket = foreign_basket_score(us)
+    risk_score += basket["adjustment"]
+    if basket["signals"]:
+        # EWY/KS200 시그널을 이유 목록에 추가
+        for sig in basket["signals"]:
+            if "🔥" in sig or "✅" in sig or "📈" in sig:
+                reasons_good.append(sig)
+            else:
+                reasons_bad.append(sig)
+
     # ── 모드 결정 ──────────────────────────────────────
     risk_score = max(0, risk_score)
+
+    # EWY BULL 힌트가 있으면 AGGRESSIVE 문턱 완화
+    ewy_hint = basket["ewy_mode_hint"]
+    aggressive_risk_cap = 10 if ewy_hint == "BULL" else 5
+    aggressive_gap_min  = 0.3 if ewy_hint == "BULL" else 0.5
 
     if risk_score >= 60:
         mode = "HALT"
     elif risk_score >= 35:
         mode = "DEFENSIVE"
-    elif risk_score <= 5 and gap_pct >= 0.5:
+    elif risk_score <= aggressive_risk_cap and gap_pct >= aggressive_gap_min:
         mode = "AGGRESSIVE"
+    elif ewy_hint == "BEAR" and risk_score >= 20:
+        # EWY 약세 + 위험 중간 이상 → DEFENSIVE로 격상
+        mode = "DEFENSIVE"
     else:
         mode = "NORMAL"
 
@@ -205,6 +304,7 @@ def decide_mode(us: dict, gap: dict) -> dict:
         "avoid_sectors": avoid_sectors[:4],
         "reasons_bad":   reasons_bad,
         "reasons_good":  reasons_good,
+        "foreign_basket": basket,
     }
 
 
@@ -268,6 +368,11 @@ def build_report(us: dict, gap: dict, mode_data: dict) -> dict:
         "fear_greed_label": us.get("fear_greed_label"),
         "kr_impact":     us.get("kr_impact"),
         "risk_flags":    us.get("risk_flags") or [],
+        "foreign_basket": mode_data.get("foreign_basket") or {},
+        "ewy_change":    us.get("ewy_change"),
+        "ewy_change_5d": us.get("ewy_change_5d"),
+        "ks200_change":  us.get("ks200_change"),
+        "ks200_change_5d": us.get("ks200_change_5d"),
     }
 
     return report
@@ -314,6 +419,18 @@ def build_telegram_message(report: dict) -> str:
         lines.append(f"  5년물: {report['us_3y_yield']:.2f}%")
     if report.get("fear_greed"):
         lines.append(f"  Fear&Greed: {report['fear_greed']} ({report['fear_greed_label']})")
+
+    # 외국인 바스켓 (EWY/KS200)
+    ewy_1d = report.get("ewy_change")
+    ewy_5d = report.get("ewy_change_5d")
+    ks_1d  = report.get("ks200_change")
+    if ewy_1d is not None or ks_1d is not None:
+        lines.append("")
+        lines.append("🌐 외국인 바스켓")
+        if ewy_1d is not None:
+            lines.append(f"  EWY:   {ewy_1d:+.2f}% (5D {ewy_5d:+.1f}%)")
+        if ks_1d is not None:
+            lines.append(f"  KS200 야간: {ks_1d:+.2f}%")
 
     # 주목 섹터
     if report["watch_sectors"]:

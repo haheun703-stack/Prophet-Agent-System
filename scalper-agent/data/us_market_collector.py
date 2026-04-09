@@ -63,6 +63,16 @@ INDIVIDUAL_TICKERS = [
     "LMT", "RTX", "XOM", "LNG", "GM",
 ]
 
+# 외국인 바스켓 지표 (한국 선행지표)
+#   EWY:   iShares MSCI Korea ETF (외국인 한국 바스켓 매수세)
+#   SSNLF: 삼성전자 ADR (OTC — 데이터 불안정하지만 시도)
+#   ^KS200: KOSPI200 선물 야간 (차익거래 힌트)
+FOREIGN_BASKET_TICKERS = {
+    "EWY":    "korea_etf",
+    "SSNLF":  "samsung_adr",
+    "^KS200": "kospi200_fut",
+}
+
 
 def collect_us_overnight() -> dict:
     """미국장 마감 데이터 전체 수집 → dict 반환 + JSON 저장."""
@@ -125,6 +135,29 @@ def collect_us_overnight() -> dict:
             individual_stocks[ticker] = round(chg, 2)
     result["individual_stocks"] = individual_stocks
 
+    # ── 4.5) 외국인 바스켓 지표 (한국 선행지표) ──────────
+    foreign_basket = {}
+    for ticker, key in FOREIGN_BASKET_TICKERS.items():
+        chg_1d = _get_change_pct(yf, ticker)
+        chg_5d = _get_change_pct_nd(yf, ticker, n=5)
+        close_val = _get_last_close(yf, ticker)
+        foreign_basket[key] = {
+            "ticker": ticker,
+            "change_1d": round(chg_1d, 2) if chg_1d is not None else 0,
+            "change_5d": round(chg_5d, 2) if chg_5d is not None else 0,
+            "close": round(close_val, 2) if close_val else 0,
+        }
+        # 편의 필드 (상위 레벨)
+        if key == "korea_etf":
+            result["ewy_change"] = round(chg_1d, 2) if chg_1d is not None else 0
+            result["ewy_change_5d"] = round(chg_5d, 2) if chg_5d is not None else 0
+        elif key == "samsung_adr":
+            result["ssnlf_change"] = round(chg_1d, 2) if chg_1d is not None else 0
+        elif key == "kospi200_fut":
+            result["ks200_change"] = round(chg_1d, 2) if chg_1d is not None else 0
+            result["ks200_change_5d"] = round(chg_5d, 2) if chg_5d is not None else 0
+    result["foreign_basket"] = foreign_basket
+
     # ── 5) Fear & Greed (VIX 기반 대리 판단) ─────────────
     vix_val = result.get("vix", 20)
     if vix_val >= 35:
@@ -152,7 +185,25 @@ def collect_us_overnight() -> dict:
         risk_flags.append(f"반도체(SOX) {result['soxx_change']:+.1f}% 급락")
     if result.get("spread_5y_10y", 0) < -0.1:
         risk_flags.append("장단기 금리역전")
+    if result.get("ewy_change", 0) <= -2.0:
+        risk_flags.append(f"EWY {result['ewy_change']:+.1f}% 외국인 한국 이탈")
     result["risk_flags"] = risk_flags
+
+    # ── 7.5) 외국인 바스켓 시그널 ────────────────────────
+    basket_signals = []
+    ewy_1d = result.get("ewy_change", 0)
+    if ewy_1d >= 5.0:
+        basket_signals.append(f"🔥 EWY {ewy_1d:+.1f}% 외국인 한국 폭발 매수")
+    elif ewy_1d >= 2.0:
+        basket_signals.append(f"✅ EWY {ewy_1d:+.1f}% 외국인 한국 매수 우세")
+    elif ewy_1d <= -2.0:
+        basket_signals.append(f"⚠️ EWY {ewy_1d:+.1f}% 외국인 한국 이탈")
+    ks_1d = result.get("ks200_change", 0)
+    if ks_1d >= 1.5:
+        basket_signals.append(f"✅ KS200 야간 {ks_1d:+.1f}% 차익거래 매수")
+    elif ks_1d <= -1.5:
+        basket_signals.append(f"⚠️ KS200 야간 {ks_1d:+.1f}% 차익거래 매도")
+    result["foreign_basket_signals"] = basket_signals
 
     # ── 7) 한국 영향 요약 ────────────────────────────────
     nq = result.get("nasdaq_change", 0)
@@ -175,7 +226,9 @@ def collect_us_overnight() -> dict:
     logger.info(
         f"[US수집] 완료: 나스닥 {result.get('nasdaq_change', 0):+.2f}% | "
         f"SOXX {result.get('soxx_change', 0):+.2f}% | "
-        f"VIX {result.get('vix', 0):.1f} | DXY {result.get('dxy', 0):.1f}"
+        f"VIX {result.get('vix', 0):.1f} | DXY {result.get('dxy', 0):.1f} | "
+        f"EWY {result.get('ewy_change', 0):+.2f}% | "
+        f"KS200 {result.get('ks200_change', 0):+.2f}%"
     )
     return result
 
@@ -204,6 +257,22 @@ def _get_last_close(yf, ticker: str) -> float | None:
             return float(hist["Close"].iloc[-1])
     except Exception as e:
         logger.warning(f"[US수집] {ticker} 절대값 수집 실패: {e}")
+    return None
+
+
+def _get_change_pct_nd(yf, ticker: str, n: int = 5) -> float | None:
+    """yfinance로 N일 전 대비 등락률(%) 계산."""
+    try:
+        data = yf.Ticker(ticker)
+        # n+2일치로 넉넉하게 받아서 실제 거래일 n일 전 종가 확보
+        hist = data.history(period=f"{n + 10}d")
+        if hist is not None and len(hist) >= n + 1:
+            prev = float(hist["Close"].iloc[-(n + 1)])
+            last = float(hist["Close"].iloc[-1])
+            if prev > 0:
+                return (last / prev - 1) * 100
+    except Exception as e:
+        logger.warning(f"[US수집] {ticker} {n}일 변동률 수집 실패: {e}")
     return None
 
 

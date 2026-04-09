@@ -1,0 +1,483 @@
+"""
+단타 TOP 픽 (Daytrading Picks v1)
+===================================
+
+목적: 내일~3일 안에 오를 확률 높은 종목 5~7개 TOP 리스트
+      시나리오 분류 없이 오직 수급 데이터 기반 단일 리스트.
+
+패턴 참조:
+- SK텔레콤 (4/2~4/7 조용한 축적 → 4/8 +9.07% → 4/9 +5.39%)
+- 후성 (4/8 QUIET_ACC 감지 → 4/9 +15.76%)
+- 넥스틸 (4/7 감지 → 4/9 +14.80%)
+
+5단계 복합 필터:
+[1] foreign_accumulation_scanner 60점+ (조용한 매집)
+[2] 쌍매수 필터: 기관 합류 1일+ (외인+기관 동시)
+[3] EWY 수혜 섹터 가산점 (반도체/운송장비/2차전지/금융/통신)
+[4] 시총 대형주 가산점 (1조+ = EWY 바스켓 직접 수혜)
+[5] 학습 피드백 (insights.json 소스 신뢰도, 있으면)
+
+출력:
+- data_store/daytrading_picks.json (기계용)
+- 콘솔 + FLOWX 게시용 텍스트 포맷
+
+사용:
+    python3 tools/daytrading_picks.py [--top 5] [--save] [--flowx-format]
+"""
+from __future__ import annotations
+import json
+import argparse
+import sys
+from pathlib import Path
+from datetime import datetime
+
+# foreign_accumulation_scanner 재사용
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from foreign_accumulation_scanner import (
+    scan_universe,
+    load_universe,
+    load_investor_flow,
+    LOOKBACK_DAYS,
+)
+
+
+# ─────────────────────────────────────────────
+# 경로
+# ─────────────────────────────────────────────
+BASE = Path(__file__).resolve().parents[1]
+OUT_PATH = BASE / "data_store" / "daytrading_picks.json"
+INSIGHTS_PATH = BASE / "data_store" / "insights.json"
+EWY_INDICATORS_PATH = BASE / "data_store" / "foreign_basket_indicators.json"
+US_OVERNIGHT_PATH = BASE / "data_store" / "us_market_overnight.json"
+
+
+# ─────────────────────────────────────────────
+# EWY 수혜 섹터 매핑
+# ─────────────────────────────────────────────
+# EWY (iShares Korea ETF) 상위 구성 → 한국 섹터 매칭
+EWY_CORE_SECTORS = {
+    "전기전자": 5,    # 삼성전자, SK하이닉스, 삼성SDI, LG에너지솔루션 (EWY 50%+)
+    "운송장비": 4,    # 현대차, 기아, 한화에어로 (EWY 10%+)
+    "화학": 3,        # LG화학, 에코프로 (EWY 5%+)
+    "금속": 3,        # 포스코, LIG넥스원 (방산 포함)
+    "기계장비": 2,    # 두산에너빌리티, 한화오션
+    "금융": 2,        # KB금융, 신한지주 (EWY 5%+)
+    "통신": 2,        # SK텔레콤, KT
+    "건설": 2,        # GS건설, 현대건설 (휴전/재건 수혜)
+}
+
+# 시총 구간별 가산점 (EWY 바스켓 수혜도)
+MCAP_BONUS = [
+    (100000, 5),    # 10조+ (EWY 직접 바스켓)
+    (50000, 4),     # 5조+
+    (20000, 3),     # 2조+
+    (10000, 2),     # 1조+
+    (5000, 1),      # 5천억+
+]
+
+MIN_FINAL_SCORE = 60.0  # 최종 점수 컷오프
+
+# ─────────────────────────────────────────────
+# 트랙 A (대형주) 설정
+# ─────────────────────────────────────────────
+LARGE_CAP_MIN_MCAP = 20000          # 시총 2조+ 대형주만
+LARGE_CAP_QUIET_THRESHOLD = 15.0    # 조용함 ±15% (대형주는 원래 변동 큼)
+LARGE_CAP_MIN_DUAL_BUY = 300        # 외인+기관 5일 누적 300억+ (쌍매수 필수)
+LARGE_CAP_MIN_FINAL = 55.0          # 대형주 최종 컷오프 (조금 완화)
+
+
+def scan_large_caps(
+    min_mcap: float = LARGE_CAP_MIN_MCAP,
+    min_dual_buy: float = LARGE_CAP_MIN_DUAL_BUY,
+    quiet_threshold: float = LARGE_CAP_QUIET_THRESHOLD,
+) -> list[dict]:
+    """
+    [트랙 A] 대형주 전용 스캔 — EWY 바스켓 수혜 직접 대상
+
+    기존 scanner와 다른 점:
+    - 시총 2조+ 필수
+    - 조용함 ±15% (완화)
+    - 외인+기관 쌍매수 누적 300억+ (금액 기준)
+    - 기관 합류 필수
+    """
+    uni = load_universe()
+    candidates = []
+
+    for code, info in uni.items():
+        if not isinstance(info, dict):
+            continue
+        mcap = info.get("cap_억", 0) or 0
+        if mcap < min_mcap:
+            continue
+
+        flow = load_investor_flow(code)
+        if flow is None:
+            continue
+
+        try:
+            # 5일 외인/기관 누적 (백만원 → 억원)
+            foreign_amt = flow["외국인_금액"].astype(float).values / 100
+            inst_amt = flow["기관_금액"].astype(float).values / 100
+            foreign_total = float(foreign_amt.sum())
+            inst_total = float(inst_amt.sum())
+
+            # [필수] 외인+기관 둘 다 양수 (쌍매수)
+            if foreign_total <= 0 or inst_total <= 0:
+                continue
+
+            dual_total = foreign_total + inst_total
+            if dual_total < min_dual_buy:
+                continue
+
+            # 주가 변동 (완화된 조용함 필터)
+            closes = flow["종가"].astype(float).values
+            if closes[0] <= 0:
+                continue
+            price_chg = ((closes[-1] / closes[0]) - 1) * 100
+            if abs(price_chg) > quiet_threshold:
+                continue
+
+            # 매수일수
+            foreign_buy_days = int((foreign_amt > 0).sum())
+            inst_buy_days = int((inst_amt > 0).sum())
+            inst_joining = int((inst_amt[-2:] > 0).sum())
+
+            # 대형주 스코어 로직 (쌍매수 금액 우선)
+            score = 45.0  # 기본
+            # 쌍매수 금액 (최대 +25)
+            if dual_total >= 10000:  # 1조+
+                score += 25
+            elif dual_total >= 5000:  # 5천억+
+                score += 20
+            elif dual_total >= 2000:  # 2천억+
+                score += 15
+            elif dual_total >= 1000:  # 1천억+
+                score += 10
+            else:
+                score += 5
+            # 매수일수 (최대 +15)
+            score += foreign_buy_days * 3
+            # 기관 합류 (최대 +10)
+            score += inst_joining * 5
+            # 시총/외인 비율 (최대 +10)
+            ratio = (foreign_total / mcap) * 100
+            if ratio >= 0.5:
+                score += 10
+            elif ratio >= 0.3:
+                score += 7
+            elif ratio >= 0.15:
+                score += 4
+            else:
+                score += 2
+
+            # 조용함 보너스 (±5% 이내 +5, 이외 0)
+            if abs(price_chg) <= 5.0:
+                score += 5
+
+            candidates.append({
+                "code": code,
+                "name": info.get("name", ""),
+                "mcap_억": round(mcap, 0),
+                "score": round(score, 1),
+                "buy_days": foreign_buy_days,
+                "inst_buy_days": inst_buy_days,
+                "inst_joining": inst_joining,
+                "foreign_total_억": round(foreign_total, 1),
+                "inst_total_억": round(inst_total, 1),
+                "dual_total_억": round(dual_total, 1),
+                "ratio_mcap_%": round(ratio, 3),
+                "price_change_%": round(price_chg, 2),
+                "quiet_score": 0,
+                "indiv_out_days": 0,
+                "close_start": int(closes[0]),
+                "close_end": int(closes[-1]),
+                "dates": flow["date"].tolist(),
+                "foreign_daily_억": [round(x, 1) for x in foreign_amt.tolist()],
+                "inst_daily_억": [round(x, 1) for x in inst_amt.tolist()],
+                "track": "large_cap",
+            })
+        except Exception:
+            continue
+
+    candidates.sort(key=lambda x: x["score"], reverse=True)
+    return candidates
+
+
+def load_insights() -> dict:
+    """insights.json 로드 (없으면 빈 dict)"""
+    if not INSIGHTS_PATH.exists():
+        return {}
+    try:
+        return json.loads(INSIGHTS_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def load_ewy_signal() -> dict:
+    """EWY/^KS200 시그널 로드 (foreign_basket_indicators.json 우선, us_market_overnight.json 대체)"""
+    # 1순위: 오늘 수집한 실시간 지표
+    if EWY_INDICATORS_PATH.exists():
+        try:
+            data = json.loads(EWY_INDICATORS_PATH.read_text(encoding="utf-8"))
+            ewy = data.get("EWY", {})
+            ks200 = data.get("^KS200", {})
+            return {
+                "ewy_1d": ewy.get("1d", 0),
+                "ewy_5d": ewy.get("5d", 0),
+                "ks200_1d": ks200.get("1d", 0),
+                "ks200_5d": ks200.get("5d", 0),
+                "source": "basket_indicators",
+            }
+        except Exception:
+            pass
+
+    # 2순위: us_market_overnight.json (Phase 1 적용 후)
+    if US_OVERNIGHT_PATH.exists():
+        try:
+            data = json.loads(US_OVERNIGHT_PATH.read_text(encoding="utf-8"))
+            return {
+                "ewy_1d": data.get("ewy_change", 0),
+                "ewy_5d": 0,
+                "ks200_1d": data.get("ks200_change", 0),
+                "ks200_5d": 0,
+                "source": "us_overnight",
+            }
+        except Exception:
+            pass
+
+    return {"ewy_1d": 0, "ewy_5d": 0, "ks200_1d": 0, "ks200_5d": 0, "source": "none"}
+
+
+def apply_daytrading_filters(
+    candidates: list[dict],
+    universe: dict,
+    ewy_signal: dict,
+    insights: dict,
+    min_final_score: float = MIN_FINAL_SCORE,
+) -> list[dict]:
+    """5단계 복합 필터 적용"""
+    filtered = []
+
+    # EWY 폭등 보정 (+5% 이상이면 대형주 가산점 강화)
+    ewy_boost = ewy_signal.get("ewy_1d", 0) >= 5.0
+
+    # 대형주 트랙은 기본 점수 컷오프를 45로 완화
+    base_cutoff = 45.0 if min_final_score < MIN_FINAL_SCORE else 60.0
+
+    for c in candidates:
+        code = c["code"]
+        info = universe.get(code, {})
+        sector = info.get("sector", "-")
+        mcap = c.get("mcap_억", 0)
+
+        # [필터 1] 기본 점수 컷오프
+        if c["score"] < base_cutoff:
+            continue
+
+        # [필터 2] 쌍매수 필수 — 기관 합류 1일+
+        if c.get("inst_joining", 0) == 0:
+            continue
+
+        # [가산 3] EWY 수혜 섹터 보너스
+        sector_bonus = EWY_CORE_SECTORS.get(sector, 0)
+
+        # [가산 4] 시총 대형주 보너스
+        mcap_bonus = 0
+        for threshold, bonus in MCAP_BONUS:
+            if mcap >= threshold:
+                mcap_bonus = bonus
+                break
+
+        # [가산 5] EWY 폭등일 대형주 추가 가산점
+        ewy_bonus = 0
+        if ewy_boost and mcap >= 10000 and sector in ("전기전자", "운송장비"):
+            ewy_bonus = 5
+
+        # [가산 6] 학습 피드백 (insights.json)
+        # 예: insights.json에 "foreign_accum" 소스가 최근 승률 70%+면 +3
+        learning_bonus = 0
+        if insights:
+            sources = insights.get("source_accuracy", {})
+            foreign_acc = sources.get("foreign_accum", {})
+            if foreign_acc.get("recent_winrate", 0) >= 0.7:
+                learning_bonus = 3
+
+        # 최종 점수
+        final_score = c["score"] + sector_bonus + mcap_bonus + ewy_bonus + learning_bonus
+
+        if final_score < min_final_score:
+            continue
+
+        # 추천 진입/목표가 계산
+        close = c.get("close_end", 0)
+        entry_low = int(close * 0.985)
+        entry_high = int(close * 1.010)
+        tp1 = int(close * 1.050)  # +5%
+        tp2 = int(close * 1.080)  # +8%
+        sl = int(close * 0.965)   # -3.5%
+
+        # 핵심 이유 1줄
+        reasons = []
+        reasons.append(f"외국인 {c['buy_days']}/{LOOKBACK_DAYS}일 매수 {c['foreign_total_억']:+.0f}억")
+        if c.get("inst_joining", 0) >= 1:
+            reasons.append(f"기관 합류 {c['inst_joining']}일")
+        if sector_bonus >= 4:
+            reasons.append(f"EWY 수혜 {sector}")
+        if ewy_bonus > 0:
+            reasons.append("EWY +10% 대형주 수혜")
+
+        filtered.append({
+            **c,
+            "sector": sector,
+            "sector_bonus": sector_bonus,
+            "mcap_bonus": mcap_bonus,
+            "ewy_bonus": ewy_bonus,
+            "learning_bonus": learning_bonus,
+            "final_score": round(final_score, 1),
+            "entry_low": entry_low,
+            "entry_high": entry_high,
+            "tp1": tp1,
+            "tp2": tp2,
+            "sl": sl,
+            "upside_to_tp1_pct": round((tp1 / close - 1) * 100, 1) if close else 0,
+            "key_reasons": " + ".join(reasons),
+        })
+
+    filtered.sort(key=lambda x: x["final_score"], reverse=True)
+    return filtered
+
+
+def format_flowx_post(picks: list[dict], ewy_signal: dict) -> str:
+    """FLOWX 게시용 포맷 — 깔끔한 리스트"""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    lines = [
+        f"🎯 단타 TOP {len(picks)} · 내일~3일 매집 포착",
+        f"📅 {now}",
+        f"━━━━━━━━━━━━━━━━━━━━━━━━",
+    ]
+
+    # EWY 시그널 1줄 요약
+    ewy_1d = ewy_signal.get("ewy_1d", 0)
+    ks200_5d = ewy_signal.get("ks200_5d", 0)
+    if abs(ewy_1d) > 0.01 or abs(ks200_5d) > 0.01:
+        lines.append(f"🌍 외인 바스켓: EWY {ewy_1d:+.2f}% | KS200 5D {ks200_5d:+.2f}%")
+        lines.append("")
+
+    for i, p in enumerate(picks, 1):
+        rank_emoji = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣"][min(i-1, 6)]
+
+        lines.append(f"{rank_emoji} <b>{p['name']}</b> ({p['code']}) · {p.get('sector','-')}")
+        lines.append(f"   💰 현재가 {p['close_end']:,}원 · 시총 {int(p['mcap_억']):,}억")
+        lines.append(f"   🎯 진입 {p['entry_low']:,}~{p['entry_high']:,} · 목표 {p['tp1']:,} (+{p['upside_to_tp1_pct']:.1f}%)")
+        lines.append(f"   📊 {p['key_reasons']}")
+        lines.append(f"   ⭐ 점수 {p['final_score']:.0f} (기본 {p['score']:.0f} + 섹터 {p['sector_bonus']} + 시총 {p['mcap_bonus']} + EWY {p['ewy_bonus']})")
+        lines.append("")
+
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("📌 선정 기준: 외국인 선행 매집 + 기관 합류 + EWY 바스켓 수혜")
+    lines.append("📌 매수 판단: 퐝가님 직접 (자동매매 없음)")
+    lines.append("⚠️ 투자 책임: 본인")
+
+    return "\n".join(lines)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--top-large", type=int, default=3, help="트랙 A 대형주 TOP N (기본 3)")
+    parser.add_argument("--top-small", type=int, default=4, help="트랙 B 중소형주 TOP N (기본 4)")
+    parser.add_argument("--scan-top", type=int, default=30, help="트랙 B scanner TOP N (기본 30)")
+    parser.add_argument("--save", action="store_true", help="JSON 저장")
+    parser.add_argument("--flowx-format", action="store_true", help="FLOWX 포맷 출력")
+    args = parser.parse_args()
+
+    print("🎯 단타 TOP 픽 시작 (Dual Track)")
+    print()
+
+    universe = load_universe()
+    insights = load_insights()
+    ewy_signal = load_ewy_signal()
+    print(f"🌍 EWY 시그널: {ewy_signal.get('source','-')} | "
+          f"EWY {ewy_signal.get('ewy_1d',0):+.2f}% | KS200 5D {ewy_signal.get('ks200_5d',0):+.2f}%")
+    print()
+
+    # ─── 트랙 A: 대형주 (시총 2조+, ±15% 완화) ───
+    print("[트랙 A] 대형주 스캔 (시총 2조+, 쌍매수 300억+)...")
+    large_candidates = scan_large_caps()
+    print(f"  ✅ 대형주 후보: {len(large_candidates)}개")
+    large_filtered = apply_daytrading_filters(
+        large_candidates, universe, ewy_signal, insights,
+        min_final_score=LARGE_CAP_MIN_FINAL,
+    )
+    picks_a = large_filtered[:args.top_large]
+    for p in picks_a:
+        p["track"] = "A_대형주"
+    print(f"  ✅ 트랙 A 최종: {len(picks_a)}개")
+
+    # ─── 트랙 B: 중소형주 (기존 scanner, ±7% 유지) ───
+    print("[트랙 B] 중소형주 선행 매집 스캔 (시총 2천억~50조, ±7%)...")
+    small_candidates = scan_universe(top_n=args.scan_top)
+    print(f"  ✅ 중소형 후보: {len(small_candidates)}개")
+    small_filtered = apply_daytrading_filters(
+        small_candidates, universe, ewy_signal, insights,
+        min_final_score=MIN_FINAL_SCORE,
+    )
+    # 트랙 A와 중복 제거
+    picks_a_codes = {p["code"] for p in picks_a}
+    small_filtered = [p for p in small_filtered if p["code"] not in picks_a_codes]
+    picks_b = small_filtered[:args.top_small]
+    for p in picks_b:
+        p["track"] = "B_중소형주"
+    print(f"  ✅ 트랙 B 최종: {len(picks_b)}개")
+
+    # 최종 결합
+    picks = picks_a + picks_b
+    print(f"  🎯 전체 TOP: {len(picks)}개 (A {len(picks_a)} + B {len(picks_b)})")
+
+    # Step 3: 출력
+    print()
+    print("=" * 90)
+    print(f"🏆 단타 TOP {len(picks)} (Dual Track)")
+    print("=" * 90)
+    for i, p in enumerate(picks, 1):
+        track_label = "🔷대형" if p.get("track","").startswith("A_") else "🟢중소"
+        print(f"{i}. {track_label} [{p['final_score']:5.1f}] {p['name']:15} ({p['code']}) "
+              f"| {p.get('sector','-'):8} "
+              f"| 현재 {p['close_end']:>8,} "
+              f"| 진입 {p['entry_low']:>8,}~{p['entry_high']:>8,} "
+              f"| 목표 {p['tp1']:>8,}")
+        print(f"     └ {p['key_reasons']}")
+        inst_total = p.get('inst_total_억', 0)
+        dual_total = p.get('dual_total_억', p['foreign_total_억'] + inst_total)
+        print(f"     └ 시총 {int(p['mcap_억']):>7,}억 | 외 {p['foreign_total_억']:>+7.1f}+기 {inst_total:>+7.1f}={dual_total:>+7.1f}억 | 기관합류 {p['inst_joining']}일 | 5D {p.get('price_change_%',0):+.1f}%")
+
+    # 저장
+    if args.save:
+        out = {
+            "updated": datetime.now().isoformat(),
+            "ewy_signal": ewy_signal,
+            "config": {
+                "scan_top": args.scan_top,
+                "top_large": args.top_large,
+                "top_small": args.top_small,
+                "min_final_score": MIN_FINAL_SCORE,
+                "large_cap_min_final": LARGE_CAP_MIN_FINAL,
+            },
+            "picks": picks,
+        }
+        OUT_PATH.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"\n💾 저장: {OUT_PATH}")
+
+    # FLOWX 포맷
+    if args.flowx_format:
+        print()
+        print("━" * 80)
+        print("📤 FLOWX 게시용 포맷:")
+        print("━" * 80)
+        print(format_flowx_post(picks, ewy_signal))
+
+    return picks
+
+
+if __name__ == "__main__":
+    main()
