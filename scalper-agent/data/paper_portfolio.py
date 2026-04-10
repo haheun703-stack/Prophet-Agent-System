@@ -153,7 +153,8 @@ class PaperPortfolio:
     # ─── 시가총액 갱신 ─────────────────────────────
 
     def mark_to_market(self, kis) -> None:
-        """장중 현재가 갱신 → unrealized_pnl 계산"""
+        """장중 현재가 갱신 → unrealized_pnl 계산 + time_stop 초과 자동 청산"""
+        time_stop_codes = []  # 순회 중 수정 방지 — 사후 청산
         for code, pos in self.positions.items():
             try:
                 p = kis.fetch_price(code)
@@ -164,9 +165,19 @@ class PaperPortfolio:
                     pos["unrealized_pnl"] = round(
                         (current - entry) / entry * 100, 2
                     ) if entry > 0 else 0.0
+                    # time_stop 초과 감지
+                    hold = self._calc_hold_days(pos.get("entry_date", ""))
+                    max_days = pos.get("time_stop_days", 5)
+                    if hold >= max_days:
+                        time_stop_codes.append((code, current))
             except Exception as e:
                 logger.warning(f"[PaperPortfolio] MTM 실패 {code}: {e}")
         self._save()
+        # time_stop 초과 포지션 자동 청산
+        for code, price in time_stop_codes:
+            name = self.positions.get(code, {}).get("name", code)
+            logger.info(f"[PaperPortfolio] TIME_STOP 청산: {name} (보유일 초과)")
+            self.close_position(code, price, "TIME_STOP")
 
     # ─── 일일 스냅샷 ──────────────────────────────
 
@@ -293,13 +304,14 @@ class PaperPortfolio:
         }
 
     def _calc_mdd(self, daily_log: list) -> float:
-        """MDD (Maximum Drawdown) 계산"""
+        """MDD (Maximum Drawdown) 계산 — 초기 자금 대비 첫날 낙폭도 반영"""
         if not daily_log:
             return 0.0
         values = [s["total_value"] for s in daily_log]
         if not values:
             return 0.0
-        peak = values[0]
+        # 초기 자금을 peak 기준으로 사용 (첫날 낙폭도 MDD에 반영)
+        peak = max(values[0], self.initial_cash)
         mdd = 0.0
         for v in values:
             if v > peak:

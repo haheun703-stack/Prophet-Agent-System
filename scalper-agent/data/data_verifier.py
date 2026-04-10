@@ -466,7 +466,7 @@ RETRY_MAP = {
     "investor_flow":  "_job_collect_daily",
     # minute_candles / minute_5min — 비활성화
     "nightwatch":     "job_nightwatch_collect",
-    "tv_scanner":     "_job_record_signals",
+    # tv_scanner — C13(morning_recommendation) 내부 생성, 단독 재수집 불가
     "sector_history": "_job_record_signals",
     # sector_relay — 비활성화
     "insights":       "_job_daily_learning",
