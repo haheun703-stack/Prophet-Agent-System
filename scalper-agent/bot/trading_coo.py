@@ -1902,12 +1902,13 @@ class TradingCOO:
 
             today = datetime.now().strftime("%Y-%m-%d")
 
-            # nightwatch_decide(16:35)와 경쟁 상태 방어: 최대 2회 시도
+            # nightwatch_decide(16:35)와 경쟁 상태 방어: 최대 5회 x 30초 = 150초
             report = None
-            for attempt in range(2):
+            max_attempts = 5
+            for attempt in range(max_attempts):
                 if not report_path.exists():
-                    if attempt == 0:
-                        logger.info("[C26] nightwatch_report.json 없음 — 30초 후 재시도")
+                    if attempt < max_attempts - 1:
+                        logger.info(f"[C26] nightwatch_report.json 없음 — 30초 후 재시도 ({attempt+1}/{max_attempts})")
                         await asyncio.sleep(30)
                         continue
                     logger.info("[C26] nightwatch_report.json 없음 — 스킵")
@@ -1925,13 +1926,13 @@ class TradingCOO:
                 if report_date == today:
                     break  # 오늘 리포트 확인 완료
 
-                if attempt == 0:
+                if attempt < max_attempts - 1:
                     logger.info(f"[C26] 리포트 날짜 불일치 ({report_date} ≠ {today}) "
-                                f"— nightwatch 완료 대기 30초")
+                                f"— nightwatch 완료 대기 30초 ({attempt+1}/{max_attempts})")
                     await asyncio.sleep(30)
                 else:
                     logger.info(f"[C26] 리포트 날짜 불일치 ({report_date} ≠ {today}) "
-                                f"— 재시도 후에도 stale, 스킵")
+                                f"— {max_attempts}회 재시도 후에도 stale, 스킵")
                     return {"nxt_paper_register": "STALE_REPORT"}
 
             if not report:
