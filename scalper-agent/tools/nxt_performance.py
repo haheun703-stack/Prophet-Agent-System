@@ -47,22 +47,18 @@ def _load_universe() -> dict:
 
 
 def _is_afterhours_eligible(code: str, name: str) -> bool:
-    """시간외 단일가 매매 가능 여부 판별.
+    """시간외 매매 가능 여부 판별.
 
-    규칙: KOSPI 개별주만 가능 (KOSDAQ, ETF, ETN 불가)
+    NXT 대체거래소 통합 매수 적용 (2025.03~):
+    - NXT 등록 종목 → NXT 시간외 (15:30~20:00)
+    - NXT 미등록 종목 → KRX 시간외 단일가 (15:40~16:00)
+    - ETF → LP 부재로 시간외 체결 불가 (제외)
     """
-    # 1) ETF 브랜드 체크
+    # ETF 브랜드 체크 (유일한 제외 사유)
     if name:
         n = name.strip().upper()
         if any(n.startswith(p.upper()) for p in _ETF_PREFIXES):
             return False
-
-    # 2) universe.json에서 시장구분 확인 (KOSDAQ 제외)
-    uni = _load_universe()
-    info = uni.get(code, {})
-    market = info.get("market", "")
-    if market == "KOSDAQ":
-        return False
 
     return True
 
@@ -74,7 +70,7 @@ def _is_afterhours_eligible(code: str, name: str) -> bool:
 def extract_nxt_top5(target_date: str = None) -> dict | None:
     """nightwatch_report.json에서 시간외매매 가능 종목 중 supply_score 상위 5개 추출.
 
-    시간외 단일가 규칙: KOSPI 개별주만 (KOSDAQ/ETF 제외)
+    NXT 대체거래소 통합: KOSPI/KOSDAQ 모두 가능, ETF만 제외
 
     Returns: {
         "date": "2026-04-10",
@@ -99,7 +95,7 @@ def extract_nxt_top5(target_date: str = None) -> dict | None:
         logger.warning("nxt_targets 비어있음")
         return None
 
-    # 시간외매매 적격성 필터 (KOSDAQ/ETF 제외)
+    # 시간외매매 적격성 필터 (ETF 제외, KOSPI/KOSDAQ 모두 NXT 대체거래소로 매수 가능)
     eligible = []
     skipped = []
     for t in targets:
@@ -212,7 +208,7 @@ def format_nxt_top5_telegram(picks_data: dict) -> str:
         lines.append("📡 " + " / ".join(s[:10] for s in sectors[:3]))
 
     lines.append("")
-    lines.append("⏰ 시간외 매수 (17:00~18:00)")
+    lines.append("⏰ NXT 시간외 매수 (15:30~20:00)")
 
     # 금요일 경고
     if date.today().weekday() == 4:  # 금요일
