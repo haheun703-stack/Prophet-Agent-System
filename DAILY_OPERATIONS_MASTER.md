@@ -221,6 +221,12 @@
        → ⚠️ 섹터 모멘텀 부스트 반영
        → 텔레그램: 안 보냄 (마감 리포트에 통합)
 
+16:47  ★ FLOWX 3대 콘텐츠 자동 업로드 (G7 Stage3 병렬)
+       → C22: 퀀트 대시보드 (5테이블: sector_flow/etf_fund/momentum/etf_rec/brain)
+       → C28: 선매집 탐지 → Supabase intelligence_stealth_scan
+       → C30: 단타 TOP 5 프리뷰 → Supabase intelligence_daytrading_picks
+       → (A12 07:35에서 확정 재발행)
+
 16:50  ★ 마감 리포트
        → 텔레그램: ★ 마감 리포트 1개 전송
          (P&L + 포트폴리오 + 내일 후보 + 학습 + AI Eye 요약

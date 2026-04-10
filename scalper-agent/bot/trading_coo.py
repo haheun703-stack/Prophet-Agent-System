@@ -1620,10 +1620,15 @@ class TradingCOO:
             except Exception as e:
                 logger.warning(f"[COO] C13 백그라운드 합류 에러: {e}")
 
-        # ── C22: 퀀트 대시보드 업로드 — 비활성화 (2026-04-04) ──
-        # FLOWX 웹 프론트엔드 미구축 → 업로드해도 보는 사람 없음 → 낭비
-        # FLOWX Phase C STEP 4 완료 시 재활성화
-        logger.info("[COO] C22 퀀트 대시보드 — 비활성화 상태 (스킵)")
+        # ── C22: 퀀트 대시보드 업로드 — 재활성화 (2026-04-10) ──
+        try:
+            c22_result = await asyncio.wait_for(
+                self._job_quant_dashboard_upload(context), timeout=300
+            )
+            results.append(("C22_quant_dashboard", c22_result, True))
+        except Exception as e:
+            logger.warning(f"[C22] 퀀트 대시보드 실패 (무시): {e}")
+            results.append(("C22_quant_dashboard", {"quant_dashboard": f"ERROR: {e}"}, False))
 
         # ── brain_report.json 갱신 safeguard ──
         # C13 실패 시에도 brain_report는 반드시 오늘 날짜로 갱신
@@ -2054,7 +2059,7 @@ class TradingCOO:
             return {"paper_daily_report": f"ERROR: {e}"}
 
     async def _job_stealth_scan(self, context=None) -> dict:
-        """C28: 기관 선매집 탐지 스캔 → stealth_scan.json 생성 + 텔레그램 알림."""
+        """C28: 기관 선매집 탐지 스캔 → stealth_scan.json + Supabase 업로드."""
         try:
             from data.stealth_scanner import scan_stealth_accumulation, format_stealth_alert
 
@@ -2062,16 +2067,21 @@ class TradingCOO:
             summary = result.get("summary", {})
             stealth_count = summary.get("stealth_count", 0)
 
-            # 잠복 종목 5개 이상이면 텔레그램 알림 — 4/8 비활성화 (알림 축소)
-            if stealth_count >= 5:
-                logger.info(f"[C28] 선매집 탐지: 잠복 {stealth_count}건 (텔레그램 OFF)")
+            # Supabase 업로드 (FLOWX 대시보드용)
+            upload_ok = False
+            try:
+                from data.upload_stealth_scan import upload_stealth_scan
+                upload_ok = await asyncio.to_thread(upload_stealth_scan, result)
+            except Exception as ue:
+                logger.warning(f"[C28] Supabase 업로드 실패 (무시): {ue}")
 
             logger.info(
                 f"[C28] 선매집 스캔 완료: "
                 f"잠복 {stealth_count} / 움직임 {summary.get('moving_count', 0)} / "
-                f"이미상승 {summary.get('surged_count', 0)}"
+                f"이미상승 {summary.get('surged_count', 0)} / "
+                f"Supabase {'OK' if upload_ok else 'SKIP'}"
             )
-            return {"stealth_scan": "OK", "stealth_count": stealth_count}
+            return {"stealth_scan": "OK", "stealth_count": stealth_count, "supabase": upload_ok}
         except Exception as e:
             logger.warning(f"[C28] 선매집 스캔 실패 (무시): {e}")
             return {"stealth_scan": f"ERROR: {e}"}
