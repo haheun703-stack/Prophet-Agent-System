@@ -1291,6 +1291,214 @@ class KISTrader:
         name = CODE_TO_NAME.get(code, code)
         return {"success": False, "message": f"{name}({code}) 보유 없음"}
 
+    # ═══════════════════════════════════════
+    #  국내종목 순위분석 API (5개)
+    # ═══════════════════════════════════════
+
+    def _ranking_get(self, path: str, tr_id: str, params: dict) -> list:
+        """순위 API 공통 GET 호출 → output 리스트 반환."""
+        import requests
+        broker = self._get_broker()
+        token = broker.access_token
+        if not token.startswith("Bearer "):
+            token = f"Bearer {token}"
+        headers = {
+            "content-type": "application/json; charset=utf-8",
+            "authorization": token,
+            "appkey": broker.api_key,
+            "appsecret": broker.api_secret,
+            "tr_id": tr_id,
+            "custtype": "P",
+        }
+        url = f"{broker.base_url}{path}"
+        resp = requests.get(url, headers=headers, params=params, timeout=10)
+        data = resp.json()
+        if data.get("rt_cd") != "0":
+            logger.warning(f"[RANK] {tr_id} 실패: {data.get('msg1', '')}")
+            return []
+        return data.get("output", [])
+
+    def fetch_ranking_fluctuation(self, market: str = "J", top_n: int = 30,
+                                   min_vol: int = 100000) -> list:
+        """등락률 순위 (FHPST01700000) — 급등/급락 종목.
+
+        Returns: [{"code","name","price","change_rate","volume"}, ...]
+        """
+        params = {
+            "fid_cond_mrkt_div_code": market,
+            "fid_cond_scr_div_code": "20170",
+            "fid_input_iscd": "0000",
+            "fid_rank_sort_cls_code": "0",
+            "fid_input_cnt_1": str(top_n),
+            "fid_prc_cls_code": "0",
+            "fid_input_price_1": "0",
+            "fid_input_price_2": "1000000",
+            "fid_vol_cnt": str(min_vol),
+            "fid_trgt_cls_code": "0",
+            "fid_trgt_exls_cls_code": "0000000000",
+            "fid_div_cls_code": "0",
+            "fid_rsfl_rate1": "0",
+            "fid_rsfl_rate2": "30",
+        }
+        raw = self._ranking_get(
+            "/uapi/domestic-stock/v1/ranking/fluctuation",
+            "FHPST01700000", params,
+        )
+        results = []
+        for r in raw[:top_n]:
+            results.append({
+                "code": r.get("stck_shrn_iscd", ""),
+                "name": r.get("hts_kor_isnm", ""),
+                "price": _safe_int(r.get("stck_prpr")),
+                "change_rate": _safe_float(r.get("prdy_ctrt")),
+                "change_amt": _safe_int(r.get("prdy_vrss")),
+                "volume": _safe_int(r.get("acml_vol")),
+                "high": _safe_int(r.get("stck_hgpr")),
+            })
+        return results
+
+    def fetch_ranking_volume(self, market: str = "J", top_n: int = 30,
+                              sort_by: str = "3") -> list:
+        """거래량순위 (FHPST01710000) — 거래 폭발 종목.
+
+        sort_by: "0"=평균거래량, "1"=거래증가율, "3"=거래금액순
+        Returns: [{"code","name","price","change_rate","volume","vol_rate"}, ...]
+        """
+        params = {
+            "FID_COND_MRKT_DIV_CODE": market,
+            "FID_COND_SCR_DIV_CODE": "20171",
+            "FID_INPUT_ISCD": "0000",
+            "FID_DIV_CLS_CODE": "0",
+            "FID_BLNG_CLS_CODE": sort_by,
+            "FID_TRGT_CLS_CODE": "0",
+            "FID_TRGT_EXLS_CLS_CODE": "0000000000",
+            "FID_INPUT_PRICE_1": "",
+            "FID_INPUT_PRICE_2": "",
+            "FID_VOL_CNT": "",
+            "FID_INPUT_DATE_1": "",
+        }
+        raw = self._ranking_get(
+            "/uapi/domestic-stock/v1/quotations/volume-rank",
+            "FHPST01710000", params,
+        )
+        results = []
+        for r in raw[:top_n]:
+            results.append({
+                "code": r.get("mksc_shrn_iscd", ""),
+                "name": r.get("hts_kor_isnm", ""),
+                "price": _safe_int(r.get("stck_prpr")),
+                "change_rate": _safe_float(r.get("prdy_ctrt")),
+                "volume": _safe_int(r.get("acml_vol")),
+                "vol_rate": _safe_float(r.get("vol_inrt")),
+                "tr_amount": _safe_int(r.get("acml_tr_pbmn")),
+            })
+        return results
+
+    def fetch_ranking_strength(self, market: str = "J", top_n: int = 30) -> list:
+        """체결강도 상위 (FHPST01680000) — 매수세 강한 종목.
+
+        Returns: [{"code","name","price","change_rate","strength","volume"}, ...]
+        """
+        params = {
+            "fid_cond_mrkt_div_code": market,
+            "fid_cond_scr_div_code": "20168",
+            "fid_input_iscd": "0000",
+            "fid_div_cls_code": "0",
+            "fid_input_price_1": "",
+            "fid_input_price_2": "",
+            "fid_vol_cnt": "",
+            "fid_trgt_cls_code": "0",
+            "fid_trgt_exls_cls_code": "0",
+        }
+        raw = self._ranking_get(
+            "/uapi/domestic-stock/v1/ranking/volume-power",
+            "FHPST01680000", params,
+        )
+        results = []
+        for r in raw[:top_n]:
+            results.append({
+                "code": r.get("stck_shrn_iscd", ""),
+                "name": r.get("hts_kor_isnm", ""),
+                "price": _safe_int(r.get("stck_prpr")),
+                "change_rate": _safe_float(r.get("prdy_ctrt")),
+                "strength": _safe_float(r.get("tday_rltv")),
+                "volume": _safe_int(r.get("acml_vol")),
+                "sell_vol": _safe_int(r.get("seln_cnqn_smtn")),
+                "buy_vol": _safe_int(r.get("shnu_cnqn_smtn")),
+            })
+        return results
+
+    def fetch_uplowprice(self, price_cls: str = "0", div_cls: str = "0",
+                          market_iscd: str = "0000") -> list:
+        """상하한가 포착 (FHKST130000C0).
+
+        price_cls: "0"=상한가, "1"=하한가
+        div_cls: "0"=상하한가종목, "6"=8%근접, "5"=10%근접, "1"=15%근접
+        market_iscd: "0000"=전체, "0001"=코스피, "1001"=코스닥
+        Returns: [{"code","name","price","change_rate","volume","ask_remain","bid_remain"}, ...]
+        """
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_COND_SCR_DIV_CODE": "11300",
+            "FID_PRC_CLS_CODE": price_cls,
+            "FID_DIV_CLS_CODE": div_cls,
+            "FID_INPUT_ISCD": market_iscd,
+            "FID_TRGT_CLS_CODE": "",
+            "FID_TRGT_EXLS_CLS_CODE": "",
+            "FID_INPUT_PRICE_1": "",
+            "FID_INPUT_PRICE_2": "",
+            "FID_VOL_CNT": "",
+        }
+        raw = self._ranking_get(
+            "/uapi/domestic-stock/v1/quotations/capture-uplowprice",
+            "FHKST130000C0", params,
+        )
+        results = []
+        for r in raw:
+            results.append({
+                "code": r.get("mksc_shrn_iscd", ""),
+                "name": r.get("hts_kor_isnm", ""),
+                "price": _safe_int(r.get("stck_prpr")),
+                "change_rate": _safe_float(r.get("prdy_ctrt")),
+                "volume": _safe_int(r.get("acml_vol")),
+                "ask_remain": _safe_int(r.get("total_askp_rsqn")),
+                "bid_remain": _safe_int(r.get("total_bidp_rsqn")),
+                "prev_vol": _safe_int(r.get("prdy_vol")),
+                "vol_rate": _safe_float(r.get("prdy_vrss_vol_rate")),
+            })
+        return results
+
+    def fetch_foreign_inst_total(self, target: str = "0",
+                                  sort_cls: str = "0") -> list:
+        """외국인/기관 매매종목 가집계 (FHPTJ04400000).
+
+        target: "0"=전체, "1"=외국인, "2"=기관계
+        sort_cls: "0"=순매수상위, "1"=순매도상위
+        Returns: [{"code","name","price","change_rate","net_qty","net_amt"}, ...]
+        """
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "V",
+            "FID_COND_SCR_DIV_CODE": "16449",
+            "FID_INPUT_ISCD": "0000",
+            "FID_DIV_CLS_CODE": "1",      # 금액정렬
+            "FID_RANK_SORT_CLS_CODE": sort_cls,
+            "FID_ETC_CLS_CODE": target,
+        }
+        raw = self._ranking_get(
+            "/uapi/domestic-stock/v1/quotations/foreign-institution-total",
+            "FHPTJ04400000", params,
+        )
+        results = []
+        for r in raw:
+            results.append({
+                "code": r.get("mksc_shrn_iscd", ""),
+                "name": r.get("hts_kor_isnm", ""),
+                "price": _safe_int(r.get("stck_prpr")),
+                "change_rate": _safe_float(r.get("prdy_ctrt")),
+                "volume": _safe_int(r.get("acml_vol")),
+            })
+        return results
+
     def liquidate_all(self) -> dict:
         """전종목 시장가 청산"""
         bal = self.fetch_balance()

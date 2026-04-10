@@ -1936,6 +1936,38 @@ class BodyHunterBot:
             await update.message.reply_text(f"주목 종목 박스 실패: {e}")
 
     # ═══════════════════════════════════════
+    #  실시간 순위 스캔
+    # ═══════════════════════════════════════
+
+    async def cmd_ranking(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """실시간 순위 스캔 — 상한가/급등/체결강도/수급 교차 분석"""
+        if not self._is_authorized(update):
+            return
+        try:
+            await update.message.reply_text("📊 실시간 순위 스캔 중...")
+            from tools.ranking_scanner import scan_surge, format_surge_telegram
+            data = await asyncio.to_thread(scan_surge, self.trader)
+            msg = format_surge_telegram(data)
+            for chunk in _split_message(msg):
+                await update.message.reply_text(chunk, parse_mode="HTML")
+        except Exception as e:
+            await update.message.reply_text(f"순위 스캔 실패: {e}")
+
+    async def cmd_ranking_inst(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """외국인/기관 가집계 — 순매수/매도 상위"""
+        if not self._is_authorized(update):
+            return
+        try:
+            await update.message.reply_text("📊 외국인/기관 가집계 조회 중...")
+            from tools.ranking_scanner import scan_institution, format_institution_telegram
+            data = await asyncio.to_thread(scan_institution, self.trader)
+            msg = format_institution_telegram(data)
+            for chunk in _split_message(msg):
+                await update.message.reply_text(chunk, parse_mode="HTML")
+        except Exception as e:
+            await update.message.reply_text(f"수급 조회 실패: {e}")
+
+    # ═══════════════════════════════════════
     #  미국장 야간 필터
     # ═══════════════════════════════════════
 
@@ -2374,6 +2406,10 @@ class BodyHunterBot:
             r"^페이퍼$": self.cmd_paper,
             r"^선매집$": self.cmd_stealth,
             r"^잠복$": self.cmd_stealth,
+            r"^순위$": self.cmd_ranking,
+            r"^상한가$": self.cmd_ranking,
+            r"^수급$": self.cmd_ranking_inst,
+            r"^가집계$": self.cmd_ranking_inst,
             r"^미국장$": self.cmd_us_overnight,
             r"^미국$": self.cmd_us_overnight,
             r"^US$": self.cmd_us_overnight,
