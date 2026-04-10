@@ -1586,6 +1586,12 @@ class TradingCOO:
             self._job_daytrading_picks(context, mode="preview"),
         ))
 
+        # C31: 단타 TOP 5 일일 성적표 (시가→종가 수익률 + 주간/월간 누적)
+        stage3_jobs.append((
+            "C31_daytrading_performance",
+            self._job_daytrading_performance(context),
+        ))
+
         if stage3_jobs:
             # C17 국적차트 TOP200 생성+업로드, C19 FLOWX 스윙 등 무거운 작업 포함
             s3 = await self.run_parallel_async(stage3_jobs, timeout_per_job=600)
@@ -2195,7 +2201,7 @@ class TradingCOO:
             )
             a_codes = {p["code"] for p in picks_a}
             small_filtered = [p for p in small_filtered if p["code"] not in a_codes]
-            picks_b = small_filtered[:4]
+            picks_b = small_filtered[:2]
             for p in picks_b:
                 p["track"] = "B_중소형주"
 
@@ -2260,6 +2266,56 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[DAYTRADING:{mode}] 실패 (무시): {e}")
             return {"daytrading": f"ERROR: {e}", "mode": mode}
+
+    async def _job_daytrading_performance(self, context=None) -> dict:
+        """C31: 단타 TOP 5 일일 성적표 (시가→종가 수익률 + 주간/월간 누적).
+
+        G7 Stage 3에서 실행. confirmed TOP 5의 당일 시가→종가 수익률 계산,
+        Supabase 업로드, 텔레그램 발송.
+        """
+        try:
+            from tools.daytrading_performance import build_performance_report
+            from data.upload_daytrading_performance import upload_daytrading_performance
+
+            report = await asyncio.to_thread(build_performance_report)
+            if not report:
+                logger.warning("[C31] 성적표 생성 불가 (confirmed 픽 없음 or OHLCV 실패)")
+                return {"performance": "SKIP", "reason": "no data"}
+
+            # Supabase 업로드
+            try:
+                await asyncio.to_thread(upload_daytrading_performance, report)
+            except Exception as ue:
+                logger.warning(f"[C31] Supabase 업로드 실패 (무시): {ue}")
+
+            # 텔레그램 송출
+            msg = report.get("telegram_msg", "")
+            if msg:
+                sent = False
+                if context and self.bot and getattr(self.bot, "chat_id", None):
+                    try:
+                        await context.bot.send_message(
+                            chat_id=self.bot.chat_id, text=msg)
+                        sent = True
+                    except Exception as te:
+                        logger.warning(f"[C31] context.bot 송출 실패: {te}")
+                if not sent:
+                    alert_fn = getattr(self.auto_trader, "_send_alert", None) if self.auto_trader else None
+                    if alert_fn:
+                        await asyncio.to_thread(alert_fn, msg)
+                        sent = True
+                if sent:
+                    logger.info(f"[C31] 성적표 텔레그램 송출 완료 (평균 {report['avg_return']:+.2f}%)")
+
+            return {
+                "performance": "OK",
+                "avg_return": report["avg_return"],
+                "best": report.get("best_pick", ""),
+                "worst": report.get("worst_pick", ""),
+            }
+        except Exception as e:
+            logger.warning(f"[C31] 성적표 실패 (무시): {e}")
+            return {"performance": f"ERROR: {e}"}
 
     async def _job_nxt_early_collect(self, context=None) -> dict:
         """C4E: NXT 사전 데이터 수집 + 예비 알림 발송.

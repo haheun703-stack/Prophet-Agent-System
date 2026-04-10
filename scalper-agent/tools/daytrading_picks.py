@@ -418,7 +418,7 @@ def format_flowx_post(picks: list[dict], ewy_signal: dict, mode: str = "confirme
 
     # 개별 종목
     for i, p in enumerate(picks, 1):
-        rank_emoji = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣", "6️⃣", "7️⃣"][min(i-1, 6)]
+        rank_emoji = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"][min(i-1, 4)]
 
         lines.append(f"{rank_emoji} <b>{p['name']}</b> ({p['code']}) · {p.get('sector','-')}")
         lines.append(f"   💰 현재가 {p['close_end']:,}원 · 시총 {int(p['mcap_억']):,}억")
@@ -487,7 +487,7 @@ def send_telegram(message: str) -> bool:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--top-large", type=int, default=3, help="트랙 A 대형주 TOP N (기본 3)")
-    parser.add_argument("--top-small", type=int, default=4, help="트랙 B 중소형주 TOP N (기본 4)")
+    parser.add_argument("--top-small", type=int, default=2, help="트랙 B 중소형주 TOP N (기본 2)")
     parser.add_argument("--scan-top", type=int, default=30, help="트랙 B scanner TOP N (기본 30)")
     parser.add_argument("--save", action="store_true", help="JSON 저장")
     parser.add_argument("--flowx-format", action="store_true", help="FLOWX 포맷 출력")
