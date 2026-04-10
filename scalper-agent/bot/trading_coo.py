@@ -1622,13 +1622,15 @@ class TradingCOO:
 
         # ── C22: 퀀트 대시보드 업로드 — 재활성화 (2026-04-10) ──
         try:
+            import time as _time
+            _c22_t0 = _time.time()
             c22_result = await asyncio.wait_for(
                 self._job_quant_dashboard_upload(context), timeout=300
             )
-            results.append(("C22_quant_dashboard", c22_result, True))
+            results.append(JobResult("C22_quant_dashboard", True, _time.time() - _c22_t0))
         except Exception as e:
             logger.warning(f"[C22] 퀀트 대시보드 실패 (무시): {e}")
-            results.append(("C22_quant_dashboard", {"quant_dashboard": f"ERROR: {e}"}, False))
+            results.append(JobResult("C22_quant_dashboard", False, 0.0, str(e)))
 
         # ── brain_report.json 갱신 safeguard ──
         # C13 실패 시에도 brain_report는 반드시 오늘 날짜로 갱신
@@ -2045,6 +2047,7 @@ class TradingCOO:
             day_count = portfolio.get_day_count()
             if day_count >= 7 and day_count % 7 == 0:
                 two_week = portfolio.format_two_week_report()
+                alert_fn = getattr(self.auto_trader, "_send_alert", None) if self.auto_trader else None
                 if alert_fn:
                     await asyncio.to_thread(alert_fn, two_week)
                     logger.info(f"[C27] Paper Trading Week{day_count//7} 종합 리포트 발송")

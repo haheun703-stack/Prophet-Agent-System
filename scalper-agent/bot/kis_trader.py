@@ -81,6 +81,8 @@ class KISTrader:
         self._broker_created_at: float = 0.0  # 브로커 생성 시각 (epoch)
         self._consecutive_failures: int = 0   # 연속 실패 카운터
         self._lock = threading.Lock()  # 스레드 안전: tracker+summary 동시 호출 방지
+        self._last_balance = None              # tr_cont 에러 시 캐시 fallback
+        self._last_balance_at: float = 0.0     # 캐시 저장 시각 (epoch)
 
     def _get_broker(self, force_refresh=False):
         """브로커 (토큰 자동 갱신, 스레드 안전)
@@ -137,6 +139,8 @@ class KISTrader:
         with self._lock:
             self._broker = None
             self._broker_created_at = 0.0
+            self._last_balance = None      # 캐시도 초기화 (stale 방지)
+            self._last_balance_at = 0.0
             logger.info("KIS 브로커 초기화됨 - 다음 호출에서 재발급")
 
     def ensure_fresh_token(self):
@@ -187,9 +191,12 @@ class KISTrader:
                 except KeyError as ke:
                     if "tr_cont" in str(ke):
                         logger.warning(f"잔고 조회 tr_cont KeyError — mojito 페이징 버그 방어")
-                        # 캐시된 마지막 잔고가 있으면 반환
-                        if hasattr(self, "_last_balance") and self._last_balance:
-                            logger.info("캐시된 잔고 반환")
+                        # 캐시된 잔고가 5분 이내이면 반환 (stale 방지)
+                        if (self._last_balance
+                                and self._last_balance.get("success")
+                                and time.time() - self._last_balance_at < 300):
+                            age = int(time.time() - self._last_balance_at)
+                            logger.info(f"캐시된 잔고 반환 ({age}초 전)")
                             return self._last_balance
                         return {"success": False, "message": "잔고 조회 tr_cont KeyError (장후)"}
                     raise
@@ -241,7 +248,8 @@ class KISTrader:
                     "total_eval": total_eval,
                     "positions": positions,
                 }
-                self._last_balance = result  # 장후 tr_cont 에러 시 캐시 활용
+                self._last_balance = result     # 장후 tr_cont 에러 시 캐시 활용
+                self._last_balance_at = time.time()
                 return result
 
             except Exception as e:

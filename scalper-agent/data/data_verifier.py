@@ -449,7 +449,7 @@ CHECKLIST = {
     "nationality":    {"description": "KRX 국적별 수급",       "priority": PRIORITY_HIGH},
     "nightwatch":     {"description": "NIGHTWATCH 리포트",     "priority": PRIORITY_HIGH},
     "sector_history": {"description": "섹터 히스토리",          "priority": PRIORITY_HIGH},
-    "sector_relay":   {"description": "섹터/그룹 릴레이",       "priority": PRIORITY_HIGH},
+    # sector_relay — 비활성화 (2026-04-11): 자동 저장 로직 없음, sector_history가 대체
     "guardian":       {"description": "Position Guardian",     "priority": PRIORITY_HIGH},
     "insights":       {"description": "학습 인사이트",          "priority": PRIORITY_HIGH},
     # short_selling — 비활성화 (2026-04-04): pykrx API 장애 38일+ → 제거
@@ -468,7 +468,7 @@ RETRY_MAP = {
     "nightwatch":     "job_nightwatch_collect",
     "tv_scanner":     "_job_record_signals",
     "sector_history": "_job_record_signals",
-    "sector_relay":   "_job_swing_picker",
+    # sector_relay — 비활성화
     "insights":       "_job_daily_learning",
     "etf_daily":      "_job_collect_daily",
 }
@@ -495,7 +495,7 @@ class DataVerifier:
         details["nationality"] = _verify_nationality(t)
         details["nightwatch"] = _verify_nightwatch(t)
         details["sector_history"] = _verify_sector_history(t)
-        details["sector_relay"] = _verify_sector_relay(t)
+        # sector_relay — 비활성화 (sector_history가 대체)
         details["guardian"] = _verify_guardian(t)
         details["insights"] = _verify_insights(t)
         # short_selling — 비활성화 (pykrx API 장애)
