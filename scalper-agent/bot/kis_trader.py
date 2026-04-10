@@ -180,7 +180,19 @@ class KISTrader:
         for attempt in range(2):
             try:
                 broker = self._get_broker()
-                resp = broker.fetch_balance()
+                # mojito 내부에서 data['tr_cont'] 직접 접근 → KeyError 방어
+                # 원본 응답을 감싸서 tr_cont 누락 시 빈 값 주입
+                try:
+                    resp = broker.fetch_balance()
+                except KeyError as ke:
+                    if "tr_cont" in str(ke):
+                        logger.warning(f"잔고 조회 tr_cont KeyError — mojito 페이징 버그 방어")
+                        # 캐시된 마지막 잔고가 있으면 반환
+                        if hasattr(self, "_last_balance") and self._last_balance:
+                            logger.info("캐시된 잔고 반환")
+                            return self._last_balance
+                        return {"success": False, "message": "잔고 조회 tr_cont KeyError (장후)"}
+                    raise
 
                 if resp is None:
                     if attempt == 0:
@@ -223,12 +235,14 @@ class KISTrader:
 
                 with self._lock:
                     self._consecutive_failures = 0
-                return {
+                result = {
                     "success": True,
                     "cash": cash,
                     "total_eval": total_eval,
                     "positions": positions,
                 }
+                self._last_balance = result  # 장후 tr_cont 에러 시 캐시 활용
+                return result
 
             except Exception as e:
                 with self._lock:

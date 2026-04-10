@@ -115,7 +115,7 @@ class PaperPortfolio:
 
         pos = self.positions.pop(code)
         entry = pos["entry_price"]
-        shares = pos["shares"]
+        shares = pos.get("shares", pos.get("qty", 1))
         proceeds = exit_price * shares
         pnl_pct = (exit_price - entry) / entry * 100 if entry > 0 else 0
         pnl_krw = proceeds - pos["cost"]
@@ -176,7 +176,7 @@ class PaperPortfolio:
 
         # 포트폴리오 평가액 = 현금 + 보유 주식 평가액
         holdings_value = sum(
-            pos.get("current_price", pos["entry_price"]) * pos["shares"]
+            pos.get("current_price", pos["entry_price"]) * pos.get("shares", pos.get("qty", 1))
             for pos in self.positions.values()
         )
         total_value = self.cash + holdings_value
@@ -255,7 +255,7 @@ class PaperPortfolio:
 
         # 누적 수익률
         holdings_value = sum(
-            pos.get("current_price", pos["entry_price"]) * pos["shares"]
+            pos.get("current_price", pos["entry_price"]) * pos.get("shares", pos.get("qty", 1))
             for pos in self.positions.values()
         )
         total_value = self.cash + holdings_value
@@ -342,7 +342,7 @@ class PaperPortfolio:
 
         # 포트폴리오 평가액
         holdings_value = sum(
-            pos.get("current_price", pos["entry_price"]) * pos["shares"]
+            pos.get("current_price", pos["entry_price"]) * pos.get("shares", pos.get("qty", 1))
             for pos in self.positions.values()
         )
         total_value = self.cash + holdings_value
