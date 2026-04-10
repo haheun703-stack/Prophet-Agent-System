@@ -18,6 +18,53 @@ logger = logging.getLogger("BH.NxtPerf")
 DATA_DIR = Path(__file__).resolve().parent.parent / "data_store"
 NW_REPORT_PATH = DATA_DIR / "nightwatch_report.json"
 NXT_PICKS_PATH = DATA_DIR / "nxt_top5_picks.json"
+UNIVERSE_PATH = DATA_DIR / "universe.json"
+
+# ETF 브랜드 접두사 (시간외 단일가 불가)
+_ETF_PREFIXES = (
+    "TIGER", "KODEX", "KBSTAR", "ACE", "PLUS", "KOSEF", "HANARO", "SOL",
+    "ARIRANG", "TREX", "FOCUS", "HK", "PARA", "마이티", "히어로즈",
+    "RISE", "KCGI", "WOORI", "WON", "WON드림",
+)
+
+
+_universe_cache: dict | None = None
+
+
+def _load_universe() -> dict:
+    """universe.json 캐시 로드."""
+    global _universe_cache
+    if _universe_cache is not None:
+        return _universe_cache
+    try:
+        if UNIVERSE_PATH.exists():
+            _universe_cache = json.loads(UNIVERSE_PATH.read_text(encoding="utf-8"))
+            return _universe_cache
+    except Exception:
+        pass
+    _universe_cache = {}
+    return _universe_cache
+
+
+def _is_afterhours_eligible(code: str, name: str) -> bool:
+    """시간외 단일가 매매 가능 여부 판별.
+
+    규칙: KOSPI 개별주만 가능 (KOSDAQ, ETF, ETN 불가)
+    """
+    # 1) ETF 브랜드 체크
+    if name:
+        n = name.strip().upper()
+        if any(n.startswith(p.upper()) for p in _ETF_PREFIXES):
+            return False
+
+    # 2) universe.json에서 시장구분 확인 (KOSDAQ 제외)
+    uni = _load_universe()
+    info = uni.get(code, {})
+    market = info.get("market", "")
+    if market == "KOSDAQ":
+        return False
+
+    return True
 
 
 # ═══════════════════════════════════════════════════
@@ -25,7 +72,9 @@ NXT_PICKS_PATH = DATA_DIR / "nxt_top5_picks.json"
 # ═══════════════════════════════════════════════════
 
 def extract_nxt_top5(target_date: str = None) -> dict | None:
-    """nightwatch_report.json에서 supply_score 상위 5개 추출 + 진입가 기록.
+    """nightwatch_report.json에서 시간외매매 가능 종목 중 supply_score 상위 5개 추출.
+
+    시간외 단일가 규칙: KOSPI 개별주만 (KOSDAQ/ETF 제외)
 
     Returns: {
         "date": "2026-04-10",
@@ -50,8 +99,26 @@ def extract_nxt_top5(target_date: str = None) -> dict | None:
         logger.warning("nxt_targets 비어있음")
         return None
 
+    # 시간외매매 적격성 필터 (KOSDAQ/ETF 제외)
+    eligible = []
+    skipped = []
+    for t in targets:
+        code = t.get("code", "")
+        name = t.get("name", "")
+        if _is_afterhours_eligible(code, name):
+            eligible.append(t)
+        else:
+            skipped.append(f"{name}({code})")
+
+    if skipped:
+        logger.info(f"시간외매매 부적격 제외: {', '.join(skipped)}")
+
+    if not eligible:
+        logger.warning("시간외매매 가능 종목 없음")
+        return None
+
     # supply_score 내림차순 → 상위 5개
-    sorted_targets = sorted(targets, key=lambda x: x.get("supply_score", 0), reverse=True)
+    sorted_targets = sorted(eligible, key=lambda x: x.get("supply_score", 0), reverse=True)
     top5 = sorted_targets[:5]
 
     # 진입가 = 당일 종가 (pykrx)
