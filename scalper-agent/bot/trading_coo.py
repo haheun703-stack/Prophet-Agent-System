@@ -2107,10 +2107,19 @@ class TradingCOO:
             mode = report.get("mode", "NORMAL")
 
             # 3) 텔레그램 알림
-            alert_fn = getattr(self.auto_trader, "_send_alert", None) if self.auto_trader else None
-            if alert_fn:
-                msg = build_telegram_message(report)
-                await asyncio.to_thread(alert_fn, msg)
+            msg = build_telegram_message(report)
+            sent = False
+            if context and self.bot and getattr(self.bot, "chat_id", None):
+                try:
+                    await context.bot.send_message(
+                        chat_id=self.bot.chat_id, text=msg)
+                    sent = True
+                except Exception as te:
+                    logger.warning(f"[A11] context.bot 송출 실패: {te}")
+            if not sent:
+                alert_fn = getattr(self.auto_trader, "_send_alert", None) if self.auto_trader else None
+                if alert_fn:
+                    await asyncio.to_thread(alert_fn, msg)
 
             # 4) Supabase 업로드 (실패해도 무시)
             try:
@@ -2218,12 +2227,25 @@ class TradingCOO:
             # 텔레그램 송출
             if picks:
                 msg = format_telegram_message(picks, ewy_signal, mode=mode)
-                alert_fn = getattr(self.auto_trader, "_send_alert", None) if self.auto_trader else None
-                if alert_fn:
-                    await asyncio.to_thread(alert_fn, msg)
+                sent = False
+                # 1차: context.bot 직접 사용 (G1 시점에도 동작)
+                if context and self.bot and getattr(self.bot, "chat_id", None):
+                    try:
+                        await context.bot.send_message(
+                            chat_id=self.bot.chat_id, text=msg)
+                        sent = True
+                    except Exception as te:
+                        logger.warning(f"[DAYTRADING:{mode}] context.bot 송출 실패: {te}")
+                # 2차: auto_trader._send_alert fallback
+                if not sent:
+                    alert_fn = getattr(self.auto_trader, "_send_alert", None) if self.auto_trader else None
+                    if alert_fn:
+                        await asyncio.to_thread(alert_fn, msg)
+                        sent = True
+                if sent:
                     logger.info(f"[DAYTRADING:{mode}] 텔레그램 송출 완료 ({len(picks)}종목)")
                 else:
-                    logger.warning(f"[DAYTRADING:{mode}] alert_fn 없음 — 텔레그램 스킵")
+                    logger.warning(f"[DAYTRADING:{mode}] 텔레그램 송출 실패 — bot/auto_trader 모두 불가")
             else:
                 logger.warning(f"[DAYTRADING:{mode}] 픽 0개 — 텔레그램 스킵")
 
