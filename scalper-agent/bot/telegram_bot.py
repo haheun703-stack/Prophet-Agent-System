@@ -1967,6 +1967,84 @@ class BodyHunterBot:
         except Exception as e:
             await update.message.reply_text(f"수급 조회 실패: {e}")
 
+    async def cmd_theme(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """테마 현황 — 종목 테마 조회 또는 테마맵 요약"""
+        if not self._is_authorized(update):
+            return
+        try:
+            from data.theme_collector import load_theme_map, get_themes_for_code
+
+            # 인자가 있으면 종목별 테마 조회
+            args_text = " ".join(context.args) if context.args else ""
+            theme_map = load_theme_map()
+            if not theme_map:
+                await update.message.reply_text("테마맵이 없습니다. 수집이 필요합니다.")
+                return
+
+            if args_text.strip():
+                # 종목코드 or 종목명으로 검색
+                code = args_text.strip()
+                # 이름으로 검색 시도
+                if not code.isdigit():
+                    c2t = theme_map.get("code_to_themes", {})
+                    themes_data = theme_map.get("themes", {})
+                    # 이름에서 코드 찾기
+                    found = []
+                    for tc, info in themes_data.items():
+                        if code in info.get("name", ""):
+                            found.append(f"<b>[{info['name']}]</b> {len(info['codes'])}종목")
+                    if found:
+                        msg = f"<b>테마 검색: '{code}'</b>\n\n" + "\n".join(found[:10])
+                    else:
+                        msg = f"'{code}' 테마를 찾을 수 없습니다."
+                else:
+                    themes = get_themes_for_code(code, theme_map)
+                    if themes:
+                        msg = f"<b>{code}</b> 테마:\n" + "\n".join(f"  · {t}" for t in themes)
+                    else:
+                        msg = f"{code}: 테마 정보 없음"
+            else:
+                # 요약 출력
+                themes = theme_map.get("themes", {})
+                top = sorted(themes.items(), key=lambda x: len(x[1]["codes"]), reverse=True)[:15]
+                lines = [
+                    f"<b>테마 현황</b> ({theme_map.get('theme_count', 0)}테마 / "
+                    f"{theme_map.get('stock_count', 0)}종목)",
+                    f"갱신: {theme_map.get('updated', '?')}",
+                    "",
+                    "<b>종목수 TOP 15</b>",
+                ]
+                for tc, info in top:
+                    lines.append(f"  [{tc}] {info['name']}: {len(info['codes'])}종목")
+                msg = "\n".join(lines)
+
+            for chunk in _split_message(msg):
+                await update.message.reply_text(chunk, parse_mode="HTML")
+        except Exception as e:
+            await update.message.reply_text(f"테마 조회 실패: {e}")
+
+    async def cmd_night_futures(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """KOSPI200 야간선물 현재가"""
+        if not self._is_authorized(update):
+            return
+        try:
+            data = await asyncio.to_thread(self.trader.fetch_night_futures_price)
+            if data.get("available"):
+                chg_icon = "🟢" if data["change_pct"] >= 0 else "🔴"
+                msg = (
+                    f"<b>KOSPI200 야간선물</b>\n\n"
+                    f"코드: {data['code']}\n"
+                    f"현재가: {data['price']:.2f}\n"
+                    f"전일비: {chg_icon} {data['change']:+.2f} ({data['change_pct']:+.2f}%)\n"
+                    f"거래량: {data['volume']:,}\n"
+                    f"조회: {data['timestamp']}"
+                )
+            else:
+                msg = f"KOSPI200 야간선물: 조회 불가 ({data.get('reason', '장외시간')})"
+            await update.message.reply_text(msg, parse_mode="HTML")
+        except Exception as e:
+            await update.message.reply_text(f"야간선물 조회 실패: {e}")
+
     # ═══════════════════════════════════════
     #  미국장 야간 필터
     # ═══════════════════════════════════════
@@ -2410,6 +2488,9 @@ class BodyHunterBot:
             r"^상한가$": self.cmd_ranking,
             r"^수급$": self.cmd_ranking_inst,
             r"^가집계$": self.cmd_ranking_inst,
+            r"^테마": self.cmd_theme,
+            r"^야간선물$": self.cmd_night_futures,
+            r"^선물$": self.cmd_night_futures,
             r"^미국장$": self.cmd_us_overnight,
             r"^미국$": self.cmd_us_overnight,
             r"^US$": self.cmd_us_overnight,

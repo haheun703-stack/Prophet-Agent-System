@@ -174,6 +174,27 @@ def scan_surge(trader=None, top_n: int = 20) -> dict:
     crossover.sort(key=lambda x: x["score"], reverse=True)
     result["crossover"] = crossover[:15]
 
+    # ── 테마 동시 급등 감지 ──
+    try:
+        from data.theme_collector import detect_theme_surge, load_theme_map, get_themes_for_code
+        theme_map = load_theme_map()
+        if theme_map:
+            # 급등 종목(5%+) 코드 추출
+            surge_codes = [s["code"] for s in result.get("surge_top", [])
+                           if s.get("code") and s.get("change_rate", 0) >= 5]
+            theme_surges = detect_theme_surge(surge_codes, theme_map, min_count=2)
+            result["theme_surges"] = theme_surges
+            if theme_surges:
+                logger.info(f"[RANK] 테마 동시급등: {len(theme_surges)}개 테마 감지")
+
+            # 교차 종목에 테마 정보 부착
+            for c in result["crossover"]:
+                themes = get_themes_for_code(c["code"], theme_map)
+                if themes:
+                    c["themes"] = themes[:3]  # 상위 3개 테마
+    except Exception as e:
+        logger.warning(f"[RANK] 테마 분석 실패: {e}")
+
     # 로컬 저장
     try:
         save_path = DATA_DIR / "ranking_scan.json"
@@ -261,6 +282,17 @@ def format_surge_telegram(data: dict) -> str:
             )
         lines.append("")
 
+    # 테마 동시급등 (신규)
+    theme_surges = data.get("theme_surges", [])
+    if theme_surges:
+        lines.append(f"<b>테마 동시급등 ({len(theme_surges)}테마)</b>")
+        for ts in theme_surges[:5]:
+            lines.append(
+                f"  <b>[{ts['theme']}]</b> {ts['count']}종목 급등 "
+                f"({ts['strength']})"
+            )
+        lines.append("")
+
     # 교차분석 (핵심)
     cross = data.get("crossover", [])
     if cross:
@@ -268,9 +300,12 @@ def format_surge_telegram(data: dict) -> str:
         for c in cross[:10]:
             tags_str = " ".join(c["tags"])
             str_info = f"체결{c['strength']:.0f}" if c["strength"] > 0 else ""
+            theme_str = ""
+            if c.get("themes"):
+                theme_str = f" [{'/'.join(c['themes'][:2])}]"
             lines.append(
                 f"  <b>{c['name']}</b> {c['change_rate']:+.1f}% "
-                f"{str_info} [{tags_str}] ({c['score']}점)"
+                f"{str_info} [{tags_str}]{theme_str} ({c['score']}점)"
             )
         lines.append("")
 

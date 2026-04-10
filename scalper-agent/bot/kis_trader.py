@@ -1499,6 +1499,117 @@ class KISTrader:
             })
         return results
 
+    # ═══════════════════════════════════════
+    #  KOSPI200 야간선물 시세 조회
+    # ═══════════════════════════════════════
+
+    def fetch_night_futures_price(self) -> dict:
+        """KOSPI200 야간선물 현재가 조회.
+
+        KIS API: FHMIF10000000 (선물옵션 시세)
+        종목코드: 101S + 월물코드 (근월물 자동 탐색)
+        운영시간: 18:00 ~ 익일 06:00
+
+        Returns:
+            {
+                "code": "101SC000",
+                "price": 371.50,
+                "prev_close": 370.00,
+                "change": 1.50,
+                "change_pct": 0.41,
+                "volume": 12345,
+                "timestamp": "2026-04-14 22:30",
+                "available": True,
+            }
+            또는 장외시간이면 {"available": False}
+        """
+        import requests
+        from datetime import datetime
+
+        try:
+            broker = self._get_broker()
+            token = broker.access_token
+            if not token.startswith("Bearer "):
+                token = f"Bearer {token}"
+
+            headers = {
+                "content-type": "application/json; charset=utf-8",
+                "authorization": token,
+                "appkey": broker.api_key,
+                "appsecret": broker.api_secret,
+                "tr_id": "FHMIF10000000",
+                "custtype": "P",
+            }
+
+            # 근월물 코드 생성: 101S + 월코드
+            # 월코드: 1=A, 2=B, ..., 9=I, 10=J, 11=K, 12=L
+            now = datetime.now()
+            month_codes = {1: "A", 2: "B", 3: "C", 4: "D", 5: "E", 6: "F",
+                           7: "G", 8: "H", 9: "I", 10: "J", 11: "K", 12: "L"}
+
+            # 야간선물은 근월물 (만기일 전이면 현재월, 만기일 후면 다음달)
+            # 간단히: 매월 2번째 목요일 만기 → 15일 이후면 다음달
+            m = now.month
+            y = now.year % 100  # 26
+            if now.day >= 15:
+                m += 1
+                if m > 12:
+                    m = 1
+                    y += 1
+            month_char = month_codes.get(m, "F")
+            fut_code = f"101S{month_char}{y:02d}0"
+
+            url = f"{broker.base_url}/uapi/domestic-futureoption/v1/quotations/inquire-price"
+            params = {
+                "FID_COND_MRKT_DIV_CODE": "F",
+                "FID_INPUT_ISCD": fut_code,
+            }
+
+            resp = requests.get(url, headers=headers, params=params, timeout=10)
+            data = resp.json()
+
+            if data.get("rt_cd") != "0":
+                # 코드가 맞지 않으면 대안 시도
+                logger.debug(f"[NIGHT_FUT] {fut_code} 실패, 대안 시도")
+                # 현재월 재시도
+                month_char2 = month_codes.get(now.month, "F")
+                fut_code2 = f"101S{now.year % 100:02d}{month_char2}0"
+                params["FID_INPUT_ISCD"] = fut_code2
+                resp = requests.get(url, headers=headers, params=params, timeout=10)
+                data = resp.json()
+
+                if data.get("rt_cd") != "0":
+                    return {"available": False, "reason": data.get("msg1", "조회 실패")}
+
+            out = data.get("output1", data.get("output", {}))
+            if isinstance(out, list):
+                out = out[0] if out else {}
+
+            price = _safe_float(out.get("stck_prpr") or out.get("futs_prpr"))
+            prev = _safe_float(out.get("stck_sdpr") or out.get("futs_prdy_clpr"))
+            vol = _safe_int(out.get("acml_vol"))
+
+            if price <= 0:
+                return {"available": False, "reason": "시세 없음 (장외시간)"}
+
+            change = price - prev if prev > 0 else 0
+            change_pct = (change / prev * 100) if prev > 0 else 0
+
+            return {
+                "code": params["FID_INPUT_ISCD"],
+                "price": price,
+                "prev_close": prev,
+                "change": round(change, 2),
+                "change_pct": round(change_pct, 2),
+                "volume": vol,
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "available": True,
+            }
+
+        except Exception as e:
+            logger.warning(f"[NIGHT_FUT] 야간선물 조회 실패: {e}")
+            return {"available": False, "reason": str(e)}
+
     def liquidate_all(self) -> dict:
         """전종목 시장가 청산"""
         bal = self.fetch_balance()

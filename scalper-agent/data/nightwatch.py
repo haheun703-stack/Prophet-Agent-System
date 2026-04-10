@@ -951,6 +951,29 @@ def collect_macro_conditions(
     except Exception:
         pass
 
+    # --- K200N: KOSPI200 야간선물 (한국 시장 직접 야간 심리) ---
+    # nightwatch 실행(16:35) 시점에는 야간선물 미개장(18:00)이므로
+    # KIS API로 전일 야간선물 종가 대비 금일 KOSPI200 변화를 참조
+    try:
+        from bot.kis_trader import KISTrader
+        _trader = KISTrader({})
+        k200n_result = _trader.fetch_night_futures_price()
+        if k200n_result.get("available"):
+            additional_raw["K200N"] = {
+                "value": k200n_result["price"],
+                "change_pct": k200n_result["change_pct"],
+                "change_abs": k200n_result["change"],
+                "volume": k200n_result["volume"],
+            }
+            conditions["k200n_pct"] = k200n_result["change_pct"]
+            conditions["k200n_up"] = k200n_result["change_pct"] > 0.3
+            conditions["k200n_down"] = k200n_result["change_pct"] < -0.3
+            logger.info(f"[NXT] KOSPI200 야간선물: {k200n_result['price']:.2f} ({k200n_result['change_pct']:+.2f}%)")
+        else:
+            logger.debug(f"[NXT] KOSPI200 야간선물 미조회: {k200n_result.get('reason', '장외')}")
+    except Exception as e:
+        logger.debug(f"[NXT] KOSPI200 야간선물 수집 실패: {e}")
+
     # --- CNH: 위안화 강세 (collect_asian_risk에서 이미 수집) ---
     cnh = asian_detail.get("CNH", {})
     if cnh.get("change_pct") is not None:
@@ -1522,6 +1545,30 @@ def calculate_nightwatch_score(
         if abs(bond_adj) > 0:
             total += bond_adj
             logger.info(f"[NXT] 채권금리 보정: {bond_adj:+.1f} ({bond_detail})")
+    except Exception:
+        pass
+
+    # KOSPI200 야간선물 보정 — 한국 시장 직접 야간 심리
+    # 야간선물 18:00~06:00 운영, 16:35 시점에는 전일 야간선물 종가를 참조
+    k200n_adj = 0.0
+    try:
+        k200n_data = raw_indicators.get("K200N", {})
+        k200n_pct = k200n_data.get("change_pct", 0) or 0
+        if k200n_pct >= 1.0:
+            k200n_adj = +1.5
+        elif k200n_pct >= 0.5:
+            k200n_adj = +0.8
+        elif k200n_pct >= 0.2:
+            k200n_adj = +0.3
+        elif k200n_pct <= -1.0:
+            k200n_adj = -1.5
+        elif k200n_pct <= -0.5:
+            k200n_adj = -0.8
+        elif k200n_pct <= -0.2:
+            k200n_adj = -0.3
+        if abs(k200n_adj) > 0:
+            total += k200n_adj
+            logger.info(f"[NXT] KOSPI200 야간선물 보정: {k200n_adj:+.1f} (K200N {k200n_pct:+.2f}%)")
     except Exception:
         pass
 
