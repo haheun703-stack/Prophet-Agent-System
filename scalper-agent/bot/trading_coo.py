@@ -1592,6 +1592,18 @@ class TradingCOO:
             self._job_daytrading_performance(context),
         ))
 
+        # C32: NXT 야간매수 TOP 5 발행 (nightwatch → supply_score 상위 5)
+        stage3_jobs.append((
+            "C32_nxt_top5_publish",
+            self._job_nxt_top5_publish(context),
+        ))
+
+        # C33: NXT 야간매수 성적표 (어제 NXT TOP 5 → 오늘 종가 수익률)
+        stage3_jobs.append((
+            "C33_nxt_performance",
+            self._job_nxt_performance(context),
+        ))
+
         if stage3_jobs:
             # C17 국적차트 TOP200 생성+업로드, C19 FLOWX 스윙 등 무거운 작업 포함
             s3 = await self.run_parallel_async(stage3_jobs, timeout_per_job=600)
@@ -2316,6 +2328,100 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[C31] 성적표 실패 (무시): {e}")
             return {"performance": f"ERROR: {e}"}
+
+    async def _job_nxt_top5_publish(self, context=None) -> dict:
+        """C32: NXT 야간매수 TOP 5 추출 + 발행.
+
+        nightwatch_report.json → supply_score TOP 5 → 진입가 기록 →
+        Supabase + 텔레그램 발행.
+        """
+        try:
+            from tools.nxt_performance import extract_nxt_top5, format_nxt_top5_telegram
+            from data.upload_nxt_performance import upload_nxt_picks
+
+            picks_data = await asyncio.to_thread(extract_nxt_top5)
+            if not picks_data:
+                logger.warning("[C32] NXT TOP 5 추출 불가 (nightwatch 없음 or 종가 실패)")
+                return {"nxt_top5": "SKIP"}
+
+            # Supabase 업로드
+            try:
+                await asyncio.to_thread(upload_nxt_picks, picks_data)
+            except Exception as ue:
+                logger.warning(f"[C32] Supabase 업로드 실패 (무시): {ue}")
+
+            # 텔레그램 송출
+            msg = format_nxt_top5_telegram(picks_data)
+            if msg:
+                sent = False
+                if context and self.bot and getattr(self.bot, "chat_id", None):
+                    try:
+                        await context.bot.send_message(
+                            chat_id=self.bot.chat_id, text=msg)
+                        sent = True
+                    except Exception as te:
+                        logger.warning(f"[C32] context.bot 송출 실패: {te}")
+                if not sent:
+                    alert_fn = getattr(self.auto_trader, "_send_alert", None) if self.auto_trader else None
+                    if alert_fn:
+                        await asyncio.to_thread(alert_fn, msg)
+                        sent = True
+                if sent:
+                    logger.info(f"[C32] NXT TOP 5 텔레그램 발행 ({len(picks_data['picks'])}종목)")
+
+            return {"nxt_top5": "OK", "count": len(picks_data["picks"])}
+        except Exception as e:
+            logger.warning(f"[C32] NXT TOP 5 실패 (무시): {e}")
+            return {"nxt_top5": f"ERROR: {e}"}
+
+    async def _job_nxt_performance(self, context=None) -> dict:
+        """C33: 어제 NXT TOP 5 성적표.
+
+        어제 NXT 추천 → 오늘 종가 기준 수익률 → 주간/월간 누적 →
+        Supabase + 텔레그램 발행.
+        """
+        try:
+            from tools.nxt_performance import build_nxt_performance_report
+            from data.upload_nxt_performance import upload_nxt_performance
+
+            report = await asyncio.to_thread(build_nxt_performance_report)
+            if not report:
+                logger.warning("[C33] NXT 성적표 불가 (어제 픽 없음 or OHLCV 실패)")
+                return {"nxt_perf": "SKIP"}
+
+            # Supabase 업로드
+            try:
+                await asyncio.to_thread(upload_nxt_performance, report)
+            except Exception as ue:
+                logger.warning(f"[C33] Supabase 업로드 실패 (무시): {ue}")
+
+            # 텔레그램 송출
+            msg = report.get("telegram_msg", "")
+            if msg:
+                sent = False
+                if context and self.bot and getattr(self.bot, "chat_id", None):
+                    try:
+                        await context.bot.send_message(
+                            chat_id=self.bot.chat_id, text=msg)
+                        sent = True
+                    except Exception as te:
+                        logger.warning(f"[C33] context.bot 송출 실패: {te}")
+                if not sent:
+                    alert_fn = getattr(self.auto_trader, "_send_alert", None) if self.auto_trader else None
+                    if alert_fn:
+                        await asyncio.to_thread(alert_fn, msg)
+                        sent = True
+                if sent:
+                    logger.info(f"[C33] NXT 성적표 텔레그램 발행 (평균 {report['avg_return']:+.2f}%)")
+
+            return {
+                "nxt_perf": "OK",
+                "pick_date": report["pick_date"],
+                "avg_return": report["avg_return"],
+            }
+        except Exception as e:
+            logger.warning(f"[C33] NXT 성적표 실패 (무시): {e}")
+            return {"nxt_perf": f"ERROR: {e}"}
 
     async def _job_nxt_early_collect(self, context=None) -> dict:
         """C4E: NXT 사전 데이터 수집 + 예비 알림 발송.
