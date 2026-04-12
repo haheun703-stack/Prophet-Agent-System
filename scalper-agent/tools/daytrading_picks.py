@@ -28,8 +28,9 @@ from __future__ import annotations
 import json
 import argparse
 import sys
+import logging
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # foreign_accumulation_scanner 재사용
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -39,6 +40,8 @@ from foreign_accumulation_scanner import (
     load_investor_flow,
     LOOKBACK_DAYS,
 )
+
+logger = logging.getLogger(__name__)
 from sector_etf_map import get_etf_for_stock, aggregate_etf_from_picks
 
 
@@ -92,6 +95,34 @@ def is_etf(name: str) -> bool:
         return False
     name_upper = name.strip().upper()
     return any(name_upper.startswith(p.upper()) for p in ETF_BRAND_PREFIXES)
+
+
+def calc_upper_wick_pct(code: str, recent_days: int = 3) -> float:
+    """pykrx OHLCV에서 최근 N일 위꼬리 비율 평균 계산 (신정재 필터).
+
+    Returns: 0~100 사이 퍼센트. 에러 시 0.
+    """
+    try:
+        from pykrx import stock
+        end = datetime.now()
+        start = end - timedelta(days=30)
+        df = stock.get_market_ohlcv(
+            start.strftime("%Y%m%d"), end.strftime("%Y%m%d"), code
+        )
+        if df is None or len(df) < recent_days:
+            return 0.0
+
+        wick_ratios = []
+        for _, row in df.tail(recent_days).iterrows():
+            h, l = float(row["고가"]), float(row["저가"])
+            o, c = float(row["시가"]), float(row["종가"])
+            rng = h - l
+            if rng > 0:
+                wick_ratios.append((h - max(o, c)) / rng * 100)
+        return round(sum(wick_ratios) / len(wick_ratios), 1) if wick_ratios else 0.0
+    except Exception as e:
+        logger.debug(f"위꼬리 계산 실패 {code}: {e}")
+        return 0.0
 
 
 # ─────────────────────────────────────────────
@@ -326,8 +357,16 @@ def apply_daytrading_filters(
             if foreign_acc.get("recent_winrate", 0) >= 0.7:
                 learning_bonus = 3
 
+        # [필터 7] 위꼬리 캔들 페널티 (신정재 필터)
+        wick_pct = calc_upper_wick_pct(code)
+        wick_pen = 0
+        if wick_pct > 30:
+            wick_pen = -15
+        elif wick_pct > 20:
+            wick_pen = -8
+
         # 최종 점수
-        final_score = c["score"] + sector_bonus + mcap_bonus + ewy_bonus + learning_bonus
+        final_score = c["score"] + sector_bonus + mcap_bonus + ewy_bonus + learning_bonus + wick_pen
 
         if final_score < min_final_score:
             continue
@@ -353,6 +392,9 @@ def apply_daytrading_filters(
         # 섹터 ETF 대안 매핑 (주린이 분산진입용)
         etf_alt = get_etf_for_stock(c.get("name", ""), sector)
 
+        if wick_pen != 0:
+            reasons.append(f"위꼬리 {wick_pct:.0f}%({wick_pen:+d})")
+
         filtered.append({
             **c,
             "sector": sector,
@@ -360,6 +402,8 @@ def apply_daytrading_filters(
             "mcap_bonus": mcap_bonus,
             "ewy_bonus": ewy_bonus,
             "learning_bonus": learning_bonus,
+            "wick_pct": wick_pct,
+            "wick_pen": wick_pen,
             "final_score": round(final_score, 1),
             "entry_low": entry_low,
             "entry_high": entry_high,
@@ -430,7 +474,8 @@ def format_flowx_post(picks: list[dict], ewy_signal: dict, mode: str = "confirme
         etf_theme = p.get("etf_alt_theme", "")
         if etf_code:
             lines.append(f"   🔗 ETF 대안: {etf_name} ({etf_code}) [{etf_theme}]")
-        lines.append(f"   ⭐ 점수 {p['final_score']:.0f} (기본 {p['score']:.0f} + 섹터 {p['sector_bonus']} + 시총 {p['mcap_bonus']} + EWY {p['ewy_bonus']})")
+        wick_info = f" + 위꼬리 {p.get('wick_pen', 0):+d}" if p.get("wick_pen", 0) != 0 else ""
+        lines.append(f"   ⭐ 점수 {p['final_score']:.0f} (기본 {p['score']:.0f} + 섹터 {p['sector_bonus']} + 시총 {p['mcap_bonus']} + EWY {p['ewy_bonus']}{wick_info})")
         lines.append("")
 
     # 🔗 ETF 집계 섹션 (주린이가 분산진입할 수 있도록)
