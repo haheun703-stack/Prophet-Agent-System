@@ -420,7 +420,7 @@ def _step3_tech_filter(codes_names: list[tuple[str, str]], market_chg: float = 0
                 results[code] = {
                     "score": 0, "detail": "데이터부족",
                     "today_chg": 0, "relative_str": 0, "close": 0,
-                    "rsi": 50, "obv_dir": "FLAT",
+                    "rsi": 50, "obv_dir": "FLAT", "upper_wick_pct": 0,
                 }
                 continue
 
@@ -523,6 +523,25 @@ def _step3_tech_filter(codes_names: list[tuple[str, str]], market_chg: float = 0
             # 상대강도 표시
             details.append(f"RS{relative_str:+.0f}%")
 
+            # ── 위꼬리 비율 계산 (최근 3일 평균) ──
+            upper_wick_avg = 0.0
+            try:
+                high_arr = df["고가"].astype(float).values
+                low_arr = df["저가"].astype(float).values
+                open_arr = df["시가"].astype(float).values
+                recent_n = min(3, len(close))
+                wick_ratios = []
+                for i in range(-recent_n, 0):
+                    h, l = high_arr[i], low_arr[i]
+                    body_high = max(open_arr[i], close[i])
+                    rng = h - l
+                    if rng > 0:
+                        wick_ratios.append((h - body_high) / rng * 100)
+                if wick_ratios:
+                    upper_wick_avg = round(sum(wick_ratios) / len(wick_ratios), 1)
+            except Exception:
+                pass
+
             results[code] = {
                 "score": max(0, round(score, 1)),
                 "detail": "+".join(details) if details else "N/A",
@@ -531,13 +550,14 @@ def _step3_tech_filter(codes_names: list[tuple[str, str]], market_chg: float = 0
                 "today_chg": round(today_chg, 1),
                 "relative_str": relative_str,
                 "close": int(close[-1]),
+                "upper_wick_pct": upper_wick_avg,
             }
         except Exception as e:
             logger.warning(f"기술 분석 실패 {name}({code}): {e}")
             results[code] = {
                 "score": 0, "detail": f"오류:{e}",
                 "today_chg": 0, "relative_str": 0, "close": 0,
-                "rsi": 50, "obv_dir": "FLAT",
+                "rsi": 50, "obv_dir": "FLAT", "upper_wick_pct": 0,
             }
 
     if data_date_ok is False:
@@ -1212,6 +1232,16 @@ def _step5_cross_validate(
         elif relative_str < -2.0:
             rel_pen = -5.0    # 시장보다 약간 약세
 
+        # ── 위꼬리 캔들 페널티 (신정재 필터) ──
+        wick_pen = 0.0
+        _wick_pct = t_info.get("upper_wick_pct", 0)
+        if _wick_pct > 30:
+            wick_pen = -15.0
+        elif _wick_pct > 20:
+            wick_pen = -8.0
+        if wick_pen != 0:
+            sources.append(f"wick({_wick_pct:.0f}%:{wick_pen:+.0f})")
+
         # 줍줍 점수 (0~30) - bargain_score를 0.3배로 변환
         bargain_sc = min(b_info.get("bargain_score", 0) * 0.3, 30) if b_info else 0
 
@@ -1469,6 +1499,7 @@ def _step5_cross_validate(
         # ── 합산 ──────────────────────────────
         raw_total = (relay_sc + premove_sc + tech_sc + bargain_sc + cross_bonus
                      + nat_sc + news_pen + obv_pen + rel_pen
+                     + wick_pen       # 위꼬리 캔들 페널티
                      + shock_pen + opp_bonus + rotation_bonus + or_bias_adj
                      + eq_adj + gap_adj
                      + nat_power_sc   # 7 SECRET 파워
