@@ -138,6 +138,19 @@ class TradingCOO:
         logger.info("[COO] TradingCOO 초기화 완료")
 
     # ─────────────────────────────────────────────
+    # 백그라운드 태스크 예외 콜백
+    # ─────────────────────────────────────────────
+    @staticmethod
+    def _bg_task_done_cb(task: asyncio.Task) -> None:
+        """fire-and-forget 백그라운드 태스크의 예외를 로깅."""
+        if task.cancelled():
+            logger.warning(f"[COO] 백그라운드 태스크 취소됨: {task.get_name()}")
+            return
+        exc = task.exception()
+        if exc:
+            logger.error(f"[COO] 백그라운드 태스크 예외 ({task.get_name()}): {exc}", exc_info=exc)
+
+    # ─────────────────────────────────────────────
     # run_job_safe: 단일 잡 래퍼
     # ─────────────────────────────────────────────
     def run_job_safe(
@@ -822,7 +835,8 @@ class TradingCOO:
                  self.bot._job_intraday_tv_init(context)),
             ])
             # B2 tick_polling: 장중 6시간 연속 실행 → 백그라운드 task
-            asyncio.create_task(self.bot._job_start_tick_polling(context))
+            _b2_task = asyncio.create_task(self.bot._job_start_tick_polling(context))
+            _b2_task.add_done_callback(self._bg_task_done_cb)
             pre_results.append(JobResult("B2_tick_polling", True, 0))
             logger.info("[COO] B2 tick_polling 백그라운드 시작")
         else:

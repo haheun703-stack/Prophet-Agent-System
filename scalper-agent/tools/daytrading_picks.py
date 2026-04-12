@@ -97,11 +97,28 @@ def is_etf(name: str) -> bool:
     return any(name_upper.startswith(p.upper()) for p in ETF_BRAND_PREFIXES)
 
 
+def _calc_wick_from_ohlcv(df, recent_days: int) -> float:
+    """OHLCV DataFrame에서 위꼬리 비율 계산 (공통 로직)."""
+    if df is None or len(df) < recent_days:
+        return -1.0  # 데이터 부족 → 호출자에서 fallback 판단
+    wick_ratios = []
+    for _, row in df.tail(recent_days).iterrows():
+        h, l = float(row["고가"] if "고가" in df.columns else row["High"])
+        o = float(row["시가"] if "시가" in df.columns else row["Open"])
+        c = float(row["종가"] if "종가" in df.columns else row["Close"])
+        rng = h - l
+        if rng > 0:
+            wick_ratios.append((h - max(o, c)) / rng * 100)
+    return round(sum(wick_ratios) / len(wick_ratios), 1) if wick_ratios else 0.0
+
+
 def calc_upper_wick_pct(code: str, recent_days: int = 3) -> float:
-    """pykrx OHLCV에서 최근 N일 위꼬리 비율 평균 계산 (신정재 필터).
+    """최근 N일 위꼬리 비율 평균 계산 (신정재 필터).
+    pykrx 우선 → 실패 시 yfinance fallback.
 
     Returns: 0~100 사이 퍼센트. 에러 시 0.
     """
+    # 1차: pykrx
     try:
         from pykrx import stock
         end = datetime.now()
@@ -109,20 +126,33 @@ def calc_upper_wick_pct(code: str, recent_days: int = 3) -> float:
         df = stock.get_market_ohlcv(
             start.strftime("%Y%m%d"), end.strftime("%Y%m%d"), code
         )
-        if df is None or len(df) < recent_days:
-            return 0.0
-
-        wick_ratios = []
-        for _, row in df.tail(recent_days).iterrows():
-            h, l = float(row["고가"]), float(row["저가"])
-            o, c = float(row["시가"]), float(row["종가"])
-            rng = h - l
-            if rng > 0:
-                wick_ratios.append((h - max(o, c)) / rng * 100)
-        return round(sum(wick_ratios) / len(wick_ratios), 1) if wick_ratios else 0.0
+        result = _calc_wick_from_ohlcv(df, recent_days)
+        if result >= 0:
+            return result
     except Exception as e:
-        logger.debug(f"위꼬리 계산 실패 {code}: {e}")
-        return 0.0
+        logger.debug(f"위꼬리 pykrx 실패 {code}: {e}")
+
+    # 2차: yfinance fallback
+    try:
+        import yfinance as yf
+        # 한국 종목코드 변환: 005930 → 005930.KS
+        suffix = ".KS" if code[0] in "0123" else ".KQ"
+        ticker = yf.Ticker(f"{code}{suffix}")
+        df = ticker.history(period="1mo")
+        if df is not None and len(df) >= recent_days:
+            wick_ratios = []
+            for _, row in df.tail(recent_days).iterrows():
+                h, l = float(row["High"]), float(row["Low"])
+                o, c = float(row["Open"]), float(row["Close"])
+                rng = h - l
+                if rng > 0:
+                    wick_ratios.append((h - max(o, c)) / rng * 100)
+            if wick_ratios:
+                return round(sum(wick_ratios) / len(wick_ratios), 1)
+    except Exception as e:
+        logger.debug(f"위꼬리 yfinance fallback 실패 {code}: {e}")
+
+    return 0.0
 
 
 # ─────────────────────────────────────────────
