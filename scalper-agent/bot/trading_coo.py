@@ -1606,17 +1606,8 @@ class TradingCOO:
             self._job_daytrading_performance(context),
         ))
 
-        # C32: NXT 야간매수 TOP 5 발행 (nightwatch → supply_score 상위 5)
-        stage3_jobs.append((
-            "C32_nxt_top5_publish",
-            self._job_nxt_top5_publish(context),
-        ))
-
-        # C33: NXT 야간매수 성적표 (어제 NXT TOP 5 → 오늘 종가 수익률)
-        stage3_jobs.append((
-            "C33_nxt_performance",
-            self._job_nxt_performance(context),
-        ))
+        # C32/C33: Stage 3 이후 순차 실행 (nightwatch_report 갱신 대기 필요)
+        # C26이 nightwatch_decide 완료를 보장한 뒤에 C32가 읽어야 정확한 score 반영
 
         if stage3_jobs:
             # C17 국적차트 TOP200 생성+업로드, C19 FLOWX 스윙 등 무거운 작업 포함
@@ -1633,6 +1624,15 @@ class TradingCOO:
                 logger.warning("[COO] C13 백그라운드 아직 진행 중 — 대기 포기, Stage 3 이후 작업 계속")
             except Exception as e:
                 logger.warning(f"[COO] C13 백그라운드 합류 에러: {e}")
+
+        # ── Stage 4: C32 + C33 순차 (C26 nightwatch 대기 완료 후) ──
+        logger.info("[COO] G7 Stage 4: C32+C33 (nightwatch 갱신 보장 후)")
+        stage4_jobs = [
+            ("C32_nxt_top5_publish", self._job_nxt_top5_publish(context)),
+            ("C33_nxt_performance", self._job_nxt_performance(context)),
+        ]
+        s4 = await self.run_parallel_async(stage4_jobs, timeout_per_job=300)
+        results.extend(s4)
 
         # ── C22: 퀀트 대시보드 업로드 — 재활성화 (2026-04-10) ──
         try:

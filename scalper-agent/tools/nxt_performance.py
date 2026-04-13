@@ -90,6 +90,15 @@ def extract_nxt_top5(target_date: str = None) -> dict | None:
         logger.error(f"nightwatch_report 파싱 실패: {e}")
         return None
 
+    # nightwatch_report date 검증 (stale 방어)
+    report_date = nw.get("date", "")
+    today_str = date.today().isoformat()
+    if report_date != today_str:
+        logger.warning(
+            f"nightwatch_report stale: report={report_date} ≠ today={today_str} — 스킵"
+        )
+        return None
+
     targets = nw.get("nxt_targets", [])
     if not targets:
         logger.warning("nxt_targets 비어있음")
