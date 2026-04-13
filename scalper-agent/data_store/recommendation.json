@@ -1,182 +1,169 @@
 {
-  "timestamp": "2026-03-26 22:06",
-  "base_date": "2026-03-26",
-  "market_regime": "NORMAL",
-  "stocks": [
+  "stage": "evening",
+  "timestamp": "2026-04-11 16:32",
+  "market_health": "NORMAL",
+  "market_change": 1.61,
+  "us_market_note": "",
+  "relay_summary": "HOT:반도체/AI | HOT:건설 | HOT:철강/소재 | HOT:금융 | HOT:IT/플랫폼 | HOT:정유/에너지 | HOT:조선 | HOT:방산/국방 | HOT:화장품/뷰티",
+  "warning": "파이프라인 타임아웃 (918s) — Step5a(수급) 이후 단계 스킵",
+  "cross_regime": "",
+  "cross_regime_detail": "",
+  "stocks": [],
+  "momentum_stocks": [
+    {
+      "code": "300120",
+      "name": "라온피플",
+      "momentum_score": 64.5,
+      "theme": "AI_소프트웨어",
+      "theme_detail": "AI_소프트웨어(AI)",
+      "volume_spike": 11.9,
+      "price_change_5d": -32.2,
+      "entry": 1089,
+      "sl": 980,
+      "tp": 1630,
+      "cap_억": 227
+    },
     {
       "code": "015260",
       "name": "에이엔피",
-      "score": 50,
-      "source": "TV_SCAN",
-      "close": 752,
-      "chg_pct": 19.37,
-      "entry": 752,
-      "sl": 691,
-      "tp1": 812,
-      "tp2": 864,
-      "rsi": 59.2,
-      "vol_ratio": 3.19,
-      "foreign_3d": 0,
-      "institution_3d": 0,
-      "reasons": [
-        "모멘텀64",
-        "RSI59",
-        "MA20위",
-        "거래량3.2x",
-        "양봉+19.4%"
-      ]
+      "momentum_score": 64.0,
+      "theme": "",
+      "theme_detail": "",
+      "volume_spike": 5.2,
+      "price_change_5d": -13.3,
+      "entry": 592,
+      "sl": 532,
+      "tp": 941,
+      "cap_억": 267
     },
     {
-      "code": "120110",
-      "name": "코오롱인더",
-      "score": 45,
-      "source": "PREMOVE",
-      "close": 80500,
-      "chg_pct": 2.16,
-      "entry": 67400.0,
-      "sl": 62008.0,
-      "tp1": 71157.14285714286,
-      "tp2": 78184.0,
-      "rsi": 68.6,
-      "vol_ratio": 1.34,
-      "foreign_3d": 0,
-      "institution_3d": 0,
-      "reasons": [
-        "사전감지60",
-        "RSI69",
-        "MA20위",
-        "양봉+2.2%"
-      ]
+      "code": "342870",
+      "name": "오아",
+      "momentum_score": 60.0,
+      "theme": "",
+      "theme_detail": "",
+      "volume_spike": 5.0,
+      "price_change_5d": -5.4,
+      "entry": 7010,
+      "sl": 6508,
+      "tp": 8514,
+      "cap_억": 438
     },
     {
-      "code": "090350",
-      "name": "노루페인트",
-      "score": 45,
-      "source": "TV_SCAN",
-      "close": 9030,
-      "chg_pct": -1.42,
-      "entry": 9030,
-      "sl": 8307,
-      "tp1": 9752,
-      "tp2": 10384,
-      "rsi": 62.9,
-      "vol_ratio": 2.87,
-      "foreign_3d": 0,
-      "institution_3d": 0,
-      "reasons": [
-        "TV75",
-        "RSI63",
-        "MA20위",
-        "거래량2.9x"
-      ]
+      "code": "002690",
+      "name": "동일제강",
+      "momentum_score": 57.0,
+      "theme": "",
+      "theme_detail": "",
+      "volume_spike": 4.0,
+      "price_change_5d": -8.7,
+      "entry": 1505,
+      "sl": 1454,
+      "tp": 1656,
+      "cap_억": 306
     },
     {
-      "code": "003535",
-      "name": "한화투자증권우",
-      "score": 45,
-      "source": "TV_SCAN",
-      "close": 9470,
-      "chg_pct": -15.3,
-      "entry": 9470,
-      "sl": 8712,
-      "tp1": 10227,
-      "tp2": 10890,
-      "rsi": 53.8,
-      "vol_ratio": 2.61,
-      "foreign_3d": 0,
-      "institution_3d": 0,
-      "reasons": [
-        "TV75",
-        "RSI54",
-        "MA20위",
-        "거래량2.6x"
-      ]
-    },
-    {
-      "code": "456160",
-      "name": "지투지바이오",
-      "score": 40,
-      "source": "PREMOVE",
-      "close": 78300,
-      "chg_pct": -1.01,
-      "entry": 100000.0,
-      "sl": 92000.0,
-      "tp1": 108503.57142857143,
-      "tp2": 116000.0,
-      "rsi": 35.9,
-      "vol_ratio": 0.56,
-      "foreign_3d": 0,
-      "institution_3d": 0,
-      "reasons": [
-        "사전감지72",
-        "RSI36",
-        "MA20위"
-      ]
-    },
-    {
-      "code": "039030",
-      "name": "이오테크닉스",
-      "score": 40,
-      "source": "PREMOVE",
-      "close": 408000,
-      "chg_pct": -8.62,
-      "entry": 421500.0,
-      "sl": 387780.0,
-      "tp1": 448321.4285714286,
-      "tp2": 488940.0,
-      "rsi": 39.1,
-      "vol_ratio": 0.87,
-      "foreign_3d": 0,
-      "institution_3d": 0,
-      "reasons": [
-        "사전감지60",
-        "RSI39",
-        "MA20위"
-      ]
-    },
-    {
-      "code": "011070",
-      "name": "LG이노텍",
-      "score": 40,
-      "source": "PREMOVE",
-      "close": 303000,
-      "chg_pct": -3.19,
-      "entry": 285000.0,
-      "sl": 267300.0,
-      "tp1": 304535.71428571426,
-      "tp2": 320400.0,
-      "rsi": 63.1,
-      "vol_ratio": 0.79,
-      "foreign_3d": 0,
-      "institution_3d": 0,
-      "reasons": [
-        "사전감지53",
-        "RSI63",
-        "MA20위"
-      ]
-    },
-    {
-      "code": "298340",
-      "name": "PLUS 국채선물3년",
-      "score": 40,
-      "source": "TV_SCAN",
-      "close": 55885,
-      "chg_pct": 0.14,
-      "entry": 55885,
-      "sl": 51414,
-      "tp1": 60355,
-      "tp2": 64267,
-      "rsi": 40.0,
-      "vol_ratio": 0.4,
-      "foreign_3d": 0,
-      "institution_3d": 0,
-      "reasons": [
-        "TV80",
-        "RSI40",
-        "MA20위",
-        "양봉+0.1%"
-      ]
+      "code": "045510",
+      "name": "정원엔시스",
+      "momentum_score": 57.0,
+      "theme": "",
+      "theme_detail": "",
+      "volume_spike": 4.8,
+      "price_change_5d": -12.5,
+      "entry": 706,
+      "sl": 665,
+      "tp": 826,
+      "cap_억": 227
     }
   ],
-  "momentum_stocks": []
+  "war_relay_stocks": [],
+  "rotation_signal": "HOT: 방산/국방(EARLY 2D) | HOT: 반도체/AI(MID 4D) | HOT: 건설(MID 4D) | HOT: 화장품/뷰티(MID 3D) | HOT: 조선(EARLY 2D) | HOT: IT/플랫폼(MID 4D) | HOT: 금융(MID 4D) | HOT: 철강/소재(MID 4D) | NEXT: 바이오/제약(스테이징)",
+  "rotation_detail": [
+    {
+      "sector": "방산/국방",
+      "phase": "EARLY",
+      "hot_days": 2,
+      "momentum": 3.23,
+      "breadth": 0.6,
+      "signal": "초기 진입(2일차) - 소부장 기회"
+    },
+    {
+      "sector": "조선",
+      "phase": "EARLY",
+      "hot_days": 2,
+      "momentum": 3.45,
+      "breadth": 0.75,
+      "signal": "초기 진입(2일차) - 소부장 기회"
+    },
+    {
+      "sector": "화장품/뷰티",
+      "phase": "MID",
+      "hot_days": 3,
+      "momentum": 2.53,
+      "breadth": 0.6,
+      "signal": "중기(3일차) - 확산 진행 중"
+    },
+    {
+      "sector": "반도체/AI",
+      "phase": "MID",
+      "hot_days": 4,
+      "momentum": 11.54,
+      "breadth": 0.62,
+      "signal": "중기(4일차) - 확산 진행 중"
+    },
+    {
+      "sector": "건설",
+      "phase": "MID",
+      "hot_days": 4,
+      "momentum": 21.5,
+      "breadth": 0.75,
+      "signal": "중기(4일차) - 확산 진행 중"
+    },
+    {
+      "sector": "IT/플랫폼",
+      "phase": "MID",
+      "hot_days": 4,
+      "momentum": 4.66,
+      "breadth": 1.0,
+      "signal": "중기(4일차) - 확산 진행 중"
+    },
+    {
+      "sector": "금융",
+      "phase": "MID",
+      "hot_days": 4,
+      "momentum": 6.12,
+      "breadth": 1.0,
+      "signal": "중기(4일차) - 확산 진행 중"
+    },
+    {
+      "sector": "철강/소재",
+      "phase": "MID",
+      "hot_days": 4,
+      "momentum": 10.26,
+      "breadth": 1.0,
+      "signal": "중기(4일차) - 확산 진행 중"
+    },
+    {
+      "sector": "바이오/제약",
+      "phase": "STAGING",
+      "hot_days": 0,
+      "momentum": 1.41,
+      "breadth": 0.4,
+      "signal": "스테이징 - 모멘텀 +1.4%, 브레드쓰 40%"
+    },
+    {
+      "sector": "정유/에너지",
+      "phase": "LATE",
+      "hot_days": 4,
+      "momentum": 3.49,
+      "breadth": 0.6,
+      "signal": "후반(4일차) - 모멘텀/확산 둔화, 진입 주의"
+    }
+  ],
+  "etf_signal": {},
+  "tv_cluster_info": [],
+  "commodity_info": {},
+  "event_risk": {},
+  "etf_recommendations": [],
+  "sector_momentum": {}
 }

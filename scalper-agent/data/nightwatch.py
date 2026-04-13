@@ -406,6 +406,7 @@ KRX_TO_JARVIS = {
 }
 
 SECTOR_MOMENTUM_PATH = DATA_DIR / "sector_momentum.json"
+UNIVERSE_PATH = DATA_DIR / "universe.json"
 
 
 def _get_hot_sector_targets(max_sectors: int = 3) -> Tuple[List[str], List[Dict], str]:
@@ -1479,6 +1480,17 @@ def select_sectors_and_targets(
 
     # 정렬: 1순위 섹터 Tier1 → supply_score 내림차순
     nxt_targets.sort(key=lambda x: (x.get("priority", 99), x.get("tier", 99), -x.get("supply_score", 0)))
+
+    # universe.json에서 최신 종목명 보정 (사명변경 반영)
+    try:
+        uni = json.loads(UNIVERSE_PATH.read_text(encoding="utf-8")) if UNIVERSE_PATH.exists() else {}
+    except Exception:
+        uni = {}
+    if isinstance(uni, dict):
+        for t in nxt_targets:
+            uni_info = uni.get(t.get("code", ""), {})
+            if isinstance(uni_info, dict) and uni_info.get("name"):
+                t["name"] = uni_info["name"]
 
     logger.info(f"[NXT-SUPPLY] 필터 전 {pre_count}개 → 필터 후 {len(nxt_targets)}개")
     for t in nxt_targets[:10]:

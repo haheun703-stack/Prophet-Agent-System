@@ -138,10 +138,18 @@ def extract_nxt_top5(target_date: str = None) -> dict | None:
             logger.warning(f"진입가 0원: {code} {t.get('name')} — 스킵")
             continue
 
+        # universe.json에서 최신 종목명 우선 사용
+        uni = _load_universe()
+        uni_name = ""
+        if isinstance(uni, dict):
+            uni_info = uni.get(code, {})
+            if isinstance(uni_info, dict):
+                uni_name = uni_info.get("name", "")
+
         picks.append({
             "rank": i,
             "code": code,
-            "name": t.get("name", ""),
+            "name": uni_name or t.get("name", ""),
             "sector": t.get("sector", "").replace("💾 ", "").replace("⚡ ", "")
                       .replace("🏗 ", "").replace("🔋 ", "").replace("🛡 ", ""),
             "sector_raw": t.get("sector", ""),
