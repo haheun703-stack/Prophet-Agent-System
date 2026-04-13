@@ -36,6 +36,7 @@ def upload_nxt_picks(picks_data: dict) -> bool:
                 "sector": p.get("sector"),
                 "supply_score": p.get("supply_score"),
                 "entry_price": p.get("entry_price"),
+                "foreign_flow_warning": p.get("foreign_flow_warning", ""),
             })
 
         row = {

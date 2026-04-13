@@ -156,6 +156,7 @@ def extract_nxt_top5(target_date: str = None) -> dict | None:
             "supply_score": t.get("supply_score", 0),
             "tier": t.get("tier", 0),
             "entry_price": entry_price,
+            "foreign_flow_warning": t.get("foreign_flow_warning", ""),
         })
 
     if not picks:
@@ -204,9 +205,17 @@ def format_nxt_top5_telegram(picks_data: dict) -> str:
     rank_emoji = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
     for p in picks:
         emoji = rank_emoji[min(p["rank"] - 1, 4)]
+        warning = p.get("foreign_flow_warning", "")
+        warn_tag = ""
+        if warning == "쌍매도":
+            warn_tag = " 🔴쌍매도"
+        elif warning == "외국인대량이탈":
+            warn_tag = " ⚠️외국인대량이탈"
+        elif warning == "외국인이탈":
+            warn_tag = " ⚠️외국인이탈"
         lines.append(
             f"{emoji} <b>{p['name']}</b> · {p['sector']} "
-            f"· 수급{p['supply_score']} · {p['entry_price']:,}원"
+            f"· 수급{p['supply_score']} · {p['entry_price']:,}원{warn_tag}"
         )
 
     # 섹터 요약

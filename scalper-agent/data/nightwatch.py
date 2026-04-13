@@ -1162,10 +1162,12 @@ def _load_tv_scanner_data() -> Dict[str, Dict]:
 
 
 def _load_investor_flow(code: str, days: int = 3) -> Dict:
-    """flow/{code}_investor.csv → 최근 N일 외인/기관 순매수 방향"""
+    """flow/{code}_investor.csv → 최근 N일 외인/기관 순매수 방향 + 최신일 금액"""
     path = DATA_DIR / "flow" / f"{code}_investor.csv"
+    empty = {"foreign_buy_days": 0, "inst_buy_days": 0,
+             "latest_foreign_amt": 0, "latest_inst_amt": 0}
     if not path.exists():
-        return {"foreign_buy_days": 0, "inst_buy_days": 0}
+        return empty
     try:
         import csv
         rows = []
@@ -1176,7 +1178,7 @@ def _load_investor_flow(code: str, days: int = 3) -> Dict:
                 rows.append(row)
         # 최근 N일 (마지막 N행)
         recent = rows[-days:] if len(rows) >= days else rows
-        # 컬럼 인덱스: 0=date, 1=기관_금액, 4=외국인_금액
+        # 컬럼 인덱스 — 헤더 기반 자동 감지 (old/new CSV 호환)
         foreign_idx = None
         inst_idx = None
         for i, h in enumerate(header):
@@ -1201,9 +1203,31 @@ def _load_investor_flow(code: str, days: int = 3) -> Dict:
                         inst_buy += 1
             except (ValueError, IndexError):
                 pass
-        return {"foreign_buy_days": foreign_buy, "inst_buy_days": inst_buy}
+
+        # 최신일(마지막 행) 금액 (백만원 단위)
+        latest_foreign = 0
+        latest_inst = 0
+        if rows:
+            last_row = rows[-1]
+            try:
+                if foreign_idx is not None and last_row[foreign_idx].strip():
+                    latest_foreign = float(last_row[foreign_idx])
+            except (ValueError, IndexError):
+                pass
+            try:
+                if inst_idx is not None and last_row[inst_idx].strip():
+                    latest_inst = float(last_row[inst_idx])
+            except (ValueError, IndexError):
+                pass
+
+        return {
+            "foreign_buy_days": foreign_buy,
+            "inst_buy_days": inst_buy,
+            "latest_foreign_amt": latest_foreign,
+            "latest_inst_amt": latest_inst,
+        }
     except Exception:
-        return {"foreign_buy_days": 0, "inst_buy_days": 0}
+        return empty
 
 
 def _score_individual_supply(targets: List[Dict]) -> List[Dict]:
@@ -1259,6 +1283,21 @@ def _score_individual_supply(targets: List[Dict]) -> List[Dict]:
             score += 5
 
         t["supply_score"] = score
+
+        # ── 외국인 수급 이탈 참조 태그 ──
+        latest_fg = flow.get("latest_foreign_amt", 0)
+        latest_inst = flow.get("latest_inst_amt", 0)
+        if latest_fg < 0 and latest_inst < 0:
+            t["foreign_flow_warning"] = "쌍매도"
+        elif latest_fg < 0:
+            fg_billion = abs(latest_fg) / 100  # 백만원→억
+            if fg_billion >= 50:
+                t["foreign_flow_warning"] = "외국인대량이탈"
+            else:
+                t["foreign_flow_warning"] = "외국인이탈"
+        else:
+            t["foreign_flow_warning"] = ""
+
     return targets
 
 
