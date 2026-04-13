@@ -1977,11 +1977,10 @@ class TradingCOO:
             if not report:
                 return {"nxt_paper_register": "NO_REPORT"}
 
-            # Paper Trading은 관망이어도 타겟 있으면 등록 (추적 목적)
-            # signal 키 사용 (verdict 키는 nightwatch에 없음)
             signal = report.get("signal", report.get("verdict", ""))
             signal_text = report.get("signal_text", "")
-            logger.info(f"[C26] NXT signal={signal} ({signal_text}), score={report.get('total_score', '?')}")
+            total_score = report.get("total_score", 0)
+            logger.info(f"[C26] NXT signal={signal} ({signal_text}), score={total_score}")
 
             targets = report.get("nxt_targets", [])
             if not isinstance(targets, list):
@@ -1991,10 +1990,59 @@ class TradingCOO:
                 logger.info("[C26] NXT 추천 종목 없음")
                 return {"nxt_paper_register": "NO_TARGETS"}
 
+            # ── BRAIN allocation 준수 ──
+            brain_regime = "표준"
+            brain_pct = 70
+            max_nxt_positions = 5  # 기본값
+            try:
+                alloc_path = DATA_STORE / "brain_allocation.json"
+                if alloc_path.exists():
+                    alloc = json.loads(alloc_path.read_text(encoding="utf-8"))
+                    brain_regime = alloc.get("effective_regime", "표준")
+                    brain_pct = alloc.get("position_size_pct", 70)
+            except Exception:
+                pass
+
+            # BRAIN 레짐별 NXT Paper 최대 포지션 수
+            if brain_regime == "관망" or brain_pct == 0:
+                logger.info("[C26] BRAIN 관망 → NXT Paper 매수 금지")
+                return {"nxt_paper_register": "BRAIN_HOLD", "regime": brain_regime}
+            elif brain_regime == "최소" or brain_pct <= 30:
+                max_nxt_positions = 2
+            elif brain_regime == "방어" or brain_pct <= 50:
+                max_nxt_positions = 3
+            else:
+                max_nxt_positions = 5
+
+            # NXT 점수(total_score)가 진입 금지(🔴) 수준이면 축소
+            if total_score is not None and total_score <= -3:
+                orig = max_nxt_positions
+                max_nxt_positions = min(max_nxt_positions, 2)
+                logger.info(f"[C26] NXT 진입금지 ({total_score:+.1f}) → 최대 {orig}→{max_nxt_positions}종목")
+
+            logger.info(f"[C26] BRAIN {brain_regime}({brain_pct}%) → NXT 최대 {max_nxt_positions}종목")
+
             portfolio = PaperPortfolio()
             registered = []
 
-            for t in targets:
+            # 기존 NXT 포지션 수 확인
+            existing_nxt = sum(
+                1 for pos in portfolio.positions.values()
+                if pos.get("source", "").startswith("nxt")
+            )
+            remaining_slots = max(0, max_nxt_positions - existing_nxt)
+            if remaining_slots <= 0:
+                logger.info(f"[C26] NXT 슬롯 소진 (기존 {existing_nxt}/{max_nxt_positions}) — 스킵")
+                return {"nxt_paper_register": 0, "reason": "SLOT_FULL",
+                        "existing": existing_nxt, "max": max_nxt_positions}
+
+            # supply_score 상위순 정렬 후 슬롯 수만큼만 등록
+            targets_sorted = sorted(targets, key=lambda x: -x.get("supply_score", 0))
+
+            for t in targets_sorted:
+                if len(registered) >= remaining_slots:
+                    break
+
                 code = t.get("code", "")
                 name = t.get("name", code)
                 if not code or code in portfolio.positions:
@@ -2015,8 +2063,9 @@ class TradingCOO:
                 if entry <= 0:
                     continue
 
-                # NXT 포지션 크기: 가용 자금의 40%
-                shares = max(1, int(portfolio.cash * 0.4 / entry))
+                # 포지션 크기: BRAIN allocation 반영
+                alloc_ratio = brain_pct / 100.0
+                shares = max(1, int(portfolio.cash * 0.3 * alloc_ratio / entry))
 
                 # TP/SL: NXT 기본값 (+3% / -2.5%)
                 tp = int(entry * 1.03)
@@ -2029,8 +2078,10 @@ class TradingCOO:
                     registered.append(name)
 
             if registered:
-                logger.info(f"[C26] NXT Paper 등록: {', '.join(registered)}")
-            return {"nxt_paper_register": len(registered), "names": registered}
+                logger.info(f"[C26] NXT Paper 등록: {', '.join(registered)} "
+                            f"({brain_regime} {brain_pct}%, {len(registered)}/{max_nxt_positions})")
+            return {"nxt_paper_register": len(registered), "names": registered,
+                    "brain_regime": brain_regime, "max_slots": max_nxt_positions}
         except Exception as e:
             logger.warning(f"[C26] NXT Paper 등록 실패 (무시): {e}")
             return {"nxt_paper_register": f"ERROR: {e}"}
