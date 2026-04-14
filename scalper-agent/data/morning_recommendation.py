@@ -2063,6 +2063,11 @@ def run_evening_recommendation() -> RecommendationReport:
 
     codes_names = list(all_codes_set)
 
+    # ── 타임아웃 가드: Step 3 진입 전 ──
+    _timeout_result = _check_pipeline_timeout("Step3(기술분석)", report)
+    if _timeout_result:
+        return _timeout_result
+
     # Step 3: 기술 분석 (market_chg 전달 → 상대강도 계산)
     t0 = time.time()
     logger.info(f"[Step 3/6] 기술 분석 ({len(codes_names)}종목, 시장 {market_chg:+.1f}%)...")

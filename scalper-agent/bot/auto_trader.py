@@ -2106,10 +2106,13 @@ class AutoTrader:
             chat_id = os.getenv("TELEGRAM_CHAT_ID")
 
         async def _send(text):
-            if self._send_alert:
-                await self._send_alert(text)
-            elif chat_id:
-                await context.bot.send_message(chat_id=chat_id, text=text)
+            try:
+                if self._send_alert:
+                    await self._send_alert(text)
+                elif chat_id:
+                    await context.bot.send_message(chat_id=chat_id, text=text)
+            except Exception as e_tg:
+                logger.warning(f"[C13] 텔레그램 전송 실패 (무시): {e_tg}")
 
         await _send("🌙 저녁 분석 시작 - 5단계 추천 파이프라인...")
 

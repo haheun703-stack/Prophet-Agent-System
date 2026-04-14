@@ -89,8 +89,8 @@ FRED_SERIES = {
 # FRED CSV URL (API 키 불필요)
 FRED_CSV_URL = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}&cosd={start}&coed={end}"
 
-# 캐시 유효 기간
-CACHE_MAX_AGE_DAYS = 1  # RRP가 일일이므로 매일 갱신
+# 캐시 유효 기간 (VPS→FRED 네트워크 타임아웃 빈발 → 3일로 완화)
+CACHE_MAX_AGE_DAYS = 3  # RRP 일일이지만 FRED 장애 시 3일간 캐시 재사용
 
 
 # ═══════════════════════════════════════
@@ -151,7 +151,7 @@ def _download_fred_csv(series_id: str, years_back: int = 2) -> List[Tuple[str, f
     }
     try:
         req = Request(url, headers=headers)
-        with urlopen(req, timeout=30) as resp:
+        with urlopen(req, timeout=10) as resp:
             text = resp.read().decode("utf-8", errors="replace")
 
         rows = []

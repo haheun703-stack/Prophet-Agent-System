@@ -120,6 +120,8 @@ class TradingCOO:
         self._b3_fallback_count = 0  # B3 연속 실패 카운터 (무한루프 방지)
         # G6 데이터 파이프라인 모드 (NORMAL/STALE/DEGRADED)
         self._g6_mode = "NORMAL"
+        # C13 추천 파이프라인 실행 중 플래그 (AUTO-RECOVERY 2중 실행 방지)
+        self._c13_recommendation_running = False
 
         # 그룹별 상태
         self.group_status: Dict[str, str] = {
@@ -1458,28 +1460,32 @@ class TradingCOO:
         if self.auto_trader:
             async def _run_c13_with_fallback():
                 """C13 실행 + 실패 시 FALLBACK (백그라운드)."""
-                r = await self.run_job_safe_async(
-                    "C13_evening_analysis",
-                    self.auto_trader.job_evening_analysis(context),
-                    timeout=2700,
-                )
-                if r.success:
-                    return r, True
-                # FALLBACK: 1분 대기 후 재시도 (기존 3분→1분 단축)
-                logger.error("[COO] ★ C13 이브닝분석 실패 — FALLBACK-C13 가동 (백그라운드)")
-                await asyncio.sleep(60)
-                r2 = await self.run_job_safe_async(
-                    "C13_evening_analysis_retry",
-                    self.auto_trader.job_evening_analysis(context),
-                    timeout=1800,
-                )
-                if r2.success:
-                    logger.info("[COO] FALLBACK-C13: 재시도 성공!")
-                else:
-                    logger.warning("[COO] FALLBACK-C13: 재시도 실패 — 전일 recommendation.json 유지")
-                    # 텔레그램 경고 — 4/8 비활성화 (알림 축소)
-                    logger.warning("[COO] C13 이브닝분석 실패 (텔레그램 OFF)")
-                return r2, r2.success
+                self._c13_recommendation_running = True
+                try:
+                    r = await self.run_job_safe_async(
+                        "C13_evening_analysis",
+                        self.auto_trader.job_evening_analysis(context),
+                        timeout=2700,
+                    )
+                    if r.success:
+                        return r, True
+                    # FALLBACK: 1분 대기 후 재시도 (기존 3분→1분 단축)
+                    logger.error("[COO] ★ C13 이브닝분석 실패 — FALLBACK-C13 가동 (백그라운드)")
+                    await asyncio.sleep(60)
+                    r2 = await self.run_job_safe_async(
+                        "C13_evening_analysis_retry",
+                        self.auto_trader.job_evening_analysis(context),
+                        timeout=1800,
+                    )
+                    if r2.success:
+                        logger.info("[COO] FALLBACK-C13: 재시도 성공!")
+                    else:
+                        logger.warning("[COO] FALLBACK-C13: 재시도 실패 — 전일 recommendation.json 유지")
+                        # 텔레그램 경고 — 4/8 비활성화 (알림 축소)
+                        logger.warning("[COO] C13 이브닝분석 실패 (텔레그램 OFF)")
+                    return r2, r2.success
+                finally:
+                    self._c13_recommendation_running = False
             c13_task = asyncio.create_task(_run_c13_with_fallback())
 
         # ── Stage 3: C14~C27 병렬 — C13과 동시 진행 ──
@@ -2770,6 +2776,19 @@ class TradingCOO:
             await self._send_recovery_alert(
                 context, fresh, [], [], "✅ 전체 정상")
             return
+
+        # ── C13 2중 실행 방지: 추천 파이프라인 진행 중이면 recommendation 복구 스킵 ──
+        if self._c13_recommendation_running:
+            before_len = len(stale)
+            stale = [chk for chk in stale if chk["name"] != "recommendation.json"]
+            if len(stale) < before_len:
+                logger.info("[AUTO-RECOVERY] recommendation 스킵 (C13 FALLBACK 진행 중)")
+                fresh.append("recommendation.json (C13 진행중)")
+            if not stale:
+                logger.info("[AUTO-RECOVERY] C13 제외 후 복구 대상 없음")
+                await self._send_recovery_alert(
+                    context, fresh, [], [], "✅ 전체 정상 (C13 진행중)")
+                return
 
         # ── 2단계: 병렬 복구 (개별 5분 / 전체 10분 타임아웃) ──
         async def _run_one(chk):
