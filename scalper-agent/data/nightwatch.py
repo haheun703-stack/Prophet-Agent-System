@@ -1256,6 +1256,100 @@ def _inject_tv_momentum_targets(nxt_targets: List[Dict]) -> int:
     return injected
 
 
+def _inject_surge_etc_targets(nxt_targets: List[Dict]) -> int:
+    """급등(+15%↑) + 기타법인 대량매수 종목을 NXT 후보에 TV score 무관 주입.
+
+    작전/자사주/계열사 세력(기타법인)이 하루에 대량매수하며 급등시킨 종목.
+    TV score가 낮아도(평소 거래대금 높은 종목) 등락률+기타법인 수급으로 감지.
+    기존 TV 모멘텀 경로와 중복 방지.
+    """
+    tv_data = _load_tv_scanner_data()
+    if not tv_data:
+        return 0
+
+    existing_codes = {t["code"] for t in nxt_targets}
+    injected = 0
+
+    # universe.json 참조
+    try:
+        uni = json.loads(UNIVERSE_PATH.read_text(encoding="utf-8")) if UNIVERSE_PATH.exists() else {}
+    except Exception:
+        uni = {}
+
+    candidates = []
+    # tv_data가 dict면 items(), list(signals)면 순회
+    items = []
+    if isinstance(tv_data, dict):
+        items = [(code, d) for code, d in tv_data.items() if not code.startswith("_")]
+    elif isinstance(tv_data, list):
+        items = [(d.get("code", ""), d) for d in tv_data]
+
+    for code, tv in items:
+        if not code or code in existing_codes:
+            continue
+
+        change_pct = tv.get("change_pct", 0) or 0
+        # 급등 기준: +15% 이상
+        if change_pct < 15.0:
+            continue
+
+        # ETF 제외
+        uni_info = uni.get(code, {}) if isinstance(uni, dict) else {}
+        nm = uni_info.get("name", tv.get("name", ""))
+        if nm.startswith(("KODEX", "TIGER", "KOSEF", "KBSTAR", "ACE", "SOL", "ARIRANG")):
+            continue
+
+        # 시총 필터 (최소 1,000억)
+        cap = uni_info.get("cap_억", 0) or 0
+        if cap < 1000:
+            continue
+
+        # 4세력 수급 확인 — 기타법인 중심
+        flow = _load_investor_flow(code, days=1)
+        latest_etc = flow.get("latest_etc_amt", 0)
+        latest_foreign = flow.get("latest_foreign_amt", 0)
+        latest_inst = flow.get("latest_inst_amt", 0)
+        etc_billion = latest_etc / 100  # 백만원→억
+
+        # 조건1: 기타법인 50억+ 단독 폭풍매수
+        if latest_etc > 0 and etc_billion >= 50:
+            supply_tag = "기타법인매수"
+            combined = etc_billion
+        # 조건2: 기타법인 20억+ & 외인 또는 기관 동참
+        elif latest_etc > 0 and etc_billion >= 20 and (latest_foreign > 0 or latest_inst > 0):
+            supply_tag = "기타+기관매수"
+            combined = etc_billion + max(latest_foreign, 0) / 100 + max(latest_inst, 0) / 100
+        else:
+            continue  # 기타법인 수급 불충분 → 스킵
+
+        tv_score = tv.get("score", 0) or 0
+        tv_ratio = tv.get("tv_ratio", 0) or 0
+        candidates.append({
+            "code": code,
+            "name": tv.get("name", uni_info.get("name", code)),
+            "sector": f"급등기타법인({supply_tag})",
+            "sector_key": "surge_etc",
+            "tier": 1,
+            "priority": 85,
+            "is_etf": False,
+            "tv_score": tv_score,
+            "tv_pattern": tv.get("pattern", ""),
+            "change_pct": change_pct,
+            "combined_supply": combined,
+        })
+
+    # 기타법인 금액 내림차순, 최대 3개 (TV 경로 5개와 별도)
+    candidates.sort(key=lambda x: -x.get("combined_supply", 0))
+    for c in candidates[:3]:
+        nxt_targets.append(c)
+        existing_codes.add(c["code"])
+        injected += 1
+        logger.info(f"[NXT-SURGE] 주입: {c['name']} {c.get('change_pct',0):+.1f}% "
+                     f"기타법인:{c.get('combined_supply',0):.0f}억 [{c['sector']}]")
+
+    return injected
+
+
 def _load_investor_flow(code: str, days: int = 3) -> Dict:
     """flow/{code}_investor.csv → 최근 N일 4세력 순매수 방향 + 최신일 금액
 
@@ -1624,6 +1718,12 @@ def select_sectors_and_targets(
     _tv_injected = _inject_tv_momentum_targets(nxt_targets)
     if _tv_injected:
         logger.info(f"[NXT-TV] TV 모멘텀 {_tv_injected}개 주입")
+
+    # ── 급등 + 기타법인 대량매수 종목 자동 주입 (TV score 무관) ──
+    # 작전/자사주/계열사 세력이 하루에 급등시킨 종목 (TV에서 놓치는 케이스)
+    _surge_injected = _inject_surge_etc_targets(nxt_targets)
+    if _surge_injected:
+        logger.info(f"[NXT-SURGE] 급등+기타법인 {_surge_injected}개 주입")
 
     # ── 개별 수급 필터 ──
     pre_count = len(nxt_targets)
