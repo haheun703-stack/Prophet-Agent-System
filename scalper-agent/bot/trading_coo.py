@@ -1227,6 +1227,10 @@ class TradingCOO:
         parallel_jobs.append((
             "C5M_macro_baseline",
             self._job_macro_baseline(context)))
+        # C5T: TV 스캐너 독립 갱신 (C7 검증 전 tv_scanner.json 날짜 보장)
+        parallel_jobs.append((
+            "C5T_tv_scanner",
+            self._job_tv_scanner_refresh(context)))
 
         if parallel_jobs:
             par_results = await self.run_parallel_async(
@@ -1788,6 +1792,55 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[C5Z] Z-score 사전 계산 실패 (무시): {e}")
             return {"flow_zscore": f"ERROR: {e}"}
+
+    async def _job_tv_scanner_refresh(self, context=None) -> dict:
+        """C5T: TV 스캐너 독립 갱신 — G6에서 C3 완료 후 실행.
+
+        C13(이브닝분석)이 G7 백그라운드에서 TV 스캔을 하지만,
+        C7 데이터 검증이 먼저 실행되어 날짜 불일치 FAIL 발생.
+        G6 병렬 단계에서 독립 스캔하여 C7 검증 전 갱신 보장.
+        """
+        try:
+            from data.trading_value_scanner import scan_trading_value, save_tv_results
+            import json
+            from pathlib import Path
+
+            store = Path(__file__).resolve().parent.parent / "data_store"
+
+            # 캐시 체크: 이미 오늘 스캔 완료면 스킵
+            tv_path = store / "tv_scanner.json"
+            if tv_path.exists():
+                from datetime import datetime
+                today_str = datetime.now().strftime("%Y-%m-%d")
+                try:
+                    cached = json.loads(tv_path.read_text("utf-8"))
+                    if cached.get("scan_date") == today_str:
+                        logger.info("[C5T] TV 스캐너 이미 오늘 갱신 완료 — 스킵")
+                        return {"tv_scanner": "CACHED"}
+                except Exception:
+                    pass
+
+            # 유니버스 로드
+            uni_path = store / "universe.json"
+            if not uni_path.exists():
+                return {"tv_scanner": "NO_UNIVERSE"}
+            universe = json.loads(uni_path.read_text("utf-8"))
+
+            # TV 풀스캔 (타임아웃 180초)
+            from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="c5t_tv") as ex:
+                future = ex.submit(scan_trading_value, universe, min_tv_billion=10.0)
+                try:
+                    signals = future.result(timeout=180)
+                    save_tv_results(signals)
+                    logger.info(f"[C5T] TV 스캐너 갱신 완료: {len(signals)}개 시그널")
+                    return {"tv_scanner": "OK", "signals": len(signals)}
+                except FuturesTimeout:
+                    logger.warning("[C5T] TV 스캐너 타임아웃 (180s)")
+                    return {"tv_scanner": "TIMEOUT"}
+        except Exception as e:
+            logger.warning(f"[C5T] TV 스캐너 갱신 실패 (무시): {e}")
+            return {"tv_scanner": f"ERROR: {e}"}
 
     async def _job_macro_baseline(self, context=None) -> dict:
         """C5M: 매크로 기준선 수집 (yfinance 6지표 20MA/60MA).

@@ -9,8 +9,8 @@ Data Pipeline Verifier — 장마감 후 데이터 수집 검증
   HIGH:     tv_scanner, brain_report, minute_candles, minute_5min,
             nationality, nightwatch, sector_history, sector_relay,
             guardian, insights
-  NOTE: tv_scanner, brain_report는 16:45+ 추천 파이프라인에서 생성되므로
-        16:25 검증 시점에는 아직 미생성 → CRITICAL 부적합 → HIGH로 하향
+  NOTE: tv_scanner — G6 C5T에서 독립 갱신 (C7 검증 전 보장)
+        brain_report는 G7 C13에서 생성 + safeguard 보장
   MEDIUM:   short_selling, news_sentiment
   LOW:      dart_disclosure, consensus
 
@@ -466,7 +466,7 @@ RETRY_MAP = {
     "investor_flow":  "_job_collect_daily",
     # minute_candles / minute_5min — 비활성화
     "nightwatch":     "job_nightwatch_collect",
-    # tv_scanner — C13(morning_recommendation) 내부 생성, 단독 재수집 불가
+    "tv_scanner":     "_job_tv_scanner_refresh",  # C5T: G6 독립 갱신
     "sector_history": "_job_record_signals",
     # sector_relay — 비활성화
     "insights":       "_job_daily_learning",

@@ -2723,10 +2723,28 @@ def run_evening_recommendation() -> RecommendationReport:
     return report
 
 
+def _load_us_overnight_cache() -> dict:
+    """A11이 생성한 us_market_overnight.json 캐시 로드 (yfinance 대체)."""
+    import json
+    cache_path = Path(__file__).resolve().parent.parent / "data_store" / "us_market_overnight.json"
+    if not cache_path.exists():
+        return {}
+    try:
+        data = json.loads(cache_path.read_text("utf-8"))
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        if data.get("date", "")[:10] == today_str:
+            return data
+    except Exception:
+        pass
+    return {}
+
+
 def run_us_market_check(prev_report: RecommendationReport) -> RecommendationReport:
-    """Stage 2: 미국장 체크 (06:30) - 미국 지수 확인 → 추천 조정"""
+    """Stage 2: 미국장 체크 (06:30) - 미국 지수 확인 → 추천 조정
+
+    우선순위: us_market_overnight.json (A11 캐시) → yfinance fallback
+    """
     from datetime import datetime
-    import yfinance as yf
 
     report = RecommendationReport(
         stage="us_check",
@@ -2736,74 +2754,78 @@ def run_us_market_check(prev_report: RecommendationReport) -> RecommendationRepo
         market_health=prev_report.market_health,
     )
 
-    # 미국 주요 지수 체크
-    us_indices = {
-        "^GSPC": "S&P500",
-        "^IXIC": "나스닥",
-        "^DJI": "다우",
-        "^VIX": "VIX",
-    }
+    # ── 1차: A11 캐시에서 미국장 데이터 로드 ──
+    us_cache = _load_us_overnight_cache()
     us_notes = []
+    sp500_chg = 0.0
+    vix_val = 0.0
+    tnx_chg = 0.0
 
-    for ticker, name in us_indices.items():
+    if us_cache:
+        logger.info("[US Check] A11 캐시 사용 (yfinance 스킵)")
+        sp_chg = us_cache.get("sp500_change", 0.0)
+        nq_chg = us_cache.get("nasdaq_change", 0.0)
+        vix_val = us_cache.get("vix", 0.0)
+        vix_chg = us_cache.get("vix_change", 0.0)
+        us_notes.append(f"S&P500: {sp_chg:+.2f}%")
+        us_notes.append(f"나스닥: {nq_chg:+.2f}%")
+        us_notes.append(f"VIX: {vix_val:.1f} ({vix_chg:+.2f}%)")
+        sp500_chg = sp_chg
+        # TNX 변동
+        tnx_yield = us_cache.get("us_10y_yield", 0.0)
+        if tnx_yield:
+            tnx_chg = 0.0  # 캐시에 전일 비교 데이터 없으면 0
+    else:
+        # ── 2차: yfinance fallback (타임아웃 방어) ──
+        logger.info("[US Check] A11 캐시 없음 — yfinance fallback")
         try:
-            data = yf.Ticker(ticker)
-            hist = data.history(period="2d")
-            if hist is not None and len(hist) >= 2:
-                prev_close = float(hist["Close"].iloc[-2])
-                last_close = float(hist["Close"].iloc[-1])
-                chg = (last_close / prev_close - 1) * 100
-                us_notes.append(f"{name}: {chg:+.2f}%")
-        except Exception as e:
-            us_notes.append(f"{name}: 조회실패")
+            import yfinance as yf
+        except ImportError:
+            report.us_market_note = "yfinance 미설치"
+            return report
+
+        us_indices = {
+            "^GSPC": "S&P500",
+            "^IXIC": "나스닥",
+            "^DJI": "다우",
+            "^VIX": "VIX",
+        }
+        for ticker, name in us_indices.items():
+            try:
+                data = yf.Ticker(ticker)
+                hist = data.history(period="2d", timeout=8)
+                if hist is not None and len(hist) >= 2:
+                    prev_close = float(hist["Close"].iloc[-2])
+                    last_close = float(hist["Close"].iloc[-1])
+                    chg = (last_close / prev_close - 1) * 100
+                    us_notes.append(f"{name}: {chg:+.2f}%")
+                    if ticker == "^GSPC":
+                        sp500_chg = chg
+                    elif ticker == "^VIX":
+                        vix_val = float(hist["Close"].iloc[-1])
+            except Exception:
+                us_notes.append(f"{name}: 조회실패")
+
+        # TNX (yfinance)
+        try:
+            tnx = yf.Ticker("^TNX")
+            tnx_hist = tnx.history(period="2d", timeout=8)
+            if tnx_hist is not None and len(tnx_hist) >= 2:
+                tnx_chg = float(tnx_hist["Close"].iloc[-1]) - float(tnx_hist["Close"].iloc[-2])
+        except Exception:
+            pass
 
     report.us_market_note = " | ".join(us_notes) if us_notes else "미국장 데이터 없음"
 
     # VIX 급등 체크
-    try:
-        vix = yf.Ticker("^VIX")
-        vix_hist = vix.history(period="2d")
-        if vix_hist is not None and len(vix_hist) >= 1:
-            vix_val = float(vix_hist["Close"].iloc[-1])
-            if vix_val > 30:
-                report.warning = f"VIX {vix_val:.1f} - 공포 급등! 매수 규모 축소 권고"
-            elif vix_val > 25:
-                report.warning = f"VIX {vix_val:.1f} - 경계, 1/2 규모 매수 고려"
-    except Exception:
-        pass
+    if vix_val > 30:
+        report.warning = f"VIX {vix_val:.1f} - 공포 급등! 매수 규모 축소 권고"
+    elif vix_val > 25:
+        report.warning = f"VIX {vix_val:.1f} - 경계, 1/2 규모 매수 고려"
 
     # S&P500 -2% 이상 폭락 시 경고
-    try:
-        sp = yf.Ticker("^GSPC")
-        sp_hist = sp.history(period="2d")
-        if sp_hist is not None and len(sp_hist) >= 2:
-            sp_chg = (float(sp_hist["Close"].iloc[-1]) / float(sp_hist["Close"].iloc[-2]) - 1) * 100
-            if sp_chg < -2.0:
-                report.warning = f"S&P500 {sp_chg:+.1f}% 폭락! 매수 보류 권고"
-    except Exception:
-        pass
-
-    # ── NIGHTWATCH 채권 자경단 신호등 (^TNX + S&P500 교차 판정) ──
-    sp500_chg = 0.0
-    tnx_chg = 0.0
-    try:
-        sp = yf.Ticker("^GSPC")
-        sp_hist = sp.history(period="2d")
-        if sp_hist is not None and len(sp_hist) >= 2:
-            sp500_chg = (float(sp_hist["Close"].iloc[-1]) / float(sp_hist["Close"].iloc[-2]) - 1) * 100
-    except Exception:
-        pass
-
-    try:
-        tnx = yf.Ticker("^TNX")
-        tnx_hist = tnx.history(period="2d")
-        if tnx_hist is not None and len(tnx_hist) >= 2:
-            # TNX는 금리(%) 자체이므로 변동폭(bp 아닌 %p)으로 계산
-            tnx_prev = float(tnx_hist["Close"].iloc[-2])
-            tnx_last = float(tnx_hist["Close"].iloc[-1])
-            tnx_chg = tnx_last - tnx_prev  # %p 변동 (예: 4.20→4.32 = +0.12)
-    except Exception:
-        pass
+    if sp500_chg < -2.0:
+        report.warning = f"S&P500 {sp500_chg:+.1f}% 폭락! 매수 보류 권고"
 
     # 3색 신호등 판정
     if sp500_chg < -1.0 and tnx_chg > 0.05:
