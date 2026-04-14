@@ -1945,18 +1945,21 @@ class TradingCOO:
     # A5P: NXT Paper 아침 청산 (G1)
     # ─────────────────────────────────────────────
     async def _job_nxt_paper_morning_close(self, context=None) -> dict:
-        """NXT paper 포지션 → 익일 시가 기준 청산."""
+        """NXT + 단타 TOP픽 paper 포지션 → 익일 시가 기준 청산."""
         try:
             from data.paper_portfolio import PaperPortfolio
             portfolio = PaperPortfolio()
             closed = []
             today = datetime.now().strftime("%Y-%m-%d")
 
+            # NXT + daytrading_pick 모두 time_stop_days=1 → 익일 아침 청산
+            _day_trade_sources = ("nxt", "daytrading_pick")
+
             for code in list(portfolio.positions.keys()):
                 pos = portfolio.positions[code]
-                if pos.get("source") != "nxt":
+                if pos.get("source") not in _day_trade_sources:
                     continue
-                # NXT는 전일 등록 → 익일 아침 청산
+                # 전일 등록 → 익일 아침 청산
                 if pos.get("entry_date", "") >= today:
                     continue  # 오늘 등록된 건 스킵
 
@@ -1972,7 +1975,8 @@ class TradingCOO:
                     except Exception:
                         pass
 
-                result = portfolio.close_position(code, open_price, "NXT_MORNING_SELL")
+                sell_reason = "NXT_MORNING_SELL" if pos.get("source") == "nxt" else "TOP_MORNING_SELL"
+                result = portfolio.close_position(code, open_price, sell_reason)
                 if result:
                     closed.append(f"{pos['name']} {result['pnl_pct']:+.1f}%")
 

@@ -1161,6 +1161,93 @@ def _load_tv_scanner_data() -> Dict[str, Dict]:
         return {}
 
 
+def _inject_tv_momentum_targets(nxt_targets: List[Dict]) -> int:
+    """TV EXPLOSION 65+ AND 쌍매수 종목을 NXT 후보에 섹터 무관 주입.
+
+    강세장 모멘텀 전략: TV 거래대금 폭발 + 외인·기관 동반매수 =
+    다음날 연속 상승 확률이 높은 종목. 섹터 기반 선정에서 놓치는
+    모멘텀 종목을 자동으로 NXT 후보 풀에 추가한다.
+    """
+    tv_data = _load_tv_scanner_data()
+    if not tv_data:
+        return 0
+
+    existing_codes = {t["code"] for t in nxt_targets}
+    injected = 0
+
+    # universe.json에서 이름/시총 참조
+    try:
+        uni = json.loads(UNIVERSE_PATH.read_text(encoding="utf-8")) if UNIVERSE_PATH.exists() else {}
+    except Exception:
+        uni = {}
+
+    candidates = []
+    for code, tv in tv_data.items():
+        if code in existing_codes:
+            continue
+        pattern = tv.get("pattern", "")
+        tv_score = tv.get("score", 0) or 0
+        tv_ratio = tv.get("tv_ratio", 0) or 0
+        change_pct = tv.get("change_pct", 0) or 0
+
+        # 조건: EXPLOSION 65+ 또는 GRADUAL_BUILDUP 70+ (강한 매집만)
+        if not ((pattern == "EXPLOSION" and tv_score >= 65 and tv_ratio >= 3.0)
+                or (pattern == "GRADUAL_BUILDUP" and tv_score >= 70 and tv_ratio >= 2.5)):
+            continue
+
+        # ETF 제외 (ETF는 JARVIS에서 이미 처리)
+        uni_info = uni.get(code, {}) if isinstance(uni, dict) else {}
+        if uni_info.get("sector") in ("기타",) and uni_info.get("name", "").startswith(
+            ("KODEX", "TIGER", "KOSEF", "KBSTAR", "ACE", "SOL", "ARIRANG")
+        ):
+            continue
+
+        # 시총 필터 (최소 1,000억)
+        cap = uni_info.get("cap_억", 0) or 0
+        if cap < 1000:
+            continue
+
+        # 수급 검증: 외인+기관 최근일 동반 매수 (쌍매수)
+        flow = _load_investor_flow(code, days=1)
+        latest_foreign = flow.get("latest_foreign_amt", 0)
+        latest_inst = flow.get("latest_inst_amt", 0)
+
+        # 쌍매수: 외인+기관 모두 양수, 합산 50억+ (백만원 단위 → /100 = 억)
+        combined = (latest_foreign + latest_inst) / 100  # 억원
+        if latest_foreign > 0 and latest_inst > 0 and combined >= 50:
+            supply_tag = "쌍매수"
+        elif latest_foreign > 0 and (latest_foreign / 100) >= 100:
+            supply_tag = "외인매수"  # 외인 단독 100억+
+        else:
+            continue  # 수급 불충분 → 스킵
+
+        candidates.append({
+            "code": code,
+            "name": tv.get("name", uni_info.get("name", code)),
+            "sector": f"TV모멘텀({supply_tag})",
+            "sector_key": "tv_momentum",
+            "tier": 1,
+            "priority": 90,  # 섹터 후보보다 후순위 (supply_score로 재정렬됨)
+            "is_etf": False,
+            "tv_score": tv_score,
+            "tv_pattern": pattern,
+            "change_pct": change_pct,
+            "combined_supply": combined,
+        })
+
+    # 수급 합산 내림차순 정렬, 최대 5개 주입
+    candidates.sort(key=lambda x: -x.get("combined_supply", 0))
+    for c in candidates[:5]:
+        nxt_targets.append(c)
+        existing_codes.add(c["code"])
+        injected += 1
+        logger.info(f"[NXT-TV] 주입: {c['name']} TV:{c.get('tv_score',0)} "
+                     f"{c.get('tv_pattern','')} {c.get('change_pct',0):+.1f}% "
+                     f"수급:{c.get('combined_supply',0):.0f}억 [{c['sector']}]")
+
+    return injected
+
+
 def _load_investor_flow(code: str, days: int = 3) -> Dict:
     """flow/{code}_investor.csv → 최근 N일 외인/기관 순매수 방향 + 최신일 금액"""
     path = DATA_DIR / "flow" / f"{code}_investor.csv"
@@ -1480,6 +1567,12 @@ def select_sectors_and_targets(
             if dt["code"] not in existing_codes:
                 nxt_targets.append(dt)
                 existing_codes.add(dt["code"])
+
+    # ── TV EXPLOSION 모멘텀 종목 자동 주입 (섹터 무관) ──
+    # 강세장에서 TV EXPLOSION + 쌍매수 = 다음날 연속 상승 확률 높음
+    _tv_injected = _inject_tv_momentum_targets(nxt_targets)
+    if _tv_injected:
+        logger.info(f"[NXT-TV] TV 모멘텀 {_tv_injected}개 주입")
 
     # ── 개별 수급 필터 ──
     pre_count = len(nxt_targets)

@@ -3665,7 +3665,11 @@ class BodyHunterBot:
     # ── PAPER 트레이딩 자동 추적 ────────────────────────
 
     async def _job_paper_register(self, context):
-        """09:05 PAPER 종목 자동 등록 — TradeTracker + PaperPortfolio 동시 등록"""
+        """09:05 PAPER 종목 자동 등록 — TradeTracker + PaperPortfolio(단타 TOP픽)
+
+        v2: morning 소스 제거 → daytrading_picks confirmed TOP5만 등록
+        신뢰도 있는 NXT + TOP픽만으로 Paper Trading 운영
+        """
         from datetime import date
         if not is_trading_day():
             return
@@ -3677,37 +3681,65 @@ class BodyHunterBot:
                 log_event("PAPER", f"{len(names)}종목 추적 시작: {', '.join(names)}")
                 logger.info(f"[PAPER] {len(names)}종목 추적 시작: {', '.join(names)} (로그만)")
 
-            # PaperPortfolio 연동 — 모닝 추천 등록
+            # PaperPortfolio 연동 — 단타 TOP픽 confirmed 등록 (morning → daytrading_pick)
             try:
                 from data.paper_portfolio import PaperPortfolio
                 portfolio = PaperPortfolio()
-                from data.trade_object import load_trade_objects
-                trade_objs = load_trade_objects()
+
+                # daytrading_picks.json (confirmed 모드) 로드
+                picks_path = Path(__file__).resolve().parent.parent / "data_store" / "daytrading_picks.json"
+                if not picks_path.exists():
+                    logger.info("[PaperPortfolio] daytrading_picks.json 없음 — 스킵")
+                    return
+
+                import json as _json
+                picks_data = _json.loads(picks_path.read_text(encoding="utf-8"))
+                today_str = datetime.now(KST).strftime("%Y-%m-%d")
+
+                # confirmed 모드만 등록 (preview는 무시)
+                if picks_data.get("mode") != "confirmed":
+                    logger.info(f"[PaperPortfolio] daytrading_picks mode={picks_data.get('mode')} — confirmed만 등록")
+                    return
+
+                picks = picks_data.get("picks", [])
+                if not picks:
+                    logger.info("[PaperPortfolio] 단타 TOP픽 없음")
+                    return
+
                 pp_count = 0
-                for to in (trade_objs or []):
-                    if to.rr_verdict == "REJECT":
+                for p in picks[:5]:
+                    code = p.get("code", "")
+                    name = p.get("name", code)
+                    if not code or code in portfolio.positions:
                         continue
-                    if to.code in portfolio.positions:
-                        continue
-                    entry = to.entry_price
+
+                    # 현재가 조회 (시가 기준)
+                    entry = 0
                     if self.trader:
                         try:
-                            p = self.trader.fetch_price(to.code)
-                            if p.get("success") and p.get("open", 0) > 0:
-                                entry = p["open"]
+                            pr = self.trader.fetch_price(code)
+                            if pr.get("success") and pr.get("open", 0) > 0:
+                                entry = pr["open"]
+                            elif pr.get("success") and pr.get("current_price", 0) > 0:
+                                entry = pr["current_price"]
                         except Exception:
                             pass
-                    shares = max(1, int(portfolio.cash * 0.3 / max(entry, 1)))
+                    if entry <= 0:
+                        continue
+
+                    shares = max(1, int(portfolio.cash * 0.25 / max(entry, 1)))
+                    tp = int(entry * 1.05)   # 단타 TOP픽: +5% 목표
+                    sl = int(entry * 0.97)   # -3% 손절
                     ok = portfolio.open_position(
-                        to.code, to.name, entry, shares, "morning",
-                        to.target_price, to.stop_loss, to.time_stop_days,
+                        code, name, entry, shares, "daytrading_pick",
+                        tp, sl, time_stop_days=1,
                     )
                     if ok:
                         pp_count += 1
                 if pp_count:
-                    logger.info(f"[PaperPortfolio] 모닝 {pp_count}종목 등록")
+                    logger.info(f"[PaperPortfolio] 단타 TOP픽 {pp_count}종목 등록")
             except Exception as e:
-                logger.warning(f"[PaperPortfolio] 모닝 등록 실패: {e}")
+                logger.warning(f"[PaperPortfolio] TOP픽 등록 실패: {e}")
         except Exception as e:
             logger.error(f"PAPER 등록 실패: {e}")
 

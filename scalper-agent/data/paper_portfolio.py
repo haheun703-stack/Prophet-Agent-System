@@ -2,12 +2,12 @@
 """
 Paper Portfolio — 가상 자금 관리 + 2주 검증 시스템
 =================================================
-모닝 추천 + NXT 야간매매를 가상 포트폴리오로 추적.
+NXT 야간매매 + 단타 TOP픽을 가상 포트폴리오로 추적.
 TradeTracker와 독립 운영 — 포트폴리오 레벨 자금관리 + 일일 P&L.
 
 Usage:
     portfolio = PaperPortfolio()
-    portfolio.open_position("005930", "삼성전자", 52000, 15, "morning", 55000, 50000, 5)
+    portfolio.open_position("005930", "삼성전자", 52000, 15, "nxt", 55000, 50000, 1)
     portfolio.close_position("005930", 54500, "TARGET")
     report = portfolio.get_daily_report()
 """
@@ -23,6 +23,17 @@ logger = logging.getLogger("BH.PaperPortfolio")
 _STORE = Path(__file__).resolve().parent.parent / "data_store"
 PORTFOLIO_PATH = _STORE / "paper_portfolio.json"
 DAILY_LOG_PATH = _STORE / "paper_daily_log.json"
+
+_SOURCE_LABELS = {
+    "nxt": "NXT",
+    "daytrading_pick": "TOP픽",
+    "morning": "모닝",  # 레거시 (v2부터 미사용)
+}
+
+
+def _paper_source_label(source: str) -> str:
+    """Paper 소스 코드 → 한국어 표시 라벨."""
+    return _SOURCE_LABELS.get(source, source)
 
 INITIAL_CASH = 10_000_000  # 1,000만원
 
@@ -257,6 +268,7 @@ class PaperPortfolio:
         # 소스별 분리
         morning = [t for t in trades if t.get("source") == "morning"]
         nxt = [t for t in trades if t.get("source") == "nxt"]
+        daytrading = [t for t in trades if t.get("source") == "daytrading_pick"]
 
         # 평균 R 실현
         r_values = []
@@ -375,7 +387,7 @@ class PaperPortfolio:
         if today_closed:
             lines.append(f"\n[오늘 청산] {len(today_closed)}건")
             for t in today_closed:
-                src = "모닝" if t["source"] == "morning" else "NXT"
+                src = _paper_source_label(t.get("source", ""))
                 lines.append(
                     f"  {t['name']} {t['pnl_pct']:+.1f}% ({t['reason']}) [{src}]"
                 )
@@ -384,7 +396,7 @@ class PaperPortfolio:
         if self.positions:
             lines.append(f"\n[보유중] {len(self.positions)}건")
             for code, pos in self.positions.items():
-                src = "모닝" if pos["source"] == "morning" else "NXT"
+                src = _paper_source_label(pos.get("source", ""))
                 hold = self._calc_hold_days(pos["entry_date"])
                 pnl = pos.get("unrealized_pnl", 0)
                 lines.append(
