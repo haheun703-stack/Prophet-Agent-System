@@ -2844,7 +2844,10 @@ class TradingCOO:
 
     def _check_freshness(self, path, today: str,
                          date_key: str | None) -> bool:
-        """파일이 오늘 날짜인지 검증."""
+        """파일이 오늘 날짜인지 검증.
+
+        investor_flow 마커: 수집률 90% 미만이면 미갱신으로 판정 → 재수집 트리거.
+        """
         import json
         try:
             if not path.exists():
@@ -2856,6 +2859,12 @@ class TradingCOO:
                     data = json.load(f)
                 file_date = str(data.get(date_key, ""))
                 if file_date == today:
+                    # investor_flow 마커: 수집률 90% 미만이면 재수집 필요
+                    coverage = data.get("coverage_pct", 100)
+                    if coverage < 90:
+                        logger.info(f"[AUTO-RECOVERY] {path.name}: "
+                                     f"수집률 {coverage}% < 90% → 재수집 필요")
+                        return False
                     return True
                 # fallback: timestamp 필드에서 날짜 추출
                 # (recommendation.json 등 date 키 없이 timestamp만 있는 경우)

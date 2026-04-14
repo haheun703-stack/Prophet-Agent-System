@@ -3086,11 +3086,13 @@ class BodyHunterBot:
             codes = list(UNIVERSE.keys())
 
             # 일봉(pykrx)과 수급(KIS)을 동시에 → 긴 쪽 시간만 소요
+            # force=False: 당일 캐시(오늘 날짜 데이터) 있으면 스킵
+            # → 첫 실행: 전체 수집 / FALLBACK 재실행: 실패분만 재수집
             loop = asyncio.get_event_loop()
             task_daily = loop.run_in_executor(
                 None, collect_daily_pykrx, codes, 24, True)
             task_flow = loop.run_in_executor(
-                None, collect_all_flow, codes, 24, True)
+                None, collect_all_flow, codes, 24, False)
 
             pykrx_cnt, flow_result = await asyncio.gather(task_daily, task_flow)
             r1 = flow_result.get("investor", {}) if isinstance(flow_result, dict) else {}

@@ -147,7 +147,9 @@ def collect_investor_flow(
     """
     _ensure_dirs()
 
-    # 캐시로 커버되지 않는 종목 확인
+    # 캐시: 오늘 날짜 데이터 있으면 스킵, 없으면 재수집
+    # (기존 days_old<=3 → 어제 데이터로 캐시히트되어 당일 수급 누락 문제 해결)
+    today_str = datetime.now().strftime("%Y-%m-%d")
     results = {}
     need_fetch = []
     for code in codes:
@@ -155,18 +157,21 @@ def collect_investor_flow(
         if not force and cache_file.exists():
             cached = pd.read_csv(cache_file, index_col=0, parse_dates=True)
             if len(cached) > 0:
-                days_old = (datetime.now() - cached.index[-1].to_pydatetime().replace(tzinfo=None)).days
-                if days_old <= 3:
+                last_date = cached.index[-1].strftime("%Y-%m-%d")
+                if last_date == today_str:
                     results[code] = cached
                     continue
         need_fetch.append(code)
 
+    cache_count = len(results)
     if not need_fetch:
-        print(f"  투자자별 수급: 전체 캐시 히트 ({len(results)}종목)")
+        print(f"  투자자별 수급: 전체 캐시 히트 ({cache_count}종목, 오늘 수집 완료)")
         return results
 
     # H2: 외부 세션 우선 사용, 없으면 내부 생성
-    print(f"  투자자 수급: {len(need_fetch)}종목 KIS API 수집 시작...")
+    est_sec = len(need_fetch) * 0.15  # 예상 소요시간
+    print(f"  투자자 수급: {len(need_fetch)}종목 KIS API 수집 시작 "
+          f"(캐시{cache_count}, 예상 {est_sec:.0f}초)...")
     if session is None:
         session = _get_kis_session()
     if session is None:
@@ -177,11 +182,15 @@ def collect_investor_flow(
 
     fetched = 0
     failed = 0
+    t_start = time.time()
     for i, code in enumerate(need_fetch):
         cache_file = FLOW_DIR / f"{code}_investor.csv"
 
-        if (i + 1) % 50 == 0 or i == 0:
-            print(f"    [{i+1}/{len(need_fetch)}] {code}...")
+        if (i + 1) % 200 == 0 or i == 0:
+            elapsed = time.time() - t_start
+            remain = (elapsed / max(i, 1)) * (len(need_fetch) - i)
+            print(f"    [{i+1}/{len(need_fetch)}] 수집중... "
+                  f"(성공{fetched} 실패{failed} 잔여{remain:.0f}초)")
 
         try:
             df = _fetch_investor_api(base_url, headers, code)
@@ -208,7 +217,12 @@ def collect_investor_flow(
             failed += 1
             continue
 
-    print(f"  투자자별 수급 완료: 신규{fetched} + 캐시{len(results)-fetched} = {len(results)}종목 (실패{failed})")
+    elapsed = time.time() - t_start
+    total = len(results)
+    coverage = total / len(codes) * 100 if codes else 0
+    print(f"  투자자별 수급 완료: 신규{fetched} + 캐시{cache_count} = "
+          f"{total}종목/{len(codes)} ({coverage:.1f}%) "
+          f"실패{failed} | {elapsed:.0f}초")
     return results
 
 
@@ -300,7 +314,8 @@ def collect_foreign_exhaustion(
     """
     _ensure_dirs()
 
-    # 캐시 확인
+    # 캐시: 오늘 날짜 데이터 있으면 스킵, 없으면 재수집
+    today_str = datetime.now().strftime("%Y-%m-%d")
     results = {}
     need_fetch = []
     for code in codes:
@@ -308,18 +323,19 @@ def collect_foreign_exhaustion(
         if not force and cache_file.exists():
             cached = pd.read_csv(cache_file, index_col=0, parse_dates=True)
             if len(cached) > 0:
-                days_old = (datetime.now() - cached.index[-1].to_pydatetime().replace(tzinfo=None)).days
-                if days_old <= 3:
+                last_date = cached.index[-1].strftime("%Y-%m-%d")
+                if last_date == today_str:
                     results[code] = cached
                     continue
         need_fetch.append(code)
 
+    cache_count = len(results)
     if not need_fetch:
-        print(f"  외국인 소진율: 전체 캐시 히트 ({len(results)}종목)")
+        print(f"  외국인 소진율: 전체 캐시 히트 ({cache_count}종목, 오늘 수집 완료)")
         return results
 
     # H2: 외부 세션 우선 사용, 없으면 내부 생성
-    print(f"  외국인 소진율: {len(need_fetch)}종목 KIS API 수집 시작...")
+    print(f"  외국인 소진율: {len(need_fetch)}종목 KIS API 수집 시작 (캐시{cache_count})...")
     if session is None:
         session = _get_kis_session()
     if session is None:
@@ -335,8 +351,8 @@ def collect_foreign_exhaustion(
     for i, code in enumerate(need_fetch):
         cache_file = FLOW_DIR / f"{code}_foreign_exh.csv"
 
-        if (i + 1) % 50 == 0 or i == 0:
-            print(f"    [{i+1}/{len(need_fetch)}] {code}...")
+        if (i + 1) % 200 == 0 or i == 0:
+            print(f"    [{i+1}/{len(need_fetch)}] 수집중... (성공{fetched} 실패{failed})")
 
         try:
             row = _fetch_foreign_rate_api(base_url, headers, code)
@@ -366,7 +382,10 @@ def collect_foreign_exhaustion(
             failed += 1
             continue
 
-    print(f"  외국인 소진율 완료: 신규{fetched} + 캐시{len(results)-fetched} = {len(results)}종목 (실패{failed})")
+    total = len(results)
+    coverage = total / len(codes) * 100 if codes else 0
+    print(f"  외국인 소진율 완료: 신규{fetched} + 캐시{cache_count} = "
+          f"{total}종목/{len(codes)} ({coverage:.1f}%) 실패{failed}")
     return results
 
 
@@ -621,28 +640,33 @@ def collect_all_flow(
     }
 
     # 수집 완료 마커 기록 → AUTO-RECOVERY 검증용
-    _write_flow_marker(result)
+    _write_flow_marker(result, total_codes=len(codes))
 
     return result
 
 
-def _write_flow_marker(result: dict):
+def _write_flow_marker(result: dict, total_codes: int = 0):
     """수급 수집 완료 마커 파일 기록 (AUTO-RECOVERY 검증용)."""
     import json
     from datetime import date
+    inv_count = len(result.get("investor", {}))
+    fex_count = len(result.get("foreign_exhaustion", {}))
+    coverage = inv_count / total_codes * 100 if total_codes > 0 else 0
     marker = {
         "date": date.today().strftime("%Y-%m-%d"),
-        "investor": len(result.get("investor", {})),
-        "foreign_exhaustion": len(result.get("foreign_exhaustion", {})),
+        "investor": inv_count,
+        "foreign_exhaustion": fex_count,
         "short_balance": len(result.get("short_balance", {})),
         "short_volume": len(result.get("short_volume", {})),
+        "total_codes": total_codes,
+        "coverage_pct": round(coverage, 1),
     }
     marker_path = FLOW_DIR / "_last_update.json"
     try:
         with open(marker_path, "w", encoding="utf-8") as f:
             json.dump(marker, f, ensure_ascii=False, indent=2)
-        logger.info(f"[FLOW] 마커 기록: investor={marker['investor']}, "
-                     f"foreign_exh={marker['foreign_exhaustion']}")
+        logger.info(f"[FLOW] 마커 기록: investor={inv_count}/{total_codes} "
+                     f"({coverage:.1f}%), foreign_exh={fex_count}")
     except Exception as e:
         logger.warning(f"[FLOW] 마커 기록 실패: {e}")
 
