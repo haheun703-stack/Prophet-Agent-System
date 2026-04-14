@@ -189,6 +189,11 @@ def collect_investor_flow(
                 # 기존 캐시에 병합 (30일 이상 축적)
                 if cache_file.exists():
                     old = pd.read_csv(cache_file, index_col=0, parse_dates=True)
+                    # 기존 CSV에 기타_금액 없으면 역산으로 채움
+                    if "기타_금액" not in old.columns and all(
+                        c in old.columns for c in ("외국인_금액", "기관_금액", "개인_금액")
+                    ):
+                        old["기타_금액"] = -(old["외국인_금액"] + old["기관_금액"] + old["개인_금액"])
                     df = pd.concat([old, df])
                     df = df[~df.index.duplicated(keep="last")]
                     df = df.sort_index()
@@ -242,6 +247,11 @@ def _fetch_investor_api(base_url: str, headers: dict, code: str) -> Optional[pd.
             date_str = item.get("stck_bsop_date", "")
             if not date_str:
                 continue
+            f_amt = _safe_int(item.get("frgn_ntby_tr_pbmn"))
+            i_amt = _safe_int(item.get("orgn_ntby_tr_pbmn"))
+            p_amt = _safe_int(item.get("prsn_ntby_tr_pbmn"))
+            # 기타 = -(외인+기관+개인) — 기타법인/자사주/계열사 등
+            etc_amt = -(f_amt + i_amt + p_amt)
             rows.append({
                 "date": pd.Timestamp(f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"),
                 "종가": _safe_int(item.get("stck_clpr")),
@@ -249,9 +259,10 @@ def _fetch_investor_api(base_url: str, headers: dict, code: str) -> Optional[pd.
                 "외국인_수량": _safe_int(item.get("frgn_ntby_qty")),
                 "기관_수량": _safe_int(item.get("orgn_ntby_qty")),
                 "개인_수량": _safe_int(item.get("prsn_ntby_qty")),
-                "외국인_금액": _safe_int(item.get("frgn_ntby_tr_pbmn")),
-                "기관_금액": _safe_int(item.get("orgn_ntby_tr_pbmn")),
-                "개인_금액": _safe_int(item.get("prsn_ntby_tr_pbmn")),
+                "외국인_금액": f_amt,
+                "기관_금액": i_amt,
+                "개인_금액": p_amt,
+                "기타_금액": etc_amt,
             })
 
         if not rows:

@@ -1207,17 +1207,25 @@ def _inject_tv_momentum_targets(nxt_targets: List[Dict]) -> int:
         if cap < 1000:
             continue
 
-        # 수급 검증: 외인+기관 최근일 동반 매수 (쌍매수)
+        # 수급 검증: 4세력 (외인/기관/개인/기타법인)
         flow = _load_investor_flow(code, days=1)
         latest_foreign = flow.get("latest_foreign_amt", 0)
         latest_inst = flow.get("latest_inst_amt", 0)
+        latest_etc = flow.get("latest_etc_amt", 0)
 
         # 쌍매수: 외인+기관 모두 양수, 합산 50억+ (백만원 단위 → /100 = 억)
         combined = (latest_foreign + latest_inst) / 100  # 억원
+        etc_billion = latest_etc / 100  # 억원
         if latest_foreign > 0 and latest_inst > 0 and combined >= 50:
             supply_tag = "쌍매수"
         elif latest_foreign > 0 and (latest_foreign / 100) >= 100:
             supply_tag = "외인매수"  # 외인 단독 100억+
+        elif latest_etc > 0 and etc_billion >= 50:
+            supply_tag = "기타법인매수"  # 기타법인(자사주/계열사/작전) 50억+
+            combined = etc_billion  # 정렬용 수급 합산에 기타 금액 사용
+        elif latest_etc > 0 and etc_billion >= 20 and (latest_foreign > 0 or latest_inst > 0):
+            supply_tag = "기타+기관매수"  # 기타법인 20억+ & 외인/기관 일부 동참
+            combined = etc_billion + max(latest_foreign, 0) / 100 + max(latest_inst, 0) / 100
         else:
             continue  # 수급 불충분 → 스킵
 
@@ -1249,10 +1257,15 @@ def _inject_tv_momentum_targets(nxt_targets: List[Dict]) -> int:
 
 
 def _load_investor_flow(code: str, days: int = 3) -> Dict:
-    """flow/{code}_investor.csv → 최근 N일 외인/기관 순매수 방향 + 최신일 금액"""
+    """flow/{code}_investor.csv → 최근 N일 4세력 순매수 방향 + 최신일 금액
+
+    4세력: 외국인, 기관, 개인, 기타(법인/자사주/계열사)
+    기타_금액이 없는 레거시 CSV → -(외인+기관+개인)으로 역산
+    """
     path = DATA_DIR / "flow" / f"{code}_investor.csv"
     empty = {"foreign_buy_days": 0, "inst_buy_days": 0,
-             "latest_foreign_amt": 0, "latest_inst_amt": 0}
+             "latest_foreign_amt": 0, "latest_inst_amt": 0,
+             "latest_personal_amt": 0, "latest_etc_amt": 0}
     if not path.exists():
         return empty
     try:
@@ -1266,13 +1279,17 @@ def _load_investor_flow(code: str, days: int = 3) -> Dict:
         # 최근 N일 (마지막 N행)
         recent = rows[-days:] if len(rows) >= days else rows
         # 컬럼 인덱스 — 헤더 기반 자동 감지 (old/new CSV 호환)
-        foreign_idx = None
-        inst_idx = None
+        foreign_idx = inst_idx = personal_idx = etc_idx = None
         for i, h in enumerate(header):
             if "외국인" in h and "금액" in h:
                 foreign_idx = i
             elif "기관" in h and "금액" in h:
                 inst_idx = i
+            elif "개인" in h and "금액" in h:
+                personal_idx = i
+            elif "기타" in h and "금액" in h:
+                etc_idx = i
+
         foreign_buy = 0
         inst_buy = 0
         for row in recent:
@@ -1292,8 +1309,7 @@ def _load_investor_flow(code: str, days: int = 3) -> Dict:
                 pass
 
         # 최신일(마지막 행) 금액 (백만원 단위)
-        latest_foreign = 0
-        latest_inst = 0
+        latest_foreign = latest_inst = latest_personal = latest_etc = 0
         if rows:
             last_row = rows[-1]
             try:
@@ -1306,12 +1322,29 @@ def _load_investor_flow(code: str, days: int = 3) -> Dict:
                     latest_inst = float(last_row[inst_idx])
             except (ValueError, IndexError):
                 pass
+            try:
+                if personal_idx is not None and last_row[personal_idx].strip():
+                    latest_personal = float(last_row[personal_idx])
+            except (ValueError, IndexError):
+                pass
+            # 기타: CSV 컬럼 있으면 직접, 없으면 역산
+            if etc_idx is not None:
+                try:
+                    if last_row[etc_idx].strip():
+                        latest_etc = float(last_row[etc_idx])
+                except (ValueError, IndexError):
+                    pass
+            else:
+                # 역산: 기타 = -(외인 + 기관 + 개인)
+                latest_etc = -(latest_foreign + latest_inst + latest_personal)
 
         return {
             "foreign_buy_days": foreign_buy,
             "inst_buy_days": inst_buy,
             "latest_foreign_amt": latest_foreign,
             "latest_inst_amt": latest_inst,
+            "latest_personal_amt": latest_personal,
+            "latest_etc_amt": latest_etc,
         }
     except Exception:
         return empty
@@ -1369,6 +1402,16 @@ def _score_individual_supply(targets: List[Dict]) -> List[Dict]:
         elif inst_days >= 1:
             score += 5
 
+        # 투자자 수급 — 기타법인 보너스 (최대 15점, 기존 100점 한도 초과 가능)
+        latest_etc = flow.get("latest_etc_amt", 0)
+        etc_billion = latest_etc / 100  # 백만원→억
+        if etc_billion >= 100:
+            score += 15  # 기타법인 100억+ 폭풍매수 (작전/자사주/계열사)
+        elif etc_billion >= 50:
+            score += 10  # 기타법인 50억+ 대량매수
+        elif etc_billion >= 20:
+            score += 5   # 기타법인 20억+ 소량매수
+
         t["supply_score"] = score
 
         # ── 외국인 수급 이탈 참조 태그 ──
@@ -1384,6 +1427,14 @@ def _score_individual_supply(targets: List[Dict]) -> List[Dict]:
                 t["foreign_flow_warning"] = "외국인이탈"
         else:
             t["foreign_flow_warning"] = ""
+
+        # ── 기타법인 대량매수 태그 (작전 세력 감지) ──
+        if etc_billion >= 50:
+            t["etc_flow_tag"] = f"기타법인+{etc_billion:.0f}억"
+        elif etc_billion >= 20:
+            t["etc_flow_tag"] = f"기타법인+{etc_billion:.0f}억"
+        else:
+            t["etc_flow_tag"] = ""
 
     return targets
 
