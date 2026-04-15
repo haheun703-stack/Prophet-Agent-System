@@ -77,6 +77,7 @@ class CycleResult:
     cap_억: int = 0
     market: str = ""
     summary: str = ""                   # 한줄 요약
+    surge_type: str = ""                # "지속"(연속매집→추가상승) / "원샷"(추격위험) / ""
 
 
 # ── 핵심: 사이클 감지기 ─────────────────────────────────
@@ -180,10 +181,10 @@ class CycleDetector:
         total_score = max(-100, min(100, total_score))
 
         # ── 위상 판정 ──
-        phase = self._determine_phase(total_score, signals)
+        phase, surge_type = self._determine_phase(total_score, signals, change_pct)
 
         # ── 한줄 요약 ──
-        summary = self._build_summary(signals, phase, name)
+        summary = self._build_summary(signals, phase, name, surge_type)
 
         return CycleResult(
             code=code,
@@ -197,6 +198,7 @@ class CycleDetector:
             cap_억=cap,
             market=market,
             summary=summary,
+            surge_type=surge_type,
         )
 
     # ── 8개 신호 감지 함수 ──────────────────────────────
@@ -416,48 +418,84 @@ class CycleDetector:
 
     # ── 위상 판정 ───────────────────────────────────────
 
-    def _determine_phase(self, score: float, signals: list) -> str:
-        """점수 + 신호 조합으로 위상 판정"""
+    def _determine_phase(self, score: float, signals: list,
+                         change_pct: float = 0.0) -> tuple:
+        """점수 + 신호 조합으로 위상 판정.
+
+        Returns:
+            (phase, surge_type) — surge_type은 SURGE일 때만 의미.
+              "지속": 3일+ 연속매집 후 급등 → 추가 상승 가능
+              "원샷": 하루 몰빵 급등 → 추격 위험
+              "": SURGE가 아닌 경우
+        """
         sig_names = {s.name for s in signals}
+        sig_map = {s.name: s for s in signals}
+
+        # ── 매집 지속일수 산출 (쌍매수days + 기타매집days 중 최대) ──
+        acc_days = 0
+        for s in signals:
+            if s.name in ("twin_buy", "stealth_acc", "force_reversal"):
+                acc_days = max(acc_days, s.days)
 
         # 급등임박: 쌍매수 + (개인바침 or 기타매집)
         if "twin_buy" in sig_names and ("retail_sacrifice" in sig_names or "stealth_acc" in sig_names):
-            return PHASE_SURGE
+            st = self._classify_surge_type(acc_days, change_pct)
+            return PHASE_SURGE, st
         if score >= 50:
-            return PHASE_SURGE
+            st = self._classify_surge_type(acc_days, change_pct)
+            return PHASE_SURGE, st
 
         # 매집: 기타법인 연속매수 or 세력전환
         if "stealth_acc" in sig_names:
-            return PHASE_ACCUMULATE
+            return PHASE_ACCUMULATE, ""
         if "force_reversal" in sig_names:
-            return PHASE_REVERSAL
+            return PHASE_REVERSAL, ""
 
         # 쌍매수 단독
         if "twin_buy" in sig_names and score > 15:
-            return PHASE_ACCUMULATE
+            return PHASE_ACCUMULATE, ""
 
         # 고점경고: 기타이탈 or 개인함정 + 쌍매도
         if "stealth_exit" in sig_names or ("retail_trap" in sig_names and "twin_sell" in sig_names):
-            return PHASE_PEAK_WARN
+            return PHASE_PEAK_WARN, ""
 
         # 물량분배: 개인함정 단독
         if "retail_trap" in sig_names:
-            return PHASE_DISTRIBUTE
+            return PHASE_DISTRIBUTE, ""
 
         # 쌍매도 단독 — 바닥 근접 가능성 (전환 대기)
         if "twin_sell" in sig_names:
-            return PHASE_DISTRIBUTE
+            return PHASE_DISTRIBUTE, ""
 
-        return PHASE_NEUTRAL
+        return PHASE_NEUTRAL, ""
+
+    @staticmethod
+    def _classify_surge_type(acc_days: int, change_pct: float) -> str:
+        """급등 세분화: 지속 vs 원샷.
+
+        - 3일+ 연속매집 → "지속" (추가 상승 가능)
+        - 이미 15%+ 급등 + 매집 2일 이하 → "원샷" (추격 위험)
+        - 그 외 → "지속" (아직 안 터졌으면 기본 지속)
+        """
+        if acc_days >= 3:
+            return "지속"
+        if change_pct >= 15.0 and acc_days <= 2:
+            return "원샷"
+        if change_pct >= 10.0 and acc_days <= 1:
+            return "원샷"
+        return "지속"
 
     # ── 한줄 요약 ───────────────────────────────────────
 
-    def _build_summary(self, signals: list, phase: str, name: str) -> str:
+    def _build_summary(self, signals: list, phase: str, name: str,
+                        surge_type: str = "") -> str:
         sig_names = [s.name_kr for s in signals]
         if not sig_names:
             return f"{name}: 특별 신호 없음"
 
         phase_kr = PHASE_KR.get(phase, phase)
+        if surge_type:
+            phase_kr = f"{phase_kr}({surge_type})"
         return f"{name}: [{phase_kr}] {' + '.join(sig_names)}"
 
     # ── 유니버스 전체 스캔 ──────────────────────────────
@@ -567,8 +605,13 @@ def format_cycle_telegram(results: list, title: str = "수급 사이클 스캔")
             price_str = f"{r.latest_close:,}" if r.latest_close else "?"
             cap_str = f"{r.cap_억:,}억" if r.cap_억 else ""
 
+            # 급등임박 surge_type 태그
+            surge_tag = ""
+            if phase == PHASE_SURGE and r.surge_type:
+                surge_tag = f"[{r.surge_type}] " if r.surge_type == "지속" else f"[{r.surge_type}⚡] "
+
             lines.append(
-                f"  {r.name}({r.code}) "
+                f"  {surge_tag}{r.name}({r.code}) "
                 f"점수{r.score:+.0f} "
                 f"{price_str} "
                 f"{sig_tags}"
@@ -600,8 +643,9 @@ def format_single_stock(result: CycleResult) -> str:
         return "분석 결과 없음"
 
     emoji = PHASE_EMOJI.get(result.phase, "")
+    surge_info = f" [{result.surge_type}]" if result.surge_type else ""
     lines = [
-        f"{emoji} {result.name}({result.code}) 수급 사이클",
+        f"{emoji} {result.name}({result.code}) 수급 사이클{surge_info}",
         f"위상: {result.phase_kr} | 점수: {result.score:+.0f}",
         f"종가: {result.latest_close:,} ({result.change_pct:+.1f}%)" if result.latest_close else "",
         "",

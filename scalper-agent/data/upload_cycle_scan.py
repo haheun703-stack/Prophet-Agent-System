@@ -73,6 +73,7 @@ def upload_cycle_scan(scan_results: list = None) -> bool:
                 "cap_억": item.get("cap_억", 0),
                 "market": item.get("market", ""),
                 "summary": item.get("summary", ""),
+                "surge_type": item.get("surge_type", ""),
                 "signals": _compact_signals(item.get("signals", [])),
             }
 
