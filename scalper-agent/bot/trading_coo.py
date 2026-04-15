@@ -2036,8 +2036,8 @@ class TradingCOO:
 
                 if attempt < max_attempts - 1:
                     logger.info(f"[C26] 리포트 날짜 불일치 ({report_date} ≠ {today}) "
-                                f"— nightwatch 완료 대기 30초 ({attempt+1}/{max_attempts})")
-                    await asyncio.sleep(30)
+                                f"— nightwatch 완료 대기 60초 ({attempt+1}/{max_attempts})")
+                    await asyncio.sleep(60)
                 else:
                     logger.info(f"[C26] 리포트 날짜 불일치 ({report_date} ≠ {today}) "
                                 f"— {max_attempts}회 재시도 후에도 stale, 스킵")
