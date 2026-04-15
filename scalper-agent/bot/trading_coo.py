@@ -2224,7 +2224,7 @@ class TradingCOO:
             return {"stealth_scan": f"ERROR: {e}"}
 
     async def _job_cycle_scan(self, context=None) -> dict:
-        """C34: 수급 사이클 감지기 스캔 → cycle_scan.json + 급등임박 텔레그램 알림."""
+        """C34: 수급 사이클 감지기 스캔 → cycle_scan.json + Supabase 업로드 + 텔레그램 알림."""
         try:
             from analysis.cycle_detector import run_cycle_scan, format_cycle_telegram
 
@@ -2234,6 +2234,13 @@ class TradingCOO:
             acc_cnt = sum(1 for r in results if r.phase == "ACCUMULATION")
             warn_cnt = sum(1 for r in results
                           if r.phase in ("PEAK_WARN", "DISTRIBUTION"))
+
+            # Supabase 업로드
+            try:
+                from data.upload_cycle_scan import upload_cycle_scan
+                await asyncio.to_thread(upload_cycle_scan, results)
+            except Exception as ue:
+                logger.warning(f"[C34] 사이클 Supabase 업로드 실패 (무시): {ue}")
 
             # 급등임박 3종목+ 시 텔레그램 알림
             if surge_cnt >= 3:
