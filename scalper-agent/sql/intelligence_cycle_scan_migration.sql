@@ -35,3 +35,7 @@ CREATE INDEX IF NOT EXISTS idx_cycle_scan_date
     ON intelligence_cycle_scan (date DESC);
 
 COMMENT ON TABLE intelligence_cycle_scan IS '4세력 수급 사이클 감지기 일일 결과 (급등임박/매집/전환/분배/고점경고)';
+
+-- v2: reversal_items 컬럼 추가 (전환 위상 종목 상세)
+ALTER TABLE intelligence_cycle_scan
+    ADD COLUMN IF NOT EXISTS reversal_items JSONB DEFAULT '[]'::jsonb;

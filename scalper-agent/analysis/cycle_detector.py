@@ -162,7 +162,9 @@ class CycleDetector:
         latest_close = int(recent["종가"].iloc[-1]) if "종가" in recent.columns and pd.notna(recent["종가"].iloc[-1]) else 0
         change_pct = 0.0
         if "전일대비" in recent.columns and pd.notna(recent["전일대비"].iloc[-1]) and latest_close > 0:
-            change_pct = round(float(recent["전일대비"].iloc[-1]) / (latest_close - float(recent["전일대비"].iloc[-1])) * 100, 2) if (latest_close - float(recent["전일대비"].iloc[-1])) != 0 else 0.0
+            diff = float(recent["전일대비"].iloc[-1])
+            prev_close = latest_close - diff
+            change_pct = round(diff / prev_close * 100, 2) if prev_close != 0 else 0.0
 
         # ── 신호 감지 ──
         signals = []
@@ -337,9 +339,9 @@ class CycleDetector:
             ))
         return signals
 
-    def _detect_force_reversal(self, recent: pd.DataFrame, full: pd.DataFrame,
+    def _detect_force_reversal(self, _recent: pd.DataFrame, full: pd.DataFrame,
                                 thr: float, is_large: bool) -> list:
-        """세력 매수전환: 3일+ 매도 후 매수 전환"""
+        """세력 매수전환: 3일+ 매도 후 매수 전환 (_recent: 미사용, 호환 유지)"""
         signals = []
         if len(full) < 8:
             return signals
@@ -553,17 +555,17 @@ class CycleDetector:
 
     def scan_surge_candidates(self, min_cap: int = 3000) -> list:
         """급등임박 종목만 필터"""
-        all_results = self.scan_universe(min_cap=min_cap, top_n=0)
+        all_results = self.scan_universe(min_cap=min_cap, top_n=999)
         return [r for r in all_results if r.phase == PHASE_SURGE]
 
     def scan_accumulation(self, min_cap: int = 3000) -> list:
         """매집 진행 종목만 필터"""
-        all_results = self.scan_universe(min_cap=min_cap, top_n=0)
+        all_results = self.scan_universe(min_cap=min_cap, top_n=999)
         return [r for r in all_results if r.phase == PHASE_ACCUMULATE]
 
     def scan_peak_warnings(self, min_cap: int = 3000) -> list:
         """고점 경고 종목만 필터"""
-        all_results = self.scan_universe(min_cap=min_cap, top_n=0)
+        all_results = self.scan_universe(min_cap=min_cap, top_n=999)
         return [r for r in all_results if r.phase in (PHASE_PEAK_WARN, PHASE_DISTRIBUTE)]
 
 
@@ -603,7 +605,6 @@ def format_cycle_telegram(results: list, title: str = "수급 사이클 스캔")
             # 신호 태그
             sig_tags = " ".join(f"#{s['name_kr']}" for s in r.signals[:3])
             price_str = f"{r.latest_close:,}" if r.latest_close else "?"
-            cap_str = f"{r.cap_억:,}억" if r.cap_억 else ""
 
             # 급등임박 surge_type 태그
             surge_tag = ""

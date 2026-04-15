@@ -25,16 +25,15 @@ def upload_cycle_scan(scan_results: list = None) -> bool:
         scan_results: run_cycle_scan()의 반환값 (CycleResult 리스트).
                       None이면 cycle_scan.json에서 로드.
     """
-    # 데이터 로드
-    raw_data = None
+    # [B5 fix] 데이터 로드 — raw_data 슬러지 제거
     if not scan_results:
         scan_path = STORE_DIR / "cycle_scan.json"
         if not scan_path.exists():
             logger.warning("cycle_scan.json 없음 — 업로드 스킵")
             return False
         try:
-            raw_data = json.loads(scan_path.read_text("utf-8"))
-            scan_results = raw_data.get("results", [])
+            data = json.loads(scan_path.read_text("utf-8"))
+            scan_results = data.get("results", [])
         except Exception as e:
             logger.error(f"cycle_scan.json 파싱 실패: {e}")
             return False
@@ -52,9 +51,10 @@ def upload_cycle_scan(scan_results: list = None) -> bool:
 
         today = datetime.now().strftime("%Y-%m-%d")
 
-        # 위상별 분류
+        # [B2 fix] 위상별 분류 — REVERSAL 추가
         surge_items = []
         acc_items = []
+        reversal_items = []
         warning_items = []
 
         for r in scan_results:
@@ -81,6 +81,8 @@ def upload_cycle_scan(scan_results: list = None) -> bool:
                 surge_items.append(compact)
             elif phase == "ACCUMULATION":
                 acc_items.append(compact)
+            elif phase == "REVERSAL":
+                reversal_items.append(compact)
             elif phase in ("DISTRIBUTION", "PEAK_WARN"):
                 warning_items.append(compact)
 
@@ -95,7 +97,7 @@ def upload_cycle_scan(scan_results: list = None) -> bool:
             "total_scanned": len(scan_results),
             "surge_count": len(surge_items),
             "accumulate_count": len(acc_items),
-            "reversal_count": phase_counts.get("REVERSAL", 0),
+            "reversal_count": len(reversal_items),
             "neutral_count": phase_counts.get("NEUTRAL", 0),
             "distribute_count": phase_counts.get("DISTRIBUTION", 0),
             "peak_warn_count": phase_counts.get("PEAK_WARN", 0),
@@ -109,14 +111,27 @@ def upload_cycle_scan(scan_results: list = None) -> bool:
             },
         }
 
-        client.table("intelligence_cycle_scan") \
-            .upsert(row, on_conflict="date") \
-            .execute()
+        # reversal_items 컬럼이 있으면 추가 (ALTER TABLE 실행 전 방어)
+        if reversal_items:
+            row["reversal_items"] = reversal_items[:10]
+
+        try:
+            client.table("intelligence_cycle_scan") \
+                .upsert(row, on_conflict="date") \
+                .execute()
+        except Exception as col_err:
+            if "reversal_items" in str(col_err):
+                # 컬럼 아직 없으면 빼고 재시도
+                row.pop("reversal_items", None)
+                client.table("intelligence_cycle_scan") \
+                    .upsert(row, on_conflict="date") \
+                    .execute()
 
         logger.info(
             f"사이클 업로드 완료: {today} · "
             f"급등임박 {len(surge_items)} / "
             f"매집 {len(acc_items)} / "
+            f"전환 {len(reversal_items)} / "
             f"경고 {len(warning_items)}"
         )
         return True
