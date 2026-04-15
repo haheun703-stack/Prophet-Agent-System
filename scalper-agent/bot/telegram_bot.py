@@ -1918,6 +1918,47 @@ class BodyHunterBot:
             await update.message.reply_text(f"선매집 스캔 실패: {e}")
 
     # ═══════════════════════════════════════
+    #  수급 사이클 감지기
+    # ═══════════════════════════════════════
+
+    async def cmd_cycle(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """수급 사이클 스캔 — 4세력 기반 위상 판정"""
+        if not self._is_authorized(update):
+            return
+        try:
+            text = update.message.text.strip()
+            # "사이클 005380" → 단일 종목 분석
+            parts = text.split()
+            if len(parts) >= 2:
+                query = parts[1]
+                code, name = resolve_stock(query)
+                if not code:
+                    await update.message.reply_text(f"종목 '{query}' 를 찾을 수 없습니다")
+                    return
+                await update.message.reply_text(f"수급 사이클 분석 중: {name}({code})...")
+                from analysis.cycle_detector import CycleDetector, format_single_stock
+                det = CycleDetector()
+                r = det.analyze(code)
+                if r:
+                    msg = format_single_stock(r)
+                else:
+                    msg = f"{query}: CSV 데이터 없음"
+                await update.message.reply_text(msg)
+            else:
+                # 전체 스캔
+                await update.message.reply_text("수급 사이클 전체 스캔 중... (10초)")
+                from analysis.cycle_detector import (
+                    run_cycle_scan, format_cycle_telegram
+                )
+                results = run_cycle_scan(min_cap=3000, top_n=20)
+                msg = format_cycle_telegram(results)
+                for chunk in _split_message(msg):
+                    await update.message.reply_text(chunk)
+        except Exception as e:
+            logger.error(f"수급사이클 오류: {e}", exc_info=True)
+            await update.message.reply_text(f"수급사이클 실패: {str(e)[:300]}")
+
+    # ═══════════════════════════════════════
     #  주목 종목 박스
     # ═══════════════════════════════════════
 
@@ -2484,6 +2525,8 @@ class BodyHunterBot:
             r"^페이퍼$": self.cmd_paper,
             r"^선매집$": self.cmd_stealth,
             r"^잠복$": self.cmd_stealth,
+            r"^사이클$": self.cmd_cycle,
+            r"^수급사이클$": self.cmd_cycle,
             r"^순위$": self.cmd_ranking,
             r"^상한가$": self.cmd_ranking,
             r"^수급$": self.cmd_ranking_inst,
@@ -2580,6 +2623,12 @@ class BodyHunterBot:
             MessageHandler(filters.Regex(r"^시나리오삭제\s+.+"), self.cmd_scenario_delete)
         )
 
+        app.add_handler(
+            MessageHandler(filters.Regex(r"^사이클\s+.+"), self.cmd_cycle)
+        )
+        app.add_handler(
+            MessageHandler(filters.Regex(r"^수급사이클\s+.+"), self.cmd_cycle)
+        )
         app.add_handler(
             MessageHandler(filters.Regex(r"^국적수급\s+.+"), self.cmd_nationality)
         )

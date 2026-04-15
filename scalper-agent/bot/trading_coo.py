@@ -1616,6 +1616,12 @@ class TradingCOO:
             self._job_daytrading_performance(context),
         ))
 
+        # C34: 수급 사이클 감지기 스캔 — 4세력 기반 위상 판정
+        stage3_jobs.append((
+            "C34_cycle_detector",
+            self._job_cycle_scan(context),
+        ))
+
         # C32/C33: Stage 3 이후 순차 실행 (nightwatch_report 갱신 대기 필요)
         # C26이 nightwatch_decide 완료를 보장한 뒤에 C32가 읽어야 정확한 score 반영
 
@@ -2216,6 +2222,38 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[C28] 선매집 스캔 실패 (무시): {e}")
             return {"stealth_scan": f"ERROR: {e}"}
+
+    async def _job_cycle_scan(self, context=None) -> dict:
+        """C34: 수급 사이클 감지기 스캔 → cycle_scan.json + 급등임박 텔레그램 알림."""
+        try:
+            from analysis.cycle_detector import run_cycle_scan, format_cycle_telegram
+
+            results = await asyncio.to_thread(run_cycle_scan, 3000, 20)
+
+            surge_cnt = sum(1 for r in results if r.phase == "SURGE")
+            acc_cnt = sum(1 for r in results if r.phase == "ACCUMULATION")
+            warn_cnt = sum(1 for r in results
+                          if r.phase in ("PEAK_WARN", "DISTRIBUTION"))
+
+            # 급등임박 3종목+ 시 텔레그램 알림
+            if surge_cnt >= 3:
+                msg = format_cycle_telegram(results, title="수급 사이클 자동 스캔")
+                alert_fn = getattr(self.auto_trader, "_send_alert", None) if self.auto_trader else None
+                if alert_fn:
+                    try:
+                        await asyncio.to_thread(alert_fn, msg)
+                    except Exception:
+                        pass
+
+            logger.info(
+                f"[C34] 수급 사이클 스캔 완료: "
+                f"급등임박 {surge_cnt} / 매집 {acc_cnt} / 경고 {warn_cnt}"
+            )
+            return {"cycle_scan": "OK", "surge": surge_cnt,
+                    "accumulation": acc_cnt, "warnings": warn_cnt}
+        except Exception as e:
+            logger.warning(f"[C34] 수급 사이클 스캔 실패 (무시): {e}")
+            return {"cycle_scan": f"ERROR: {e}"}
 
     async def _job_watchbox(self, context=None) -> dict:
         """C29: 주목 종목 박스 생성 → watchbox.json + Supabase 업로드 + 텔레그램 알림."""
