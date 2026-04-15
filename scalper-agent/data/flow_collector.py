@@ -198,11 +198,30 @@ def collect_investor_flow(
                 # 기존 캐시에 병합 (30일 이상 축적)
                 if cache_file.exists():
                     old = pd.read_csv(cache_file, index_col=0, parse_dates=True)
-                    # 기존 CSV에 기타_금액 없으면 역산으로 채움
-                    if "기타_금액" not in old.columns and all(
+                    # 기존 CSV에 기타법인 없으면 역산으로 채움
+                    if "기타법인_금액" not in old.columns and all(
                         c in old.columns for c in ("외국인_금액", "기관_금액", "개인_금액")
                     ):
-                        old["기타_금액"] = -(old["외국인_금액"] + old["기관_금액"] + old["개인_금액"])
+                        old["기타법인_금액"] = -(old["외국인_금액"] + old["기관_금액"] + old["개인_금액"])
+                    if "기타법인_수량" not in old.columns and all(
+                        c in old.columns for c in ("외국인_수량", "기관_수량", "개인_수량")
+                    ):
+                        old["기타법인_수량"] = -(old["외국인_수량"] + old["기관_수량"] + old["개인_수량"])
+                    # 구버전 컬럼명 정리 (기타_금액 → 기타법인_금액)
+                    if "기타_금액" in old.columns:
+                        if "기타법인_금액" not in old.columns:
+                            old.rename(columns={"기타_금액": "기타법인_금액"}, inplace=True)
+                        else:
+                            old.drop(columns=["기타_금액"], inplace=True, errors="ignore")
+                    # NaN 행 백필 (컬럼 있지만 값 비어있는 경우)
+                    if "기타법인_금액" in old.columns:
+                        mask = old["기타법인_금액"].isna()
+                        if mask.any() and all(c in old.columns for c in ("외국인_금액", "기관_금액", "개인_금액")):
+                            old.loc[mask, "기타법인_금액"] = -(old.loc[mask, "외국인_금액"] + old.loc[mask, "기관_금액"] + old.loc[mask, "개인_금액"])
+                    if "기타법인_수량" in old.columns:
+                        mask = old["기타법인_수량"].isna()
+                        if mask.any() and all(c in old.columns for c in ("외국인_수량", "기관_수량", "개인_수량")):
+                            old.loc[mask, "기타법인_수량"] = -(old.loc[mask, "외국인_수량"] + old.loc[mask, "기관_수량"] + old.loc[mask, "개인_수량"])
                     df = pd.concat([old, df])
                     df = df[~df.index.duplicated(keep="last")]
                     df = df.sort_index()
@@ -264,19 +283,24 @@ def _fetch_investor_api(base_url: str, headers: dict, code: str) -> Optional[pd.
             f_amt = _safe_int(item.get("frgn_ntby_tr_pbmn"))
             i_amt = _safe_int(item.get("orgn_ntby_tr_pbmn"))
             p_amt = _safe_int(item.get("prsn_ntby_tr_pbmn"))
-            # 기타 = -(외인+기관+개인) — 기타법인/자사주/계열사 등
+            f_qty = _safe_int(item.get("frgn_ntby_qty"))
+            i_qty = _safe_int(item.get("orgn_ntby_qty"))
+            p_qty = _safe_int(item.get("prsn_ntby_qty"))
+            # 기타법인 = -(외인+기관+개인) — 기타법인/자사주/계열사 등
             etc_amt = -(f_amt + i_amt + p_amt)
+            etc_qty = -(f_qty + i_qty + p_qty)
             rows.append({
                 "date": pd.Timestamp(f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"),
                 "종가": _safe_int(item.get("stck_clpr")),
                 "전일대비": _safe_int(item.get("prdy_vrss")),
-                "외국인_수량": _safe_int(item.get("frgn_ntby_qty")),
-                "기관_수량": _safe_int(item.get("orgn_ntby_qty")),
-                "개인_수량": _safe_int(item.get("prsn_ntby_qty")),
+                "외국인_수량": f_qty,
+                "기관_수량": i_qty,
+                "개인_수량": p_qty,
+                "기타법인_수량": etc_qty,
                 "외국인_금액": f_amt,
                 "기관_금액": i_amt,
                 "개인_금액": p_amt,
-                "기타_금액": etc_amt,
+                "기타법인_금액": etc_amt,
             })
 
         if not rows:
