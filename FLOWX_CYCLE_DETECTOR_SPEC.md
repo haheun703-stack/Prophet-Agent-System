@@ -33,14 +33,15 @@
       "phase": "SURGE",
       "phase_kr": "급등임박",
       "score": 100,
-      "latest_close": 218000,
-      "change_pct": 2.3,
+      "latest_close": 508000,
+      "change_pct": 3.4,
       "cap_억": 465000,
       "market": "KOSPI",
-      "summary": "기타법인 7일 연속 매수(926억) + 쌍매수",
+      "summary": "현대차: [급등임박(지속)] 쌍매수 + 쌍매도 + 개인바침 + 기타매집 + 기관전환 + 3세력매수",
+      "surge_type": "지속",
       "signals": [
-        {"name": "twin_buy", "name_kr": "쌍매수", "score": 25, "detail": "외인+기관 5일 중 3일 동시 매수", "days": 3},
-        {"name": "stealth_acc", "name_kr": "기타매집", "score": 30, "detail": "기타법인 7일 연속 +926억", "days": 7}
+        {"name": "twin_buy", "name_kr": "쌍매수", "score": 38, "detail": "최근3일 중 2일 쌍매수", "days": 2},
+        {"name": "stealth_acc", "name_kr": "기타매집", "score": 33, "detail": "기타법인 7일 연속 매수 (합산+926억)", "days": 7}
       ]
     }
   ],
@@ -58,6 +59,24 @@
       "summary": "기관 5일 연속 매수",
       "signals": [
         {"name": "stealth_acc", "name_kr": "기타매집", "score": 15, "detail": "기타법인 5일 연속 +340억", "days": 5}
+      ]
+    }
+  ],
+  "reversal_items": [
+    {
+      "code": "066570",
+      "name": "LG전자",
+      "phase": "REVERSAL",
+      "phase_kr": "전환",
+      "score": 20,
+      "latest_close": 85000,
+      "change_pct": 1.2,
+      "cap_억": 139000,
+      "market": "KOSPI",
+      "summary": "LG전자: [전환] 기관전환",
+      "surge_type": "",
+      "signals": [
+        {"name": "force_reversal", "name_kr": "기관전환", "score": 20, "detail": "기관 매도(-80)→매수(+120) 전환", "days": 0}
       ]
     }
   ],
@@ -103,6 +122,40 @@
 | DISTRIBUTION | 물량분배 | 세력→개인 떠넘기기 진행 | 보라 | 📤 |
 | PEAK_WARN | 고점경고 | 기타법인 이탈+개인만 매수 = 하락 전조 | 검정/빨강 | ⚠️ |
 
+## 급등 세분화: surge_type (v2)
+
+SURGE(급등임박) 종목을 "지속"과 "원샷"으로 구분.
+**surge_type 필드는 SURGE 위상에서만 값이 있고, 나머지 위상은 빈 문자열.**
+
+| surge_type | 의미 | 조건 | 뱃지 색상 |
+|------------|------|------|-----------|
+| 지속 | 3일+ 연속매집 후 상승 → 추가 상승 가능 | acc_days >= 3 | 초록 |
+| 원샷 | 하루 몰빵 급등 → 추격 위험 | change >= 15% & acc <= 2일, 또는 change >= 10% & acc <= 1일 | 빨강 + ⚡ |
+
+### 카드 표시 예시
+```
+🔥 [지속] 현대차  +100점  508,000원  +3.4%
+   → 3일+ 연속매집, 추가 상승 가능
+
+🔥 [원샷⚡] 대한전선  +55점  41,250원  +28.3%
+   → 하루 몰빵 급등, 추격 위험
+```
+
+### 정렬 우선순위
+같은 SURGE 내에서: **지속 > 원샷** 순서 (지속이 더 가치 있음)
+
+## 전환 위상: reversal_items (v2)
+
+REVERSAL(전환) 위상 종목을 별도 섹션으로 표시.
+**섹션 순서**: 급등임박 → 전환 → 매집 → 경고
+
+| 필드 | 설명 |
+|------|------|
+| `reversal_items` | JSONB 배열, 최대 10개. 바닥 전환 징후 종목 |
+
+### 빈 데이터
+- `reversal_items` 빈 배열 또는 null: "전환 감지 종목 없음"
+
 ## 8가지 감지 신호 (signals 배열)
 
 | name | name_kr | 의미 | 점수 | 색상 |
@@ -129,17 +182,22 @@
 파이차트 또는 도넛차트로 6위상 분포 표시.
 `phase_summary` 데이터 사용.
 
-### 3개 섹션/탭
+### 4개 섹션/탭
 
 **섹션 1: 🔥 급등임박 (surge_items)** — 빨강/금색 테마
 - 가장 중요한 섹션 — 매수 검토 대상
 - 기본 펼침 상태
+- surge_type별 뱃지: [지속]=초록, [원샷⚡]=빨강
 
-**섹션 2: 📦 매집 (accumulate_items)** — 주황 테마
+**섹션 2: 🔄 전환 (reversal_items)** — 초록 테마
+- 바닥 전환 징후 종목 — 관찰 대상
+- 기본 접힘 가능
+
+**섹션 3: 📦 매집 (accumulate_items)** — 주황 테마
 - 관심 종목 등록 대상 (아직 진입 이름)
 - 기본 접힘 가능
 
-**섹션 3: ⚠️ 경고 (warning_items)** — 빨강/검정 테마
+**섹션 4: ⚠️ 경고 (warning_items)** — 빨강/검정 테마
 - 보유 중이면 청산 검토, 미보유면 매수 금지
 - 기본 접힘 가능
 
@@ -254,6 +312,7 @@ CREATE TABLE IF NOT EXISTS intelligence_cycle_scan (
     peak_warn_count   INTEGER DEFAULT 0,
     surge_items       JSONB DEFAULT '[]'::jsonb,
     accumulate_items  JSONB DEFAULT '[]'::jsonb,
+    reversal_items    JSONB DEFAULT '[]'::jsonb,
     warning_items     JSONB DEFAULT '[]'::jsonb,
     top_surge_names   JSONB DEFAULT '[]'::jsonb,
     phase_summary     JSONB DEFAULT '{}'::jsonb,
