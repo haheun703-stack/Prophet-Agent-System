@@ -435,6 +435,34 @@ def _verify_insights(today: str) -> dict:
     return {"status": "FAIL", "reason": f"마지막 수정: {mtime}", "updated": mtime}
 
 
+def _verify_cycle_scan(today: str) -> dict:
+    """C34 수급 사이클 감지기 — 오늘 스캔 + surge_type 필드 존재"""
+    path = STORE_DIR / "cycle_scan.json"
+    if not path.exists():
+        return {"status": "FAIL", "reason": "파일 없음"}
+    try:
+        data = json.loads(path.read_text("utf-8"))
+        updated = data.get("updated", "")
+        file_date = updated[:10] if updated else ""
+        count = data.get("count", 0)
+        results = data.get("results", []) or []
+
+        if file_date != today:
+            return {"status": "FAIL", "reason": f"최신 스캔: {file_date}",
+                    "updated": updated, "count": count}
+
+        # surge_type 필드 검증 (4/15 추가 필드)
+        has_surge_type = any("surge_type" in r for r in results[:5])
+        if results and not has_surge_type:
+            return {"status": "PARTIAL",
+                    "reason": "surge_type 필드 없음 (구버전 결과)",
+                    "updated": updated, "count": count}
+
+        return {"status": "PASS", "updated": updated, "count": count}
+    except Exception as e:
+        return {"status": "FAIL", "reason": str(e)}
+
+
 # ═══════════════════════════════════════════
 #  DataVerifier 메인 클래스
 # ═══════════════════════════════════════════
@@ -458,6 +486,7 @@ CHECKLIST = {
     "dart_disclosure":{"description": "DART 공시",             "priority": PRIORITY_LOW},
     "consensus":      {"description": "컨센서스 목표가",        "priority": PRIORITY_LOW},
     "etf_daily":      {"description": "ETF 일봉 데이터",        "priority": PRIORITY_MEDIUM},
+    "cycle_scan":     {"description": "C34 수급 사이클 감지",     "priority": PRIORITY_HIGH},
 }
 
 # 재수집 매핑 (VER-03)
@@ -471,6 +500,7 @@ RETRY_MAP = {
     # sector_relay — 비활성화
     "insights":       "_job_daily_learning",
     "etf_daily":      "_job_collect_daily",
+    "cycle_scan":     "_job_cycle_scan",
 }
 
 
@@ -504,6 +534,7 @@ class DataVerifier:
         details["dart_disclosure"] = _verify_dart_disclosure()
         details["consensus"] = _verify_consensus()
         details["etf_daily"] = _verify_etf_daily(t)
+        details["cycle_scan"] = _verify_cycle_scan(t)
 
         # 통계 계산
         passed = sum(1 for d in details.values() if d["status"] == "PASS")

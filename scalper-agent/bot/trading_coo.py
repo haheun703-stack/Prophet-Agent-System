@@ -511,6 +511,20 @@ class TradingCOO:
         self.group_status["G1"] = GroupStatus.RUNNING
         self.save_state()
 
+        # ── A0: 전일 데이터 백필 (병렬 전 순차 실행) ──
+        # 16:25 verify는 flow 수집 중 통과하지만 C34 등 HIGH 잡이 실패할 수 있음.
+        # A1~A12(A11 미국장 필터, A10 premove 등)가 전일 cycle_scan/sector_history를
+        # 읽기 전에 반드시 백필이 완료돼야 함.
+        try:
+            a0_result = await asyncio.wait_for(
+                self._job_morning_backfill(context), timeout=900
+            )
+            logger.info(f"[COO] A0 백필 결과: {a0_result}")
+        except asyncio.TimeoutError:
+            logger.warning("[COO] A0 백필 타임아웃 (15분) — 계속 진행")
+        except Exception as e:
+            logger.warning(f"[COO] A0 백필 에러: {e}")
+
         # 잡 → 코루틴 매핑 (self.bot / self.auto_trader에서 참조)
         jobs: List[Tuple[str, Coroutine]] = []
 
@@ -2261,6 +2275,88 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[C34] 수급 사이클 스캔 실패 (무시): {e}")
             return {"cycle_scan": f"ERROR: {e}"}
+
+    async def _job_morning_backfill(self, context=None) -> dict:
+        """A0: G1 시작 시 전일 데이터 누락 자동 백필.
+
+        16:25 verify는 flow 수집 중이라 통과하지만, 이후 수집 오류로 C34 등
+        HIGH 우선순위 잡이 실패하는 경우가 많음.
+        아침 06:30에 전일 기준 verify_all() → FAIL이면 RETRY_MAP으로 재실행.
+        """
+        from datetime import date as _date, timedelta as _td
+        try:
+            from data.data_verifier import DataVerifier, RETRY_MAP
+
+            # 전일(장 마감 기준) 또는 오늘 — 오늘 06:30 기준이면 전일 데이터가 대상
+            today = _date.today().isoformat()
+            verifier = DataVerifier(today=today)
+            result = await asyncio.to_thread(verifier.verify_all)
+
+            status = result.get("status", "UNKNOWN")
+            passed = result.get("passed", 0)
+            total = result.get("total", 0)
+            logger.info(f"[A0] 전일 데이터 검증: {status} {passed}/{total}")
+
+            # FAIL 항목 중 RETRY_MAP에 있는 것 재실행 (HIGH/CRITICAL 모두)
+            retried = set()
+            skipped_failures = []
+            for key, detail in result.get("details", {}).items():
+                if detail.get("status") != "FAIL":
+                    continue
+                job_name = RETRY_MAP.get(key)
+                if not job_name:
+                    skipped_failures.append(key)
+                    continue
+                if job_name in retried:
+                    continue
+                retried.add(job_name)
+                logger.info(f"[A0] 백필 시도: {key} → {job_name}")
+                try:
+                    # COO 자체 메서드 우선, 없으면 bot/auto_trader
+                    method = getattr(self, job_name, None)
+                    if method is None and self.bot:
+                        method = getattr(self.bot, job_name, None)
+                    if method is None and self.auto_trader:
+                        method = getattr(self.auto_trader, job_name, None)
+                    if method:
+                        await asyncio.wait_for(method(context), timeout=180)
+                    else:
+                        logger.warning(f"[A0] 백필 메서드 미발견: {job_name}")
+                except Exception as e:
+                    logger.warning(f"[A0] 백필 실패 {job_name}: {e}")
+
+            if retried:
+                # 재검증
+                result2 = await asyncio.to_thread(DataVerifier(today=today).verify_all)
+                still_fail = [k for k, d in result2.get("details", {}).items()
+                              if d.get("status") == "FAIL" and k in RETRY_MAP]
+                logger.info(
+                    f"[A0] 백필 완료: {len(retried)}개 재실행 / 잔여 FAIL: {still_fail}"
+                )
+
+                # 잔여 FAIL 있으면 텔레그램 경고
+                if still_fail:
+                    alert_fn = getattr(self.auto_trader, "_send_alert", None) \
+                               if self.auto_trader else None
+                    if alert_fn:
+                        try:
+                            msg = (
+                                "⚠️ 아침 데이터 백필 경고\n"
+                                f"   재시도 후에도 FAIL: {', '.join(still_fail)}\n"
+                                f"   수동 확인 필요"
+                            )
+                            await asyncio.to_thread(alert_fn, msg)
+                        except Exception:
+                            pass
+
+                return {"morning_backfill": "OK", "retried": len(retried),
+                        "remaining_fail": still_fail}
+
+            return {"morning_backfill": "OK", "retried": 0,
+                    "skipped": skipped_failures}
+        except Exception as e:
+            logger.warning(f"[A0] 아침 백필 실패 (무시): {e}")
+            return {"morning_backfill": f"ERROR: {e}"}
 
     async def _job_watchbox(self, context=None) -> dict:
         """C29: 주목 종목 박스 생성 → watchbox.json + Supabase 업로드 + 텔레그램 알림."""
