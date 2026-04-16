@@ -524,7 +524,7 @@ def format_flowx_post(picks: list[dict], ewy_signal: dict, mode: str = "confirme
     lines.append("📌 선정: 외국인 선행매집 + 기관 합류 + EWY 바스켓 수혜")
     if mode == "preview":
         lines.append("📌 내일 아침 07:30 미국장 반영 후 최종 확정")
-        lines.append("⏰ NXT 야간 매수 가능 (17:00~20:00)")
+        lines.append("⏰ 09:00 KRX 정규장 진입 (NXT 종목은 별도 메시지)")
     else:
         lines.append("⏰ 09:00 개장 ~ 09:30 사이 진입 권장")
     lines.append("⚠️ 투자 책임: 본인")
