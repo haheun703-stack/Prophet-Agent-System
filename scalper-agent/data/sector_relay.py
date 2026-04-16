@@ -221,11 +221,22 @@ class SectorStatus:
     relay_candidates: list = field(default_factory=list)  # 릴레이 후보
 
 
-def _fetch_momentum(code: str, name: str, tier: str) -> Optional[StockMomentum]:
-    """종목 하나의 모멘텀 데이터 조회"""
+def _fetch_momentum(code: str, name: str, tier: str,
+                    as_of: Optional[str] = None) -> Optional[StockMomentum]:
+    """종목 하나의 모멘텀 데이터 조회
+
+    Args:
+        as_of: YYYY-MM-DD 기준일 (None=오늘). 백필시 과거 날짜까지의 OHLCV만 사용.
+    """
     try:
         from datetime import datetime, timedelta
-        end = datetime.now()
+        if as_of:
+            try:
+                end = datetime.strptime(as_of, "%Y-%m-%d")
+            except Exception:
+                end = datetime.now()
+        else:
+            end = datetime.now()
         start = end - timedelta(days=45)
         start_s = start.strftime("%Y%m%d")
         end_s = end.strftime("%Y%m%d")
@@ -233,6 +244,15 @@ def _fetch_momentum(code: str, name: str, tier: str) -> Optional[StockMomentum]:
         df = stock.get_market_ohlcv(start_s, end_s, code)
         if df is None or len(df) < 5:
             return None
+
+        # 기준일까지 필터 (end 포함, 그 이후 데이터 제거)
+        if as_of:
+            try:
+                df = df[df.index <= end]
+                if len(df) < 5:
+                    return None
+            except Exception:
+                pass
 
         close = int(df.iloc[-1]["종가"])
         if close == 0:
@@ -273,8 +293,12 @@ def _classify_status(
     return "COLD"
 
 
-def scan_sector(sector_id: str) -> Optional[SectorStatus]:
-    """단일 섹터 분석"""
+def scan_sector(sector_id: str, as_of: Optional[str] = None) -> Optional[SectorStatus]:
+    """단일 섹터 분석
+
+    Args:
+        as_of: YYYY-MM-DD 기준일 (None=오늘). 과거 날짜 스캔 가능.
+    """
     sec = SECTORS.get(sector_id)
     if not sec:
         return None
@@ -282,7 +306,7 @@ def scan_sector(sector_id: str) -> Optional[SectorStatus]:
     all_stocks = []
     for tier_name, tier_list in [("leader", sec["leaders"]), ("mid", sec["mid"]), ("sobujan", sec["sobujan"])]:
         for code, name in tier_list:
-            m = _fetch_momentum(code, name, tier_name)
+            m = _fetch_momentum(code, name, tier_name, as_of=as_of)
             if m:
                 all_stocks.append(m)
 
@@ -325,11 +349,15 @@ def scan_sector(sector_id: str) -> Optional[SectorStatus]:
     )
 
 
-def scan_all_sectors() -> list[SectorStatus]:
-    """전 섹터 스캔 (HOT/WARMING/RELAY 우선 정렬)"""
+def scan_all_sectors(as_of: Optional[str] = None) -> list[SectorStatus]:
+    """전 섹터 스캔 (HOT/WARMING/RELAY 우선 정렬)
+
+    Args:
+        as_of: YYYY-MM-DD 기준일 (None=오늘). 과거 날짜 백필 가능.
+    """
     results = []
     for sid in SECTORS:
-        ss = scan_sector(sid)
+        ss = scan_sector(sid, as_of=as_of)
         if ss:
             results.append(ss)
 

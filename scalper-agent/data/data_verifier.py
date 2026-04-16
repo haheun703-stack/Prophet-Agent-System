@@ -276,10 +276,13 @@ def _verify_dart_disclosure() -> dict:
 
 
 def _verify_consensus() -> dict:
-    """컨센서스 목표가 — 최근 7일 이내 업데이트"""
+    """컨센서스 목표가 — 모닝추천 종목별 lazy-cache (30일 이내 허용)
+
+    consensus.json은 모닝추천이 추천 종목에 대해서만 증권사 목표가를
+    저장하는 lazy 캐시. 매일 전체 갱신되는 파일이 아니므로 기준을 완화.
+    """
     cons_path = STORE_DIR / "consensus.json"
     if not cons_path.exists():
-        # consensus_scraper 결과가 어디에 저장되는지 확인
         alt_paths = [
             STORE_DIR / "consensus_cache.json",
             STORE_DIR / "processed" / "consensus.json",
@@ -289,7 +292,7 @@ def _verify_consensus() -> dict:
                 cons_path = p
                 break
         else:
-            return {"status": "SKIP", "reason": "컨센서스 파일 없음 (주 1회 수집)"}
+            return {"status": "SKIP", "reason": "컨센서스 파일 없음 (모닝추천 시 생성)"}
 
     mtime = _file_mtime_date(cons_path)
     if not mtime:
@@ -298,7 +301,8 @@ def _verify_consensus() -> dict:
     today_d = date.today()
     mtime_d = date.fromisoformat(mtime)
     days_old = (today_d - mtime_d).days
-    if days_old <= 7:
+    # 30일 이내면 PASS (lazy-cache 특성상 매일 갱신 X)
+    if days_old <= 30:
         return {"status": "PASS", "updated": mtime, "days_ago": days_old}
     return {"status": "PARTIAL", "reason": f"{days_old}일 전 업데이트", "updated": mtime}
 
@@ -359,7 +363,10 @@ def _verify_tv_scanner(today: str) -> dict:
 
 
 def _verify_sector_history(today: str) -> dict:
-    """섹터 히스토리 — 오늘 엔트리 존재"""
+    """섹터 히스토리 — 오늘 엔트리 + 최근 5거래일 연속성 확인
+
+    로테이션 분석은 5일 창을 사용하므로 과거 구멍도 탐지.
+    """
     path = STORE_DIR / "sector_history.json"
     if not path.exists():
         return {"status": "FAIL", "reason": "파일 없음"}
@@ -367,9 +374,44 @@ def _verify_sector_history(today: str) -> dict:
         data = json.loads(path.read_text("utf-8"))
         dates = sorted(data.keys())
         latest = dates[-1] if dates else ""
-        if latest == today:
-            return {"status": "PASS", "latest": latest, "total_dates": len(dates)}
-        return {"status": "FAIL", "reason": f"최신 날짜: {latest}", "latest": latest}
+
+        # 오늘 엔트리 필수
+        if latest != today:
+            return {"status": "FAIL", "reason": f"최신 날짜: {latest}", "latest": latest,
+                    "total_dates": len(dates)}
+
+        # 최근 5거래일 구멍 검사
+        try:
+            from utils.trading_calendar import is_trading_day
+            _is_td = is_trading_day
+        except Exception:
+            _is_td = lambda d: d.weekday() < 5
+
+        today_d = date.fromisoformat(today)
+        existing = set(dates)
+        missing = []
+        checked = 0
+        i = 1
+        while checked < 5 and i < 15:
+            d = today_d - timedelta(days=i)
+            i += 1
+            try:
+                if not _is_td(d):
+                    continue
+            except Exception:
+                if d.weekday() >= 5:
+                    continue
+            checked += 1
+            if d.strftime("%Y-%m-%d") not in existing:
+                missing.append(d.strftime("%Y-%m-%d"))
+
+        if missing:
+            return {"status": "PARTIAL",
+                    "reason": f"최근 5거래일 중 누락: {', '.join(missing)}",
+                    "latest": latest, "total_dates": len(dates),
+                    "missing_dates": missing}
+
+        return {"status": "PASS", "latest": latest, "total_dates": len(dates)}
     except Exception as e:
         return {"status": "FAIL", "reason": str(e)}
 

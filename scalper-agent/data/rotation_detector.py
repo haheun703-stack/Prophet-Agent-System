@@ -114,15 +114,16 @@ def save_history(history: dict):
     logger.info(f"섹터 히스토리 저장: {len(cleaned)}일치 → {HISTORY_PATH}")
 
 
-def record_today(sector_results: list) -> dict:
-    """오늘의 섹터 스캔 결과를 히스토리에 추가
+def record_today(sector_results: list, as_of: Optional[str] = None) -> dict:
+    """섹터 스캔 결과를 히스토리에 추가
 
     Args:
         sector_results: scan_all_sectors()의 반환값 (list[SectorStatus])
+        as_of: YYYY-MM-DD 기준일 (None=오늘). 과거 날짜 백필 시 지정.
     Returns:
         업데이트된 히스토리
     """
-    today = datetime.now().strftime("%Y-%m-%d")
+    target_date = as_of if as_of else datetime.now().strftime("%Y-%m-%d")
     history = load_history()
 
     today_data = {}
@@ -138,9 +139,81 @@ def record_today(sector_results: list) -> dict:
             "relay_gap": ss.relay_gap,
         }
 
-    history[today] = today_data
+    history[target_date] = today_data
     save_history(history)
     return history
+
+
+# ═══════════════════════════════════════
+#  구멍(누락) 감지 + 자동 백필
+# ═══════════════════════════════════════
+
+def detect_missing_dates(days_back: int = 10) -> list[str]:
+    """최근 N일 중 sector_history에 없는 거래일 감지.
+
+    Args:
+        days_back: 몇 일 전까지 확인할지 (기본 10일)
+    Returns:
+        누락된 YYYY-MM-DD 리스트 (오름차순, 거래일만)
+    """
+    history = load_history()
+    existing = set(history.keys())
+    today = datetime.now().date()
+
+    missing = []
+    # 거래일 판정 (trading_calendar 사용)
+    try:
+        from utils.trading_calendar import is_trading_day
+        _is_td = is_trading_day
+    except Exception:
+        # 폴백: 주말만 제외
+        _is_td = lambda d: d.weekday() < 5
+
+    for i in range(1, days_back + 1):
+        d = today - timedelta(days=i)
+        d_str = d.strftime("%Y-%m-%d")
+        if d_str in existing:
+            continue
+        try:
+            td_ok = _is_td(d)
+        except Exception:
+            td_ok = d.weekday() < 5
+        if td_ok:
+            missing.append(d_str)
+
+    return sorted(missing)
+
+
+def backfill_missing_dates(days_back: int = 10) -> dict:
+    """최근 N일 sector_history 구멍 자동 백필.
+
+    Returns:
+        {"filled": [날짜들], "skipped": [스캔실패 날짜들], "total": N}
+    """
+    missing = detect_missing_dates(days_back=days_back)
+    if not missing:
+        return {"filled": [], "skipped": [], "total": 0}
+
+    from data.sector_relay import scan_all_sectors
+    filled = []
+    skipped = []
+
+    for d_str in missing:
+        try:
+            logger.info(f"[rotation] 백필 시작: {d_str}")
+            sectors = scan_all_sectors(as_of=d_str)
+            if not sectors:
+                logger.warning(f"[rotation] 백필 스캔 결과 없음: {d_str}")
+                skipped.append(d_str)
+                continue
+            record_today(sectors, as_of=d_str)
+            filled.append(d_str)
+            logger.info(f"[rotation] 백필 완료: {d_str} ({len(sectors)}섹터)")
+        except Exception as e:
+            logger.warning(f"[rotation] 백필 실패 {d_str}: {e}")
+            skipped.append(d_str)
+
+    return {"filled": filled, "skipped": skipped, "total": len(missing)}
 
 
 # ═══════════════════════════════════════

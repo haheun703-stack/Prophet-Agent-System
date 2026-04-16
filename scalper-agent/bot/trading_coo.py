@@ -2281,13 +2281,38 @@ class TradingCOO:
 
         16:25 verify는 flow 수집 중이라 통과하지만, 이후 수집 오류로 C34 등
         HIGH 우선순위 잡이 실패하는 경우가 많음.
-        아침 06:30에 전일 기준 verify_all() → FAIL이면 RETRY_MAP으로 재실행.
+        아침 06:30에 전일 기준 verify_all() → FAIL/PARTIAL이면 RETRY_MAP으로 재실행.
+
+        Step 1: sector_history 과거 구멍 자동 백필 (rotation_detector.backfill_missing_dates)
+        Step 2: verify_all() 실행
+        Step 3: FAIL/PARTIAL 항목 중 RETRY_MAP에 매핑된 잡 재실행
+        Step 4: 재검증 → 잔여 실패시 텔레그램 경고
         """
         from datetime import date as _date, timedelta as _td
         try:
+            # ── Step 1: sector_history 과거 구멍 자동 백필 ──
+            sector_fill_result = {"filled": [], "skipped": [], "total": 0}
+            try:
+                from data.rotation_detector import backfill_missing_dates
+                sector_fill_result = await asyncio.to_thread(
+                    backfill_missing_dates, 10
+                )
+                if sector_fill_result.get("filled"):
+                    logger.info(
+                        f"[A0] sector_history 구멍 복구: "
+                        f"{sector_fill_result['filled']}"
+                    )
+                if sector_fill_result.get("skipped"):
+                    logger.warning(
+                        f"[A0] sector_history 백필 실패: "
+                        f"{sector_fill_result['skipped']}"
+                    )
+            except Exception as e:
+                logger.warning(f"[A0] sector_history 백필 예외: {e}")
+
+            # ── Step 2: verify_all ──
             from data.data_verifier import DataVerifier, RETRY_MAP
 
-            # 전일(장 마감 기준) 또는 오늘 — 오늘 06:30 기준이면 전일 데이터가 대상
             today = _date.today().isoformat()
             verifier = DataVerifier(today=today)
             result = await asyncio.to_thread(verifier.verify_all)
@@ -2297,11 +2322,16 @@ class TradingCOO:
             total = result.get("total", 0)
             logger.info(f"[A0] 전일 데이터 검증: {status} {passed}/{total}")
 
-            # FAIL 항목 중 RETRY_MAP에 있는 것 재실행 (HIGH/CRITICAL 모두)
+            # ── Step 3: FAIL/PARTIAL 항목 재실행 ──
+            # PARTIAL도 포함 (consensus lazy-cache는 제외)
             retried = set()
             skipped_failures = []
+            _retry_statuses = ("FAIL", "PARTIAL")
             for key, detail in result.get("details", {}).items():
-                if detail.get("status") != "FAIL":
+                if detail.get("status") not in _retry_statuses:
+                    continue
+                # consensus는 lazy-cache라 재시도 안함
+                if key == "consensus":
                     continue
                 job_name = RETRY_MAP.get(key)
                 if not job_name:
@@ -2310,9 +2340,8 @@ class TradingCOO:
                 if job_name in retried:
                     continue
                 retried.add(job_name)
-                logger.info(f"[A0] 백필 시도: {key} → {job_name}")
+                logger.info(f"[A0] 백필 시도: {key}({detail.get('status')}) → {job_name}")
                 try:
-                    # COO 자체 메서드 우선, 없으면 bot/auto_trader
                     method = getattr(self, job_name, None)
                     if method is None and self.bot:
                         method = getattr(self.bot, job_name, None)
@@ -2325,16 +2354,16 @@ class TradingCOO:
                 except Exception as e:
                     logger.warning(f"[A0] 백필 실패 {job_name}: {e}")
 
-            if retried:
-                # 재검증
+            # ── Step 4: 재검증 + 경고 ──
+            if retried or sector_fill_result.get("filled"):
                 result2 = await asyncio.to_thread(DataVerifier(today=today).verify_all)
                 still_fail = [k for k, d in result2.get("details", {}).items()
                               if d.get("status") == "FAIL" and k in RETRY_MAP]
                 logger.info(
-                    f"[A0] 백필 완료: {len(retried)}개 재실행 / 잔여 FAIL: {still_fail}"
+                    f"[A0] 백필 완료: sector구멍 {len(sector_fill_result.get('filled', []))}일 "
+                    f"/ 잡 {len(retried)}개 재실행 / 잔여 FAIL: {still_fail}"
                 )
 
-                # 잔여 FAIL 있으면 텔레그램 경고
                 if still_fail:
                     alert_fn = getattr(self.auto_trader, "_send_alert", None) \
                                if self.auto_trader else None
@@ -2349,10 +2378,14 @@ class TradingCOO:
                         except Exception:
                             pass
 
-                return {"morning_backfill": "OK", "retried": len(retried),
+                return {"morning_backfill": "OK",
+                        "sector_filled": sector_fill_result.get("filled", []),
+                        "retried": len(retried),
                         "remaining_fail": still_fail}
 
-            return {"morning_backfill": "OK", "retried": 0,
+            return {"morning_backfill": "OK",
+                    "sector_filled": [],
+                    "retried": 0,
                     "skipped": skipped_failures}
         except Exception as e:
             logger.warning(f"[A0] 아침 백필 실패 (무시): {e}")
