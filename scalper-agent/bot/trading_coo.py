@@ -1243,6 +1243,10 @@ class TradingCOO:
         parallel_jobs.append((
             "C5M_macro_baseline",
             self._job_macro_baseline(context)))
+        # C3M: 시장별 11주체 수급 (KIS FHPTJ04040000) — BRAIN/T3 보조자료
+        parallel_jobs.append((
+            "C3M_market_flow",
+            self._job_market_flow_collect(context)))
         # C5T: TV 스캐너 독립 갱신 (C7 검증 전 tv_scanner.json 날짜 보장)
         parallel_jobs.append((
             "C5T_tv_scanner",
@@ -1959,6 +1963,25 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[C35] 수급 패턴 스캔 실패 (무시): {e}")
             return {"pattern_scan": f"ERROR: {e}"}
+
+    async def _job_market_flow_collect(self, context=None) -> dict:
+        """C3M: 시장별 11주체 수급 수집 (KOSPI/KOSDAQ) — KIS FHPTJ04040000.
+
+        G6 장마감 후 1회 실행. 외인/개인/기관종합 + 기관 7주체(금융투자/투신/
+        사모/은행/보험/기타금융/연기금) + 기타법인 = 11주체.
+        data_store/flow/market_{kospi|kosdaq}.csv 저장 (60일 롤링).
+        """
+        try:
+            from data.market_flow_collector import collect_market_flow
+            out = await asyncio.to_thread(collect_market_flow, 1)
+            if not out:
+                return {"market_flow": "EMPTY"}
+            info = {k: len(v) for k, v in out.items() if v is not None}
+            logger.info(f"[C3M] 시장 수급 수집 완료 — {info}")
+            return {"market_flow": "OK", "markets": info}
+        except Exception as e:
+            logger.warning(f"[C3M] 시장 수급 수집 실패 (무시): {e}")
+            return {"market_flow": f"ERROR: {e}"}
 
     async def _job_macro_baseline(self, context=None) -> dict:
         """C5M: 매크로 기준선 수집 (yfinance 6지표 20MA/60MA).
