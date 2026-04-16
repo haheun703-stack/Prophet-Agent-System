@@ -683,10 +683,36 @@ def _calc_market_flow() -> dict:
         if retail_panic:
             parts.append("개인쏠림⚠")
 
-        return {
+        result = {
             "bull": bull, "bear": bear, "retail_panic": retail_panic,
             "detail": " ".join(parts),
         }
+
+        # ── C3M 11주체 세부 흐름 연동 (KIS FHPTJ04040000) ──
+        # 연기금/투신/금융투자/사모 분리 → BRAIN 점수 세밀화
+        try:
+            from data.market_flow_collector import get_recent_entity_sum
+            inst_detail = {}
+            for entity in ("finance_invest", "trust", "private_equity",
+                           "bank", "insurance", "other_finance", "pension",
+                           "foreign_reg", "foreign_nreg", "other_corp"):
+                v = get_recent_entity_sum("kospi", entity, days=5)
+                if v is not None:
+                    inst_detail[f"{entity}_5d"] = round(v, 1)  # 억원
+            if inst_detail:
+                result["inst_detail"] = inst_detail
+                # 간결 요약 (주요 3주체)
+                pension = inst_detail.get("pension_5d", 0)
+                trust = inst_detail.get("trust_5d", 0)
+                fi = inst_detail.get("finance_invest_5d", 0)
+                parts.append(
+                    f"금투{fi:+,.0f}/투신{trust:+,.0f}/연금{pension:+,.0f}억"
+                )
+                result["detail"] = " ".join(parts)
+        except Exception as e:
+            logger.debug(f"[FIX-06] C3M 세부흐름 로드 실패 (무시): {e}")
+
+        return result
     except Exception as e:
         logger.warning(f"[FIX-06] 시장 수급 분석 실패: {e}")
         return {}
@@ -1052,6 +1078,46 @@ def _phase6_synthesis(
         if market_flow.get("retail_panic"):
             score -= 5
             reasons.append("개인쏠림(-5)")
+
+        # 9.1 C3M 11주체 세부 흐름 (C3M-BRAIN 연동)
+        inst_detail = market_flow.get("inst_detail") or {}
+        if inst_detail:
+            pension_5d = inst_detail.get("pension_5d", 0) or 0
+            trust_5d = inst_detail.get("trust_5d", 0) or 0
+            fi_5d = inst_detail.get("finance_invest_5d", 0) or 0
+            pe_5d = inst_detail.get("private_equity_5d", 0) or 0
+
+            # 연기금 장기매집 (+4) / 대량매도 (-4)  — 가장 느리고 무거운 자금
+            if pension_5d >= 3000:
+                score += 4
+                reasons.append(f"연기금매집(+4)")
+            elif pension_5d <= -3000:
+                score -= 4
+                reasons.append(f"연기금매도(-4)")
+
+            # 투신 ETF/펀드 유입 (+2) / 이탈 (-2) — 개인간접투자 심리
+            if trust_5d >= 2000:
+                score += 2
+                reasons.append(f"투신유입(+2)")
+            elif trust_5d <= -2000:
+                score -= 2
+                reasons.append(f"투신이탈(-2)")
+
+            # 금투(증권사) 자기자본 — 단기 스마트머니
+            if fi_5d >= 5000:
+                score += 2
+                reasons.append(f"금투매수(+2)")
+            elif fi_5d <= -5000:
+                score -= 2
+                reasons.append(f"금투매도(-2)")
+
+            # 사모펀드 — 초단기/헤지 시그널 (과열/패닉 경보)
+            if pe_5d >= 2000:
+                score += 2
+                reasons.append(f"사모매수(+2)")
+            elif pe_5d <= -2000:
+                score -= 2
+                reasons.append(f"사모매도(-2)")
 
     # 9.5 수급 Z-score 통계적 이상치 보정
     if flow.flow_zscore_adj != 0:

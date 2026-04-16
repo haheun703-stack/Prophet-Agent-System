@@ -129,7 +129,134 @@ class PatternResult:
     entities_10d: Dict[str, Optional[float]] = field(default_factory=dict)
     entities_20d: Dict[str, Optional[float]] = field(default_factory=dict)
     warnings: List[str] = field(default_factory=list)
+    # C3M-T3 연동: 시장 맥락 보조점수 (시장 역풍시 감쇠)
+    market_context: Dict[str, Optional[float]] = field(default_factory=dict)
+    market_adj: int = 0            # 시장맥락 점수 조정 (-15 ~ +10)
+    final_score: int = 0           # = score + market_adj (0~100 clip)
     classified_at: str = ""
+
+
+# ============================================================
+#  C3M-T3 연동: 시장 맥락 로더 + 점수 조정
+# ============================================================
+
+_UNIVERSE_CACHE: Optional[Dict[str, str]] = None  # code -> market
+
+
+def _get_market_for_code(code: str) -> str:
+    """종목 코드 → 시장(kospi/kosdaq) 판별. universe.json 캐시."""
+    global _UNIVERSE_CACHE
+    if _UNIVERSE_CACHE is None:
+        try:
+            uni_path = SCALPER_DIR / "data_store" / "universe.json"
+            uni = json.loads(uni_path.read_text(encoding="utf-8"))
+            _UNIVERSE_CACHE = {
+                k: ("kospi" if v.get("market") == "KOSPI" else "kosdaq")
+                for k, v in uni.items()
+            }
+        except Exception:
+            _UNIVERSE_CACHE = {}
+    return _UNIVERSE_CACHE.get(code, "kospi")  # default KOSPI
+
+
+def _load_market_context(market: str = "kospi") -> Dict[str, Optional[float]]:
+    """C3M 데이터(market_{kospi,kosdaq}.csv)에서 최근 5일 주체별 누적 (억원)."""
+    try:
+        sys.path.insert(0, str(SCALPER_DIR))
+        from data.market_flow_collector import get_recent_entity_sum
+        ctx = {}
+        for entity in ("foreign", "individual", "institution",
+                       "finance_invest", "trust", "pension",
+                       "private_equity", "other_corp"):
+            v = get_recent_entity_sum(market, entity, days=5)
+            ctx[f"{entity}_5d"] = round(v, 1) if v is not None else None
+        return ctx
+    except Exception:
+        return {}
+
+
+def _apply_market_context(
+    pattern: str,
+    entities_today: Dict[str, Optional[float]],
+    market_ctx: Dict[str, Optional[float]],
+    change_rate: float,
+) -> Tuple[int, List[str]]:
+    """시장 맥락 기반 점수 조정.
+
+    Returns: (adj, notes)
+      - adj: -15 ~ +10 점수 가감
+      - notes: 경고/주석 문자열 리스트
+    """
+    if not market_ctx:
+        return 0, []
+
+    adj = 0
+    notes: List[str] = []
+
+    # 시장 수급 방향 판정 (외인+기관 5일 합)
+    mkt_f = market_ctx.get("foreign_5d") or 0
+    mkt_i = market_ctx.get("institution_5d") or 0
+    mkt_pension = market_ctx.get("pension_5d") or 0
+    mkt_trust = market_ctx.get("trust_5d") or 0
+    mkt_flow_sum = mkt_f + mkt_i
+
+    mkt_bull = mkt_f >= 3000 and mkt_i >= 3000           # 양쪽 +3000억 이상
+    mkt_bear = mkt_f <= -3000 and mkt_i <= -3000         # 양쪽 -3000억 이상
+
+    # 1) FOREIGN_SOLO / DUAL_SURGE — 시장 역풍시 감쇠
+    if pattern in ("FOREIGN_SOLO", "DUAL_SURGE"):
+        if mkt_bull:
+            adj += 5
+            notes.append(f"시장순풍(외{mkt_f:+.0f}/기{mkt_i:+.0f}억)(+5)")
+        elif mkt_bear:
+            adj -= 10
+            notes.append(f"시장역풍(외{mkt_f:+.0f}/기{mkt_i:+.0f}억)(-10)")
+        elif mkt_f <= -5000:
+            adj -= 5
+            notes.append(f"시장외인매도(외{mkt_f:+.0f}억)(-5)")
+
+    # 2) INST_SOLO — 기관 시장맥락 체크
+    elif pattern == "INST_SOLO":
+        if mkt_i >= 5000:
+            adj += 5
+            notes.append(f"시장기관동반(기{mkt_i:+.0f}억)(+5)")
+        elif mkt_i <= -5000:
+            adj -= 8
+            notes.append(f"시장기관매도속 단독매수(기{mkt_i:+.0f}억)(-8)")
+        # 연기금 장기매집 순풍
+        if mkt_pension >= 3000:
+            adj += 3
+            notes.append(f"연기금매집(+3)")
+
+    # 3) OUTFLOW — 시장도 동반 매도면 "시장 전체 조정"
+    elif pattern == "OUTFLOW":
+        if mkt_bear:
+            notes.append(f"시장동반매도(외{mkt_f:+.0f}/기{mkt_i:+.0f}억) — 전체 조정 국면")
+            # 시장 전체 조정은 종목 고점신호 약화 → 감점 완화
+            adj += 3
+
+    # 4) OTHER_CORP_LOAD — 시장 기타법인 매집 추세면 섹터 트렌드
+    elif pattern == "OTHER_CORP_LOAD":
+        mkt_oc = market_ctx.get("other_corp_5d") or 0
+        if mkt_oc >= 5000:
+            notes.append(f"시장기타법인동반매집(+{mkt_oc:.0f}억) — 자사주 트렌드")
+            adj += 3
+
+    # 5) RETAIL_LED — 시장 개인쏠림이면 과열 경고
+    elif pattern == "RETAIL_LED":
+        mkt_p = market_ctx.get("individual_5d") or 0
+        if mkt_p >= 10000 and mkt_flow_sum <= -5000:
+            adj -= 5
+            notes.append("시장전체 개인쏠림 — 과열국면(-5)")
+
+    # 6) 공통: 투신(개인간접) 대량 이탈시 단타성 패턴 추가 감점
+    if mkt_trust <= -3000 and pattern in ("RETAIL_LED", "MIXED"):
+        adj -= 2
+        notes.append(f"투신이탈(-2)")
+
+    # 범위 제한
+    adj = max(-15, min(10, adj))
+    return adj, notes
 
 
 def _csv_to_canonical_df(csv_path: Path) -> Optional[pd.DataFrame]:
@@ -329,12 +456,23 @@ def analyze_code(
         if all(v is None for v in entities_today.values()):
             warnings.insert(0, "수급 데이터 전체 누락 — 패턴 분류 신뢰 불가")
 
+    # ── C3M-T3 시장맥락 보조점수 ──
+    mkt = _get_market_for_code(code)
+    market_ctx = _load_market_context(mkt)
+    market_adj, ctx_notes = _apply_market_context(
+        pattern, entities_today, market_ctx, change_rate,
+    )
+    warnings.extend(ctx_notes)
+
+    base_score = PATTERN_SCORE[pattern]
+    final_score = max(0, min(100, base_score + market_adj))
+
     return PatternResult(
         code=code,
         name=name,
         pattern=pattern,
         description=PATTERN_DESC[pattern],
-        score=PATTERN_SCORE[pattern],
+        score=base_score,
         grade=PATTERN_GRADE[pattern],
         change_rate=change_rate,
         close=close,
@@ -344,6 +482,9 @@ def analyze_code(
         entities_10d=entities_10d,
         entities_20d=entities_20d,
         warnings=warnings,
+        market_context=market_ctx,
+        market_adj=market_adj,
+        final_score=final_score,
         classified_at=datetime.now().isoformat(timespec="seconds"),
     )
 
@@ -413,10 +554,10 @@ def print_summary(results: List[PatternResult]) -> None:
 
     # 종목별 상세
     print("[종목별 상세]")
-    print(f"{'종목':18s} {'등락률':>7s} {'외인':>9s} {'기관':>9s} {'개인':>9s} {'기타법인':>10s}  {'패턴':20s}")
-    print("-" * 100)
-    # 점수 순 정렬
-    results_sorted = sorted(results, key=lambda r: (-r.score, -r.change_rate))
+    print(f"{'종목':18s} {'등락률':>7s} {'외인':>9s} {'기관':>9s} {'개인':>9s} {'기타법인':>10s}  {'점수':>11s}  {'패턴':20s}")
+    print("-" * 118)
+    # final_score 순 정렬 (시장맥락 반영)
+    results_sorted = sorted(results, key=lambda r: (-r.final_score, -r.change_rate))
     for r in results_sorted:
         f = r.entities_today.get("foreign")
         i = r.entities_today.get("institution")
@@ -427,7 +568,11 @@ def print_summary(results: List[PatternResult]) -> None:
         p_s = f"{p:+.1f}억" if p is not None else "    N/A"
         oc_s = f"{oc:+.1f}억" if oc is not None else "    N/A"
         name_disp = r.name[:10]
-        print(f"{name_disp:18s} {r.change_rate:+6.2f}% {f_s:>9s} {i_s:>9s} {p_s:>9s} {oc_s:>10s}  {PATTERN_DESC[r.pattern][:20]:20s}")
+        if r.market_adj:
+            sc_s = f"{r.final_score:>3d}({r.score:+d}{r.market_adj:+d})"
+        else:
+            sc_s = f"{r.final_score:>3d}       "
+        print(f"{name_disp:18s} {r.change_rate:+6.2f}% {f_s:>9s} {i_s:>9s} {p_s:>9s} {oc_s:>10s}  {sc_s:>11s}  {PATTERN_DESC[r.pattern][:20]:20s}")
 
     print()
     print("[경고 발생 종목]")
@@ -463,7 +608,8 @@ def save_results(results: List[PatternResult], date: str) -> Path:
             pat: {"count": len(lst), "description": PATTERN_DESC[pat]}
             for pat, lst in by_pattern.items()
         },
-        "items": [asdict(r) for r in sorted(results, key=lambda r: (-r.score, -r.change_rate))],
+        # final_score 기준 정렬 (시장맥락 반영)
+        "items": [asdict(r) for r in sorted(results, key=lambda r: (-r.final_score, -r.change_rate))],
         "by_pattern": by_pattern,
         "generated_at": datetime.now().isoformat(timespec="seconds"),
     }
