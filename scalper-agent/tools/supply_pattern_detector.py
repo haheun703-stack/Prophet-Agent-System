@@ -30,11 +30,18 @@ import argparse
 import json
 import sys
 from dataclasses import dataclass, field, asdict
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
+
+# ── 한국시간 (VPS UTC 대응) ──
+KST = timezone(timedelta(hours=9))
+
+# ── KIS API 단위 전환일 (2026-01-16 이전 pykrx=원, 이후 KIS=백만원) ──
+# flow_collector.py가 KIS로 전환된 시점. 이 날짜 이전 데이터는 pykrx 잔재(원 단위).
+UNIT_CHANGE_DATE = pd.Timestamp("2026-01-16")
 
 # ── 프로젝트 경로 ──
 SCALPER_DIR = Path(__file__).resolve().parent.parent
@@ -149,23 +156,28 @@ def _csv_to_canonical_df(csv_path: Path) -> Optional[pd.DataFrame]:
         canonical_rows.append(c)
 
     out = pd.DataFrame(canonical_rows, index=df.index)
-    # 단위 자동 감지 (2026-04-16 버그 수정):
-    #   CSV가 과거(~2024 초)엔 원 단위(예: 76525320), 최근엔 백만원 단위(예: 6569)로
-    #   혼재 저장된 것을 발견. 절대값 기준 임계로 자동 분기:
-    #     - abs >= 1e7 → 원 단위 → /1e8 (억원)
-    #     - abs <  1e7 → 백만원 단위 → /100 (억원)
-    def _convert_unit(v):
-        if v is None:
+    # C-1 수정 (2026-04-16): 날짜 기반 단위 분기 (기존 magnitude 휴리스틱 버그 해결)
+    #   - UNIT_CHANGE_DATE 이전: pykrx 잔재 = 원 단위 → /1e8
+    #   - UNIT_CHANGE_DATE 이후: KIS API = 백만원 단위 → /100
+    #   - 날짜 불명시: magnitude fallback (abs>=1e7 → 원, else 백만원)
+    def _convert_unit(v, row_date=None):
+        if v is None or v != v:  # None or NaN
             return None
-        if v != v:  # NaN
-            return None
+        if row_date is not None:
+            try:
+                if pd.Timestamp(row_date) >= UNIT_CHANGE_DATE:
+                    return v / 100.0   # 백만원 → 억원
+                return v / 1e8         # 원 → 억원
+            except Exception:
+                pass
+        # Fallback (날짜 파싱 실패 시)
         if abs(v) >= 1e7:
             return v / 1e8
         return v / 100.0
 
     for col in ENTITY_COLUMNS:
         if col in out.columns:
-            out[col] = out[col].apply(_convert_unit)
+            out[col] = [_convert_unit(v, idx) for v, idx in zip(out[col], out.index)]
     # 정렬
     out = out.sort_index()
     return out
@@ -248,13 +260,16 @@ def classify_pattern(
         return "OUTFLOW", warnings
 
     # 3. OTHER_CORP_DUMP — 기타법인 -20억 이하 (매도)
+    # H-1 경고: other_corp는 -(외+기+개) 역산 값 (KIS API 미제공) — 단독 신호로는 주의
     if oc <= -THR["other_corp_dump"]:
         warnings.append(f"기타법인 {oc:+.1f}억 매도 — 자사주 처분/대주주 매도 의심")
+        warnings.append("※ 기타법인은 역산값 — 공시/거래원 확인 필요")
         return "OTHER_CORP_DUMP", warnings
 
     # 4. OTHER_CORP_LOAD — 기타법인 +20억 이상 (매수)
     if oc >= THR["other_corp_load"]:
         warnings.append(f"기타법인 {oc:+.1f}억 매수 — M&A/자사주 취득 가능성")
+        warnings.append("※ 기타법인은 역산값 — 공시/거래원 확인 필요")
         return "OTHER_CORP_LOAD", warnings
 
     # 5. FOREIGN_SOLO — 외 +50억 AND (기 <30억 OR 외인 우세)
@@ -266,9 +281,11 @@ def classify_pattern(
     if i >= THR["solo_main"] and f < THR["solo_other"]:
         return "INST_SOLO", warnings
 
-    # 7. DUAL_WEAK fallback — 외+기 모두 매수인데 개인조건 미달시 우세 주체로 분류
-    # 예: 코나아이(외+30.8/기+97.8/개-128.3) → INST_SOLO (기관 우세)
-    # 예: 필옵틱스(외+49/기+14.2/개-61.2) → FOREIGN_SOLO (외인 우세)
+    # 7. DUAL_WEAK fallback — 외+기 모두 +30억 이상 매수인데 DUAL_SURGE 조건 미달시 우세 주체로 분류
+    # C-2 수정: 주석 예시와 조건(f>=30 AND i>=30) 일치화
+    # 예: 외+40/기+35/개-25 (DUAL_SURGE 개인-30 미달) → FOREIGN_SOLO (외인 우세)
+    # 예: 외+35/기+40/개-20 (DUAL_SURGE 개인-30 미달) → INST_SOLO (기관 우세)
+    # 참고: 필옵틱스/코나아이처럼 기관<30억인 케이스는 DUAL_WEAK 미해당 → MIXED로 분류
     if f >= THR["dual_inst"] and i >= THR["dual_inst"]:
         if f >= i:
             warnings.append(f"외인 우세 쌍매수 (외 {f:+.1f}억 / 기 {i:+.1f}억)")
@@ -307,6 +324,10 @@ def analyze_code(
 
     if df is None:
         warnings.insert(0, f"CSV 없음: {csv_path.name}")
+    else:
+        # H-2-보조: 전 주체 None이면 MIXED가 되는 것이 함정 — 경고 추가
+        if all(v is None for v in entities_today.values()):
+            warnings.insert(0, "수급 데이터 전체 누락 — 패턴 분류 신뢰 불가")
 
     return PatternResult(
         code=code,
@@ -327,6 +348,19 @@ def analyze_code(
     )
 
 
+def _safe_num(v, default: float = 0.0) -> float:
+    """H-4: NaN/None/타입 오류 방어 float 변환."""
+    if v is None:
+        return default
+    try:
+        f = float(v)
+        if f != f or f in (float("inf"), float("-inf")):  # NaN/inf
+            return default
+        return f
+    except (ValueError, TypeError):
+        return default
+
+
 def analyze_missed_gainers(date: str) -> List[PatternResult]:
     """오늘(date)의 missed_gainers 전체 분석."""
     mg_path = MISSED_DIR / f"{date}.json"
@@ -337,16 +371,25 @@ def analyze_missed_gainers(date: str) -> List[PatternResult]:
     items = data.get("items", [])
 
     results = []
+    skipped = 0
     for it in items:
+        # H-5: code가 필수. 없으면 스킵 (KeyError 대신 warn)
+        code = (it.get("code") or "").strip()
+        if not code:
+            skipped += 1
+            continue
+        # H-4: NaN/type 방어
         r = analyze_code(
-            code=it["code"],
-            name=it["name"],
-            change_rate=float(it["change_rate"]),
-            close=float(it["close"]),
-            volume=int(it["volume"]),
+            code=code,
+            name=it.get("name") or code,
+            change_rate=_safe_num(it.get("change_rate")),
+            close=_safe_num(it.get("close")),
+            volume=int(_safe_num(it.get("volume"))),
             ref_date=date,
         )
         results.append(r)
+    if skipped:
+        print(f"[경고] missed_gainers code 누락 {skipped}건 스킵")
     return results
 
 

@@ -18,8 +18,11 @@ import sys
 import time
 import logging
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time as dt_time, timezone
 from typing import Dict, List, Optional, Tuple
+
+# VPS UTC 대응 KST
+KST = timezone(timedelta(hours=9))
 
 import pandas as pd
 import numpy as np
@@ -147,9 +150,16 @@ def collect_investor_flow(
     """
     _ensure_dirs()
 
-    # 캐시: 오늘 날짜 데이터 있으면 스킵, 없으면 재수집
-    # (기존 days_old<=3 → 어제 데이터로 캐시히트되어 당일 수급 누락 문제 해결)
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    # H-3 수정: 장중 캐시 오염 방지.
+    #   - 장마감 후(16:00 KST): 오늘 데이터 캐시 = 확정값 → 캐시 신뢰
+    #   - 장중/장전: 캐시 mtime 5분 이내만 신뢰, 아니면 재수집
+    #   - VPS UTC 대응: KST 기준 시간으로 판정
+    now_kst = datetime.now(KST).replace(tzinfo=None)
+    today_str = now_kst.strftime("%Y-%m-%d")
+    # KST 16:00 이후 = 장마감 후
+    is_market_closed = now_kst.time() >= dt_time(16, 0)
+    CACHE_FRESH_SEC = 300  # 장중 캐시 신선도 5분
+
     results = {}
     need_fetch = []
     for code in codes:
@@ -159,8 +169,15 @@ def collect_investor_flow(
             if len(cached) > 0:
                 last_date = cached.index[-1].strftime("%Y-%m-%d")
                 if last_date == today_str:
-                    results[code] = cached
-                    continue
+                    # 장마감 후 → 확정값, 캐시 신뢰
+                    # 장중/장전 → 5분 이내 수집한 캐시만 신뢰
+                    if is_market_closed:
+                        results[code] = cached
+                        continue
+                    mtime_age = time.time() - cache_file.stat().st_mtime
+                    if mtime_age < CACHE_FRESH_SEC:
+                        results[code] = cached
+                        continue
         need_fetch.append(code)
 
     cache_count = len(results)

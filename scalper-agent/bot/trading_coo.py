@@ -1896,9 +1896,28 @@ class TradingCOO:
                 PATTERN_DESC,
                 PATTERN_SCORE,
             )
-            from datetime import datetime as _dt
+            from datetime import datetime as _dt, timezone as _tz, timedelta as _td
 
-            date_str = _dt.now().strftime("%Y-%m-%d")
+            # M-2 수정: VPS UTC 대응 — KST 기준 날짜 사용
+            _KST = _tz(_td(hours=9))
+            date_str = _dt.now(_KST).strftime("%Y-%m-%d")
+
+            # H-2 수정: flow_collector(C3) 결과 확인 — STALE/실패 시 패턴 분류 신뢰 불가
+            try:
+                from pathlib import Path as _P
+                flow_dir = _P(__file__).resolve().parent.parent / "data_store" / "flow"
+                # 오늘 수집된 _investor.csv 파일 존재 여부 체크 (10개 이상이면 정상)
+                today_ts = _dt.now(_KST).replace(tzinfo=None).timestamp()
+                recent = [f for f in flow_dir.glob("*_investor.csv")
+                          if (today_ts - f.stat().st_mtime) < 7200]  # 2시간 이내
+                if len(recent) < 10:
+                    logger.warning(
+                        f"[C35] flow_collector 최근 수집 {len(recent)}건 < 10 — "
+                        f"STALE 가능성. 패턴 스캔 스킵"
+                    )
+                    return {"pattern_scan": "SKIP", "reason": "flow STALE", "recent": len(recent)}
+            except Exception as _e:
+                logger.warning(f"[C35] flow STALE 체크 실패(무시): {_e}")
 
             # 동기 함수를 스레드로 실행 (CSV 읽기 다수)
             results = await asyncio.to_thread(analyze_missed_gainers, date_str)
