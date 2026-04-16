@@ -175,13 +175,44 @@ def _load_market_context(market: str = "kospi") -> Dict[str, Optional[float]]:
         return {}
 
 
+# ── 시장별 임계값 (억원) ──
+# KOSDAQ은 KOSPI 대비 약 1/3~1/10 규모 (2026-04-16 실측: 외인 KOSPI +13,485 vs KOSDAQ -1,809)
+MARKET_THR = {
+    "kospi": {
+        "bull_flow": 3000,      # bull/bear: 외+기 각 절대값
+        "foreign_big": 5000,    # 외인 단독 대량
+        "inst_big": 5000,       # 기관 동반/역풍
+        "pension_accum": 3000,  # 연기금 매집
+        "trust_outflow": 3000,  # 투신 이탈
+        "retail_extreme": 10000,# 개인쏠림 임계
+        "flow_sum_bear": 5000,  # 외+기 합 매도
+        "other_corp_trend": 5000,
+    },
+    "kosdaq": {
+        # KOSDAQ 규모 1/3 기준 조정 (너무 민감하지 않도록)
+        "bull_flow": 1000,
+        "foreign_big": 1500,
+        "inst_big": 1500,
+        "pension_accum": 800,
+        "trust_outflow": 1000,
+        "retail_extreme": 3000,
+        "flow_sum_bear": 1500,
+        "other_corp_trend": 1500,
+    },
+}
+
+
 def _apply_market_context(
     pattern: str,
     entities_today: Dict[str, Optional[float]],
     market_ctx: Dict[str, Optional[float]],
     change_rate: float,
+    market: str = "kospi",
 ) -> Tuple[int, List[str]]:
     """시장 맥락 기반 점수 조정.
+
+    Args:
+        market: "kospi" or "kosdaq" — 시장별 임계값 분기
 
     Returns: (adj, notes)
       - adj: -15 ~ +10 점수 가감
@@ -189,6 +220,9 @@ def _apply_market_context(
     """
     if not market_ctx:
         return 0, []
+
+    thr = MARKET_THR.get(market, MARKET_THR["kospi"])
+    mkt_tag = f"[{market.upper()}]"
 
     adj = 0
     notes: List[str] = []
@@ -200,59 +234,58 @@ def _apply_market_context(
     mkt_trust = market_ctx.get("trust_5d") or 0
     mkt_flow_sum = mkt_f + mkt_i
 
-    mkt_bull = mkt_f >= 3000 and mkt_i >= 3000           # 양쪽 +3000억 이상
-    mkt_bear = mkt_f <= -3000 and mkt_i <= -3000         # 양쪽 -3000억 이상
+    mkt_bull = mkt_f >= thr["bull_flow"] and mkt_i >= thr["bull_flow"]
+    mkt_bear = mkt_f <= -thr["bull_flow"] and mkt_i <= -thr["bull_flow"]
 
     # 1) FOREIGN_SOLO / DUAL_SURGE — 시장 역풍시 감쇠
     if pattern in ("FOREIGN_SOLO", "DUAL_SURGE"):
         if mkt_bull:
             adj += 5
-            notes.append(f"시장순풍(외{mkt_f:+.0f}/기{mkt_i:+.0f}억)(+5)")
+            notes.append(f"{mkt_tag}시장순풍(외{mkt_f:+.0f}/기{mkt_i:+.0f}억)(+5)")
         elif mkt_bear:
             adj -= 10
-            notes.append(f"시장역풍(외{mkt_f:+.0f}/기{mkt_i:+.0f}억)(-10)")
-        elif mkt_f <= -5000:
+            notes.append(f"{mkt_tag}시장역풍(외{mkt_f:+.0f}/기{mkt_i:+.0f}억)(-10)")
+        elif mkt_f <= -thr["foreign_big"]:
             adj -= 5
-            notes.append(f"시장외인매도(외{mkt_f:+.0f}억)(-5)")
+            notes.append(f"{mkt_tag}시장외인매도(외{mkt_f:+.0f}억)(-5)")
 
     # 2) INST_SOLO — 기관 시장맥락 체크
     elif pattern == "INST_SOLO":
-        if mkt_i >= 5000:
+        if mkt_i >= thr["inst_big"]:
             adj += 5
-            notes.append(f"시장기관동반(기{mkt_i:+.0f}억)(+5)")
-        elif mkt_i <= -5000:
+            notes.append(f"{mkt_tag}시장기관동반(기{mkt_i:+.0f}억)(+5)")
+        elif mkt_i <= -thr["inst_big"]:
             adj -= 8
-            notes.append(f"시장기관매도속 단독매수(기{mkt_i:+.0f}억)(-8)")
+            notes.append(f"{mkt_tag}시장기관매도속 단독매수(기{mkt_i:+.0f}억)(-8)")
         # 연기금 장기매집 순풍
-        if mkt_pension >= 3000:
+        if mkt_pension >= thr["pension_accum"]:
             adj += 3
-            notes.append(f"연기금매집(+3)")
+            notes.append(f"{mkt_tag}연기금매집(+3)")
 
     # 3) OUTFLOW — 시장도 동반 매도면 "시장 전체 조정"
     elif pattern == "OUTFLOW":
         if mkt_bear:
-            notes.append(f"시장동반매도(외{mkt_f:+.0f}/기{mkt_i:+.0f}억) — 전체 조정 국면")
-            # 시장 전체 조정은 종목 고점신호 약화 → 감점 완화
+            notes.append(f"{mkt_tag}시장동반매도(외{mkt_f:+.0f}/기{mkt_i:+.0f}억) — 전체 조정 국면")
             adj += 3
 
     # 4) OTHER_CORP_LOAD — 시장 기타법인 매집 추세면 섹터 트렌드
     elif pattern == "OTHER_CORP_LOAD":
         mkt_oc = market_ctx.get("other_corp_5d") or 0
-        if mkt_oc >= 5000:
-            notes.append(f"시장기타법인동반매집(+{mkt_oc:.0f}억) — 자사주 트렌드")
+        if mkt_oc >= thr["other_corp_trend"]:
+            notes.append(f"{mkt_tag}시장기타법인동반매집(+{mkt_oc:.0f}억) — 자사주 트렌드")
             adj += 3
 
     # 5) RETAIL_LED — 시장 개인쏠림이면 과열 경고
     elif pattern == "RETAIL_LED":
         mkt_p = market_ctx.get("individual_5d") or 0
-        if mkt_p >= 10000 and mkt_flow_sum <= -5000:
+        if mkt_p >= thr["retail_extreme"] and mkt_flow_sum <= -thr["flow_sum_bear"]:
             adj -= 5
-            notes.append("시장전체 개인쏠림 — 과열국면(-5)")
+            notes.append(f"{mkt_tag}시장전체 개인쏠림 — 과열국면(-5)")
 
     # 6) 공통: 투신(개인간접) 대량 이탈시 단타성 패턴 추가 감점
-    if mkt_trust <= -3000 and pattern in ("RETAIL_LED", "MIXED"):
+    if mkt_trust <= -thr["trust_outflow"] and pattern in ("RETAIL_LED", "MIXED"):
         adj -= 2
-        notes.append(f"투신이탈(-2)")
+        notes.append(f"{mkt_tag}투신이탈(-2)")
 
     # 범위 제한
     adj = max(-15, min(10, adj))
@@ -460,7 +493,7 @@ def analyze_code(
     mkt = _get_market_for_code(code)
     market_ctx = _load_market_context(mkt)
     market_adj, ctx_notes = _apply_market_context(
-        pattern, entities_today, market_ctx, change_rate,
+        pattern, entities_today, market_ctx, change_rate, market=mkt,
     )
     warnings.extend(ctx_notes)
 
