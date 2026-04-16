@@ -320,6 +320,39 @@ def find_missed_gainers(today: str, threshold: float = 3.0) -> list:
     return missed[:30]  # TOP 30까지
 
 
+def save_missed_gainers_file(today: str, missed: list, threshold: float = 3.0) -> Path:
+    """놓친 급등주 TOP 30을 날짜별 파일로 축적 저장.
+
+    텔레그램 리포트에서 제거한 사후 진단용 자료를 날짜별로 쌓아서
+    나중에 패턴 분석/섹터 회귀 등에 활용.
+
+    Returns:
+        저장 파일 경로
+    """
+    out_dir = LEARNING_DIR / "missed_gainers"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"{today}.json"
+
+    payload = {
+        "date": today,
+        "threshold_pct": threshold,
+        "count": len(missed),
+        "items": missed,  # TOP 30 (change_rate 내림차순)
+    }
+
+    tmp = out_path.with_suffix(".tmp")
+    try:
+        tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(out_path)
+        logger.info(f"[MissedGainers] {today}.json 저장 — {len(missed)}종목")
+    except Exception as e:
+        logger.warning(f"[MissedGainers] 파일 저장 실패 (무시): {e}")
+        if tmp.exists():
+            tmp.unlink(missing_ok=True)
+
+    return out_path
+
+
 # ═══════════════════════════════════════════
 #  3. 시그널 적중률 누적 DB
 # ═══════════════════════════════════════════
@@ -717,14 +750,9 @@ def format_learning_report(
     else:
         lines.append("\n📊 오늘 추천 데이터 없음")
 
-    # ── 놓친 급등주 ──
-    if missed:
-        lines.append(f"\n🔍 놓친 급등주 TOP 10 (+3%↑)")
-        lines.append("────────────────────────")
-        for m in missed[:10]:
-            lines.append(f"  ⚡ {m['name']}({m['code']}) +{m['change_rate']:.1f}%")
-        if len(missed) > 10:
-            lines.append(f"  ... 외 {len(missed)-10}개")
+    # ── 놓친 급등주 섹션은 텔레그램 제외 (사후 진단 → 파일 저장) ──
+    # 2026-04-16: save_missed_gainers_file()로 날짜별 파일 축적,
+    # signal_log.json top_missed는 append_daily_record에서 유지
 
     # ── Rolling 적중률 ──
     if rolling["period"] > 0:
@@ -1088,6 +1116,9 @@ def run(quick: bool = False):
     if not quick:
         logger.info("[Phase 2] 놓친 급등주 역추적...")
         missed = find_missed_gainers(today)
+        # 2.5 날짜별 파일 축적 (텔레그램 제외 → 파일로만 축적)
+        if missed:
+            save_missed_gainers_file(today, missed)
 
     # 3. DB 저장
     logger.info("[Phase 3] 학습 DB 저장...")
