@@ -668,15 +668,57 @@ RESULT_PATH = DATA_DIR / "cycle_scan.json"
 
 
 def save_scan_results(results: list):
-    """스캔 결과 JSON 저장"""
+    """스캔 결과 JSON 저장 (phase별 분류 포함 — Supabase row 구조와 일치)"""
+    results_dict = [asdict(r) for r in results]
+
+    # phase별 분류 (upload_cycle_scan.py와 동일 로직)
+    surge_items = []
+    acc_items = []
+    reversal_items = []
+    warning_items = []
+    phase_counts = {}
+
+    for item in results_dict:
+        phase = item.get("phase", "NEUTRAL")
+        phase_counts[phase] = phase_counts.get(phase, 0) + 1
+        compact = {
+            "code": item.get("code"),
+            "name": item.get("name"),
+            "phase": phase,
+            "phase_kr": item.get("phase_kr", ""),
+            "score": item.get("score", 0),
+            "change_pct": round(item.get("change_pct", 0), 2),
+            "cap_억": item.get("cap_억", 0),
+            "surge_type": item.get("surge_type", ""),
+            "summary": item.get("summary", ""),
+        }
+        if phase == "SURGE":
+            surge_items.append(compact)
+        elif phase == "ACCUMULATION":
+            acc_items.append(compact)
+        elif phase == "REVERSAL":
+            reversal_items.append(compact)
+        elif phase in ("DISTRIBUTION", "PEAK_WARN"):
+            warning_items.append(compact)
+
     data = {
         "updated": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "count": len(results),
-        "results": [asdict(r) for r in results],
+        "phase_counts": phase_counts,
+        "surge_items": surge_items,
+        "acc_items": acc_items,
+        "reversal_items": reversal_items,
+        "warning_items": warning_items,
+        "results": results_dict,
     }
     with open(RESULT_PATH, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-    logger.info(f"[CycleDetector] 저장: {RESULT_PATH} ({len(results)}건)")
+    logger.info(
+        f"[CycleDetector] 저장: {RESULT_PATH} "
+        f"(총 {len(results)}건 / 급등 {len(surge_items)} / "
+        f"매집 {len(acc_items)} / 전환 {len(reversal_items)} / "
+        f"경고 {len(warning_items)})"
+    )
 
 
 def load_scan_results() -> list:
