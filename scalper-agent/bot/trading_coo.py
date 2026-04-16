@@ -1465,6 +1465,15 @@ class TradingCOO:
             )
             results.append(r12)
 
+        # C35: T3 수급 패턴 감지기 — 오늘 급등주 전수 패턴 분류
+        # C12 missed_gainers 생성 직후 실행. 가벼운 잡 (<30초).
+        r35 = await self.run_job_safe_async(
+            "C35_pattern_scan",
+            self._job_supply_pattern_scan(context),
+            timeout=120,
+        )
+        results.append(r35)
+
         # C13: ★ 이브닝 분석 (CRITICAL)
         # 추천 파이프라인: Step1~6 합계 ~25분
         # Step5 Soft Scoring이 300+종목 처리 시 ~20분 소요 (TV잔존+거래대금이상 종목 추가)
@@ -1867,6 +1876,70 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[C5T] TV 스캐너 갱신 실패 (무시): {e}")
             return {"tv_scanner": f"ERROR: {e}"}
+
+    # ─────────────────────────────────────────────
+    # C35: T3 수급 패턴 감지기 (4주체 기반, 11주체 확장 가능)
+    # ─────────────────────────────────────────────
+    async def _job_supply_pattern_scan(self, context=None) -> dict:
+        """C35: 오늘 급등주 수급 패턴 전수 분류.
+
+        G7 Stage 2 C12 직후 실행 (missed_gainers 생성 이후).
+        쌍매수/외인단독/기관단독/기타법인매수·매도/개인주도/수급이탈 7종 분류.
+        11주체 호환 스키마 사용 — KRX OpenAPI 승인 시 자동 확장.
+
+        산출물: data_store/learning/pattern_scan/{YYYY-MM-DD}.json
+        """
+        try:
+            from tools.supply_pattern_detector import (
+                analyze_missed_gainers,
+                save_results,
+                PATTERN_DESC,
+                PATTERN_SCORE,
+            )
+            from datetime import datetime as _dt
+
+            date_str = _dt.now().strftime("%Y-%m-%d")
+
+            # 동기 함수를 스레드로 실행 (CSV 읽기 다수)
+            results = await asyncio.to_thread(analyze_missed_gainers, date_str)
+
+            if not results:
+                logger.info("[C35] 패턴 스캔: 대상 없음 (missed_gainers 비어있음)")
+                return {"pattern_scan": "EMPTY", "count": 0}
+
+            # 패턴별 집계
+            counts: dict = {}
+            for r in results:
+                counts[r.pattern] = counts.get(r.pattern, 0) + 1
+
+            # 파일 저장
+            out_path = await asyncio.to_thread(save_results, results, date_str)
+
+            # 주요 패턴 요약 로그
+            strong_patterns = ["DUAL_SURGE", "FOREIGN_SOLO", "INST_SOLO"]
+            strong_cnt = sum(counts.get(p, 0) for p in strong_patterns)
+            warn_patterns = ["OTHER_CORP_DUMP", "OUTFLOW"]
+            warn_cnt = sum(counts.get(p, 0) for p in warn_patterns)
+
+            logger.info(
+                f"[C35] 수급 패턴 스캔 완료 — {len(results)}종목, "
+                f"강신호 {strong_cnt}개, 위험 {warn_cnt}개 → {out_path.name}"
+            )
+
+            return {
+                "pattern_scan": "OK",
+                "count": len(results),
+                "strong": strong_cnt,
+                "warn": warn_cnt,
+                "counts": counts,
+                "path": str(out_path),
+            }
+        except FileNotFoundError as e:
+            logger.warning(f"[C35] missed_gainers 파일 없음: {e}")
+            return {"pattern_scan": "SKIP", "reason": "missed_gainers missing"}
+        except Exception as e:
+            logger.warning(f"[C35] 수급 패턴 스캔 실패 (무시): {e}")
+            return {"pattern_scan": f"ERROR: {e}"}
 
     async def _job_macro_baseline(self, context=None) -> dict:
         """C5M: 매크로 기준선 수집 (yfinance 6지표 20MA/60MA).
