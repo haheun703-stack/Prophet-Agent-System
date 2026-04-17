@@ -447,9 +447,24 @@ def _detect_bomb_reentry(
 
         # (B) 폭탄 직후 (1일) — 아직 이른감
         if days_after == 1:
+            # M-2: 이전 폭탄 검사 — 2차 폭탄 후 EARLY는 더 강한 신호
+            for j in range(i - 1, max(i - lookback, -1), -1):
+                prev_row = recent.iloc[j]
+                prev_f = float(prev_row.get("foreign", 0) or 0)
+                if prev_f >= bomb_thr:
+                    gap = i - j
+                    prev_date = recent.index[j]
+                    return {**base,
+                            "signal": "EARLY",
+                            "prev_bomb_date": str(prev_date)[:10],
+                            "prev_bomb_foreign": round(prev_f, 1),
+                            "gap_days": gap,
+                            "is_second_bomb": True,
+                            "note": f"2차 폭탄 직후 D+1 — {gap}일 전 1차 후 재폭발 (내일 재매수 주시)"}
             return {**base,
                     "signal": "EARLY",
-                    "note": "폭탄 직후 — 눌림목 대기 (최적 2-4일)"}
+                    "is_second_bomb": False,
+                    "note": "1차 폭탄 직후 — 눌림목 대기 (최적 2-4일)"}
 
         # (C) 유효 기간 내 (2~7일)
         if 2 <= days_after <= 7:
@@ -514,7 +529,7 @@ def _detect_bomb_reentry(
             if fv > 0:
                 pos_days += 1
 
-        if f_sum >= accum_thr and pos_days >= 3:
+        if f_sum >= accum_thr and pos_days >= 4:
             f_pct = round(f_sum / cap_b * 100, 3) if cap_b > 0 else 0
             return {
                 "signal": "QUIET_ACCUM",
