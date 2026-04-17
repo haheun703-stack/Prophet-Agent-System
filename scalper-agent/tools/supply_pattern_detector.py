@@ -381,13 +381,14 @@ def _detect_bomb_reentry(
         lookback: 검색 기간 (일)
 
     Returns:
-        dict with signal: NONE/BOMB_TODAY/EARLY/PULLBACK_WAIT/REENTRY/STRONG_REENTRY/EXPIRED
+        dict with signal: NONE/BOMB_TODAY/SECOND_BOMB/EARLY/PULLBACK_WAIT/REENTRY/STRONG_REENTRY/EXPIRED/QUIET_ACCUM
     """
     empty = {"signal": "NONE"}
     if df is None or df.empty or cap_b <= 0:
         return empty
 
     bomb_thr = max(cap_b * 0.003, 2.0)
+    bomb_thr = min(bomb_thr, 500.0)   # Fix1: 초대형주 캡 (삼성SDI 38조→500억 vs 이전 1139억)
 
     if ref_date:
         recent = df.loc[df.index <= ref_date].tail(lookback)
@@ -422,11 +423,27 @@ def _detect_bomb_reentry(
             "days_since_bomb": days_after,
         }
 
-        # (A) 당일 폭탄 — 추격 금지
+        # (A) 당일 폭탄
         if days_after == 0:
+            # Fix2: 2차 폭탄 검사 — 이전에 또 다른 폭탄이 있었나?
+            # 빅텍: 4/10 폭탄→눌림→4/16 재폭발 = SECOND_BOMB (최강 매수신호)
+            for j in range(i - 1, max(i - lookback, -1), -1):
+                prev_row = recent.iloc[j]
+                prev_f = float(prev_row.get("foreign", 0) or 0)
+                if prev_f >= bomb_thr:
+                    gap = i - j
+                    prev_date = recent.index[j]
+                    return {**base,
+                            "signal": "SECOND_BOMB",
+                            "prev_bomb_date": str(prev_date)[:10],
+                            "prev_bomb_foreign": round(prev_f, 1),
+                            "gap_days": gap,
+                            "note": f"2차+ 폭탄 — {gap}거래일 전 1차 폭탄 후 재폭발 (최강 매수신호)"}
+
+            # 이전 폭탄 없음 → 순수 1차 폭탄 (추격 금지)
             return {**base,
                     "signal": "BOMB_TODAY",
-                    "note": "당일 폭탄 — 추격매수 금지 (D+5 -1.28%)"}
+                    "note": "당일 1차 폭탄 — 추격매수 금지 (D+5 -1.28%)"}
 
         # (B) 폭탄 직후 (1일) — 아직 이른감
         if days_after == 1:
@@ -477,6 +494,36 @@ def _detect_bomb_reentry(
             return {**base,
                     "signal": "EXPIRED",
                     "note": f"폭탄 {days_after}일 경과 — 유효기간 초과"}
+
+    # ── Fix3: 폭탄은 없지만 5D 저강도 연속 외인매수 ──
+    # 예: 후성(6.7조) 5D+67억, 덕산테코피아(8539억) 5D+21.7억
+    accum_thr = min(bomb_thr * 0.3, 50.0)  # 폭탄의 30% 또는 50억 중 작은 값
+    accum_thr = max(accum_thr, 1.0)        # 최소 1억
+
+    if ref_date:
+        tail5 = df.loc[df.index <= ref_date].tail(5)
+    else:
+        tail5 = df.tail(5)
+
+    if len(tail5) >= 3:
+        f_sum = 0.0
+        pos_days = 0
+        for _, row in tail5.iterrows():
+            fv = float(row.get("foreign", 0) or 0)
+            f_sum += fv
+            if fv > 0:
+                pos_days += 1
+
+        if f_sum >= accum_thr and pos_days >= 3:
+            f_pct = round(f_sum / cap_b * 100, 3) if cap_b > 0 else 0
+            return {
+                "signal": "QUIET_ACCUM",
+                "foreign_5d_sum": round(f_sum, 1),
+                "foreign_5d_pct": f_pct,
+                "positive_days": pos_days,
+                "total_days": len(tail5),
+                "note": f"저강도 연속매수 5D(외인+{f_sum:.1f}억, {pos_days}/{len(tail5)}일 매수)",
+            }
 
     return empty
 
@@ -687,14 +734,20 @@ def analyze_code(
 
     # ── 멀티데이 폭탄→재매수 감지 ──
     bomb_reentry = _detect_bomb_reentry(df, cap_b, ref_date)
-    if bomb_reentry.get("signal") == "BOMB_TODAY":
-        warnings.append(f"외인폭탄 당일 — 추격매수 금지 (통계: D+5 -1.28%)")
-    elif bomb_reentry.get("signal") == "STRONG_REENTRY":
+    bomb_sig = bomb_reentry.get("signal", "NONE")
+    if bomb_sig == "SECOND_BOMB":
+        gap = bomb_reentry.get("gap_days", "?")
+        warnings.append(f"2차+ 폭탄 — {gap}일 전 1차 후 재폭발 (최강 매수신호)")
+    elif bomb_sig == "BOMB_TODAY":
+        warnings.append(f"외인폭탄 당일 (1차) — 추격매수 금지 (통계: D+5 -1.28%)")
+    elif bomb_sig == "STRONG_REENTRY":
         warnings.append(f"외인폭탄 재매수+기타법인 (D+3 +1.88% 승률53%)")
-    elif bomb_reentry.get("signal") == "REENTRY":
+    elif bomb_sig == "REENTRY":
         warnings.append(f"외인폭탄 재매수 감지 (D+3 +0.93%)")
-    elif bomb_reentry.get("signal") == "PULLBACK_WAIT":
+    elif bomb_sig == "PULLBACK_WAIT":
         warnings.append(f"외인폭탄 D+{bomb_reentry.get('days_since_bomb', '?')} — 눌림 대기 중")
+    elif bomb_sig == "QUIET_ACCUM":
+        warnings.append(f"저강도 연속매수 {bomb_reentry.get('note', '')}")
 
     # ── C3M-T3 시장맥락 보조점수 ──
     mkt = _get_market_for_code(code)
@@ -707,13 +760,16 @@ def analyze_code(
     # ── 최종 점수 (폭탄 재매수 보너스 포함) ──
     base_score = PATTERN_SCORE[pattern]
     bomb_adj = 0
-    bomb_sig = bomb_reentry.get("signal", "NONE")
-    if bomb_sig == "STRONG_REENTRY":
+    if bomb_sig == "SECOND_BOMB":
+        bomb_adj = 15   # 2차 폭탄 = 최강 매수신호
+    elif bomb_sig == "STRONG_REENTRY":
         bomb_adj = 10
     elif bomb_sig == "REENTRY":
         bomb_adj = 5
+    elif bomb_sig == "QUIET_ACCUM":
+        bomb_adj = 5    # 저강도 연속매수 = 관심
     elif bomb_sig == "BOMB_TODAY":
-        bomb_adj = -10  # 추격 감점
+        bomb_adj = -10  # 1차 폭탄 추격 감점
 
     final_score = max(0, min(100, base_score + market_adj + bomb_adj))
 
@@ -876,7 +932,7 @@ def save_results(results: List[PatternResult], date: str) -> Path:
     output = {
         "date": date,
         "count": len(results),
-        "schema_version": "supply_flow_v2_dynamic_thr",
+        "schema_version": "supply_flow_v3_second_bomb",
         "available_entities": AVAILABLE_ENTITIES,
         "pending_entities": [c for c in ENTITY_COLUMNS if c not in AVAILABLE_ENTITIES],
         "summary": {
