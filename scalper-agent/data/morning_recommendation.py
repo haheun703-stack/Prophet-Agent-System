@@ -997,6 +997,20 @@ def _step5_cross_validate(
     affected_sectors = shock_info.get("affected_sectors", [])
     opportunity_sectors = shock_info.get("opportunity_sectors", [])
 
+    # ── v4: bomb_watchlist 로드 (수급폭탄 TOP-N) ──
+    _bomb_map = {}  # {code: {bomb_adj, signal, rank_score, ...}}
+    try:
+        import json as _json_bw
+        _bw_path = Path(__file__).resolve().parent.parent / "data_store" / "bomb_watchlist.json"
+        if _bw_path.exists():
+            _bw_data = _json_bw.loads(_bw_path.read_text(encoding="utf-8"))
+            for bw in _bw_data.get("watchlist", []):
+                _bomb_map[bw["code"]] = bw
+            if _bomb_map:
+                logger.info(f"[step5] bomb_watchlist 로드: {len(_bomb_map)}종목")
+    except Exception as _bw_e:
+        logger.warning(f"[step5] bomb_watchlist 로드 실패(무시): {_bw_e}")
+
     # 모든 종목 코드 수집
     all_codes = set()
     all_codes.update(relay.get("stocks", {}).keys())
@@ -1010,6 +1024,8 @@ def _step5_cross_validate(
     # TV 스캐너 종목도 교차검증 대상에 포함
     if tv_signals:
         all_codes.update(tv_signals.keys())
+    # bomb_watchlist 종목도 후보에 포함
+    all_codes.update(_bomb_map.keys())
 
     # ── 7 SECRET 국적 파워 (NORMAL 모드) ──
     normal_nat_powers = {}
@@ -1496,6 +1512,14 @@ def _step5_cross_validate(
             sources.append("us_relay(+10)")
             cross += 1
 
+        # ── v4: 수급폭탄 보너스 (bomb_watchlist TOP-N) ──
+        bomb_sc = 0.0
+        if code in _bomb_map:
+            _bw = _bomb_map[code]
+            bomb_sc = float(_bw.get("bomb_adj", 0))  # +15(SECOND_BOMB) or +12(EARLY 2nd)
+            sources.append(f"bomb({_bw['signal']}:+{bomb_sc:.0f})")
+            cross += 1
+
         # ── 합산 ──────────────────────────────
         raw_total = (relay_sc + premove_sc + tech_sc + bargain_sc + cross_bonus
                      + nat_sc + news_pen + obv_pen + rel_pen
@@ -1509,7 +1533,8 @@ def _step5_cross_validate(
                      + doublebuy_sc   # 쌍매수 연속 보너스
                      + largecap_sc    # 대형주 수급 감지
                      + stealth_sc     # 선매집 잠복 보너스
-                     + us_relay_sc)   # US→KR 릴레이 보너스
+                     + us_relay_sc    # US→KR 릴레이 보너스
+                     + bomb_sc)       # v4: 수급폭탄 보너스
 
         # ── US 모드 조정 ──────────────────────
         # DEFENSIVE: 전체 점수 20% 감점 (보수적 진입)

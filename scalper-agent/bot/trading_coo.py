@@ -1949,6 +1949,20 @@ class TradingCOO:
                 f"강신호 {strong_cnt}개, 위험 {warn_cnt}개 → {out_path.name}"
             )
 
+            # ── v4: bomb_watchlist 생성 (TOP-N 수급폭탄 선별) ──
+            bomb_count = 0
+            try:
+                from tools.supply_pattern_detector import generate_bomb_watchlist
+                bomb_list = await asyncio.to_thread(
+                    generate_bomb_watchlist, date_str, 5
+                )
+                bomb_count = len(bomb_list)
+                if bomb_list:
+                    bomb_names = ", ".join(b["name"] for b in bomb_list[:3])
+                    logger.info(f"[C35] bomb_watchlist: {bomb_count}종목 — {bomb_names}")
+            except Exception as _be:
+                logger.warning(f"[C35] bomb_watchlist 생성 실패(무시): {_be}")
+
             return {
                 "pattern_scan": "OK",
                 "count": len(results),
@@ -1956,6 +1970,7 @@ class TradingCOO:
                 "warn": warn_cnt,
                 "counts": counts,
                 "path": str(out_path),
+                "bomb_watchlist": bomb_count,
             }
         except FileNotFoundError as e:
             logger.warning(f"[C35] missed_gainers 파일 없음: {e}")

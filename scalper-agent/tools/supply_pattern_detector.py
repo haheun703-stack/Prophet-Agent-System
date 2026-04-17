@@ -28,11 +28,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 import pandas as pd
 
@@ -206,7 +209,7 @@ def _load_universe():
                 if vk.startswith("cap_") and isinstance(vv, (int, float)):
                     cap = float(vv)
                     break
-            _UNIVERSE_CACHE[k] = {"market": market, "cap": cap}
+            _UNIVERSE_CACHE[k] = {"market": market, "cap": cap, "name": v.get("name", k)}
     except Exception:
         _UNIVERSE_CACHE = {}
 
@@ -217,8 +220,22 @@ def _get_market_for_code(code: str) -> str:
     return (_UNIVERSE_CACHE or {}).get(code, {}).get("market", "kospi")
 
 
+_KRX_MKTCAP_CACHE: Optional[Dict[str, float]] = None  # code -> 억원
+
+
 def _get_cap_for_code(code: str) -> float:
-    """종목 코드 → 시총 (억원)."""
+    """종목 코드 → 시총 (억원). KRX API 일별 시총 우선, fallback=universe.json."""
+    global _KRX_MKTCAP_CACHE
+    # 1) KRX API 캐시 (당일 실시간 시총)
+    if _KRX_MKTCAP_CACHE is None:
+        try:
+            from data.krx_openapi_client import get_mktcap_dict
+            _KRX_MKTCAP_CACHE = get_mktcap_dict()
+        except Exception:
+            _KRX_MKTCAP_CACHE = {}
+    if code in _KRX_MKTCAP_CACHE and _KRX_MKTCAP_CACHE[code] > 0:
+        return _KRX_MKTCAP_CACHE[code]
+    # 2) fallback: universe.json
     _load_universe()
     return (_UNIVERSE_CACHE or {}).get(code, {}).get("cap", 0.0)
 
@@ -975,6 +992,102 @@ def save_results(results: List[PatternResult], date: str) -> Path:
         encoding="utf-8",
     )
     return out_path
+
+
+def generate_bomb_watchlist(
+    ref_date: Optional[str] = None,
+    top_n: int = 5,
+) -> List[Dict]:
+    """bomb_watchlist 생성 — SECOND_BOMB/EARLY(2nd) TOP-N 선별.
+
+    v4: 백테스트 결과 반영 — 무필터 전종목 투입 = 실패(29.2%),
+    TOP-N 선별 + 점수 랭킹이 핵심.
+
+    스코어링:
+      - SECOND_BOMB: base 15점
+      - EARLY(is_second_bomb): base 12점
+      - 시총 3000억+: +3점 (유동성)
+      - gap_days 2~5일: +2점 (최적 갭)
+      - bomb_foreign_pct 0.5%+: +3점 (강한 매수)
+
+    Args:
+        ref_date: 기준일 (None=오늘)
+        top_n: 상위 N개 선별 (기본 5)
+
+    Returns:
+        [{code, name, signal, score, bomb_adj, gap_days, cap_b, ...}]
+        + data_store/bomb_watchlist.json 저장
+    """
+    _load_universe()
+    universe = _UNIVERSE_CACHE or {}
+    candidates = []
+
+    for code in universe:
+        csv_path = FLOW_DIR / f"{code}_investor.csv"
+        df = _csv_to_canonical_df(csv_path)
+        if df is None or df.empty:
+            continue
+
+        cap_b = _get_cap_for_code(code)
+        if cap_b <= 0:
+            continue
+
+        result = _detect_bomb_reentry(df, cap_b, ref_date=ref_date)
+        sig = result.get("signal", "NONE")
+
+        if sig == "SECOND_BOMB":
+            bomb_adj = 15
+        elif sig == "EARLY" and result.get("is_second_bomb", False):
+            bomb_adj = 12
+        else:
+            continue
+
+        # 스코어링
+        rank_score = bomb_adj
+        if cap_b >= 3000:
+            rank_score += 3  # 유동성 보너스
+        gap = result.get("gap_days", 0)
+        if 2 <= gap <= 5:
+            rank_score += 2  # 최적 갭
+        bfp = result.get("bomb_foreign_pct", 0)
+        if bfp >= 0.5:
+            rank_score += 3  # 강한 매수
+
+        name = universe.get(code, {}).get("name", code) if isinstance(universe.get(code), dict) else code
+        candidates.append({
+            "code": code,
+            "name": name,
+            "signal": sig,
+            "is_second_bomb": True,
+            "bomb_adj": bomb_adj,
+            "rank_score": rank_score,
+            "gap_days": gap,
+            "cap_b": round(cap_b, 0),
+            "bomb_foreign_pct": bfp,
+            "bomb_date": result.get("bomb_date", ""),
+            "track": "B",
+        })
+
+    # TOP-N 정렬: rank_score 내림 → 시총 내림
+    candidates.sort(key=lambda x: (-x["rank_score"], -x["cap_b"]))
+    watchlist = candidates[:top_n]
+
+    # JSON 저장
+    output = {
+        "date": ref_date or datetime.now().strftime("%Y-%m-%d"),
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "total_candidates": len(candidates),
+        "top_n": top_n,
+        "watchlist": watchlist,
+    }
+    out_path = SCALPER_DIR / "data_store" / "bomb_watchlist.json"
+    try:
+        out_path.write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
+        logger.info("bomb_watchlist 저장: %d/%d종목 → %s", len(watchlist), len(candidates), out_path)
+    except Exception as e:
+        logger.error("bomb_watchlist 저장 실패: %s", e)
+
+    return watchlist
 
 
 def main():
