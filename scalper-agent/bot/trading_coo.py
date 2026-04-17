@@ -1954,7 +1954,7 @@ class TradingCOO:
             try:
                 from tools.supply_pattern_detector import generate_bomb_watchlist
                 bomb_list = await asyncio.to_thread(
-                    generate_bomb_watchlist, date_str, 5
+                    generate_bomb_watchlist, date_str, 10
                 )
                 bomb_count = len(bomb_list)
                 if bomb_list:

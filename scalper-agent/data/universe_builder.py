@@ -108,11 +108,11 @@ def _build_sector_mapping(date: str) -> dict:
     return mapping
 
 
-def build_universe(min_cap_억: int = 500) -> dict:
+def build_universe(min_cap_억: int = 200) -> dict:
     """시총 기준 유니버스 자동 생성
 
     Args:
-        min_cap_억: 최소 시가총액 (억원). 기본 500 = 5백억 (v2: 1000→500 확대)
+        min_cap_억: 최소 시가총액 (억원). 기본 200 = 2백억 (v3: 500→200 소형주 확대)
 
     Returns:
         {code: {"name": ..., "market": ..., "cap": ...}}
@@ -248,7 +248,7 @@ def load_universe() -> dict:
 #  Naver Finance API 기반 유니버스 빌드 (pykrx 실패 시 fallback)
 # ═══════════════════════════════════════════════════
 
-def _build_universe_naver(min_cap_억: int = 500) -> dict:
+def _build_universe_naver(min_cap_억: int = 200) -> dict:
     """Naver Finance API로 유니버스 빌드 (pykrx KRX API 차단 시 fallback)
 
     기존 universe.json의 섹터 매핑을 최대한 재활용하고,
@@ -756,7 +756,7 @@ if __name__ == "__main__":
 
     import argparse
     parser = argparse.ArgumentParser(description="유니버스 빌더")
-    parser.add_argument("--min-cap", type=int, default=500, help="최소 시총 (억원, 기본 500=5천억)")
+    parser.add_argument("--min-cap", type=int, default=200, help="최소 시총 (억원, 기본 200=2백억)")
     parser.add_argument("--force", action="store_true", help="캐시 무시")
     parser.add_argument("--months", type=int, default=24, help="수집 기간 (월)")
     parser.add_argument("--build-only", action="store_true", help="유니버스만 빌드 (수집X)")

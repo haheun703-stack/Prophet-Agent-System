@@ -1000,15 +1000,20 @@ def generate_bomb_watchlist(
 ) -> List[Dict]:
     """bomb_watchlist 생성 — SECOND_BOMB/EARLY(2nd) TOP-N 선별.
 
-    v4: 백테스트 결과 반영 — 무필터 전종목 투입 = 실패(29.2%),
-    TOP-N 선별 + 점수 랭킹이 핵심.
+    v4.1: 4/17 실전 피드백 반영 — 스코어링 반전.
+    기존(v4) 안전주 선호 → 소형주/긴gap 폭발 포착으로 전환.
+    (점수23=TOP5 평균 -0.29% vs 점수15=기가레인 +30%)
 
     스코어링:
       - SECOND_BOMB: base 15점
       - EARLY(is_second_bomb): base 12점
-      - 시총 3000억+: +3점 (유동성)
-      - gap_days 2~5일: +2점 (최적 갭)
-      - bomb_foreign_pct 0.5%+: +3점 (강한 매수)
+      - 시총 <3000억: +5점 (소형주 폭발력)
+      - 시총 3000~10000억: +3점 (중형)
+      - 시총 10000억+: +0점 (대형주 둔감)
+      - gap_days 5~10일: +4점 (장기 매집 후 폭발)
+      - gap_days 2~4일: +1점
+      - bomb_foreign_pct 0.8%+: +3점 (강한 매수)
+      - bomb_foreign_pct 0.3%+: +1점 (약한 매수도 인정)
 
     Args:
         ref_date: 기준일 (None=오늘)
@@ -1042,16 +1047,26 @@ def generate_bomb_watchlist(
         else:
             continue
 
-        # 스코어링
+        # v4.1 스코어링 — 소형주/긴gap 폭발 포착
         rank_score = bomb_adj
-        if cap_b >= 3000:
-            rank_score += 3  # 유동성 보너스
+        # 시총: 소형주 보너스 (소형 > 중형 > 대형)
+        if cap_b < 3000:
+            rank_score += 5  # 소형주 폭발력
+        elif cap_b < 10000:
+            rank_score += 3  # 중형주
+        # else: 대형주 +0
         gap = result.get("gap_days", 0)
-        if 2 <= gap <= 5:
-            rank_score += 2  # 최적 갭
+        # gap: 긴 매집 보너스 (장기 > 단기)
+        if 5 <= gap <= 10:
+            rank_score += 4  # 장기 매집 후 폭발
+        elif 2 <= gap <= 4:
+            rank_score += 1
         bfp = result.get("bomb_foreign_pct", 0)
-        if bfp >= 0.5:
+        # 외인비: 단계별 (0.3% 이상이면 최소 인정)
+        if bfp >= 0.8:
             rank_score += 3  # 강한 매수
+        elif bfp >= 0.3:
+            rank_score += 1  # 약한 매수도 인정
 
         name = universe.get(code, {}).get("name", code) if isinstance(universe.get(code), dict) else code
         candidates.append({
@@ -1068,8 +1083,8 @@ def generate_bomb_watchlist(
             "track": "B",
         })
 
-    # TOP-N 정렬: rank_score 내림 → 시총 내림
-    candidates.sort(key=lambda x: (-x["rank_score"], -x["cap_b"]))
+    # TOP-N 정렬: rank_score 내림 → 시총 오름 (소형주 우선)
+    candidates.sort(key=lambda x: (-x["rank_score"], x["cap_b"]))
     watchlist = candidates[:top_n]
 
     # JSON 저장

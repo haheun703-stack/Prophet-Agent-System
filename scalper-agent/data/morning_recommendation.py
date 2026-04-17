@@ -997,19 +997,27 @@ def _step5_cross_validate(
     affected_sectors = shock_info.get("affected_sectors", [])
     opportunity_sectors = shock_info.get("opportunity_sectors", [])
 
-    # ── v4: bomb_watchlist 로드 (수급폭탄 TOP-N) ──
-    _bomb_map = {}  # {code: {bomb_adj, signal, rank_score, ...}}
+    # ── v4.1: bomb 전종목 스캔 (B안 — TOP-N 랭킹 폐지, 전체 +15 보너스) ──
+    _bomb_map = {}  # {code: {bomb_adj, signal, ...}}
     try:
-        import json as _json_bw
-        _bw_path = Path(__file__).resolve().parent.parent / "data_store" / "bomb_watchlist.json"
-        if _bw_path.exists():
-            _bw_data = _json_bw.loads(_bw_path.read_text(encoding="utf-8"))
-            for bw in _bw_data.get("watchlist", []):
-                _bomb_map[bw["code"]] = bw
-            if _bomb_map:
-                logger.info(f"[step5] bomb_watchlist 로드: {len(_bomb_map)}종목")
+        from tools.supply_pattern_detector import generate_bomb_watchlist
+        _bomb_all = generate_bomb_watchlist(ref_date=None, top_n=9999)  # 전체
+        for bw in _bomb_all:
+            _bomb_map[bw["code"]] = bw
+        if _bomb_map:
+            logger.info(f"[step5] bomb 전종목 스캔: {len(_bomb_map)}종목 (전체 보너스)")
     except Exception as _bw_e:
-        logger.warning(f"[step5] bomb_watchlist 로드 실패(무시): {_bw_e}")
+        logger.warning(f"[step5] bomb 스캔 실패(무시): {_bw_e}")
+        # fallback: 기존 watchlist 파일
+        try:
+            import json as _json_bw
+            _bw_path = Path(__file__).resolve().parent.parent / "data_store" / "bomb_watchlist.json"
+            if _bw_path.exists():
+                _bw_data = _json_bw.loads(_bw_path.read_text(encoding="utf-8"))
+                for bw in _bw_data.get("watchlist", []):
+                    _bomb_map[bw["code"]] = bw
+        except Exception:
+            pass
 
     # 모든 종목 코드 수집
     all_codes = set()
@@ -1024,7 +1032,7 @@ def _step5_cross_validate(
     # TV 스캐너 종목도 교차검증 대상에 포함
     if tv_signals:
         all_codes.update(tv_signals.keys())
-    # bomb_watchlist 종목도 후보에 포함
+    # v4.1: bomb 전종목 후보에 포함 (B안 — 다른 팩터와 합산으로 최종 순위 결정)
     all_codes.update(_bomb_map.keys())
 
     # ── 7 SECRET 국적 파워 (NORMAL 모드) ──
@@ -1512,7 +1520,7 @@ def _step5_cross_validate(
             sources.append("us_relay(+10)")
             cross += 1
 
-        # ── v4: 수급폭탄 보너스 (bomb_watchlist TOP-N) ──
+        # ── v4.1: 수급폭탄 보너스 (전종목 — B안) ──
         bomb_sc = 0.0
         if code in _bomb_map:
             _bw = _bomb_map[code]
@@ -1534,7 +1542,7 @@ def _step5_cross_validate(
                      + largecap_sc    # 대형주 수급 감지
                      + stealth_sc     # 선매집 잠복 보너스
                      + us_relay_sc    # US→KR 릴레이 보너스
-                     + bomb_sc)       # v4: 수급폭탄 보너스
+                     + bomb_sc)       # v4.1: 수급폭탄 보너스 (전종목)
 
         # ── US 모드 조정 ──────────────────────
         # DEFENSIVE: 전체 점수 20% 감점 (보수적 진입)
