@@ -61,8 +61,8 @@ MISSED_DIR = SCALPER_DIR / "data_store" / "learning" / "missed_gainers"
 OUTPUT_DIR = SCALPER_DIR / "data_store" / "learning" / "pattern_scan"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# ── 패턴 임계값 (억원 단위) ──
-# 실데이터 기반 튜닝 (2026-04-16 덕산/무림/엑스게이트 검증)
+# ── 패턴 임계값 (억원 단위) — 대형주 절대값 fallback ──
+# ※ 실제 감지는 _dynamic_thr(시총)로 동적 계산 (아래 THR는 시총 미확인시 fallback)
 THR = {
     "dual_foreign": 50.0,      # 쌍매수: 외인 최소
     "dual_inst": 30.0,         # 쌍매수: 기관 최소
@@ -77,6 +77,49 @@ THR = {
     "surge_pct": 10.0,         # 수급이탈 판정용 가격 급등 기준
     "individual_dump": 30.0,   # 쌍매수: 개인 순매도 최소 (절대값)
 }
+
+
+# ── 시총 기반 동적 임계값 ──
+# 75만 행 통계분석 결과 (2,431종목):
+#   - 급등주(+10%+) 시총대비 외인매수: 소형 P50=0.292%, 중형 P50=0.313%, 대형 P50=0.242%
+#   - 0.3% = 전 규모 중앙값 수준 → "의미있는 매수"의 최소 기준
+#   - 대칭도(|외인+개인|/|외인|) P50=0.271, 양호 기준 ≤0.5 (62.3% 해당)
+#   - 폭탄 당일 추격매수 = 손실 (D+5 -1.28%) → 눌림목 재매수만 유효
+#   - 최적 조합: 대칭0.5+눌림-3%+기타법인 → D+3 +1.88% 승률53%
+def _dynamic_thr(cap_b: float) -> dict:
+    """시총 기반 동적 임계값 (억원 단위).
+
+    cap_b: 시총 (억원). 0이면 절대값 fallback(THR) 반환.
+    """
+    if cap_b <= 0:
+        return THR
+
+    # 핵심: 시총의 0.3% = 의미있는 수급 이동 (75만 행 검증)
+    bomb = cap_b * 0.003
+    bomb = max(bomb, 2.0)     # 최소 2억 (시총 ~667억 이하)
+    bomb = min(bomb, 500.0)   # 최대 500억 (시총 ~16.7조+ 초대형주)
+
+    return {
+        "dual_foreign": bomb,                  # 쌍매수: 외인 0.3%+
+        "dual_inst": max(bomb * 0.6, 1.5),     # 쌍매수: 기관 0.18%+
+        "solo_main": bomb,                      # 단독: 주도 0.3%+
+        "solo_other": max(bomb * 0.6, 1.5),    # 단독: 보조 최대 0.18%
+        "retail_strong": max(bomb * 0.6, 1.5),
+        "retail_netral": max(bomb * 0.4, 1.0),
+        "other_corp_load": max(bomb * 0.4, 1.0),
+        "other_corp_dump": max(bomb * 0.4, 1.0),
+        "outflow_foreign": max(bomb * 0.6, 1.5),
+        "outflow_inst": max(bomb * 0.4, 1.0),
+        "surge_pct": 10.0,                     # 고정
+        "individual_dump": max(bomb * 0.6, 1.5),
+    }
+
+
+def _calc_symmetry(foreign: float, individual: float) -> Optional[float]:
+    """외인-개인 대칭도. |외인+개인|/|외인|. 0=완벽대칭, ≤0.5 양호(62.3%)."""
+    if abs(foreign) < 0.1:
+        return None
+    return round(abs(foreign + individual) / abs(foreign), 3)
 
 # ── 패턴 정의 ──
 PATTERN_DESC = {
@@ -133,6 +176,10 @@ class PatternResult:
     market_context: Dict[str, Optional[float]] = field(default_factory=dict)
     market_adj: int = 0            # 시장맥락 점수 조정 (-15 ~ +10)
     final_score: int = 0           # = score + market_adj (0~100 clip)
+    # v2 추가: 시총비율 기반 (75만 행 통계 분석)
+    cap_b: float = 0.0                           # 시총 (억원)
+    symmetry: Optional[float] = None             # 외인-개인 대칭도 (≤0.5 양호)
+    bomb_reentry: Dict = field(default_factory=dict)  # 멀티데이 폭탄→재매수 신호
     classified_at: str = ""
 
 
@@ -140,23 +187,40 @@ class PatternResult:
 #  C3M-T3 연동: 시장 맥락 로더 + 점수 조정
 # ============================================================
 
-_UNIVERSE_CACHE: Optional[Dict[str, str]] = None  # code -> market
+_UNIVERSE_CACHE: Optional[Dict[str, dict]] = None  # code -> {"market": str, "cap": float}
+
+
+def _load_universe():
+    """universe.json 로드 (시장+시총 통합 캐시)."""
+    global _UNIVERSE_CACHE
+    if _UNIVERSE_CACHE is not None:
+        return
+    try:
+        uni_path = SCALPER_DIR / "data_store" / "universe.json"
+        uni = json.loads(uni_path.read_text(encoding="utf-8"))
+        _UNIVERSE_CACHE = {}
+        for k, v in uni.items():
+            market = "kospi" if v.get("market") == "KOSPI" else "kosdaq"
+            cap = 0.0
+            for vk, vv in v.items():
+                if vk.startswith("cap_") and isinstance(vv, (int, float)):
+                    cap = float(vv)
+                    break
+            _UNIVERSE_CACHE[k] = {"market": market, "cap": cap}
+    except Exception:
+        _UNIVERSE_CACHE = {}
 
 
 def _get_market_for_code(code: str) -> str:
-    """종목 코드 → 시장(kospi/kosdaq) 판별. universe.json 캐시."""
-    global _UNIVERSE_CACHE
-    if _UNIVERSE_CACHE is None:
-        try:
-            uni_path = SCALPER_DIR / "data_store" / "universe.json"
-            uni = json.loads(uni_path.read_text(encoding="utf-8"))
-            _UNIVERSE_CACHE = {
-                k: ("kospi" if v.get("market") == "KOSPI" else "kosdaq")
-                for k, v in uni.items()
-            }
-        except Exception:
-            _UNIVERSE_CACHE = {}
-    return _UNIVERSE_CACHE.get(code, "kospi")  # default KOSPI
+    """종목 코드 → 시장(kospi/kosdaq) 판별."""
+    _load_universe()
+    return (_UNIVERSE_CACHE or {}).get(code, {}).get("market", "kospi")
+
+
+def _get_cap_for_code(code: str) -> float:
+    """종목 코드 → 시총 (억원)."""
+    _load_universe()
+    return (_UNIVERSE_CACHE or {}).get(code, {}).get("cap", 0.0)
 
 
 def _load_market_context(market: str = "kospi") -> Dict[str, Optional[float]]:
@@ -292,6 +356,131 @@ def _apply_market_context(
     return adj, notes
 
 
+# ============================================================
+#  멀티데이 외인폭탄 → 눌림목 → 재매수 감지
+# ============================================================
+# 75만 행 통계 결과:
+#   당일 추격매수 = 손실 (D+5 -1.28%)
+#   눌림 -3%+ 후 재매수 = D+3 +1.88% (대칭0.5+기타법인)
+#   눌림 -8%+ 후 재매수 = D+5 +3.18% (최강)
+#   기타법인 동반 = +1.17%p 엣지
+#   재매수 타이밍: P25=2일, P50=3일, P75=4일
+
+def _detect_bomb_reentry(
+    df: Optional[pd.DataFrame],
+    cap_b: float,
+    ref_date: Optional[str] = None,
+    lookback: int = 15,
+) -> Dict:
+    """외인 폭탄 → 눌림목 → 재매수 멀티데이 패턴 감지.
+
+    Args:
+        df: canonical flow DataFrame (억원 단위, index=date)
+        cap_b: 시총 (억원)
+        ref_date: 기준일 (None이면 최근)
+        lookback: 검색 기간 (일)
+
+    Returns:
+        dict with signal: NONE/BOMB_TODAY/EARLY/PULLBACK_WAIT/REENTRY/STRONG_REENTRY/EXPIRED
+    """
+    empty = {"signal": "NONE"}
+    if df is None or df.empty or cap_b <= 0:
+        return empty
+
+    bomb_thr = max(cap_b * 0.003, 2.0)
+
+    if ref_date:
+        recent = df.loc[df.index <= ref_date].tail(lookback)
+    else:
+        recent = df.tail(lookback)
+
+    if len(recent) < 3:
+        return empty
+
+    # 가장 최근의 유효한 폭탄일 탐색 (역순)
+    for i in range(len(recent) - 1, -1, -1):
+        row = recent.iloc[i]
+        f_val = float(row.get("foreign", 0) or 0)
+        p_val = float(row.get("individual", 0) or 0)
+
+        if f_val < bomb_thr:
+            continue
+
+        # 대칭도 체크
+        sym = abs(f_val + p_val) / abs(f_val) if abs(f_val) > 0 else 999
+
+        bomb_date = recent.index[i]
+        days_after = len(recent) - 1 - i
+        bomb_pct = round(f_val / cap_b * 100, 3)
+
+        base = {
+            "bomb_date": str(bomb_date)[:10],
+            "bomb_foreign_pct": bomb_pct,
+            "bomb_foreign_abs": round(f_val, 1),
+            "symmetry": round(sym, 3),
+            "symmetry_ok": sym <= 0.5,
+            "days_since_bomb": days_after,
+        }
+
+        # (A) 당일 폭탄 — 추격 금지
+        if days_after == 0:
+            return {**base,
+                    "signal": "BOMB_TODAY",
+                    "note": "당일 폭탄 — 추격매수 금지 (D+5 -1.28%)"}
+
+        # (B) 폭탄 직후 (1일) — 아직 이른감
+        if days_after == 1:
+            return {**base,
+                    "signal": "EARLY",
+                    "note": "폭탄 직후 — 눌림목 대기 (최적 2-4일)"}
+
+        # (C) 유효 기간 내 (2~7일)
+        if 2 <= days_after <= 7:
+            today_row = recent.iloc[-1]
+            today_f = float(today_row.get("foreign", 0) or 0)
+            today_oc = float(today_row.get("other_corp", 0) or 0)
+
+            # 폭탄 후 외인 순매수 합
+            after_slice = recent.iloc[i + 1:]
+            after_f_sum = sum(float(r.get("foreign", 0) or 0) for _, r in after_slice.iterrows())
+
+            base["reentry_today_foreign"] = round(today_f, 1)
+            base["other_corp_coop"] = today_oc > 0
+            base["after_bomb_foreign_sum"] = round(after_f_sum, 1)
+
+            if today_f > 0 and sym <= 0.5:
+                # 재매수 감지!
+                if today_oc > 0:
+                    return {**base,
+                            "signal": "STRONG_REENTRY",
+                            "expected_edge_d3": 1.88,
+                            "expected_winrate_d3": 53.0,
+                            "note": "재매수+기타법인동반 (D+3 +1.88% 승률53%)"}
+                else:
+                    return {**base,
+                            "signal": "REENTRY",
+                            "expected_edge_d3": 0.93,
+                            "expected_winrate_d3": 49.9,
+                            "note": "재매수 감지 (D+3 +0.93% 승률50%)"}
+            elif today_f <= 0 and sym <= 0.5:
+                return {**base,
+                        "signal": "PULLBACK_WAIT",
+                        "note": f"눌림목 대기 D+{days_after} — 외인 재매수 시작 시 진입"}
+            else:
+                # 대칭도 미달이지만 폭탄은 있음
+                return {**base,
+                        "signal": "WEAK_BOMB",
+                        "note": "대칭도 미달(개인매도 부족) — 신뢰도 낮음"}
+
+        # (D) 유효기간 초과
+        if days_after > 7:
+            return {**base,
+                    "signal": "EXPIRED",
+                    "note": f"폭탄 {days_after}일 경과 — 유효기간 초과"}
+
+    return empty
+
+
 def _csv_to_canonical_df(csv_path: Path) -> Optional[pd.DataFrame]:
     """
     CSV 파일(백만원 단위) → canonical 영문 ID DataFrame (억원 단위).
@@ -384,9 +573,13 @@ def _today_row(df: pd.DataFrame, ref_date: Optional[str] = None) -> Dict[str, Op
 def classify_pattern(
     entities_today: Dict[str, Optional[float]],
     change_rate: float,
+    thr: Optional[dict] = None,
 ) -> Tuple[str, List[str]]:
     """
     오늘 수급(억원) + 등락률 → 패턴 분류.
+
+    Args:
+        thr: 동적 임계값 dict (_dynamic_thr 결과). None이면 글로벌 THR 사용.
 
     우선순위:
       1. DUAL_SURGE (외+기관 쌍매수, 개인 대량 매도)
@@ -398,6 +591,8 @@ def classify_pattern(
       7. RETAIL_LED
       8. MIXED
     """
+    t = thr or THR
+
     f = entities_today.get("foreign") or 0.0
     i = entities_today.get("institution") or 0.0
     p = entities_today.get("individual") or 0.0
@@ -405,48 +600,41 @@ def classify_pattern(
 
     warnings: List[str] = []
 
-    # 1. DUAL_SURGE — 외 +50억 AND 기 +30억 AND 개 -30억 이상 매도
-    if f >= THR["dual_foreign"] and i >= THR["dual_inst"] and p <= -THR["individual_dump"]:
-        # M-1: DUAL_SURGE인데 기타법인 대량 매도 병행 시 경고 추가
-        if oc <= -THR["other_corp_dump"]:
+    # 1. DUAL_SURGE — 외 + 기관 쌍매수 + 개인 대량 매도
+    if f >= t["dual_foreign"] and i >= t["dual_inst"] and p <= -t["individual_dump"]:
+        if oc <= -t["other_corp_dump"]:
             warnings.append(
                 f"쌍매수지만 기타법인 {oc:+.1f}억 매도 병행 — 내부자 물량 소화 의심"
             )
         return "DUAL_SURGE", warnings
 
-    # 2. OUTFLOW — 외 -30억 AND 기 -20억 AND 급등 10%+
-    if f <= -THR["outflow_foreign"] and i <= -THR["outflow_inst"] and change_rate >= THR["surge_pct"]:
+    # 2. OUTFLOW — 외/기관 대량 매도인데 급등
+    if f <= -t["outflow_foreign"] and i <= -t["outflow_inst"] and change_rate >= t["surge_pct"]:
         warnings.append(f"수급 이탈에도 +{change_rate:.1f}% 급등 — 고점 가능성")
         return "OUTFLOW", warnings
 
-    # 3. OTHER_CORP_DUMP — 기타법인 -20억 이하 (매도)
-    # H-1 경고: other_corp는 -(외+기+개) 역산 값 (KIS API 미제공) — 단독 신호로는 주의
-    if oc <= -THR["other_corp_dump"]:
+    # 3. OTHER_CORP_DUMP
+    if oc <= -t["other_corp_dump"]:
         warnings.append(f"기타법인 {oc:+.1f}억 매도 — 자사주 처분/대주주 매도 의심")
         warnings.append("※ 기타법인은 역산값 — 공시/거래원 확인 필요")
         return "OTHER_CORP_DUMP", warnings
 
-    # 4. OTHER_CORP_LOAD — 기타법인 +20억 이상 (매수)
-    if oc >= THR["other_corp_load"]:
+    # 4. OTHER_CORP_LOAD
+    if oc >= t["other_corp_load"]:
         warnings.append(f"기타법인 {oc:+.1f}억 매수 — M&A/자사주 취득 가능성")
         warnings.append("※ 기타법인은 역산값 — 공시/거래원 확인 필요")
         return "OTHER_CORP_LOAD", warnings
 
-    # 5. FOREIGN_SOLO — 외 +50억 AND (기 <30억 OR 외인 우세)
-    # H-1/H-3 수정: 외인+기관 모두 매수지만 DUAL_SURGE 개인조건 미달시 우세 주체로 SOLO 승격
-    if f >= THR["solo_main"] and i < THR["solo_other"]:
+    # 5. FOREIGN_SOLO
+    if f >= t["solo_main"] and i < t["solo_other"]:
         return "FOREIGN_SOLO", warnings
 
-    # 6. INST_SOLO — 기 +50억 AND 외 <30억
-    if i >= THR["solo_main"] and f < THR["solo_other"]:
+    # 6. INST_SOLO
+    if i >= t["solo_main"] and f < t["solo_other"]:
         return "INST_SOLO", warnings
 
-    # 7. DUAL_WEAK fallback — 외+기 모두 +30억 이상 매수인데 DUAL_SURGE 조건 미달시 우세 주체로 분류
-    # C-2 수정: 주석 예시와 조건(f>=30 AND i>=30) 일치화
-    # 예: 외+40/기+35/개-25 (DUAL_SURGE 개인-30 미달) → FOREIGN_SOLO (외인 우세)
-    # 예: 외+35/기+40/개-20 (DUAL_SURGE 개인-30 미달) → INST_SOLO (기관 우세)
-    # 참고: 필옵틱스/코나아이처럼 기관<30억인 케이스는 DUAL_WEAK 미해당 → MIXED로 분류
-    if f >= THR["dual_inst"] and i >= THR["dual_inst"]:
+    # 7. DUAL_WEAK fallback — 외+기 모두 매수지만 DUAL_SURGE 개인조건 미달
+    if f >= t["dual_inst"] and i >= t["dual_inst"]:
         if f >= i:
             warnings.append(f"외인 우세 쌍매수 (외 {f:+.1f}억 / 기 {i:+.1f}억)")
             return "FOREIGN_SOLO", warnings
@@ -454,8 +642,8 @@ def classify_pattern(
             warnings.append(f"기관 우세 쌍매수 (외 {f:+.1f}억 / 기 {i:+.1f}억)")
             return "INST_SOLO", warnings
 
-    # 8. RETAIL_LED — 외+기 합 |20억| 이내 AND 개인 +30억
-    if abs(f + i) <= THR["retail_netral"] and p >= THR["retail_strong"]:
+    # 8. RETAIL_LED
+    if abs(f + i) <= t["retail_netral"] and p >= t["retail_strong"]:
         warnings.append("개인 주도 단타 — 변동성 주의")
         return "RETAIL_LED", warnings
 
@@ -471,7 +659,7 @@ def analyze_code(
     volume: int,
     ref_date: Optional[str] = None,
 ) -> PatternResult:
-    """단일 코드 패턴 분석."""
+    """단일 코드 패턴 분석 (시총비율 기반 동적 임계값 v2)."""
     csv_path = FLOW_DIR / f"{code}_investor.csv"
     df = _csv_to_canonical_df(csv_path)
 
@@ -480,14 +668,33 @@ def analyze_code(
     entities_10d = _calc_cumulative(df, 10, ref_date) if df is not None else {}
     entities_20d = _calc_cumulative(df, 20, ref_date) if df is not None else {}
 
-    pattern, warnings = classify_pattern(entities_today, change_rate)
+    # ── 시총 기반 동적 임계값 (v2 핵심) ──
+    cap_b = _get_cap_for_code(code)
+    dyn_thr = _dynamic_thr(cap_b)
+
+    pattern, warnings = classify_pattern(entities_today, change_rate, thr=dyn_thr)
 
     if df is None:
         warnings.insert(0, f"CSV 없음: {csv_path.name}")
     else:
-        # H-2-보조: 전 주체 None이면 MIXED가 되는 것이 함정 — 경고 추가
         if all(v is None for v in entities_today.values()):
             warnings.insert(0, "수급 데이터 전체 누락 — 패턴 분류 신뢰 불가")
+
+    # ── 대칭도 계산 ──
+    f_val = entities_today.get("foreign") or 0.0
+    p_val = entities_today.get("individual") or 0.0
+    symmetry = _calc_symmetry(f_val, p_val)
+
+    # ── 멀티데이 폭탄→재매수 감지 ──
+    bomb_reentry = _detect_bomb_reentry(df, cap_b, ref_date)
+    if bomb_reentry.get("signal") == "BOMB_TODAY":
+        warnings.append(f"외인폭탄 당일 — 추격매수 금지 (통계: D+5 -1.28%)")
+    elif bomb_reentry.get("signal") == "STRONG_REENTRY":
+        warnings.append(f"외인폭탄 재매수+기타법인 (D+3 +1.88% 승률53%)")
+    elif bomb_reentry.get("signal") == "REENTRY":
+        warnings.append(f"외인폭탄 재매수 감지 (D+3 +0.93%)")
+    elif bomb_reentry.get("signal") == "PULLBACK_WAIT":
+        warnings.append(f"외인폭탄 D+{bomb_reentry.get('days_since_bomb', '?')} — 눌림 대기 중")
 
     # ── C3M-T3 시장맥락 보조점수 ──
     mkt = _get_market_for_code(code)
@@ -497,8 +704,18 @@ def analyze_code(
     )
     warnings.extend(ctx_notes)
 
+    # ── 최종 점수 (폭탄 재매수 보너스 포함) ──
     base_score = PATTERN_SCORE[pattern]
-    final_score = max(0, min(100, base_score + market_adj))
+    bomb_adj = 0
+    bomb_sig = bomb_reentry.get("signal", "NONE")
+    if bomb_sig == "STRONG_REENTRY":
+        bomb_adj = 10
+    elif bomb_sig == "REENTRY":
+        bomb_adj = 5
+    elif bomb_sig == "BOMB_TODAY":
+        bomb_adj = -10  # 추격 감점
+
+    final_score = max(0, min(100, base_score + market_adj + bomb_adj))
 
     return PatternResult(
         code=code,
@@ -516,8 +733,11 @@ def analyze_code(
         entities_20d=entities_20d,
         warnings=warnings,
         market_context=market_ctx,
-        market_adj=market_adj,
+        market_adj=market_adj + bomb_adj,
         final_score=final_score,
+        cap_b=cap_b,
+        symmetry=symmetry,
+        bomb_reentry=bomb_reentry,
         classified_at=datetime.now().isoformat(timespec="seconds"),
     )
 
@@ -587,25 +807,47 @@ def print_summary(results: List[PatternResult]) -> None:
 
     # 종목별 상세
     print("[종목별 상세]")
-    print(f"{'종목':18s} {'등락률':>7s} {'외인':>9s} {'기관':>9s} {'개인':>9s} {'기타법인':>10s}  {'점수':>11s}  {'패턴':20s}")
-    print("-" * 118)
-    # final_score 순 정렬 (시장맥락 반영)
+    print(f"{'종목':18s} {'시총':>7s} {'등락률':>7s} {'외인':>9s} {'기관':>9s} {'개인':>9s}  {'점수':>11s}  {'패턴':16s} {'폭탄신호':12s}")
+    print("-" * 130)
+    # final_score 순 정렬 (시장맥락+폭탄 반영)
     results_sorted = sorted(results, key=lambda r: (-r.final_score, -r.change_rate))
     for r in results_sorted:
         f = r.entities_today.get("foreign")
         i = r.entities_today.get("institution")
         p = r.entities_today.get("individual")
-        oc = r.entities_today.get("other_corp")
         f_s = f"{f:+.1f}억" if f is not None else "    N/A"
         i_s = f"{i:+.1f}억" if i is not None else "    N/A"
         p_s = f"{p:+.1f}억" if p is not None else "    N/A"
-        oc_s = f"{oc:+.1f}억" if oc is not None else "    N/A"
         name_disp = r.name[:10]
+        # 시총 표시
+        if r.cap_b >= 10000:
+            cap_s = f"{r.cap_b / 10000:.1f}조"
+        elif r.cap_b > 0:
+            cap_s = f"{r.cap_b:,.0f}억"
+        else:
+            cap_s = "N/A"
+        # 점수 (조정 포함)
         if r.market_adj:
-            sc_s = f"{r.final_score:>3d}({r.score:+d}{r.market_adj:+d})"
+            sc_s = f"{r.final_score:>3d}({r.score}{r.market_adj:+d})"
         else:
             sc_s = f"{r.final_score:>3d}       "
-        print(f"{name_disp:18s} {r.change_rate:+6.2f}% {f_s:>9s} {i_s:>9s} {p_s:>9s} {oc_s:>10s}  {sc_s:>11s}  {PATTERN_DESC[r.pattern][:20]:20s}")
+        # 폭탄 재매수 신호
+        bomb_sig = r.bomb_reentry.get("signal", "NONE")
+        bomb_s = bomb_sig if bomb_sig != "NONE" else ""
+        print(f"{name_disp:18s} {cap_s:>7s} {r.change_rate:+6.2f}% {f_s:>9s} {i_s:>9s} {p_s:>9s}  {sc_s:>11s}  {PATTERN_DESC[r.pattern][:16]:16s} {bomb_s:12s}")
+
+    # 대칭도 양호 종목 (≤0.5)
+    sym_good = [r for r in results_sorted if r.symmetry is not None and r.symmetry <= 0.5
+                and r.entities_today.get("foreign", 0) and (r.entities_today.get("foreign") or 0) > 0]
+    if sym_good:
+        print()
+        print("[대칭도 양호 종목] (외인매수 = 개인매도 대칭, ≤0.5)")
+        for r in sym_good[:10]:
+            f_v = r.entities_today.get("foreign", 0)
+            p_v = r.entities_today.get("individual", 0)
+            bomb_s = r.bomb_reentry.get("signal", "")
+            print(f"  {r.name[:10]:12s} 대칭도={r.symmetry:.3f} 외인{f_v:+.1f}/개인{p_v:+.1f}억"
+                  + (f" [{bomb_s}]" if bomb_s and bomb_s != "NONE" else ""))
 
     print()
     print("[경고 발생 종목]")
@@ -634,7 +876,7 @@ def save_results(results: List[PatternResult], date: str) -> Path:
     output = {
         "date": date,
         "count": len(results),
-        "schema_version": "supply_flow_v1_4entity",
+        "schema_version": "supply_flow_v2_dynamic_thr",
         "available_entities": AVAILABLE_ENTITIES,
         "pending_entities": [c for c in ENTITY_COLUMNS if c not in AVAILABLE_ENTITIES],
         "summary": {
