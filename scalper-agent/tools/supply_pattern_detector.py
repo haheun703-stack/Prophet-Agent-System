@@ -753,6 +753,13 @@ def analyze_code(
     if bomb_sig == "SECOND_BOMB":
         gap = bomb_reentry.get("gap_days", "?")
         warnings.append(f"2차+ 폭탄 — {gap}일 전 1차 후 재폭발 (최강 매수신호)")
+    elif bomb_sig == "EARLY":
+        is_2nd = bomb_reentry.get("is_second_bomb", False)
+        if is_2nd:
+            gap = bomb_reentry.get("gap_days", "?")
+            warnings.append(f"2차 폭탄 D+1 — {gap}일 전 1차 후 재폭발 직후 (TP3%/SL-2% 승률56%)")
+        else:
+            warnings.append(f"1차 폭탄 D+1 — 눌림목 대기 추천 (최적 진입 2-4일 후)")
     elif bomb_sig == "BOMB_TODAY":
         warnings.append(f"외인폭탄 당일 (1차) — 추격매수 금지 (통계: D+5 -1.28%)")
     elif bomb_sig == "STRONG_REENTRY":
@@ -777,6 +784,10 @@ def analyze_code(
     bomb_adj = 0
     if bomb_sig == "SECOND_BOMB":
         bomb_adj = 15   # 2차 폭탄 = 최강 매수신호
+    elif bomb_sig == "EARLY" and bomb_reentry.get("is_second_bomb", False):
+        bomb_adj = 12   # 2차 폭탄 직후 D+1 (통계: TP3%/SL-2% +0.77%, 승률56%)
+    elif bomb_sig == "EARLY":
+        bomb_adj = 3    # 1차 폭탄 D+1 — 아직 눌림 대기 필요
     elif bomb_sig == "STRONG_REENTRY":
         bomb_adj = 10
     elif bomb_sig == "REENTRY":
