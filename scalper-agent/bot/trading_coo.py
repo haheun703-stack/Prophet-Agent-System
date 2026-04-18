@@ -1964,6 +1964,25 @@ class TradingCOO:
             except Exception as _be:
                 logger.warning(f"[C35] bomb_watchlist 생성 실패(무시): {_be}")
 
+            # ── v5.0: 수급 강도 TOP 생성 + Supabase 업로드 ──
+            intensity_count = 0
+            try:
+                from tools.flow_intelligence import generate_flow_intensity_data
+                from data.upload_flow_intensity import upload_flow_intensity
+                intensity_data = await asyncio.to_thread(
+                    generate_flow_intensity_data, 15, 2000
+                )
+                if intensity_data and intensity_data.get("top_stocks"):
+                    intensity_count = len(intensity_data["top_stocks"])
+                    await asyncio.to_thread(upload_flow_intensity, intensity_data)
+                    top1 = intensity_data["top_stocks"][0]
+                    logger.info(
+                        f"[C35] 수급강도 TOP{intensity_count}: "
+                        f"1위 {top1['name']}({top1['intensity_pct']}%)"
+                    )
+            except Exception as _ie:
+                logger.warning(f"[C35] 수급강도 생성/업로드 실패(무시): {_ie}")
+
             return {
                 "pattern_scan": "OK",
                 "count": len(results),
@@ -1972,6 +1991,7 @@ class TradingCOO:
                 "counts": counts,
                 "path": str(out_path),
                 "bomb_watchlist": bomb_count,
+                "flow_intensity": intensity_count,
             }
         except FileNotFoundError as e:
             logger.warning(f"[C35] missed_gainers 파일 없음: {e}")

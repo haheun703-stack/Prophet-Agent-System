@@ -414,3 +414,166 @@ async def generate_bomb_buy_alert(kis_trader, top_n: int = 5) -> str:
     logger.info(f"[매수알림] TOP{len(picks)}: {names}")
 
     return "\n".join(lines)
+
+
+# ═══════════════════════════════════════
+#  수급 강도 TOP (FLOWX 스윙시스템 패널)
+# ═══════════════════════════════════════
+# ETF/펀드 키워드 필터
+_ETF_KEYWORDS = [
+    "KODEX", "TIGER", "ACE", "KIWOOM", "SOL ", "HANARO", "KOSEF", "ARIRANG",
+    "BNK", "PLUS ", "FOCUS", "TIMEFOLIO", "RISE ", "TIME ", "ITF ", "1Q ",
+    "KoAct", "WON ", "UNICORN", "Active", "액티브",
+]
+
+# 과열 기준: 5일 등락률 이 이상이면 과열 경고
+OVERHEAT_THRESHOLD_PCT = 20.0
+
+
+def _is_etf(name: str) -> bool:
+    """ETF/펀드 여부 판별."""
+    if not name or name == "?":
+        return True
+    for kw in _ETF_KEYWORDS:
+        if kw in name:
+            return True
+    return False
+
+
+def generate_flow_intensity_data(top_n: int = 15, min_cap: int = 2000) -> dict:
+    """수급 강도 TOP 데이터 생성 (시총 대비 유입 비율).
+
+    Args:
+        top_n: 상위 종목 수 (기본 15)
+        min_cap: 최소 시총(억) 필터 (기본 2000억)
+
+    Returns:
+        {"date": str, "total_scanned": int, "top_stocks": [...],
+         "dual_buy_count": int, "overheat_count": int}
+    """
+    uni_path = DATA_STORE / "universe.json"
+    if not uni_path.exists():
+        logger.error("universe.json 없음")
+        return {}
+
+    universe = json.loads(uni_path.read_text(encoding="utf-8"))
+
+    results = []
+    scanned = 0
+
+    for f in FLOW_DIR.glob("*_investor.csv"):
+        code = f.name.split("_")[0]
+        info = universe.get(code, {})
+        name = info.get("name", "?")
+
+        if _is_etf(name):
+            continue
+
+        cap = info.get("cap_\uc5b5", 0)  # cap_억
+        if not cap or cap < min_cap:
+            continue
+
+        mtype = _get_market_type(code)
+
+        lines = f.read_text(encoding="utf-8").strip().split("\n")
+        if len(lines) < 5:
+            continue
+
+        recent = []
+        for line in lines[-5:]:
+            parts = line.split(",")
+            if len(parts) < 4:
+                continue
+            try:
+                fn = float(parts[1]) if parts[1] else 0
+                ins = float(parts[2]) if parts[2] and parts[2] != "" else 0
+                close = float(parts[-2])
+            except (ValueError, IndexError):
+                continue
+            recent.append({"f": fn, "i": ins, "close": close})
+
+        if len(recent) < 5 or recent[-1]["close"] < 1000:
+            continue
+
+        scanned += 1
+
+        # 3일 합산 (백만원 단위)
+        f3 = sum(r["f"] for r in recent[-3:])
+        i3 = sum(r["i"] for r in recent[-3:])
+
+        # 5일 등락
+        pct5 = (recent[-1]["close"] / recent[0]["close"] - 1) * 100 if recent[0]["close"] > 0 else 0
+
+        # 수급 강도 = (3일 합산 / 100 → 억) / 시총(억) * 100
+        intensity = (f3 + i3) / 100 / cap * 100 if cap > 0 else 0
+
+        # 양수(유입)만 의미 있음
+        if intensity <= 0:
+            continue
+
+        # 쌍매수 여부
+        last = recent[-1]
+        dual_buy = last["f"] > 0 and last["i"] > 0
+
+        # 연속 매수일
+        consec_f = 0
+        for r in reversed(recent):
+            if r["f"] > 0:
+                consec_f += 1
+            else:
+                break
+
+        consec_i = 0
+        for r in reversed(recent):
+            if r["i"] > 0:
+                consec_i += 1
+            else:
+                break
+
+        # 과열 여부
+        is_overheated = pct5 >= OVERHEAT_THRESHOLD_PCT
+
+        results.append({
+            "code": code,
+            "name": name,
+            "market_type": mtype,
+            "intensity_pct": round(intensity, 2),
+            "foreign_3d_억": round(f3 / 100, 0),
+            "inst_3d_억": round(i3 / 100, 0),
+            "total_3d_억": round((f3 + i3) / 100, 0),
+            "cap_억": cap,
+            "close": int(recent[-1]["close"]),
+            "pct_5d": round(pct5, 1),
+            "dual_buy": dual_buy,
+            "consec_foreign": consec_f,
+            "consec_inst": consec_i,
+            "is_overheated": is_overheated,
+        })
+
+    # 강도순 정렬
+    results.sort(key=lambda x: -x["intensity_pct"])
+    top = results[:top_n]
+
+    # 랭크 부여
+    for i, r in enumerate(top, 1):
+        r["rank"] = i
+
+    dual_cnt = sum(1 for r in top if r["dual_buy"])
+    heat_cnt = sum(1 for r in top if r["is_overheated"])
+
+    from data.trading_calendar import last_trading_day
+    last_day = last_trading_day().isoformat()
+
+    out = {
+        "date": last_day,
+        "total_scanned": scanned,
+        "top_stocks": top,
+        "dual_buy_count": dual_cnt,
+        "overheat_count": heat_cnt,
+    }
+
+    logger.info(
+        f"[수급강도] {scanned}종목 스캔 → TOP{len(top)} "
+        f"(쌍매수 {dual_cnt}, 과열 {heat_cnt})"
+    )
+    return out
