@@ -1949,12 +1949,13 @@ class TradingCOO:
                 f"강신호 {strong_cnt}개, 위험 {warn_cnt}개 → {out_path.name}"
             )
 
-            # ── v4: bomb_watchlist 생성 (TOP-N 수급폭탄 선별) ──
+            # ── v4.2: bomb_watchlist 전체 저장 (morning_rec 보너스 맵용) ──
+            # v4: top_n=10 → v4.2: top_n=9999 (전체 저장, morning_rec에서 교집합만 사용)
             bomb_count = 0
             try:
                 from tools.supply_pattern_detector import generate_bomb_watchlist
                 bomb_list = await asyncio.to_thread(
-                    generate_bomb_watchlist, date_str, 10
+                    generate_bomb_watchlist, date_str, 9999
                 )
                 bomb_count = len(bomb_list)
                 if bomb_list:

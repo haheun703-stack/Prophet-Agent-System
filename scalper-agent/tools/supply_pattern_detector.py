@@ -1027,7 +1027,17 @@ def generate_bomb_watchlist(
     universe = _UNIVERSE_CACHE or {}
     candidates = []
 
+    # v4.2: ETF/레버리지/인버스 제외 키워드
+    _ETF_KEYWORDS = {"ETF", "ACE ", "KODEX", "TIGER", "KBSTAR", "SOL ", "ARIRANG",
+                     "레버리지", "인버스", "선물", "2X", "곱버스"}
+
     for code in universe:
+        # ETF/레버리지/인버스 필터
+        _u_info = universe.get(code, {}) if isinstance(universe.get(code), dict) else {}
+        _u_name = _u_info.get("name", "")
+        if any(kw in _u_name for kw in _ETF_KEYWORDS):
+            continue
+
         csv_path = FLOW_DIR / f"{code}_investor.csv"
         df = _csv_to_canonical_df(csv_path)
         if df is None or df.empty:

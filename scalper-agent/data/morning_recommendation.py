@@ -997,27 +997,24 @@ def _step5_cross_validate(
     affected_sectors = shock_info.get("affected_sectors", [])
     opportunity_sectors = shock_info.get("opportunity_sectors", [])
 
-    # ── v4.1: bomb 전종목 스캔 (B안 — TOP-N 랭킹 폐지, 전체 +15 보너스) ──
+    # ── v4.1→v4.2: bomb 보너스 맵 (후보 추가 X, 기존 후보에 보너스만 적용) ──
+    # v4.1 문제: bomb 174종목을 all_codes에 추가 → 7SECRET KRX API 호출 폭증 → 타임아웃
+    # v4.2 수정: bomb_map은 보너스 룩업용으로만 사용, 후보 확장하지 않음
     _bomb_map = {}  # {code: {bomb_adj, signal, ...}}
     try:
-        from tools.supply_pattern_detector import generate_bomb_watchlist
-        _bomb_all = generate_bomb_watchlist(ref_date=None, top_n=9999)  # 전체
-        for bw in _bomb_all:
-            _bomb_map[bw["code"]] = bw
+        import json as _json_bw
+        _bw_path = Path(__file__).resolve().parent.parent / "data_store" / "bomb_watchlist.json"
+        if _bw_path.exists():
+            _bw_data = _json_bw.loads(_bw_path.read_text(encoding="utf-8"))
+            for bw in _bw_data.get("watchlist", []):
+                _bomb_map[bw["code"]] = bw
+            # 전체 candidates도 로드 (watchlist 외 나머지)
+            if not _bomb_map:
+                pass  # watchlist 비어있으면 스킵
         if _bomb_map:
-            logger.info(f"[step5] bomb 전종목 스캔: {len(_bomb_map)}종목 (전체 보너스)")
+            logger.info(f"[step5] bomb 보너스 맵: {len(_bomb_map)}종목 (기존 후보에만 적용)")
     except Exception as _bw_e:
-        logger.warning(f"[step5] bomb 스캔 실패(무시): {_bw_e}")
-        # fallback: 기존 watchlist 파일
-        try:
-            import json as _json_bw
-            _bw_path = Path(__file__).resolve().parent.parent / "data_store" / "bomb_watchlist.json"
-            if _bw_path.exists():
-                _bw_data = _json_bw.loads(_bw_path.read_text(encoding="utf-8"))
-                for bw in _bw_data.get("watchlist", []):
-                    _bomb_map[bw["code"]] = bw
-        except Exception:
-            pass
+        logger.warning(f"[step5] bomb 맵 로드 실패(무시): {_bw_e}")
 
     # 모든 종목 코드 수집
     all_codes = set()
@@ -1032,8 +1029,11 @@ def _step5_cross_validate(
     # TV 스캐너 종목도 교차검증 대상에 포함
     if tv_signals:
         all_codes.update(tv_signals.keys())
-    # v4.1: bomb 전종목 후보에 포함 (B안 — 다른 팩터와 합산으로 최종 순위 결정)
-    all_codes.update(_bomb_map.keys())
+    # v4.2: bomb 종목은 후보에 추가하지 않음 (7SECRET KRX API 호출 방지)
+    # → 대신 스코어링 루프에서 _bomb_map에 있으면 +15 보너스 적용
+    _bomb_hit = len(all_codes & set(_bomb_map.keys()))
+    if _bomb_hit:
+        logger.info(f"[step5] bomb 보너스 적용 대상: {_bomb_hit}/{len(_bomb_map)}종목 (기존 후보 교집합)")
 
     # ── 7 SECRET 국적 파워 (NORMAL 모드) ──
     normal_nat_powers = {}
@@ -1836,7 +1836,7 @@ def run_evening_recommendation() -> RecommendationReport:
     logger.info("저녁 추천 파이프라인 시작 (Soft Scoring v2)")
     logger.info("=" * 50)
     t_start = time.time()
-    PIPELINE_TOTAL_TIMEOUT = 900  # 15분 총 타임아웃
+    PIPELINE_TOTAL_TIMEOUT = 1500  # 25분 총 타임아웃 (v4.2: 900→1500, 유니버스 확대 대응)
 
     def _check_pipeline_timeout(step_name: str, report_obj, partial_stocks=None):
         """파이프라인 총 경과 시간 체크 — 15분 초과 시 부분 저장 후 리턴"""
