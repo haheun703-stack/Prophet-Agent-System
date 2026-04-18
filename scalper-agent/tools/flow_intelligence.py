@@ -27,6 +27,31 @@ FLOW_DIR = DATA_STORE / "flow"
 # 리포트 차수 캐시 (일중 변화 추적용)
 _prev_report = {}  # {"frgn_buy": [...], "inst_buy": [...]}
 
+# NXT 대상종목 캐시
+_nxt_codes = None
+
+
+def _get_market_type(code: str) -> str:
+    """종목의 마켓 타입 반환 — NXT 또는 KRX."""
+    global _nxt_codes
+    if _nxt_codes is None:
+        nxt_path = DATA_STORE / "nxt_eligible.json"
+        if nxt_path.exists():
+            try:
+                data = json.loads(nxt_path.read_text(encoding="utf-8"))
+                _nxt_codes = set(data.get("stocks", {}).keys())
+            except Exception:
+                _nxt_codes = set()
+        else:
+            _nxt_codes = set()
+    return "NXT" if code in _nxt_codes else "KRX"
+
+
+def _market_tag(code: str) -> str:
+    """텔레그램 표시용 마켓 태그."""
+    mt = _get_market_type(code)
+    return "[NXT]" if mt == "NXT" else "[KRX전용]"
+
 
 def _load_bomb_map():
     """bomb_watchlist.json에서 bomb 맵 로드."""
@@ -184,7 +209,8 @@ async def generate_intraday_flow_report(kis_trader, round_num: int) -> str:
     frgn_buy_top = frgn_buy[:5] if frgn_buy else []
     for i, s in enumerate(frgn_buy_top):
         bomb_tag = " *BOMB*" if s.get("code") in bomb_map else ""
-        lines.append(f"  {i+1}. {s['name']}({s['code']}) {s.get('change_rate', 0):+.1f}%{bomb_tag}")
+        mt = _market_tag(s.get("code", ""))
+        lines.append(f"  {i+1}. {s['name']}({s['code']}) {s.get('change_rate', 0):+.1f}% {mt}{bomb_tag}")
 
     # 외인 순매도 TOP3
     lines.append(f"\n[외인 순매도 TOP3]")
@@ -197,7 +223,8 @@ async def generate_intraday_flow_report(kis_trader, round_num: int) -> str:
     inst_buy_top = inst_buy[:5] if inst_buy else []
     for i, s in enumerate(inst_buy_top):
         bomb_tag = " *BOMB*" if s.get("code") in bomb_map else ""
-        lines.append(f"  {i+1}. {s['name']}({s['code']}) {s.get('change_rate', 0):+.1f}%{bomb_tag}")
+        mt = _market_tag(s.get("code", ""))
+        lines.append(f"  {i+1}. {s['name']}({s['code']}) {s.get('change_rate', 0):+.1f}% {mt}{bomb_tag}")
 
     # 기관 순매도 TOP3
     lines.append(f"\n[기관 순매도 TOP3]")
@@ -342,8 +369,9 @@ async def generate_bomb_buy_alert(kis_trader, top_n: int = 5) -> str:
         tp_pct = "+3%"
         sl_pct = "-2%"
 
+        mt = _market_tag(p['code'])
         lines.append(f"")
-        lines.append(f"{i+1}. {p['name']}({p['code']}) {close:,}원")
+        lines.append(f"{i+1}. {p['name']}({p['code']}) {close:,}원 {mt}")
 
         # bomb 정보
         gap_str = f"{p['gap_days']}일 매집" if p['gap_days'] else ""

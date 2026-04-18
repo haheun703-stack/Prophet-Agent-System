@@ -2968,6 +2968,20 @@ def run_morning_confirmation(prev_report: RecommendationReport) -> Recommendatio
 #  텔레그램 포맷
 # ═══════════════════════════════════════
 
+def _get_market_type_tag(code: str) -> str:
+    """종목 마켓 타입 태그 — [NXT] 또는 [KRX전용]."""
+    nxt_path = Path(__file__).resolve().parent.parent / "data_store" / "nxt_eligible.json"
+    if not hasattr(_get_market_type_tag, "_cache"):
+        _get_market_type_tag._cache = set()
+        if nxt_path.exists():
+            try:
+                data = json.loads(nxt_path.read_text(encoding="utf-8"))
+                _get_market_type_tag._cache = set(data.get("stocks", {}).keys())
+            except Exception:
+                pass
+    return "[NXT]" if code in _get_market_type_tag._cache else "[KRX전용]"
+
+
 def format_recommendation(report: RecommendationReport, max_budget: int = 0) -> str:
     """텔레그램용 추천 리포트 포맷 (v2: 상대강도 + 페널티 표시)
 
@@ -3070,8 +3084,10 @@ def format_recommendation(report: RecommendationReport, max_budget: int = 0) -> 
 
         # 상대강도 표시
         rs_icon = "💪" if s.relative_str > 2 else ("⚡" if s.relative_str > 0 else "")
+        # 마켓 타입 (NXT/KRX전용)
+        _mt = _get_market_type_tag(s.code)
         lines.append(
-            f"{ce} {i}. {s.name}({s.code}) [{s.confidence}] "
+            f"{ce} {i}. {s.name}({s.code}) {_mt} [{s.confidence}] "
             f"총점:{s.total_score:.0f} {rs_icon}"
         )
         lines.append(

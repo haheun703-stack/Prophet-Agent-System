@@ -1377,9 +1377,23 @@ def _inject_bomb_targets(nxt_targets: List[Dict]) -> int:
     except Exception:
         uni = {}
 
+    # NXT 대상종목 필터 (KRX전용은 NXT에서 거래 불가)
+    nxt_eligible = set()
+    nxt_path = DATA_DIR / "nxt_eligible.json"
+    if nxt_path.exists():
+        try:
+            nxt_data = json.loads(nxt_path.read_text(encoding="utf-8"))
+            nxt_eligible = set(nxt_data.get("stocks", {}).keys())
+        except Exception:
+            pass
+
     for b in watchlist:
         code = b.get("code", "")
         if code in existing_codes:
+            continue
+
+        # NXT 대상이 아닌 종목은 NXT 매매 불가 → 스킵
+        if nxt_eligible and code not in nxt_eligible:
             continue
 
         bomb_adj = b.get("bomb_adj", 15)
