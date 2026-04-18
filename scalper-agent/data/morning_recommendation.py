@@ -1853,7 +1853,7 @@ def run_evening_recommendation() -> RecommendationReport:
     logger.info("저녁 추천 파이프라인 시작 (Soft Scoring v2)")
     logger.info("=" * 50)
     t_start = time.time()
-    PIPELINE_TOTAL_TIMEOUT = 1500  # 25분 총 타임아웃 (v4.2: 900→1500, 유니버스 확대 대응)
+    PIPELINE_TOTAL_TIMEOUT = 2100  # 35분 총 타임아웃 (v4.3: 1500→2100, Step3 병렬화+유니버스 2889종목)
 
     def _check_pipeline_timeout(step_name: str, report_obj, partial_stocks=None):
         """파이프라인 총 경과 시간 체크 — 15분 초과 시 부분 저장 후 리턴"""
@@ -1862,7 +1862,7 @@ def run_evening_recommendation() -> RecommendationReport:
             return None  # 계속 진행
         logger.warning(
             f"[TIMEOUT] 파이프라인 총 {elapsed:.0f}s 경과 ({step_name} 진입 전) "
-            f"— 15분 초과, 부분 저장 후 종료"
+            f"— {PIPELINE_TOTAL_TIMEOUT}s 초과, 부분 저장 후 종료"
         )
         report_obj.warning = (
             f"파이프라인 타임아웃 ({elapsed:.0f}s) — {step_name} 이후 단계 스킵"
@@ -2118,11 +2118,23 @@ def run_evening_recommendation() -> RecommendationReport:
     if _timeout_result:
         return _timeout_result
 
-    # Step 3: 기술 분석 (market_chg 전달 → 상대강도 계산)
+    # Step 3: 기술 분석 (병렬 청크 — I/O bound pykrx 호출 5배 가속)
     t0 = time.time()
-    logger.info(f"[Step 3/6] 기술 분석 ({len(codes_names)}종목, 시장 {market_chg:+.1f}%)...")
-    tech_result = _step3_tech_filter(codes_names, market_chg=market_chg)
-    logger.info(f"  → 완료 ({time.time()-t0:.0f}s)")
+    TECH_WORKERS = 5
+    TECH_CHUNK_SIZE = max(1, (len(codes_names) + TECH_WORKERS - 1) // TECH_WORKERS)
+    _tech_chunks = [codes_names[i:i+TECH_CHUNK_SIZE] for i in range(0, len(codes_names), TECH_CHUNK_SIZE)]
+    logger.info(f"[Step 3/6] 기술 분석 ({len(codes_names)}종목 → {len(_tech_chunks)}청크x{TECH_WORKERS}워커, 시장 {market_chg:+.1f}%)...")
+    tech_result = {}
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    with ThreadPoolExecutor(max_workers=TECH_WORKERS, thread_name_prefix="tech") as _tech_pool:
+        _tech_futs = {_tech_pool.submit(_step3_tech_filter, chunk, market_chg): i
+                      for i, chunk in enumerate(_tech_chunks)}
+        for _tf in as_completed(_tech_futs):
+            try:
+                tech_result.update(_tf.result())
+            except Exception as _e3:
+                logger.warning(f"기술분석 청크 실패: {_e3}")
+    logger.info(f"  → 완료 {len(tech_result)}종목 ({time.time()-t0:.0f}s)")
 
     # ── 타임아웃 가드: Step 4 진입 전 ──
     _timeout_result = _check_pipeline_timeout("Step4(뉴스AI)", report)
@@ -2300,18 +2312,32 @@ def run_evening_recommendation() -> RecommendationReport:
         except Exception as e:
             logger.warning(f"[TV Persistence] 로드 실패: {e}")
 
-        # TV 신규추가 종목 보충 분석 (tech + news)
+        # TV 신규추가 종목 보충 분석 (tech + news) — 타임아웃 가드 + 병렬화
         if tv_added > 0:
+            _tv_elapsed = time.time() - t_start
             tv_new_codes = [(code, tv_signals[code].name) for code, tv_sig in tv_signals.items()
                            if tv_sig.score >= 60 and code not in tech_result]
-            if tv_new_codes:
+            if tv_new_codes and _tv_elapsed < PIPELINE_TOTAL_TIMEOUT * 0.65:
                 try:
-                    tv_tech = _step3_tech_filter(tv_new_codes, market_chg=market_chg)
+                    _tv_csize = max(1, (len(tv_new_codes) + TECH_WORKERS - 1) // TECH_WORKERS)
+                    _tv_chunks = [tv_new_codes[i:i+_tv_csize] for i in range(0, len(tv_new_codes), _tv_csize)]
+                    tv_tech = {}
+                    with ThreadPoolExecutor(max_workers=TECH_WORKERS, thread_name_prefix="tv_tech") as _tv_pool:
+                        _tv_futs = {_tv_pool.submit(_step3_tech_filter, c, market_chg): i
+                                    for i, c in enumerate(_tv_chunks)}
+                        for _tvf in as_completed(_tv_futs):
+                            try:
+                                tv_tech.update(_tvf.result())
+                            except Exception:
+                                pass
                     tech_result.update(tv_tech)
-                    logger.info(f"  → TV 보충 기술분석: {len(tv_tech)}종목")
+                    logger.info(f"  → TV 보충 기술분석: {len(tv_tech)}종목 ({len(_tv_chunks)}청크 병렬)")
                 except Exception as e_tv_tech:
                     logger.warning(f"TV 보충 기술분석 실패: {e_tv_tech}")
-                # 뉴스는 NEUTRAL로 채움 (속도 우선)
+            elif tv_new_codes:
+                logger.warning(f"[TV 보충] 경과 {_tv_elapsed:.0f}s (타임아웃 65%) — 기술분석 스킵")
+            # 뉴스는 NEUTRAL로 채움 (속도 우선)
+            if tv_new_codes:
                 for code, name in tv_new_codes:
                     if code not in news_result:
                         news_result[code] = {"sentiment": "NEUTRAL", "reason": "TV신규(미분석)", "score": 0}
@@ -2656,6 +2682,8 @@ def run_evening_recommendation() -> RecommendationReport:
     report.tv_cluster_info = tv_cluster_info
     elapsed = time.time() - t_start
     logger.info(f"최종 추천: {len(final_stocks)}종목, 모멘텀 {len(report.momentum_stocks)}종목 (전체 {elapsed:.0f}s)")
+    if elapsed > PIPELINE_TOTAL_TIMEOUT * 0.8:
+        logger.warning(f"[PERF] 파이프라인 {elapsed:.0f}s — 타임아웃({PIPELINE_TOTAL_TIMEOUT}s) 80% 초과, 병목 점검 필요")
 
     # ── 2단계: 국적별 행동 프로파일러 + 7 SECRET 파워 ──
     try:
