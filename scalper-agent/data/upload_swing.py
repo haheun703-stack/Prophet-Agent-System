@@ -141,6 +141,8 @@ def generate_swing_page_data() -> dict:
 
     # ── 1) BRAIN 로드 ──
     brain_pct = 0
+    brain_raw_pct = 0
+    regime_cap_reason = ""
     brain_verdict = "관망"
     brain_reason = ""
     analysis = {}
@@ -150,6 +152,8 @@ def generate_swing_page_data() -> dict:
         try:
             brain = json.loads(brain_path.read_text("utf-8"))
             brain_pct = brain.get("position_size_pct", 0)
+            brain_raw_pct = brain.get("position_size_pct_raw", brain_pct)
+            regime_cap_reason = brain.get("regime_cap_reason", "")
             brain_verdict_raw = brain.get("overall_verdict", "")
 
             # verdict 번역
@@ -403,6 +407,8 @@ def generate_swing_page_data() -> dict:
         "date": today_str,
         "brain_verdict": brain_verdict,
         "brain_pct": brain_pct,
+        "brain_raw_pct": brain_raw_pct,
+        "regime_cap_reason": regime_cap_reason,
         "brain_reason": brain_reason[:300],
         "min_grade_applied": min_grade,
         "market_comment": market_comment,
@@ -1766,6 +1772,9 @@ def upload_dashboard_swing(swing_data: dict) -> bool:
             # BRAIN
             "brain_verdict": swing_data["brain_verdict"],
             "brain_pct": swing_data["brain_pct"],
+            "brain_raw_pct": swing_data.get("brain_raw_pct", swing_data["brain_pct"]),
+            "brain_capped_pct": swing_data["brain_pct"],
+            "regime_cap_reason": swing_data.get("regime_cap_reason", ""),
             "brain_reason": swing_data.get("brain_reason", "")[:300],
             "regime": alloc.get("effective_regime", alloc.get("regime", "NORMAL")),
             "regime_severity": alloc.get("severity", 0),
@@ -1839,7 +1848,7 @@ def upload_dashboard_swing(swing_data: dict) -> bool:
             # 컬럼 미존재 시 해당 필드 제거 후 재시도
             err_str = str(upsert_err)
             if "does not exist" in err_str:
-                for col in ["stealth_stocks"]:
+                for col in ["stealth_stocks", "brain_raw_pct", "brain_capped_pct", "regime_cap_reason"]:
                     if col in err_str and col in row:
                         logger.warning(f"[DASHBOARD] {col} 컬럼 미존재 → 제거 후 재시도")
                         del row[col]

@@ -176,6 +176,8 @@ class BrainReport:
     risk: RiskAssessment = field(default_factory=RiskAssessment)
     overall_verdict: str = ""
     position_size_pct: int = 70
+    position_size_pct_raw: int = 70       # 매크로캡 적용 전 원점수
+    regime_cap_reason: str = ""           # 캡 사유 (예: "비용상승→50%캡")
     position_size_reason: str = ""
     stock_narratives: list = field(default_factory=list)
     war_signal: Dict = field(default_factory=dict)  # 전쟁/휴전 시그널
@@ -953,7 +955,7 @@ def _phase6_synthesis(
     brain_perf: list = None,
     nw: dict = None,
 ) -> tuple:
-    """Returns: (overall_verdict, position_size_pct, position_size_reason, stock_narratives)"""
+    """Returns: (overall_verdict, position_size_pct, position_size_reason, stock_narratives, raw_pct, regime_cap_reason)"""
 
     # ── 포지션 사이징 ──
     score = 0
@@ -1186,10 +1188,14 @@ def _phase6_synthesis(
         pct, label = 0, "관망"
 
     # 14. 매크로 전략 비중 캡 (macro_strategy → 레짐별 상한)
+    raw_pct = pct  # 캡 적용 전 원점수 보존
+    regime_cap_reason = ""
     try:
-        from data.macro_strategy import get_budget_cap
+        from data.macro_strategy import get_budget_cap, get_current_regime
         macro_cap_pct, _ = get_budget_cap()
         if macro_cap_pct < pct:
+            current_regime = get_current_regime()
+            regime_cap_reason = f"{current_regime}→{macro_cap_pct}%캡"
             reasons.append(f"매크로캡{macro_cap_pct}%")
             pct = macro_cap_pct
             label = f"매크로제한({label})"
@@ -1251,7 +1257,7 @@ def _phase6_synthesis(
         sn = _build_stock_narrative(s, sector_ctx, macro, theme_map)
         stock_narratives.append(sn)
 
-    return overall_verdict, pct, size_reason, stock_narratives
+    return overall_verdict, pct, size_reason, stock_narratives, raw_pct, regime_cap_reason
 
 
 def _build_stock_narrative(
@@ -1510,11 +1516,11 @@ def generate_brain_report() -> BrainReport:
     risk = _phase5_risk(nw, guardian, events)
     logger.info(f"  [Phase 5] 리스크: {risk.risk_level} ({risk.risk_score:.0f}점)")
 
-    verdict, pct, reason, narratives = _phase6_synthesis(
+    verdict, pct, reason, narratives, raw_pct, cap_reason = _phase6_synthesis(
         macro, commodity, sector, flow, risk, rec, themes,
         insights, index_tech, market_flow, brain_perf, nw,
     )
-    logger.info(f"  [Phase 6] 판정: 비중 {pct}% | {verdict[:60]}")
+    logger.info(f"  [Phase 6] 판정: 비중 {pct}% (원점수 {raw_pct}%) | {verdict[:60]}")
 
     # Phase 5.5: 전쟁/휴전 시그널
     war_data = {}
@@ -1536,6 +1542,8 @@ def generate_brain_report() -> BrainReport:
         risk=risk,
         overall_verdict=verdict,
         position_size_pct=pct,
+        position_size_pct_raw=raw_pct,
+        regime_cap_reason=cap_reason,
         position_size_reason=reason,
         stock_narratives=narratives,
         war_signal=war_data,
@@ -1609,6 +1617,8 @@ def load_brain_report() -> BrainReport | None:
         generated_at=data.get("generated_at", ""),
         overall_verdict=data.get("overall_verdict", ""),
         position_size_pct=data.get("position_size_pct", 70),
+        position_size_pct_raw=data.get("position_size_pct_raw", data.get("position_size_pct", 70)),
+        regime_cap_reason=data.get("regime_cap_reason", ""),
         position_size_reason=data.get("position_size_reason", ""),
     )
 
