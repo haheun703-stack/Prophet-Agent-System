@@ -265,110 +265,39 @@ class VWAPMonitor:
 
     # ── 알림 체크 ──
     def check_alerts(self):
-        """진입 조건 알림 + 어드바이저 크로스체크"""
+        """v5.0: 익절/손절 알림만 전송 (VWAP 개별 알림 OFF)"""
         phase = self.current_phase
         if phase in ("PREPARE", "OBSERVE", "DONE", "WAIT"):
-            return  # 관찰 모드에선 알림 X
+            return
 
         alerts = []
-
-        # 어드바이저 캐시 (진입 알림 시 크로스체크용 — 5분 이내 결과 재사용)
-        adv_cache = {}
-        if self.advisor and self.last_advisor_run:
-            elapsed = (datetime.now() - self.last_advisor_run).total_seconds()
-            if elapsed < 300:  # 5분 이내면 새로 돌리지 않음
-                adv_cache = {}  # 캐시 없으면 필요 시 개별 조회
 
         for code, tk in self.trackers.items():
             cp = tk.prev_price
             if cp <= 0:
                 continue
 
-            # ── 1) 이상적 진입가 도달 (±1.5%) ──
-            if abs(tk.entry_gap_pct) <= 1.5 and tk.can_alert("ENTRY_IDEAL", 30):
-                # 어드바이저 크로스체크
-                adv_note = ""
-                if self.advisor:
-                    try:
-                        ar = self.advisor.analyze(code, tk.name, tk.vwap, cp)
-                        adv_note = f"\n방향: {ar.action} (스코어{ar.score:+.0f})"
-                        if ar.action in ("SELL", "STRONG_SELL"):
-                            adv_note += " !! 방향 역행 - 진입 보류 권장"
-                    except Exception:
-                        pass
-
-                alerts.append(
-                    f"** 이상적진입 도달 **\n"
-                    f"{tk.name}({code}) [{tk.tier}]\n"
-                    f"현재 {cp:,} | 진입 {tk.entry:,} ({tk.entry_gap_pct:+.1f}%)\n"
-                    f"SL {tk.sl:,} | TP {tk.tp1:,}\n"
-                    f"VWAP {tk.vwap:,.0f} (vs VWAP {tk.vwap_gap_pct:+.1f}%)"
-                    f"{adv_note}"
-                )
-
-            # ── 2) 공격적 진입가 도달 (±1.5%) ──
-            elif abs(tk.entry_agg_gap_pct) <= 1.5 and tk.can_alert("ENTRY_AGG", 30):
-                # 어드바이저 크로스체크
-                adv_note = ""
-                if self.advisor:
-                    try:
-                        ar = self.advisor.analyze(code, tk.name, tk.vwap, cp)
-                        adv_note = f"\n방향: {ar.action} (스코어{ar.score:+.0f})"
-                        if ar.action in ("SELL", "STRONG_SELL"):
-                            adv_note += " !! 방향 역행 - 진입 보류 권장"
-                    except Exception:
-                        pass
-
-                alerts.append(
-                    f"* 공격적진입 근접 *\n"
-                    f"{tk.name}({code}) [{tk.tier}]\n"
-                    f"현재 {cp:,} | 공격적 {tk.entry_agg:,} ({tk.entry_agg_gap_pct:+.1f}%)\n"
-                    f"SL {tk.sl:,} | TP {tk.tp1:,}\n"
-                    f"VWAP {tk.vwap:,.0f}"
-                    f"{adv_note}"
-                )
-
-            # ── 3) VWAP 하향돌파 (풀백 시그널) ──
-            if tk.vwap > 0 and tk.vwap_gap_pct < -1.0 and tk.can_alert("VWAP_BELOW", 20):
-                alerts.append(
-                    f"VWAP 하향 이탈\n"
-                    f"{tk.name}({code}) 현재 {cp:,} < VWAP {tk.vwap:,.0f} ({tk.vwap_gap_pct:+.1f}%)\n"
-                    f"진입가까지 {tk.entry_gap_pct:+.1f}%"
-                )
-
-            # ── 4) VWAP 상향 회복 (매수 타이밍) ──
-            if (tk.vwap > 0 and -0.3 < tk.vwap_gap_pct < 0.5
-                    and len(tk.prices) >= 3
-                    and tk.prices[-2][1] < tk.vwap  # 직전 VWAP 아래였음
-                    and cp >= tk.vwap  # 지금 위로 복귀
-                    and tk.can_alert("VWAP_RECOVER", 30)):
-                alerts.append(
-                    f"VWAP 회복! 매수 검토\n"
-                    f"{tk.name}({code}) 현재 {cp:,} >= VWAP {tk.vwap:,.0f}\n"
-                    f"진입가 대비 {tk.entry_gap_pct:+.1f}% | 등락 {tk.change_pct:+.1f}%"
-                )
-
-            # ── 5) SL 근접 경고 (진입 후 관리용) ──
+            # ── [손절주의] SL 근접 경고 ──
             if tk.sl > 0:
                 sl_gap = (cp / tk.sl - 1) * 100
                 if sl_gap < 2.0 and tk.can_alert("SL_NEAR", 30):
                     alerts.append(
-                        f"!! SL 근접 주의 !!\n"
-                        f"{tk.name}({code}) 현재 {cp:,} | SL {tk.sl:,} (거리 {sl_gap:.1f}%)"
+                        f"[손절주의]\n"
+                        f"{tk.name}({code}) 현재 {cp:,}원\n"
+                        f"손절가 {tk.sl:,}원 (거리 {sl_gap:.1f}%)"
                     )
 
-            # ── 6) TP 도달 (익절 알림) ──
+            # ── [익절] TP 도달 ──
             if tk.tp1 > 0 and cp >= tk.tp1 and tk.can_alert("TP_HIT", 60):
                 alerts.append(
-                    f"++ TP1 도달! 익절 검토 ++\n"
-                    f"{tk.name}({code}) 현재 {cp:,} >= TP1 {tk.tp1:,}\n"
+                    f"[익절]\n"
+                    f"{tk.name}({code}) 현재 {cp:,}원 >= 목표 {tk.tp1:,}원\n"
                     f"등락 {tk.change_pct:+.1f}%"
                 )
 
-        # 알림 전송 (한 번에 묶어서)
+        # 알림 전송
         if alerts:
-            header = f"[{self.PHASES.get(phase, ('','',''))[2]}] {datetime.now().strftime('%H:%M')}"
-            msg = f"=== {header} ===\n\n" + "\n\n".join(alerts)
+            msg = f"━━ {datetime.now().strftime('%H:%M')} ━━\n\n" + "\n\n".join(alerts)
             tg_send(msg)
             logger.info(f"알림 {len(alerts)}건 전송")
 

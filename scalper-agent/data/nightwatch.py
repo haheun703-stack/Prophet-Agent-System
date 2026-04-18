@@ -1350,6 +1350,74 @@ def _inject_surge_etc_targets(nxt_targets: List[Dict]) -> int:
     return injected
 
 
+def _inject_bomb_targets(nxt_targets: List[Dict]) -> int:
+    """bomb_watchlist.json에서 수급폭탄 종목을 NXT 후보에 주입.
+
+    C35 수급 패턴 감지기가 생성한 bomb 종목 중 수급 확인된 것만 NXT에 추가.
+    """
+    bomb_path = DATA_DIR / "bomb_watchlist.json"
+    if not bomb_path.exists():
+        return 0
+
+    try:
+        bw = json.loads(bomb_path.read_text(encoding="utf-8"))
+        watchlist = bw.get("watchlist", [])
+    except Exception:
+        return 0
+
+    if not watchlist:
+        return 0
+
+    existing_codes = {t["code"] for t in nxt_targets}
+    injected = 0
+
+    # universe.json에서 이름/시총 참조
+    try:
+        uni = json.loads(UNIVERSE_PATH.read_text(encoding="utf-8")) if UNIVERSE_PATH.exists() else {}
+    except Exception:
+        uni = {}
+
+    for b in watchlist:
+        code = b.get("code", "")
+        if code in existing_codes:
+            continue
+
+        bomb_adj = b.get("bomb_adj", 15)
+        if bomb_adj < 12:
+            continue  # 약한 시그널 스킵
+
+        # 수급 검증
+        flow = _load_investor_flow(code, days=1)
+        latest_foreign = flow.get("latest_foreign_amt", 0)
+        latest_inst = flow.get("latest_inst_amt", 0)
+
+        # 최소 1주체 매수 확인
+        if latest_foreign <= 0 and latest_inst <= 0:
+            continue
+
+        uni_info = uni.get(code, {}) if isinstance(uni, dict) else {}
+        name = b.get("name", uni_info.get("name", code))
+
+        nxt_targets.append({
+            "code": code,
+            "name": name,
+            "sector": f"수급폭탄({b.get('signal', 'BOMB')})",
+            "sector_key": "bomb",
+            "tier": 1,
+            "priority": 85,
+            "is_etf": False,
+            "supply_score": 60 + bomb_adj,  # bomb_adj 반영
+            "combined_supply": (latest_foreign + latest_inst) / 100,
+            "source": "bomb_watchlist",
+        })
+        existing_codes.add(code)
+        injected += 1
+        logger.info(f"[NXT-BOMB] 주입: {name} bomb_adj={bomb_adj} "
+                     f"외인={latest_foreign/100:.0f}억 기관={latest_inst/100:.0f}억")
+
+    return injected
+
+
 def _load_investor_flow(code: str, days: int = 3) -> Dict:
     """flow/{code}_investor.csv → 최근 N일 4세력 순매수 방향 + 최신일 금액
 
@@ -1724,6 +1792,11 @@ def select_sectors_and_targets(
     _surge_injected = _inject_surge_etc_targets(nxt_targets)
     if _surge_injected:
         logger.info(f"[NXT-SURGE] 급등+기타법인 {_surge_injected}개 주입")
+
+    # ── bomb 수급폭탄 종목 자동 주입 ──
+    _bomb_injected = _inject_bomb_targets(nxt_targets)
+    if _bomb_injected:
+        logger.info(f"[NXT-BOMB] 수급폭탄 {_bomb_injected}개 주입")
 
     # ── 개별 수급 필터 ──
     pre_count = len(nxt_targets)

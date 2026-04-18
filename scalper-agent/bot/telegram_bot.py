@@ -514,6 +514,45 @@ class BodyHunterBot:
         # 대시보드는 /포트 명령어로 온디맨드 조회
         pass
 
+    # ── v5.0 수급 인텔리전스 ──
+    async def _job_flow_report(self, context, round_num: int):
+        """장중 수급 리포트 래퍼 (round_num: 1~4)"""
+        now = datetime.now(KST)
+        if not is_trading_day(now.date()):
+            return
+        try:
+            from tools.flow_intelligence import generate_intraday_flow_report
+            text = await generate_intraday_flow_report(self.trader, round_num)
+            await context.bot.send_message(chat_id=self.chat_id, text=text)
+            logger.info(f"[수급리포트] {round_num}차 전송 완료")
+        except Exception as e:
+            logger.error(f"[수급리포트] {round_num}차 실패: {e}")
+
+    async def _job_flow_report_1(self, context):
+        await self._job_flow_report(context, 1)
+
+    async def _job_flow_report_2(self, context):
+        await self._job_flow_report(context, 2)
+
+    async def _job_flow_report_3(self, context):
+        await self._job_flow_report(context, 3)
+
+    async def _job_flow_report_4(self, context):
+        await self._job_flow_report(context, 4)
+
+    async def _job_bomb_buy_alert(self, context):
+        """15:00 bomb 매수 알림"""
+        now = datetime.now(KST)
+        if not is_trading_day(now.date()):
+            return
+        try:
+            from tools.flow_intelligence import generate_bomb_buy_alert
+            text = await generate_bomb_buy_alert(self.trader, top_n=5)
+            await context.bot.send_message(chat_id=self.chat_id, text=text)
+            logger.info("[매수알림] bomb TOP5 전송 완료")
+        except Exception as e:
+            logger.error(f"[매수알림] bomb 전송 실패: {e}")
+
     async def _job_portfolio_alert(self, context):
         """보유종목 긴급 알림 (60초) — 급락(-5%) 시에만 전송"""
         now = datetime.now(KST)
@@ -2903,6 +2942,14 @@ class BodyHunterBot:
         # COO_MANAGED: G6 — FLOWX sector_universe 수급/거래량 UPDATE
         # jq.run_daily(self._job_flowx_universe_update, time=kst_time(15, 40))
         # logger.info("FLOWX sector_universe UPDATE 등록: 15:40 KST")
+
+        # ── v5.0 수급 인텔리전스 (장중 4회 + 15:00 매수 알림) ──
+        jq.run_daily(self._job_flow_report_1, time=kst_time(10, 0))   # 1차 수급
+        jq.run_daily(self._job_flow_report_2, time=kst_time(11, 20))  # 2차 수급
+        jq.run_daily(self._job_flow_report_3, time=kst_time(13, 20))  # 3차 수급
+        jq.run_daily(self._job_flow_report_4, time=kst_time(14, 30))  # 4차 수급
+        jq.run_daily(self._job_bomb_buy_alert, time=kst_time(15, 0))  # bomb 매수 알림
+        logger.info("수급 인텔리전스 등록: 10:00/11:20/13:20/14:30 수급 + 15:00 매수알림")
 
         # COO_MANAGED: G7 — JARVIS BRAIN 자본 배분
         # jq.run_daily(self.auto_trader.job_brain_allocation, time=kst_time(16, 36))
