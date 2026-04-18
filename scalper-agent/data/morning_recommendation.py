@@ -997,10 +997,10 @@ def _step5_cross_validate(
     affected_sectors = shock_info.get("affected_sectors", [])
     opportunity_sectors = shock_info.get("opportunity_sectors", [])
 
-    # ── v4.1→v4.2: bomb 보너스 맵 (후보 추가 X, 기존 후보에 보너스만 적용) ──
-    # v4.1 문제: bomb 174종목을 all_codes에 추가 → 7SECRET KRX API 호출 폭증 → 타임아웃
-    # v4.2 수정: bomb_map은 보너스 룩업용으로만 사용, 후보 확장하지 않음
-    _bomb_map = {}  # {code: {bomb_adj, signal, ...}}
+    # ── v4.3: bomb 보너스 맵 (경량 패스 — 7SECRET 스킵, 합류 후 스코어링) ──
+    # v4.1: bomb→all_codes→7SECRET 폭증→타임아웃 / v4.2: 교집합만→교집합0=무용지물
+    # v4.3: 7SECRET 이전에는 추가 안 함 → 7SECRET 완료 후 bomb-only 합류 (경량 패스)
+    _bomb_map = {}  # {code: {bomb_adj, signal, name, ...}}
     try:
         import json as _json_bw
         _bw_path = Path(__file__).resolve().parent.parent / "data_store" / "bomb_watchlist.json"
@@ -1008,11 +1008,8 @@ def _step5_cross_validate(
             _bw_data = _json_bw.loads(_bw_path.read_text(encoding="utf-8"))
             for bw in _bw_data.get("watchlist", []):
                 _bomb_map[bw["code"]] = bw
-            # 전체 candidates도 로드 (watchlist 외 나머지)
-            if not _bomb_map:
-                pass  # watchlist 비어있으면 스킵
         if _bomb_map:
-            logger.info(f"[step5] bomb 보너스 맵: {len(_bomb_map)}종목 (기존 후보에만 적용)")
+            logger.info(f"[step5] bomb 맵: {len(_bomb_map)}종목 (v4.3 경량패스)")
     except Exception as _bw_e:
         logger.warning(f"[step5] bomb 맵 로드 실패(무시): {_bw_e}")
 
@@ -1029,11 +1026,11 @@ def _step5_cross_validate(
     # TV 스캐너 종목도 교차검증 대상에 포함
     if tv_signals:
         all_codes.update(tv_signals.keys())
-    # v4.2: bomb 종목은 후보에 추가하지 않음 (7SECRET KRX API 호출 방지)
-    # → 대신 스코어링 루프에서 _bomb_map에 있으면 +15 보너스 적용
-    _bomb_hit = len(all_codes & set(_bomb_map.keys()))
-    if _bomb_hit:
-        logger.info(f"[step5] bomb 보너스 적용 대상: {_bomb_hit}/{len(_bomb_map)}종목 (기존 후보 교집합)")
+    # v4.3: bomb 종목은 7SECRET 이전에는 추가하지 않음 (KRX API 호출 방지)
+    # → 7SECRET 완료 후 bomb-only 종목을 합류시킴 (경량 패스)
+    _bomb_only_codes = set(_bomb_map.keys()) - all_codes  # 기존 후보에 없는 bomb 종목
+    _bomb_overlap = len(all_codes & set(_bomb_map.keys()))
+    logger.info(f"[step5] bomb: 전체={len(_bomb_map)} / 기존교집합={_bomb_overlap} / bomb전용={len(_bomb_only_codes)}")
 
     # ── 7 SECRET 국적 파워 (NORMAL 모드) ──
     normal_nat_powers = {}
@@ -1070,6 +1067,13 @@ def _step5_cross_validate(
             logger.info(f"NORMAL 7SECRET 파워: {np_cnt}/{len(norm_codes)}종목")
     except Exception as e:
         logger.warning(f"NORMAL 7SECRET 파워 실패 (무시): {e}")
+
+    # ── v4.3: bomb-only 종목 합류 (7SECRET 완료 후 → 경량 패스) ──
+    # 7SECRET은 기존 후보만 처리됨 → bomb-only 종목은 nat_power_sc=0 (스킵)
+    # 대신 bomb_adj(+15/+12) + flow + fib 등으로 점수 확보
+    if _bomb_only_codes:
+        all_codes.update(_bomb_only_codes)
+        logger.info(f"[v4.3] bomb-only {len(_bomb_only_codes)}종목 all_codes 합류 (7SECRET 스킵, 경량 패스)")
 
     _fib_cache = {}  # 피보나치 분석 캐시 (코드별 1회만)
 
@@ -1170,9 +1174,11 @@ def _step5_cross_validate(
             _tv_obj = tv_signals[code]
             _tv_name = getattr(_tv_obj, "name", "") or (
                 _tv_obj.get("name", "") if isinstance(_tv_obj, dict) else "")
+        # v4.3: bomb-only 종목 이름 해석 (bomb_map에서 조회)
+        _bomb_name = _bomb_map[code].get("name", "") if code in _bomb_map else ""
         name = (r_info.get("name") or p_info.get("name")
                 or m_info.get("name") or b_info.get("name")
-                or _tv_name or code)
+                or _tv_name or _bomb_name or code)
         # TV-only 종목도 close 확보 (SL=0, TP=0 방지)
         _tv_close = 0
         if tv_signals and code in tv_signals:
@@ -1184,6 +1190,17 @@ def _step5_cross_validate(
                  or p_info.get("close")
                  or b_info.get("close", 0)
                  or _tv_close)
+        # v4.3: bomb-only 종목 종가 fallback (daily CSV)
+        if not close and code in _bomb_map:
+            _bomb_csv = Path(__file__).resolve().parent.parent / "data_store" / "daily" / f"{code}.csv"
+            if _bomb_csv.exists():
+                try:
+                    import pandas as _pd_bomb
+                    _df_bomb = _pd_bomb.read_csv(_bomb_csv, encoding="utf-8")
+                    if len(_df_bomb) > 0:
+                        close = int(_df_bomb["종가"].iloc[-1])
+                except Exception:
+                    pass
 
         # ── 양의 점수 (가산) ──────────────────
         # 교차 등장 횟수
