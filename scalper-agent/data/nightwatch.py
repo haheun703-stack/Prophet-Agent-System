@@ -1432,6 +1432,167 @@ def _inject_bomb_targets(nxt_targets: List[Dict]) -> int:
     return injected
 
 
+def _inject_early_accumulation_targets(nxt_targets: List[Dict]) -> int:
+    """매집 초기 미발화 종목을 NXT 후보에 주입.
+
+    가온전선 패턴: 외인이 조용히 3일+ 매집 → 가격 아직 안 움직임 → 폭등 직전
+    기존 NXT는 "이미 터진 종목"을 잡지만, 이 함수는 "터지기 직전" 종목을 잡는다.
+
+    조건:
+    1. 외인 순매수 3일+ (최근 5일 중)
+    2. 5일 등락률 5% 미만 (아직 미발화)
+    3. 외인 매수 가속 (최근 2일 금액 > 이전 3일 금액)
+    4. 마지막 날 쌍매수 우선
+    5. ETF/시총 10조+ 제외
+    """
+    import csv as csv_mod
+
+    existing_codes = {t["code"] for t in nxt_targets}
+    injected = 0
+
+    # universe.json 참조
+    try:
+        uni = json.loads(UNIVERSE_PATH.read_text(encoding="utf-8")) if UNIVERSE_PATH.exists() else {}
+    except Exception:
+        uni = {}
+
+    flow_dir = DATA_DIR / "flow"
+    if not flow_dir.exists():
+        return 0
+
+    candidates = []
+    for fp in flow_dir.glob("*_investor.csv"):
+        code = fp.stem.replace("_investor", "")
+        if code in existing_codes:
+            continue
+
+        # universe 필터 (ETF 제외, 시총 제한)
+        uni_info = uni.get(code, {}) if isinstance(uni, dict) else {}
+        if not isinstance(uni_info, dict):
+            continue
+        name = uni_info.get("name", code)
+        if name.startswith(("KODEX", "TIGER", "RISE", "ACE", "KOSEF", "SOL",
+                            "ARIRANG", "KBSTAR", "PLUS", "TIME", "KoAct")):
+            continue
+
+        try:
+            rows = []
+            with open(fp, "r", encoding="utf-8-sig") as f:
+                reader = csv_mod.DictReader(f)
+                for row in reader:
+                    rows.append(row)
+            if len(rows) < 5:
+                continue
+
+            last5 = rows[-5:]
+
+            # 5일 수급 분석
+            frgn_days = 0
+            total_frgn = 0.0
+            total_inst = 0.0
+            first3_frgn = 0.0
+            last2_frgn = 0.0
+
+            for i, r in enumerate(last5):
+                fg = float(r.get("외국인_금액", r.get("foreign_amount", 0)) or 0)
+                ig = float(r.get("기관_금액", r.get("institution_amount", 0)) or 0)
+                if fg > 0:
+                    frgn_days += 1
+                total_frgn += fg
+                total_inst += ig
+                if i < 3:
+                    first3_frgn += fg
+                else:
+                    last2_frgn += fg
+
+            # 조건1: 외인 3일+ 순매수
+            if frgn_days < 3:
+                continue
+
+            # 조건2: 5일 등락률 5% 미만
+            close_first = last5[0].get("종가", last5[0].get("close", ""))
+            close_last = last5[-1].get("종가", last5[-1].get("close", ""))
+            try:
+                c_first = float(close_first)
+                c_last = float(close_last)
+                if c_first <= 0:
+                    continue
+                chg5 = (c_last - c_first) / c_first * 100
+            except (ValueError, TypeError):
+                continue
+
+            if chg5 > 5.0:
+                continue  # 이미 5%+ 상승 → 미발화 아님
+
+            # 조건3: 외인 가속 (최근 2일 > 이전 3일)
+            accel = last2_frgn - first3_frgn  # 양수면 가속
+
+            # 마지막 날 쌍매수 여부
+            last_fg = float(last5[-1].get("외국인_금액", last5[-1].get("foreign_amount", 0)) or 0)
+            last_ig = float(last5[-1].get("기관_금액", last5[-1].get("institution_amount", 0)) or 0)
+            last_dual = last_fg > 0 and last_ig > 0
+
+            # 5일 합산 수급 (억)
+            total_flow_b = (total_frgn + total_inst) / 100
+
+            # 최소 수급 규모 (5일 합산 10억 미만이면 노이즈)
+            if total_flow_b < 10:
+                continue
+
+            # 스코어링
+            score = 50  # 기본 (매집 초기 보너스 base)
+            score += frgn_days * 5         # 외인 매수 일수 (max +25)
+            if last_dual:
+                score += 20                # 마지막 날 쌍매수
+            if accel > 0:
+                score += 15                # 가속 중
+            if chg5 < 2.0:
+                score += 10                # 아직 진짜 안 오른 것
+            if total_flow_b >= 100:
+                score += 15                # 수급 규모 100억+
+            elif total_flow_b >= 50:
+                score += 10
+
+            candidates.append({
+                "code": code,
+                "name": name,
+                "sector": "매집초기(미발화)",
+                "sector_key": "early_accumulation",
+                "tier": 1,
+                "priority": 80,  # 섹터 후보(90)보다 높은 우선순위
+                "is_etf": False,
+                "supply_score": score,
+                "combined_supply": total_flow_b,
+                "chg5": chg5,
+                "accel_b": accel / 100,  # 억 단위
+                "frgn_days": frgn_days,
+                "last_dual": last_dual,
+                "source": "early_accumulation",
+            })
+
+        except Exception:
+            continue
+
+    # supply_score 내림차순, 최대 5개 주입
+    candidates.sort(key=lambda x: -x.get("supply_score", 0))
+    for c in candidates[:5]:
+        nxt_targets.append(c)
+        existing_codes.add(c["code"])
+        injected += 1
+        logger.info(
+            f"[NXT-ACCUM] 주입: {c['name']}({c['code']}) "
+            f"score={c['supply_score']} 외인{c['frgn_days']}d "
+            f"5일{c['chg5']:+.1f}% 가속{c['accel_b']:+.0f}억 "
+            f"합산{c['combined_supply']:.0f}억"
+            f"{' [쌍매수]' if c['last_dual'] else ''}"
+        )
+
+    if injected:
+        logger.info(f"[NXT-ACCUM] 매집 초기 미발화 {injected}개 주입 완료")
+
+    return injected
+
+
 def _load_investor_flow(code: str, days: int = 3) -> Dict:
     """flow/{code}_investor.csv → 최근 N일 4세력 순매수 방향 + 최신일 금액
 
@@ -1532,6 +1693,9 @@ def _score_individual_supply(targets: List[Dict]) -> List[Dict]:
     for t in targets:
         if t.get("is_etf"):
             t["supply_score"] = 100
+            continue
+        # early_accumulation은 자체 스코어링 사용 (덮어쓰기 방지)
+        if t.get("source") == "early_accumulation":
             continue
         code = t["code"]
         score = 0
@@ -1811,6 +1975,11 @@ def select_sectors_and_targets(
     _bomb_injected = _inject_bomb_targets(nxt_targets)
     if _bomb_injected:
         logger.info(f"[NXT-BOMB] 수급폭탄 {_bomb_injected}개 주입")
+
+    # ── 매집 초기 미발화 종목 자동 주입 (가온전선 패턴) ──
+    _accum_injected = _inject_early_accumulation_targets(nxt_targets)
+    if _accum_injected:
+        logger.info(f"[NXT-ACCUM] 매집 초기 미발화 {_accum_injected}개 주입")
 
     # ── 개별 수급 필터 ──
     pre_count = len(nxt_targets)
