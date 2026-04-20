@@ -1475,7 +1475,7 @@ def _inject_early_accumulation_targets(nxt_targets: List[Dict]) -> int:
                             "ARIRANG", "KBSTAR", "PLUS", "TIME", "KoAct")):
             continue
         # 시총 필터: 2,000억 ~ 50,000억 (대형주 갭업 제한적, 소형주 유동성 부족)
-        cap_b = uni_info.get("cap_億", 0) or 0
+        cap_b = uni_info.get("cap_억", 0) or 0
         if cap_b < 2000 or cap_b > 50000:
             continue
 
