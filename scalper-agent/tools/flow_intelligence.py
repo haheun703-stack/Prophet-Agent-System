@@ -27,6 +27,9 @@ FLOW_DIR = DATA_STORE / "flow"
 # 리포트 차수 캐시 (일중 변화 추적용)
 _prev_report = {}  # {"frgn_buy": [...], "inst_buy": [...]}
 
+# 장중 수급 누적 파일 (매일 리셋)
+INTRADAY_CUMUL_PATH = DATA_STORE / "intraday_flow_cumulative.json"
+
 # NXT 대상종목 캐시
 _nxt_codes = None
 
@@ -293,6 +296,261 @@ async def generate_intraday_flow_report(kis_trader, round_num: int) -> str:
         "inst_buy_codes": list(inst_buy_codes),
         "round": round_num,
     }
+
+    # ═══ 누적 저장 (15시 매수 추천용) ═══
+    _save_cumulative_round(round_num, frgn_buy or [], inst_buy or [])
+
+    return "\n".join(lines)
+
+
+# ═══════════════════════════════════════
+#  장중 수급 누적 저장/조회
+# ═══════════════════════════════════════
+def _save_cumulative_round(round_num: int, frgn_buy: list, inst_buy: list):
+    """각 라운드 수급 데이터를 JSON에 누적 저장.
+
+    구조: {
+      "date": "2026-04-21",
+      "rounds": {
+        "1": {"frgn_buy": [...], "inst_buy": [...]},
+        "2": {...}, ...
+      }
+    }
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    # 기존 파일 로드 (오늘 날짜 아니면 리셋)
+    cumul = {}
+    if INTRADAY_CUMUL_PATH.exists():
+        try:
+            cumul = json.loads(INTRADAY_CUMUL_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            cumul = {}
+
+    if cumul.get("date") != today:
+        cumul = {"date": today, "rounds": {}}
+
+    # TOP 20까지 저장 (전체 종목 중 상위)
+    frgn_data = []
+    for s in (frgn_buy or [])[:20]:
+        frgn_data.append({
+            "code": s.get("code", ""),
+            "name": s.get("name", ""),
+            "amount": s.get("amount", 0),
+            "change_rate": s.get("change_rate", 0),
+        })
+
+    inst_data = []
+    for s in (inst_buy or [])[:20]:
+        inst_data.append({
+            "code": s.get("code", ""),
+            "name": s.get("name", ""),
+            "amount": s.get("amount", 0),
+            "change_rate": s.get("change_rate", 0),
+        })
+
+    cumul["rounds"][str(round_num)] = {
+        "frgn_buy": frgn_data,
+        "inst_buy": inst_data,
+        "time": datetime.now().strftime("%H:%M"),
+    }
+
+    try:
+        INTRADAY_CUMUL_PATH.write_text(
+            json.dumps(cumul, ensure_ascii=False, indent=2), encoding="utf-8")
+        logger.info(f"[누적저장] {round_num}차 외인{len(frgn_data)}종목 기관{len(inst_data)}종목 저장")
+    except Exception as e:
+        logger.error(f"[누적저장] 실패: {e}")
+
+
+def _load_cumulative() -> dict:
+    """오늘 누적 데이터 로드."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    if not INTRADAY_CUMUL_PATH.exists():
+        return {}
+    try:
+        cumul = json.loads(INTRADAY_CUMUL_PATH.read_text(encoding="utf-8"))
+        if cumul.get("date") != today:
+            return {}
+        return cumul
+    except Exception:
+        return {}
+
+
+# ═══════════════════════════════════════
+#  15:00 장중 수급 누적 매수 추천
+# ═══════════════════════════════════════
+async def generate_15h_flow_buy_alert(kis_trader=None, min_rounds: int = 2, top_n: int = 8) -> str:
+    """15시 장중 수급 누적 매수 추천.
+
+    1~4차 수급 데이터를 분석하여 일관적으로 매수세가 유입된 종목을 추천.
+    - 외인/기관 TOP20에 여러 라운드 등장 = 일관 매수
+    - 3회 이상 등장 + 쌍매수 = 최강
+
+    Args:
+        kis_trader: KIS 인스턴스 (5차 실시간 조회용, 없으면 4차까지만)
+        min_rounds: 최소 등장 라운드 수 (기본 2)
+        top_n: 추천 종목 수 (기본 8)
+
+    Returns:
+        텔레그램 전송용 텍스트
+    """
+    cumul = _load_cumulative()
+    if not cumul or not cumul.get("rounds"):
+        return "[15시 수급] 장중 누적 데이터 없음 — 1~4차 수급 미수집"
+
+    rounds = cumul["rounds"]
+    total_rounds = len(rounds)
+
+    if total_rounds < 2:
+        return f"[15시 수급] 수집된 라운드 {total_rounds}회 — 최소 2회 이상 필요"
+
+    # ── 종목별 누적 집계 ──
+    stock_stats = {}  # code → {name, frgn_rounds, inst_rounds, total_amount, ...}
+
+    for rnum, rdata in rounds.items():
+        # 외인 매수 TOP
+        for s in rdata.get("frgn_buy", []):
+            code = s.get("code", "")
+            if not code:
+                continue
+            if code not in stock_stats:
+                stock_stats[code] = {
+                    "code": code,
+                    "name": s.get("name", code),
+                    "frgn_rounds": 0,
+                    "inst_rounds": 0,
+                    "frgn_total_amt": 0,
+                    "inst_total_amt": 0,
+                    "last_chg": s.get("change_rate", 0),
+                    "rounds_detail": [],
+                }
+            stock_stats[code]["frgn_rounds"] += 1
+            stock_stats[code]["frgn_total_amt"] += s.get("amount", 0)
+            stock_stats[code]["last_chg"] = s.get("change_rate", 0)
+
+        # 기관 매수 TOP
+        for s in rdata.get("inst_buy", []):
+            code = s.get("code", "")
+            if not code:
+                continue
+            if code not in stock_stats:
+                stock_stats[code] = {
+                    "code": code,
+                    "name": s.get("name", code),
+                    "frgn_rounds": 0,
+                    "inst_rounds": 0,
+                    "frgn_total_amt": 0,
+                    "inst_total_amt": 0,
+                    "last_chg": 0,
+                    "rounds_detail": [],
+                }
+            stock_stats[code]["inst_rounds"] += 1
+            stock_stats[code]["inst_total_amt"] += s.get("amount", 0)
+
+    # ── 스코어링 ──
+    uni_path = DATA_STORE / "universe.json"
+    universe = {}
+    if uni_path.exists():
+        try:
+            universe = json.loads(uni_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    scored = []
+    for code, st in stock_stats.items():
+        name = st["name"]
+
+        # ETF 필터
+        if _is_etf(name):
+            continue
+
+        # 시총 필터 (최소 500억)
+        cap = universe.get(code, {}).get("cap_억", 0)
+        if cap and cap < 500:
+            continue
+
+        # 이미 급등한 종목 제외 (당일 +10% 이상)
+        if st["last_chg"] >= 10.0:
+            continue
+
+        frgn_r = st["frgn_rounds"]
+        inst_r = st["inst_rounds"]
+        combined_rounds = frgn_r + inst_r  # 외인3 + 기관2 = 5
+        max_side = max(frgn_r, inst_r)     # 한쪽 최대 등장 수
+
+        # 최소 라운드 필터: 외인 또는 기관 중 하나라도 min_rounds 이상
+        if max_side < min_rounds:
+            continue
+
+        # 점수 계산
+        # 기본: 한쪽 라운드 등장 * 10 + 양쪽 라운드 합산 * 5
+        score = max_side * 10 + combined_rounds * 5
+
+        # 쌍매수 보너스: 같은 라운드에 외인+기관 동시 등장
+        is_dual = frgn_r >= 2 and inst_r >= 2
+        if is_dual:
+            score += 20
+
+        # 금액 보너스 (합산 1억 이상당 1점, 최대 30점)
+        total_amt = st["frgn_total_amt"] + st["inst_total_amt"]
+        amt_bonus = min(30, total_amt // 100000000) if total_amt > 0 else 0
+        score += amt_bonus
+
+        scored.append({
+            "code": code,
+            "name": name,
+            "frgn_rounds": frgn_r,
+            "inst_rounds": inst_r,
+            "is_dual": is_dual,
+            "score": score,
+            "last_chg": st["last_chg"],
+            "frgn_amt_억": round(st["frgn_total_amt"] / 100000000, 1) if st["frgn_total_amt"] else 0,
+            "inst_amt_억": round(st["inst_total_amt"] / 100000000, 1) if st["inst_total_amt"] else 0,
+            "cap_억": cap,
+            "market_type": _get_market_type(code),
+        })
+
+    # 점수순 정렬
+    scored.sort(key=lambda x: -x["score"])
+    picks = scored[:top_n]
+
+    if not picks:
+        return f"[15시 수급] {total_rounds}회 수집 — 일관 매수 종목 없음 (기준: {min_rounds}회 이상)"
+
+    # ── 텔레그램 메시지 포맷 ──
+    today = datetime.now().strftime("%m/%d(%a)")
+    lines = []
+    lines.append(f"━━━━━━━━━━━━━━━━━━━")
+    lines.append(f"  [15시 수급 매수 후보]")
+    lines.append(f"  {today} — {total_rounds}회 누적 분석")
+    lines.append(f"━━━━━━━━━━━━━━━━━━━")
+    lines.append(f"")
+
+    for i, p in enumerate(picks, 1):
+        mt = "[NXT]" if p["market_type"] == "NXT" else ""
+        dual_mark = " 쌍매수" if p["is_dual"] else ""
+
+        lines.append(f"{i}. {p['name']}({p['code']}) {p['last_chg']:+.1f}% {mt}")
+
+        # 수급 상세
+        frgn_str = f"외인 {p['frgn_rounds']}/{total_rounds}회"
+        inst_str = f"기관 {p['inst_rounds']}/{total_rounds}회"
+        lines.append(f"   {frgn_str} | {inst_str}{dual_mark}")
+
+        # 금액
+        if p["frgn_amt_억"] or p["inst_amt_억"]:
+            lines.append(f"   누적: 외인 {p['frgn_amt_억']:.0f}억 + 기관 {p['inst_amt_억']:.0f}억")
+
+        lines.append(f"")
+
+    lines.append(f"━━━━━━━━━━━━━━━━━━━")
+    lines.append(f"  기준: {min_rounds}회+ 일관 매수 | 당일+10% 초과 제외")
+    lines.append(f"  ★ 수동 매수 후 익일 갭/수급 확인")
+    lines.append(f"━━━━━━━━━━━━━━━━━━━")
+
+    names_log = ", ".join(f"{p['name']}(sc={p['score']})" for p in picks[:5])
+    logger.info(f"[15시수급추천] {len(picks)}종목: {names_log}")
 
     return "\n".join(lines)
 

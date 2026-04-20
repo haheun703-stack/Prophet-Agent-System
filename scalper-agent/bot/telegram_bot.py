@@ -541,10 +541,21 @@ class BodyHunterBot:
         await self._job_flow_report(context, 4)
 
     async def _job_bomb_buy_alert(self, context):
-        """15:00 bomb 매수 알림"""
+        """15:00 bomb 매수 알림 + 장중 수급 누적 추천"""
         now = datetime.now(KST)
         if not is_trading_day(now.date()):
             return
+
+        # 1) 장중 수급 누적 매수 추천 (4회 누적 분석)
+        try:
+            from tools.flow_intelligence import generate_15h_flow_buy_alert
+            flow_text = await generate_15h_flow_buy_alert(self.trader, min_rounds=2, top_n=8)
+            await context.bot.send_message(chat_id=self.chat_id, text=flow_text)
+            logger.info("[15시수급] 장중 누적 매수 추천 전송 완료")
+        except Exception as e:
+            logger.error(f"[15시수급] 전송 실패: {e}")
+
+        # 2) bomb 매수 알림 (기존)
         try:
             from tools.flow_intelligence import generate_bomb_buy_alert
             text = await generate_bomb_buy_alert(self.trader, top_n=5)
