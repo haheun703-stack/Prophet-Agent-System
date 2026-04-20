@@ -1496,7 +1496,7 @@ class KISTrader:
 
         target: "0"=전체, "1"=외국인, "2"=기관계
         sort_cls: "0"=순매수상위, "1"=순매도상위
-        Returns: [{"code","name","price","change_rate","net_qty","net_amt"}, ...]
+        Returns: [{"code","name","price","change_rate","volume","amount"(원)}, ...]
         """
         params = {
             "FID_COND_MRKT_DIV_CODE": "V",
@@ -1510,14 +1510,28 @@ class KISTrader:
             "/uapi/domestic-stock/v1/quotations/foreign-institution-total",
             "FHPTJ04400000", params,
         )
+        if raw and len(raw) > 0:
+            logger.debug(f"[가집계] target={target} 첫행 키: {list(raw[0].keys())[:10]}")
         results = []
         for r in raw:
+            # 순매수금액(원): target에 맞는 필드 우선 사용
+            if target == "1":
+                net_amt = _safe_int(r.get("frgn_ntby_tr_pbmn", 0))
+            elif target == "2":
+                net_amt = _safe_int(r.get("orgn_ntby_tr_pbmn", 0))
+            else:
+                net_amt = _safe_int(r.get("frgn_ntby_tr_pbmn", 0)) + \
+                          _safe_int(r.get("orgn_ntby_tr_pbmn", 0))
+            # fallback: 개별 필드 없으면 generic 필드 시도
+            if net_amt == 0:
+                net_amt = _safe_int(r.get("ntby_tr_pbmn", 0))
             results.append({
                 "code": r.get("mksc_shrn_iscd", ""),
                 "name": r.get("hts_kor_isnm", ""),
                 "price": _safe_int(r.get("stck_prpr")),
                 "change_rate": _safe_float(r.get("prdy_ctrt")),
                 "volume": _safe_int(r.get("acml_vol")),
+                "amount": net_amt,
             })
         return results
 

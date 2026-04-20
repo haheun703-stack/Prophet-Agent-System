@@ -388,7 +388,7 @@ async def generate_15h_flow_buy_alert(kis_trader=None, min_rounds: int = 2, top_
     - 3회 이상 등장 + 쌍매수 = 최강
 
     Args:
-        kis_trader: KIS 인스턴스 (5차 실시간 조회용, 없으면 4차까지만)
+        kis_trader: KIS 인스턴스 (현재 미사용, 향후 15시 실시간 5차 조회 확장용)
         min_rounds: 최소 등장 라운드 수 (기본 2)
         top_n: 추천 종목 수 (기본 8)
 
@@ -442,11 +442,12 @@ async def generate_15h_flow_buy_alert(kis_trader=None, min_rounds: int = 2, top_
                     "inst_rounds": 0,
                     "frgn_total_amt": 0,
                     "inst_total_amt": 0,
-                    "last_chg": 0,
+                    "last_chg": s.get("change_rate", 0),
                     "rounds_detail": [],
                 }
             stock_stats[code]["inst_rounds"] += 1
             stock_stats[code]["inst_total_amt"] += s.get("amount", 0)
+            stock_stats[code]["last_chg"] = s.get("change_rate", 0)
 
     # ── 스코어링 ──
     uni_path = DATA_STORE / "universe.json"
