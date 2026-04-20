@@ -9,7 +9,7 @@ NEWS-04: 스코어링/프리클로즈/저널 반영
 아키텍처:
   1단계: 네이버 금융 헤드라인 수집 (빠름, API 불필요)
   2단계: 키워드 기반 사전 필터 (즉시, 비용 0)
-  3단계: 부정 의심 종목만 Claude haiku로 정밀 분석
+  3단계: 부정 의심 종목만 Sonnet+Opus Advisor 정밀 분석 (→Sonnet→Haiku 폴백)
   → Kill-Switch 발동 시 Guardian에 +25점 주입
 """
 
@@ -150,10 +150,20 @@ def _keyword_sentiment(headlines: List[Dict]) -> Tuple[float, int]:
     return normalized, neg_count
 
 
+def _extract_text_from_content(content_blocks):
+    """Advisor 패턴 응답에서 text 블록만 추출"""
+    if isinstance(content_blocks, list):
+        return "".join(
+            b.get("text", "") for b in content_blocks
+            if isinstance(b, dict) and b.get("type") == "text"
+        )
+    return str(content_blocks)
+
+
 def _claude_headline_sentiment(
     code: str, name: str, headlines: List[Dict]
 ) -> Optional[float]:
-    """Claude haiku로 헤드라인 정밀 감성분석 (비용 절약: 헤드라인만)
+    """Sonnet+Opus Advisor로 헤드라인 정밀 감성분석 (3단계 폴백)
 
     Returns:
         -1.0 ~ +1.0 감성 점수 또는 None (실패 시)
@@ -166,7 +176,7 @@ def _claude_headline_sentiment(
         f"{i}. {h['title']}" for i, h in enumerate(headlines[:10], 1)
     )
 
-    prompt = f"""한국 주식 {name}({code}) 관련 뉴스 헤드라인입니다.
+    base_prompt = f"""한국 주식 {name}({code}) 관련 뉴스 헤드라인입니다.
 주가에 미치는 영향을 분석하세요.
 
 {headline_text}
@@ -174,38 +184,116 @@ def _claude_headline_sentiment(
 JSON으로만 응답하세요:
 {{"sentiment": <-1.0~+1.0 소수점1자리. -1.0=극단적 악재, +1.0=극단적 호재>, "reason": "핵심 이유 1줄", "worst_headline": "가장 부정적인 헤드라인 원문"}}"""
 
-    try:
-        resp = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
+    advisor_prompt = base_prompt + """
+
+중요: 감성 점수를 매기기 전에, advisor 도구를 사용하여
+해당 종목의 최근 수급/차트 맥락에서 이 뉴스의 실질 영향을 검증받으세요."""
+
+    # ── 3단계 폴백: Sonnet+Opus → Sonnet → Haiku ──
+    common_headers = {
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+    tiers = [
+        {
+            "label": "Sonnet+Opus",
+            "headers": {**common_headers, "anthropic-beta": "advisor-tool-2026-03-01"},
+            "body": {
+                "model": "claude-sonnet-4-6",
+                "max_tokens": 512,
+                "messages": [{"role": "user", "content": advisor_prompt}],
+                "tools": [{
+                    "type": "advisor_20260301",
+                    "name": "advisor",
+                    "model": "claude-opus-4-7",
+                    "max_uses": 1,
+                }],
             },
-            json={
+            "timeout": 45,
+        },
+        {
+            "label": "Sonnet",
+            "headers": common_headers,
+            "body": {
+                "model": "claude-sonnet-4-6",
+                "max_tokens": 512,
+                "messages": [{"role": "user", "content": base_prompt}],
+            },
+            "timeout": 30,
+        },
+        {
+            "label": "Haiku",
+            "headers": common_headers,
+            "body": {
                 "model": "claude-haiku-4-5-20251001",
                 "max_tokens": 256,
-                "messages": [{"role": "user", "content": prompt}],
+                "messages": [{"role": "user", "content": base_prompt}],
             },
-            timeout=15,
-        )
+            "timeout": 15,
+        },
+    ]
 
-        if resp.status_code != 200:
-            logger.error(f"[NEWS_SENTIMENT] Claude API {resp.status_code}")
-            return None
+    for tier in tiers:
+        try:
+            t0 = time.time()
+            resp = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers=tier["headers"],
+                json=tier["body"],
+                timeout=tier["timeout"],
+            )
+            elapsed = time.time() - t0
 
-        text = resp.json()["content"][0]["text"].strip()
-        if "```json" in text:
-            text = text.split("```json")[1].split("```")[0].strip()
-        elif "```" in text:
-            text = text.split("```")[1].split("```")[0].strip()
+            # Advisor beta 미지원 → 다음 티어
+            if resp.status_code == 400 and "Opus" in tier["label"]:
+                logger.warning(f"[NEWS_SENT] {tier['label']} advisor beta 미지원 → 폴백")
+                continue
 
-        result = json.loads(text)
-        return float(result.get("sentiment", 0.0))
+            if resp.status_code != 200:
+                logger.warning(f"[NEWS_SENT] {tier['label']} API {resp.status_code}")
+                continue
 
-    except Exception as e:
-        logger.error(f"[NEWS_SENTIMENT] Claude 분석 실패 {code}: {e}")
-        return None
+            data = resp.json()
+            text = _extract_text_from_content(data.get("content", []))
+
+            # 비용 추적 로그
+            usage = data.get("usage", {})
+            has_advisor = any(
+                b.get("type") in ("server_tool_use", "advisor_tool_result")
+                for b in data.get("content", [])
+                if isinstance(b, dict)
+            )
+            logger.info(
+                f"[NEWS_SENT] {name}({code}) | {tier['label']} | "
+                f"입력:{usage.get('input_tokens', 0)} "
+                f"출력:{usage.get('output_tokens', 0)} | "
+                f"Advisor:{'Y' if has_advisor else 'N'} | "
+                f"{elapsed:.1f}초"
+            )
+
+            # JSON 파싱
+            text = text.strip()
+            if "```json" in text:
+                text = text.split("```json")[1].split("```")[0].strip()
+            elif "```" in text:
+                text = text.split("```")[1].split("```")[0].strip()
+
+            result = json.loads(text)
+            return float(result.get("sentiment", 0.0))
+
+        except requests.exceptions.Timeout:
+            logger.warning(f"[NEWS_SENT] {tier['label']} 타임아웃 → 폴백")
+            continue
+        except json.JSONDecodeError as e:
+            logger.warning(f"[NEWS_SENT] {tier['label']} JSON 파싱 실패: {e}")
+            continue
+        except Exception as e:
+            logger.warning(f"[NEWS_SENT] {tier['label']} 실패: {e} → 폴백")
+            continue
+
+    logger.error(f"[NEWS_SENT] {name}({code}) 전 티어 실패")
+    return None
 
 
 def analyze_stock_sentiment(

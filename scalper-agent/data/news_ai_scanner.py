@@ -11,14 +11,16 @@
   4. 섹터/테마 뉴스 (반도체, 2차전지, 바이오 등)
 
 AI 분석:
-  - Anthropic Claude API (ANTHROPIC_API_KEY)
+  - Sonnet 4.6 + Opus Advisor → Sonnet → Haiku 3단계 폴백
   - 종목별 뉴스 감성 + 촉매 이벤트 + 리스크 분석
+  - 비용 추적 로그 (모델/토큰/Advisor 사용 여부/지연시간)
 """
 import os
 import re
 import json
 import logging
 import requests
+import time
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime, timedelta
@@ -218,10 +220,20 @@ def collect_all_news(code: str, name: str) -> List[NewsItem]:
     return unique
 
 
+def _extract_text_from_content(content_blocks):
+    """Advisor 패턴 응답에서 text 블록만 추출"""
+    if isinstance(content_blocks, list):
+        return "".join(
+            b.get("text", "") for b in content_blocks
+            if isinstance(b, dict) and b.get("type") == "text"
+        )
+    return str(content_blocks)
+
+
 def analyze_with_claude(code: str, name: str,
                         news_items: List[NewsItem],
                         supply_context: str = "") -> Optional[NewsAIResult]:
-    """Claude AI로 뉴스 통합 분석
+    """Claude AI로 뉴스 통합 분석 (Sonnet+Opus Advisor → Sonnet → Haiku 3단계 폴백)
 
     Args:
         code: 종목코드
@@ -253,7 +265,7 @@ def analyze_with_claude(code: str, name: str,
             news_text += f"\n   {item.snippet[:100]}"
         news_text += "\n"
 
-    prompt = f"""당신은 한국 주식시장 전문 뉴스 분석가입니다.
+    base_prompt = f"""당신은 한국 주식시장 전문 뉴스 분석가입니다.
 
 종목: {name} ({code})
 {f'수급 컨텍스트: {supply_context}' if supply_context else ''}
@@ -282,30 +294,115 @@ def analyze_with_claude(code: str, name: str,
 - 단순 언급/중립: 0
 - 뉴스 없으면 score=0, grade=NEUTRAL"""
 
-    try:
-        resp = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
+    advisor_prompt = base_prompt + """
+
+중요: 뉴스의 주가 영향을 판단하기 전에, advisor 도구를 사용하여
+해당 뉴스의 시장 맥락과 과거 유사 사례를 검증받으세요."""
+
+    # ── 3단계 폴백: Sonnet+Opus → Sonnet → Haiku ──
+    common_headers = {
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+    tiers = [
+        {
+            "label": "Sonnet+Opus",
+            "headers": {**common_headers, "anthropic-beta": "advisor-tool-2026-03-01"},
+            "body": {
+                "model": "claude-sonnet-4-6",
+                "max_tokens": 2000,
+                "messages": [{"role": "user", "content": advisor_prompt}],
+                "tools": [{
+                    "type": "advisor_20260301",
+                    "name": "advisor",
+                    "model": "claude-opus-4-7",
+                    "max_uses": 1,
+                }],
             },
-            json={
+            "timeout": 60,
+        },
+        {
+            "label": "Sonnet",
+            "headers": common_headers,
+            "body": {
+                "model": "claude-sonnet-4-6",
+                "max_tokens": 2000,
+                "messages": [{"role": "user", "content": base_prompt}],
+            },
+            "timeout": 45,
+        },
+        {
+            "label": "Haiku",
+            "headers": common_headers,
+            "body": {
                 "model": "claude-haiku-4-5-20251001",
                 "max_tokens": 1024,
-                "messages": [{"role": "user", "content": prompt}],
+                "messages": [{"role": "user", "content": base_prompt}],
             },
-            timeout=30,
-        )
+            "timeout": 30,
+        },
+    ]
 
-        if resp.status_code != 200:
-            logger.error(f"Claude API 오류 {resp.status_code}: {resp.text[:200]}")
-            return None
+    text = None
+    model_used = "N/A"
+    for tier in tiers:
+        try:
+            t0 = time.time()
+            resp = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers=tier["headers"],
+                json=tier["body"],
+                timeout=tier["timeout"],
+            )
+            elapsed = time.time() - t0
 
-        data = resp.json()
-        text = data["content"][0]["text"].strip()
+            # Advisor beta 미지원 → 다음 티어
+            if resp.status_code == 400 and "Opus" in tier["label"]:
+                logger.warning(f"[NEWS_AI] {tier['label']} advisor beta 미지원 → 폴백")
+                continue
 
+            if resp.status_code != 200:
+                logger.warning(
+                    f"[NEWS_AI] {tier['label']} API {resp.status_code}: "
+                    f"{resp.text[:200]}"
+                )
+                continue
+
+            data = resp.json()
+            text = _extract_text_from_content(data.get("content", []))
+            model_used = tier["label"]
+
+            # 비용 추적 로그
+            usage = data.get("usage", {})
+            has_advisor = any(
+                b.get("type") in ("server_tool_use", "advisor_tool_result")
+                for b in data.get("content", [])
+                if isinstance(b, dict)
+            )
+            logger.info(
+                f"[NEWS_AI] {name}({code}) | {model_used} | "
+                f"입력:{usage.get('input_tokens', 0)} "
+                f"출력:{usage.get('output_tokens', 0)} | "
+                f"Advisor:{'Y' if has_advisor else 'N'} | "
+                f"{elapsed:.1f}초"
+            )
+            break
+
+        except requests.exceptions.Timeout:
+            logger.warning(f"[NEWS_AI] {tier['label']} 타임아웃 ({tier['timeout']}초) → 폴백")
+            continue
+        except Exception as e:
+            logger.warning(f"[NEWS_AI] {tier['label']} 실패: {e} → 폴백")
+            continue
+
+    if not text:
+        logger.error(f"[NEWS_AI] {name}({code}) 전 티어 실패")
+        return None
+
+    try:
         # JSON 파싱 (```json 블록 처리)
+        text = text.strip()
         if "```json" in text:
             text = text.split("```json")[1].split("```")[0].strip()
         elif "```" in text:
@@ -330,10 +427,10 @@ def analyze_with_claude(code: str, name: str,
         )
 
     except json.JSONDecodeError as e:
-        logger.error(f"Claude 응답 JSON 파싱 실패: {e}")
+        logger.error(f"[NEWS_AI] JSON 파싱 실패 ({model_used}): {e}\n응답: {text[:300]}")
         return None
     except Exception as e:
-        logger.error(f"Claude API 호출 실패: {e}")
+        logger.error(f"[NEWS_AI] 결과 처리 실패 ({model_used}): {e}")
         return None
 
 
