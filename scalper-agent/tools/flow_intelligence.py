@@ -262,6 +262,29 @@ async def generate_intraday_flow_report(kis_trader, round_num: int) -> str:
             if out_frgn:
                 lines.append(f"  외인 이탈: {len(out_frgn)}종목")
 
+    # 매집 레이더 교차 확인 (전일 감지 종목이 오늘도 수급 TOP에 등장?)
+    radar_path = DATA_STORE / "accumulation_radar.json"
+    if radar_path.exists():
+        try:
+            radar = json.loads(radar_path.read_text(encoding="utf-8"))
+            radar_stocks = {s["code"]: s for s in radar.get("stocks", [])}
+            radar_in_frgn = frgn_buy_codes & set(radar_stocks.keys())
+            radar_in_inst = inst_buy_codes & set(radar_stocks.keys())
+            radar_matched = radar_in_frgn | radar_in_inst
+
+            if radar_matched:
+                lines.append(f"\n[매집 레이더 교차]")
+                for c in radar_matched:
+                    rs = radar_stocks[c]
+                    dual_today = c in radar_in_frgn and c in radar_in_inst
+                    status = "외인+기관 쌍매수 지속!" if dual_today else (
+                        "외인 매집 지속" if c in radar_in_frgn else "기관 매수 합류")
+                    lines.append(
+                        f"  🔥 {rs['name']} — {status} "
+                        f"({rs.get('frgn_days',0)}일→{rs.get('frgn_days',0)+1}일째)")
+        except Exception as e:
+            logger.debug(f"매집 레이더 교차 체크 실패 (무시): {e}")
+
     lines.append(f"\n━━━━━━━━━━━━━━━━━━━")
 
     # 캐시 저장

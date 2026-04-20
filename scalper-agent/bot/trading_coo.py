@@ -2879,6 +2879,11 @@ class TradingCOO:
                 "stocks": nxt_targets,
             }
 
+            # 로컬 캐시 저장 (장중 수급 리포트에서 교차 체크용)
+            import json as _json
+            cache_path = Path(__file__).resolve().parent.parent / "data_store" / "accumulation_radar.json"
+            cache_path.write_text(_json.dumps(radar_data, ensure_ascii=False, indent=2), encoding="utf-8")
+
             # Supabase 업로드
             await asyncio.to_thread(upload_accumulation_radar, radar_data)
 
