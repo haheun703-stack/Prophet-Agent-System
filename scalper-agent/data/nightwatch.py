@@ -1570,7 +1570,7 @@ def _inject_early_accumulation_targets(nxt_targets: List[Dict]) -> int:
                 "supply_score": score,
                 "combined_supply": total_flow_b,
                 "chg5": chg5,
-                "accel_b": accel / 100,  # 억 단위
+                "accel_b": accel_b,
                 "frgn_days": frgn_days,
                 "last_dual": last_dual,
                 "source": "early_accumulation",

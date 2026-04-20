@@ -2862,16 +2862,15 @@ class TradingCOO:
                 logger.info("[C36] 매집 레이더 종목 없음")
                 return {"accumulation_radar": "SKIP", "count": 0}
 
-            # 섹터/테마 태그 생성
+            # 섹터/테마 태그 생성 (쌍매수가 최강 신호 → 최우선)
             for t in nxt_targets:
                 if not t.get("tag"):
-                    chg5 = t.get("chg5", 0)
-                    if chg5 < -3:
+                    if t.get("last_dual"):
+                        t["tag"] = "쌍매수"
+                    elif t.get("chg5", 0) < -3:
                         t["tag"] = "바닥매집"
                     elif t.get("accel_b", 0) > 30:
                         t["tag"] = "가속전환"
-                    elif t.get("last_dual"):
-                        t["tag"] = "쌍매수"
                     else:
                         t["tag"] = "외인매집"
 
@@ -2887,11 +2886,12 @@ class TradingCOO:
             lines = ["🔍 매집 레이더 — 외인 조용한 매집 감지"]
             lines.append("아직 안 올랐지만 외인이 3일+ 매집 중\n")
             for t in nxt_targets[:5]:
-                dual = "쌍" if t.get("last_dual") else ""
+                tag = t.get("tag", "")
+                dual_mark = "🔥" if t.get("last_dual") and "쌍" not in tag else ""
                 lines.append(
                     f"  {t['name']} | 외인{t.get('frgn_days',0)}일 "
                     f"가속{t.get('accel_b',0):+.0f}억 | "
-                    f"5일{t.get('chg5',0):+.1f}% | {t.get('tag','')}{dual}"
+                    f"5일{t.get('chg5',0):+.1f}% | [{tag}]{dual_mark}"
                 )
             msg = "\n".join(lines)
 
