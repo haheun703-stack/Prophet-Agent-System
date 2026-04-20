@@ -1540,7 +1540,9 @@ def _inject_early_accumulation_targets(nxt_targets: List[Dict]) -> int:
             total_flow_b = (total_frgn + total_inst) / 100
 
             # 최소 수급 규모 (5일 합산 10억 미만이면 노이즈)
-            if total_flow_b < 10:
+            # 단, 가속이 강하면 (최근2일 합산 30억+) 합산 낮아도 허용
+            accel_b = accel / 100  # 억 단위
+            if total_flow_b < 10 and accel_b < 30:
                 continue
 
             # 스코어링
