@@ -1673,6 +1673,7 @@ class TradingCOO:
         stage4_jobs = [
             ("C32_nxt_top5_publish", self._job_nxt_top5_publish(context)),
             ("C33_nxt_performance", self._job_nxt_performance(context)),
+            ("C36_accumulation_radar", self._job_accumulation_radar(context)),
         ]
         s4 = await self.run_parallel_async(stage4_jobs, timeout_per_job=300)
         results.extend(s4)
@@ -2839,6 +2840,80 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[C32] NXT TOP 5 실패 (무시): {e}")
             return {"nxt_top5": f"ERROR: {e}"}
+
+    async def _job_accumulation_radar(self, context=None) -> dict:
+        """C36: 매집 레이더 — 외인 매집 초기 미발화 종목 FLOWX 업로드.
+
+        nightwatch._inject_early_accumulation_targets()로 감지된 종목을
+        intelligence_accumulation_radar 테이블에 업로드.
+        NXT TOP5 바로 아래, 매매 타임라인 위에 표시.
+        """
+        try:
+            from data.nightwatch import _inject_early_accumulation_targets
+            from data.upload_nxt_performance import upload_accumulation_radar
+            from datetime import date
+
+            # 감지기 실행
+            nxt_targets = []
+            injected = await asyncio.to_thread(
+                _inject_early_accumulation_targets, nxt_targets
+            )
+            if not nxt_targets:
+                logger.info("[C36] 매집 레이더 종목 없음")
+                return {"accumulation_radar": "SKIP", "count": 0}
+
+            # 섹터/테마 태그 생성
+            for t in nxt_targets:
+                if not t.get("tag"):
+                    chg5 = t.get("chg5", 0)
+                    if chg5 < -3:
+                        t["tag"] = "바닥매집"
+                    elif t.get("accel_b", 0) > 30:
+                        t["tag"] = "가속전환"
+                    elif t.get("last_dual"):
+                        t["tag"] = "쌍매수"
+                    else:
+                        t["tag"] = "외인매집"
+
+            radar_data = {
+                "date": date.today().isoformat(),
+                "stocks": nxt_targets,
+            }
+
+            # Supabase 업로드
+            await asyncio.to_thread(upload_accumulation_radar, radar_data)
+
+            # 텔레그램 알림 (간단 리스트)
+            lines = ["🔍 매집 레이더 — 외인 조용한 매집 감지"]
+            lines.append("아직 안 올랐지만 외인이 3일+ 매집 중\n")
+            for t in nxt_targets[:5]:
+                dual = "쌍" if t.get("last_dual") else ""
+                lines.append(
+                    f"  {t['name']} | 외인{t.get('frgn_days',0)}일 "
+                    f"가속{t.get('accel_b',0):+.0f}억 | "
+                    f"5일{t.get('chg5',0):+.1f}% | {t.get('tag','')}{dual}"
+                )
+            msg = "\n".join(lines)
+
+            sent = False
+            if context and self.bot and getattr(self.bot, "chat_id", None):
+                try:
+                    await context.bot.send_message(
+                        chat_id=self.bot.chat_id, text=msg)
+                    sent = True
+                except Exception:
+                    pass
+            if not sent:
+                alert_fn = getattr(self.auto_trader, "_send_alert", None) if self.auto_trader else None
+                if alert_fn:
+                    await asyncio.to_thread(alert_fn, msg)
+
+            logger.info(f"[C36] 매집 레이더 발행 완료 ({len(nxt_targets)}종목)")
+            return {"accumulation_radar": "OK", "count": len(nxt_targets)}
+
+        except Exception as e:
+            logger.warning(f"[C36] 매집 레이더 실패 (무시): {e}")
+            return {"accumulation_radar": f"ERROR: {e}"}
 
     async def _job_nxt_performance(self, context=None) -> dict:
         """C33: 어제 NXT TOP 5 성적표.

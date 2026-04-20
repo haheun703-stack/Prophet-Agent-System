@@ -59,6 +59,58 @@ def upload_nxt_picks(picks_data: dict) -> bool:
         return False
 
 
+def upload_accumulation_radar(radar_data: dict) -> bool:
+    """매집 레이더 데이터를 Supabase에 저장.
+
+    NXT TOP5 바로 아래, 매매 타임라인 위에 표시.
+    외인 3일+ 매집 중이나 아직 안 오른 "미발화" 종목.
+
+    Args:
+        radar_data: {
+            "date": "2026-04-20",
+            "stocks": [{"code","name","frgn_days","accel_b","chg5","tag","last_dual"}, ...]
+        }
+    """
+    if not radar_data or not radar_data.get("stocks"):
+        return False
+
+    try:
+        from data.upload_swing import _get_client
+        client = _get_client()
+        if not client:
+            return False
+
+        stocks_json = []
+        for s in radar_data["stocks"]:
+            stocks_json.append({
+                "code": s.get("code", ""),
+                "name": s.get("name", ""),
+                "frgn_days": s.get("frgn_days", 0),
+                "accel_b": round(s.get("accel_b", 0), 1),
+                "chg5": round(s.get("chg5", 0), 1),
+                "tag": s.get("tag", ""),
+                "last_dual": s.get("last_dual", False),
+                "supply_score": s.get("supply_score", 0),
+                "combined_supply": round(s.get("combined_supply", 0), 1),
+            })
+
+        row = {
+            "date": radar_data["date"],
+            "stocks": stocks_json,
+        }
+
+        client.table("intelligence_accumulation_radar") \
+            .upsert(row, on_conflict="date") \
+            .execute()
+
+        logger.info(f"매집 레이더 업로드 완료: {radar_data['date']} · {len(stocks_json)}종목")
+        return True
+
+    except Exception as e:
+        logger.error(f"매집 레이더 업로드 실패: {e}")
+        return False
+
+
 def upload_nxt_performance(report: dict) -> bool:
     """NXT 성적표를 Supabase에 저장.
 
