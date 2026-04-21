@@ -77,6 +77,7 @@ def scan_oneshot_stealth(
         return {"error": "insufficient dates"}
 
     latest_date = dates[0]         # 가��� 최근 거래일 (종가 기준)
+    latest_date_fmt = f"{latest_date[:4]}-{latest_date[4:6]}-{latest_date[6:]}"
     search_dates = dates[1:]       # 쌍매수 탐색 범위 (당일 제외)
     start_date = search_dates[-1]  # 가장 오래된 탐색일
 
@@ -135,7 +136,6 @@ def scan_oneshot_stealth(
         # 날짜 포맷 변환 (DB: 20260415 → CSV: 2026-04-15)
         sig_date = sig["date"]
         sig_date_fmt = f"{sig_date[:4]}-{sig_date[4:6]}-{sig_date[6:]}"
-        latest_date_fmt = f"{latest_date[:4]}-{latest_date[4:6]}-{latest_date[6:]}"
 
         signal_close = None
         latest_close = None
