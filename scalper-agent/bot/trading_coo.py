@@ -1674,6 +1674,7 @@ class TradingCOO:
             ("C32_nxt_top5_publish", self._job_nxt_top5_publish(context)),
             ("C33_nxt_performance", self._job_nxt_performance(context)),
             ("C36_accumulation_radar", self._job_accumulation_radar(context)),
+            ("C37_oneshot_stealth", self._job_oneshot_stealth(context)),
         ]
         s4 = await self.run_parallel_async(stage4_jobs, timeout_per_job=300)
         results.extend(s4)
@@ -2919,6 +2920,44 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[C36] 매집 레이더 실패 (무시): {e}")
             return {"accumulation_radar": f"ERROR: {e}"}
+
+    async def _job_oneshot_stealth(self, context=None) -> dict:
+        """C37: 원샷 쌍매수 잠복 감지 → oneshot_stealth.json + 텔레그램 알림.
+
+        최근 7일 내 외인+기관 동시 대량매수(200억+) 후
+        아직 주가가 크게 움직이지 않은 잠복 종목 포착.
+        """
+        try:
+            from data.oneshot_detector import scan_oneshot_stealth, format_oneshot_alert
+
+            result = await asyncio.to_thread(scan_oneshot_stealth)
+            stealth_count = result.get("summary", {}).get("stealth_count", 0)
+
+            if stealth_count == 0:
+                logger.info("[C37] 원샷 잠복 종목 없음")
+                return {"oneshot_stealth": "SKIP", "count": 0}
+
+            # 텔레그램 알림
+            msg = format_oneshot_alert(result)
+            sent = False
+            if context and self.bot and getattr(self.bot, "chat_id", None):
+                try:
+                    await context.bot.send_message(
+                        chat_id=self.bot.chat_id, text=msg)
+                    sent = True
+                except Exception:
+                    pass
+            if not sent:
+                alert_fn = getattr(self.auto_trader, "_send_alert", None) if self.auto_trader else None
+                if alert_fn:
+                    await asyncio.to_thread(alert_fn, msg)
+
+            logger.info(f"[C37] 원샷 잠복 감지 완료 (잠복 {stealth_count}건)")
+            return {"oneshot_stealth": "OK", "count": stealth_count}
+
+        except Exception as e:
+            logger.warning(f"[C37] 원샷 잠복 감지 실패 (무시): {e}")
+            return {"oneshot_stealth": f"ERROR: {e}"}
 
     async def _job_nxt_performance(self, context=None) -> dict:
         """C33: 어제 NXT TOP 5 성적표.
