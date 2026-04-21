@@ -170,3 +170,58 @@ def upload_nxt_performance(report: dict) -> bool:
     except Exception as e:
         logger.error(f"NXT 성적표 업로드 실패: {e}")
         return False
+
+
+def upload_oneshot_stealth(scan_data: dict) -> bool:
+    """원샷 쌍매수 잠복 데이터를 Supabase에 저장.
+
+    NXT TOP5 아래, 매집 레이더 위에 표시.
+    최근 7일 내 외인+기관 200억+ 동시매수 후 아직 ±7% 잠복 종목.
+
+    Args:
+        scan_data: scan_oneshot_stealth() 반환값
+    """
+    stealth = scan_data.get("stealth", [])
+    if not stealth:
+        return False
+
+    try:
+        from data.upload_swing import _get_client
+        client = _get_client()
+        if not client:
+            return False
+
+        stocks_json = []
+        for s in stealth:
+            stocks_json.append({
+                "ticker": s.get("ticker", ""),
+                "name": s.get("name", ""),
+                "signal_date": s.get("signal_date", ""),
+                "frgn_buy": s.get("frgn_buy", 0),
+                "inst_buy": s.get("inst_buy", 0),
+                "dual_total": s.get("dual_total", 0),
+                "signal_close": s.get("signal_close", 0),
+                "latest_close": s.get("latest_close", 0),
+                "chg_pct": s.get("chg_pct", 0),
+            })
+
+        row = {
+            "date": scan_data.get("latest_date", ""),
+            "lookback_days": scan_data.get("lookback_days", 7),
+            "min_dual_buy": scan_data.get("min_dual_buy", 200),
+            "stealth_count": scan_data.get("summary", {}).get("stealth_count", 0),
+            "gone_count": scan_data.get("summary", {}).get("gone_count", 0),
+            "failed_count": scan_data.get("summary", {}).get("failed_count", 0),
+            "stocks": stocks_json,
+        }
+
+        client.table("intelligence_oneshot_stealth") \
+            .upsert(row, on_conflict="date") \
+            .execute()
+
+        logger.info(f"원샷 잠복 업로드 완료: {row['date']} · {len(stocks_json)}종목")
+        return True
+
+    except Exception as e:
+        logger.error(f"원샷 잠복 업로드 실패: {e}")
+        return False

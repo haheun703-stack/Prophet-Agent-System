@@ -2937,6 +2937,14 @@ class TradingCOO:
                 logger.info("[C37] 원샷 잠복 종목 없음")
                 return {"oneshot_stealth": "SKIP", "count": 0}
 
+            # Supabase 업로드 (FLOWX 대시보드 — NXT 아래, 매집 레이더 위)
+            upload_ok = False
+            try:
+                from data.upload_nxt_performance import upload_oneshot_stealth
+                upload_ok = await asyncio.to_thread(upload_oneshot_stealth, result)
+            except Exception as ue:
+                logger.warning(f"[C37] Supabase 업로드 실패 (무시): {ue}")
+
             # 텔레그램 알림
             msg = format_oneshot_alert(result)
             sent = False
@@ -2952,8 +2960,11 @@ class TradingCOO:
                 if alert_fn:
                     await asyncio.to_thread(alert_fn, msg)
 
-            logger.info(f"[C37] 원샷 잠복 감지 완료 (잠복 {stealth_count}건)")
-            return {"oneshot_stealth": "OK", "count": stealth_count}
+            logger.info(
+                f"[C37] 원샷 잠복 감지 완료 (잠복 {stealth_count}건, "
+                f"Supabase {'OK' if upload_ok else 'SKIP'})"
+            )
+            return {"oneshot_stealth": "OK", "count": stealth_count, "supabase": upload_ok}
 
         except Exception as e:
             logger.warning(f"[C37] 원샷 잠복 감지 실패 (무시): {e}")
