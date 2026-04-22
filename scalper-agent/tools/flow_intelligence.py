@@ -768,8 +768,9 @@ def generate_flow_intensity_data(top_n: int = 15, min_cap: int = 2000) -> dict:
             if len(parts) < 4:
                 continue
             try:
-                fn = float(parts[1]) if parts[1] else 0
-                ins = float(parts[2]) if parts[2] and parts[2] != "" else 0
+                # CSV 컬럼: [0]날짜 [1]기관 [2]기타법인 [3]개인 [4]외국인 ... [-2]종가
+                fn = float(parts[4]) if len(parts) > 4 and parts[4] else 0    # 외국인_금액
+                ins = float(parts[1]) if parts[1] else 0                       # 기관_금액
                 close = float(parts[-2])
                 _last_csv_date = parts[0].strip()
             except (ValueError, IndexError):

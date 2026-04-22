@@ -22,11 +22,7 @@ CREATE TABLE IF NOT EXISTS scoreboard (
     PRIMARY KEY (bot_type, period)
 );
 
--- 인덱스
-CREATE INDEX IF NOT EXISTS idx_scoreboard_bot_type
-    ON scoreboard(bot_type);
-
--- RLS
+-- RLS (PK가 bot_type 선행이므로 별도 인덱스 불필요)
 ALTER TABLE scoreboard ENABLE ROW LEVEL SECURITY;
 DO $$ BEGIN
     CREATE POLICY "Public read" ON scoreboard

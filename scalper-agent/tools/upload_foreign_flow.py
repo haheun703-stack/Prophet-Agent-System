@@ -5,7 +5,7 @@
 intelligence_foreign_flow + intelligence_foreign_flow_sector 테이블에 업로드
 
 스케줄: 매일 16:35 (flow_collector 완료 후)
-실행: python3 tools/upload_foreign_flow.py [--date 2026-04-09]
+실행: python3 tools/upload_foreign_flow.py [--dry-run] [--save-json]
 
 파이프라인:
 1. 전체 유니버스 (시총 2천억+) 스캔
@@ -18,12 +18,15 @@ from __future__ import annotations
 import os
 import sys
 import json
+import logging
 import argparse
 from pathlib import Path
 from datetime import datetime, date
 from collections import defaultdict
 import pandas as pd
 
+
+logger = logging.getLogger("BH.ForeignFlow")
 
 # ─────────────────────────────────────────────
 # 경로
@@ -56,6 +59,23 @@ LOOKBACK_DAYS = 5
 MIN_FOREIGN_TOTAL = 30  # 5일 누적 30억 이상만 업로드
 QUIET_THRESHOLD = 7.0
 
+# ETF/펀드 키워드 필터
+_ETF_KEYWORDS = [
+    "KODEX", "TIGER", "ACE", "KIWOOM", "SOL ", "HANARO", "KOSEF", "ARIRANG",
+    "BNK", "PLUS ", "FOCUS", "TIMEFOLIO", "RISE ", "TIME ", "ITF ", "1Q ",
+    "KoAct", "WON ", "UNICORN", "Active", "액티브",
+]
+
+
+def _is_etf(name: str) -> bool:
+    """ETF/펀드 여부 판별."""
+    if not name or name == "?":
+        return True
+    for kw in _ETF_KEYWORDS:
+        if kw in name:
+            return True
+    return False
+
 
 def load_universe() -> dict:
     with open(UNIVERSE_PATH, "r", encoding="utf-8") as f:
@@ -67,7 +87,7 @@ def analyze() -> tuple[list[dict], list[dict], str]:
     uni = load_universe()
     targets = {code: info for code, info in uni.items()
                if isinstance(info, dict) and info.get("cap_억", 0) >= MIN_MCAP}
-    print(f"📊 분석 대상: {len(targets)}개 종목")
+    logger.info(f"[C38] 분석 대상: {len(targets)}개 종목")
 
     stock_rows = []
     sector_agg = defaultdict(lambda: {
@@ -89,6 +109,11 @@ def analyze() -> tuple[list[dict], list[dict], str]:
                 continue
 
             name = info.get("name", "?")
+
+            # ETF 필터
+            if _is_etf(name):
+                continue
+
             sector = info.get("sector", "기타")
             mcap = int(info.get("cap_억", 0))
 
@@ -157,10 +182,10 @@ def analyze() -> tuple[list[dict], list[dict], str]:
                 "inst_5d": round(inst_5d, 1),
             })
         except Exception as e:
+            logger.debug(f"[C38] {code} 파싱 실패: {e}")
             continue
 
-    print(f"  ✅ 감지 종목: {len(stock_rows)}")
-    print(f"  ✅ 감지 섹터: {len(sector_agg)}")
+    logger.info(f"[C38] 감지 종목: {len(stock_rows)}, 섹터: {len(sector_agg)}")
 
     # ───── 랭킹 부여 ─────
     # 1) 당일 외인 순매수 순위 (10억+ 매수만)
@@ -211,7 +236,7 @@ def upload_to_supabase(stock_rows: list[dict], sector_rows: list[dict]) -> bool:
     try:
         from supabase import create_client
     except ImportError:
-        print("❌ supabase-py 설치 필요: pip install supabase")
+        logger.error("[C38] supabase-py 설치 필요: pip install supabase")
         return False
 
     url = os.environ.get("SUPABASE_URL", "")
@@ -219,13 +244,13 @@ def upload_to_supabase(stock_rows: list[dict], sector_rows: list[dict]) -> bool:
            or os.environ.get("SUPABASE_KEY", ""))
 
     if not url or not key:
-        print(f"❌ Supabase 환경변수 없음 (URL: {bool(url)}, KEY: {bool(key)})")
+        logger.error(f"[C38] Supabase 환경변수 없음 (URL: {bool(url)}, KEY: {bool(key)})")
         return False
 
     client = create_client(url, key)
 
     # 1) 종목별 업로드 (배치 100개씩)
-    print(f"\n📤 intelligence_foreign_flow 업로드 시작 ({len(stock_rows)}건)")
+    logger.info(f"[C38] intelligence_foreign_flow 업로드 시작 ({len(stock_rows)}건)")
     BATCH = 100
     success = 0
     for i in range(0, len(stock_rows), BATCH):
@@ -240,48 +265,50 @@ def upload_to_supabase(stock_rows: list[dict], sector_rows: list[dict]) -> bool:
                 batch, on_conflict="date,code"
             ).execute()
             success += len(batch)
-            print(f"  배치 {i//BATCH + 1}: {len(batch)}건 ✓")
+            logger.debug(f"[C38] 배치 {i//BATCH + 1}: {len(batch)}건")
         except Exception as e:
-            print(f"  배치 {i//BATCH + 1} 실패: {e}")
-    print(f"✅ 종목: {success}/{len(stock_rows)}건 업로드")
+            logger.warning(f"[C38] 배치 {i//BATCH + 1} 실패: {e}")
+    logger.info(f"[C38] 종목: {success}/{len(stock_rows)}건 업로드")
 
     # 2) 섹터별 업로드
-    print(f"\n📤 intelligence_foreign_flow_sector 업로드 시작 ({len(sector_rows)}건)")
+    logger.info(f"[C38] intelligence_foreign_flow_sector 업로드 시작 ({len(sector_rows)}건)")
     try:
         client.table("intelligence_foreign_flow_sector").upsert(
             sector_rows, on_conflict="date,sector"
         ).execute()
-        print(f"✅ 섹터: {len(sector_rows)}건 업로드 완료")
+        logger.info(f"[C38] 섹터: {len(sector_rows)}건 업로드 완료")
     except Exception as e:
-        print(f"❌ 섹터 업로드 실패: {e}")
+        logger.error(f"[C38] 섹터 업로드 실패: {e}")
         return False
 
     return True
 
 
 def main():
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true", help="Supabase 업로드 없이 로컬 저장만")
     parser.add_argument("--save-json", action="store_true", help="JSON 저장")
     args = parser.parse_args()
 
-    print("🔍 외국인 돈 흐름 분석 시작")
-    print(f"   시총 하한: {MIN_MCAP}억 / Lookback: {LOOKBACK_DAYS}일")
+    logger.info("외국인 돈 흐름 분석 시작")
+    logger.info(f"   시총 하한: {MIN_MCAP}억 / Lookback: {LOOKBACK_DAYS}일")
 
     stock_rows, sector_rows, last_date = analyze()
-    print(f"\n📅 기준일: {last_date}")
+    logger.info(f"기준일: {last_date}")
 
     # 상위 종목 미리보기
     top5_cumul = sorted(stock_rows, key=lambda x: x["foreign_5d_억"], reverse=True)[:5]
-    print("\n🏆 5일 누적 외인 TOP 5")
+    logger.info("5일 누적 외인 TOP 5")
     for r in top5_cumul:
-        print(f"  [{r['rank_cumul']:>2}] {r['name']:<15} {r['foreign_5d_억']:>8,.0f}억  "
+        logger.info(f"  [{r['rank_cumul']:>2}] {r['name']:<15} {r['foreign_5d_억']:>8,.0f}억  "
               f"({r['sector']})  dual={r['is_dual_buy']}  quiet={r['is_quiet_accum']}")
 
     # 섹터 TOP 5
-    print("\n🏭 섹터 TOP 5")
+    logger.info("섹터 TOP 5")
     for s in sector_rows[:5]:
-        print(f"  [{s['rank']}] {s['sector']:<12} 외인 {s['foreign_5d_억']:>8,.0f}억 "
+        logger.info(f"  [{s['rank']}] {s['sector']:<12} 외인 {s['foreign_5d_억']:>8,.0f}억 "
               f"기관 {s['inst_5d_억']:>8,.0f}억  ({s['stock_count']}종목)")
 
     if args.save_json:
@@ -293,18 +320,18 @@ def main():
             "sector_rows": sector_rows,
         }
         out_path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
-        print(f"\n💾 JSON 저장: {out_path}")
+        logger.info(f"JSON 저장: {out_path}")
 
     if not args.dry_run:
         ok = upload_to_supabase(stock_rows, sector_rows)
         if ok:
-            print("\n✅ 전체 업로드 완료")
+            logger.info("전체 업로드 완료")
             return 0
         else:
-            print("\n❌ 업로드 실패")
+            logger.error("업로드 실패")
             return 1
     else:
-        print("\n⚠️ Dry-run 모드: 업로드 생략")
+        logger.info("Dry-run 모드: 업로드 생략")
         return 0
 
 
