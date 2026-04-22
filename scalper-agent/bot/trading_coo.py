@@ -1675,6 +1675,7 @@ class TradingCOO:
             ("C33_nxt_performance", self._job_nxt_performance(context)),
             ("C36_accumulation_radar", self._job_accumulation_radar(context)),
             ("C37_oneshot_stealth", self._job_oneshot_stealth(context)),
+            ("C38_foreign_flow", self._job_foreign_flow_upload(context)),
         ]
         s4 = await self.run_parallel_async(stage4_jobs, timeout_per_job=300)
         results.extend(s4)
@@ -2969,6 +2970,32 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[C37] 원샷 잠복 감지 실패 (무시): {e}")
             return {"oneshot_stealth": f"ERROR: {e}"}
+
+    async def _job_foreign_flow_upload(self, context=None) -> dict:
+        """C38: 외국인 돈 흐름 Supabase 업로드.
+
+        시총 2천억+ 전 유니버스 5일 롤링 외인/기관 수급 →
+        intelligence_foreign_flow + intelligence_foreign_flow_sector upsert.
+        """
+        try:
+            from tools.upload_foreign_flow import analyze, upload_to_supabase
+
+            stock_rows, sector_rows, last_date = await asyncio.to_thread(analyze)
+            if not stock_rows:
+                logger.info("[C38] foreign_flow: 감지 종목 없음")
+                return {"foreign_flow": "EMPTY"}
+
+            ok = await asyncio.to_thread(upload_to_supabase, stock_rows, sector_rows)
+            logger.info(
+                f"[C38] foreign_flow 업로드 {'완료' if ok else '실패'} — "
+                f"{len(stock_rows)}종목, {len(sector_rows)}섹터 ({last_date})"
+            )
+            return {"foreign_flow": "OK" if ok else "FAIL",
+                    "stocks": len(stock_rows), "sectors": len(sector_rows)}
+
+        except Exception as e:
+            logger.warning(f"[C38] foreign_flow 업로드 실패 (무시): {e}")
+            return {"foreign_flow": f"ERROR: {e}"}
 
     async def _job_nxt_performance(self, context=None) -> dict:
         """C33: 어제 NXT TOP 5 성적표.

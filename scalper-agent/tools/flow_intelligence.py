@@ -762,6 +762,7 @@ def generate_flow_intensity_data(top_n: int = 15, min_cap: int = 2000) -> dict:
             continue
 
         recent = []
+        _last_csv_date = None
         for line in lines[-5:]:
             parts = line.split(",")
             if len(parts) < 4:
@@ -770,6 +771,7 @@ def generate_flow_intensity_data(top_n: int = 15, min_cap: int = 2000) -> dict:
                 fn = float(parts[1]) if parts[1] else 0
                 ins = float(parts[2]) if parts[2] and parts[2] != "" else 0
                 close = float(parts[-2])
+                _last_csv_date = parts[0].strip()
             except (ValueError, IndexError):
                 continue
             recent.append({"f": fn, "i": ins, "close": close})
@@ -830,6 +832,7 @@ def generate_flow_intensity_data(top_n: int = 15, min_cap: int = 2000) -> dict:
             "consec_foreign": consec_f,
             "consec_inst": consec_i,
             "is_overheated": is_overheated,
+            "_csv_date": _last_csv_date,
         })
 
     # 강도순 정렬
@@ -843,11 +846,21 @@ def generate_flow_intensity_data(top_n: int = 15, min_cap: int = 2000) -> dict:
     dual_cnt = sum(1 for r in top if r["dual_buy"])
     heat_cnt = sum(1 for r in top if r["is_overheated"])
 
-    from data.trading_calendar import last_trading_day
-    last_day = last_trading_day().isoformat()
+    # CSV 최신 날짜 사용 (last_trading_day()는 전일 반환이라 장 마감 후 1일 차이)
+    csv_date = None
+    for r in results:
+        if r.get("_csv_date") and (csv_date is None or r["_csv_date"] > csv_date):
+            csv_date = r["_csv_date"]
+    if csv_date is None:
+        from data.trading_calendar import last_trading_day
+        csv_date = last_trading_day().isoformat()
+
+    # 임시 키 제거
+    for r in results:
+        r.pop("_csv_date", None)
 
     out = {
-        "date": last_day,
+        "date": csv_date,
         "total_scanned": scanned,
         "top_stocks": top,
         "dual_buy_count": dual_cnt,
