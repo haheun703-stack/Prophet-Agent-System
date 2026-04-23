@@ -420,13 +420,18 @@ class TradingCOO:
         name: str,
         coro: Coroutine,
         timeout: Optional[float] = None,
+        retry_factory: Optional[Callable] = None,
     ) -> JobResult:
         """async 잡을 try/except + asyncio.wait_for 타임아웃으로 실행.
+
+        타임아웃/예외 발생 시 retry_factory가 있으면 1회 자동 재시도.
+        재시도 시 타임아웃을 1.5배로 확장.
 
         Args:
             name: 잡 이름
             coro: 실행할 코루틴 (이미 생성된 상태)
             timeout: 초 단위 타임아웃 (None이면 무제한)
+            retry_factory: 재시도용 코루틴 팩토리 (없으면 재시도 안 함)
         Returns:
             JobResult
         """
@@ -443,27 +448,70 @@ class TradingCOO:
 
         except asyncio.TimeoutError:
             elapsed = time.monotonic() - start
+            if retry_factory:
+                logger.warning(
+                    f"[COO] {name} 타임아웃 ({timeout}초) → 1회 재시도 "
+                    f"(확장 {int(timeout * 1.5)}초)"
+                )
+                return await self._retry_once(
+                    name, retry_factory, int(timeout * 1.5), start
+                )
             logger.warning(f"[COO] {name} 타임아웃 ({timeout}초)")
             return JobResult(name, False, elapsed, f"TIMEOUT ({timeout}s)")
 
         except Exception as e:
             elapsed = time.monotonic() - start
             err = str(e)
+            if retry_factory:
+                logger.warning(
+                    f"[COO] {name} 예외 ({err}) → 1회 재시도"
+                )
+                return await self._retry_once(
+                    name, retry_factory, timeout, start
+                )
             logger.error(f"[COO] {name} 예외: {err}")
             return JobResult(name, False, elapsed, err)
+
+    async def _retry_once(
+        self,
+        name: str,
+        factory: Callable,
+        timeout: Optional[float],
+        original_start: float,
+    ) -> JobResult:
+        """1회 재시도 실행."""
+        try:
+            coro2 = factory()
+            if timeout:
+                await asyncio.wait_for(coro2, timeout=timeout)
+            else:
+                await coro2
+            elapsed = time.monotonic() - original_start
+            logger.info(f"[COO] {name} 재시도 성공 ({elapsed:.1f}초)")
+            return JobResult(name, True, elapsed)
+        except asyncio.TimeoutError:
+            elapsed = time.monotonic() - original_start
+            logger.error(f"[COO] {name} 재시도도 타임아웃 ({timeout}초)")
+            return JobResult(name, False, elapsed, f"RETRY_TIMEOUT ({timeout}s)")
+        except Exception as e2:
+            elapsed = time.monotonic() - original_start
+            logger.error(f"[COO] {name} 재시도 실패: {e2}")
+            return JobResult(name, False, elapsed, f"RETRY_FAIL: {e2}")
 
     # ─────────────────────────────────────────────
     # run_parallel_async: async 병렬 실행 래퍼
     # ─────────────────────────────────────────────
     async def run_parallel_async(
         self,
-        jobs: List[Tuple[str, Coroutine]],
+        jobs: list,
         timeout_per_job: Optional[float] = None,
     ) -> List[JobResult]:
         """async 잡들을 asyncio.gather로 병렬 실행, 개별 예외 격리.
 
         Args:
-            jobs: [(name, coroutine), ...] 리스트
+            jobs: [(name, coroutine), ...] 또는
+                  [(name, coroutine, retry_factory), ...] 리스트
+                  retry_factory가 있으면 타임아웃/예외 시 1회 자동 재시도
             timeout_per_job: 잡별 타임아웃 (초)
         Returns:
             JobResult 리스트
@@ -471,10 +519,19 @@ class TradingCOO:
         if not jobs:
             return []
 
-        tasks = [
-            self.run_job_safe_async(name, coro, timeout=timeout_per_job)
-            for name, coro in jobs
-        ]
+        tasks = []
+        for job in jobs:
+            if len(job) == 3:
+                name, coro, factory = job
+                tasks.append(self.run_job_safe_async(
+                    name, coro, timeout=timeout_per_job,
+                    retry_factory=factory,
+                ))
+            else:
+                name, coro = job
+                tasks.append(self.run_job_safe_async(
+                    name, coro, timeout=timeout_per_job,
+                ))
         results = await asyncio.gather(*tasks)
 
         ok = sum(1 for r in results if r.success)
@@ -1433,18 +1490,20 @@ class TradingCOO:
         elif self._g6_mode == "DEGRADED":
             logger.warning("[COO] G7: DEGRADED — 선취매 스킵")
 
-        # ── Stage 1: C8 + C10 + C11 병렬 (300s) ──
-        logger.info("[COO] G7 Stage 1: C8+C10+C11 병렬")
+        # ── Stage 1: C8 + C10 + C11 병렬 (600s, 재시도 1회) ──
+        logger.info("[COO] G7 Stage 1: C8+C10+C11 병렬 (재시도 지원)")
         stage1_jobs = []
 
         if self.bot:
             stage1_jobs.append((
                 "C8_record_signals",
                 self.bot._job_record_signals(context),
+                lambda: self.bot._job_record_signals(context),
             ))
             stage1_jobs.append((
                 "C10_swing_picker",
                 self.bot._job_swing_picker(context),
+                lambda: self.bot._job_swing_picker(context),
             ))
 
         if self.auto_trader:
@@ -1454,7 +1513,7 @@ class TradingCOO:
             ))
 
         if stage1_jobs:
-            s1 = await self.run_parallel_async(stage1_jobs, timeout_per_job=300)
+            s1 = await self.run_parallel_async(stage1_jobs, timeout_per_job=600)
             results.extend(s1)
 
         # ── Stage 2: C12 → C13 순차 ──
@@ -1550,11 +1609,12 @@ class TradingCOO:
                 self.bot._job_macd_scan(context),
             ))
 
-        # C17: 국적 차트
+        # C17: 국적 차트 (재시도 지원 — TOP200 KRX 크롤링으로 600초 초과 빈발)
         if self.bot:
             stage3_jobs.append((
                 "C17_nationality_charts",
                 self.bot._job_nationality_charts(context),
+                lambda: self.bot._job_nationality_charts(context),
             ))
 
         # C18: 파이프라인 헬스

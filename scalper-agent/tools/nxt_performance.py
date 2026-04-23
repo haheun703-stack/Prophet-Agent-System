@@ -18,6 +18,7 @@ logger = logging.getLogger("BH.NxtPerf")
 DATA_DIR = Path(__file__).resolve().parent.parent / "data_store"
 NW_REPORT_PATH = DATA_DIR / "nightwatch_report.json"
 NXT_PICKS_PATH = DATA_DIR / "nxt_top5_picks.json"
+NXT_PERF_PATH = DATA_DIR / "learning" / "nxt_performance.json"
 UNIVERSE_PATH = DATA_DIR / "universe.json"
 
 # ETF 브랜드 접두사 (시간외 단일가 불가)
@@ -373,7 +374,7 @@ def build_nxt_performance_report() -> dict | None:
     pick_date = yesterday_picks.get("date", "")
     msg = format_nxt_performance_telegram(items, cumulative, pick_date)
 
-    return {
+    report = {
         "pick_date": pick_date,
         "result_date": date.today().isoformat(),
         "items": items,
@@ -383,6 +384,44 @@ def build_nxt_performance_report() -> dict | None:
         "cumulative": cumulative,
         "telegram_msg": msg,
     }
+
+    # 로컬 저장 (learning/nxt_performance.json — 최근 30일 누적)
+    _save_nxt_performance_local(report)
+
+    return report
+
+
+def _save_nxt_performance_local(report: dict) -> None:
+    """NXT 성적을 learning/nxt_performance.json에 누적 저장 (최근 30일)."""
+    try:
+        NXT_PERF_PATH.parent.mkdir(parents=True, exist_ok=True)
+        history = []
+        if NXT_PERF_PATH.exists():
+            try:
+                history = json.loads(NXT_PERF_PATH.read_text(encoding="utf-8"))
+                if not isinstance(history, list):
+                    history = []
+            except Exception:
+                history = []
+
+        # 같은 pick_date 중복 제거
+        pick_date = report.get("pick_date", "")
+        history = [h for h in history if h.get("pick_date") != pick_date]
+
+        # telegram_msg 제외하고 저장 (용량 절약)
+        entry = {k: v for k, v in report.items() if k != "telegram_msg"}
+        history.append(entry)
+
+        # 최근 30건만 유지
+        history = sorted(history, key=lambda x: x.get("pick_date", ""))[-30:]
+
+        NXT_PERF_PATH.write_text(
+            json.dumps(history, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        logger.info(f"NXT 성적 로컬 저장: {NXT_PERF_PATH} ({len(history)}건)")
+    except Exception as e:
+        logger.warning(f"NXT 성적 로컬 저장 실패: {e}")
 
 
 def _fetch_nxt_cumulative(lookback_days: int = 30) -> list:
