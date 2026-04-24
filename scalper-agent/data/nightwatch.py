@@ -1693,6 +1693,21 @@ def _load_investor_flow(code: str, days: int = 3) -> Dict:
         return empty
 
 
+_SECTOR_EMOJI = [
+    "💾 ", "🔋 ", "🏗️ ", "⚡ ", "🛡️ ", "🚀 ",
+    "💻 ", "💊 ", "🛢 ", "🎭 ",   # JARVIS_SECTORS 전체
+]
+
+
+def _strip_sector_emoji(sector: str) -> str:
+    """섹터 이름에서 이모지 접두사 제거 (정규화)."""
+    if not sector:
+        return ""
+    for em in _SECTOR_EMOJI:
+        sector = sector.replace(em, "")
+    return sector.strip()
+
+
 def _load_nxt_performance_feedback() -> Dict:
     """NXT 성적 피드백 데이터 로드 (학습 가중치 보정용).
 
@@ -1712,8 +1727,7 @@ def _load_nxt_performance_feedback() -> Dict:
         return feedback
 
     try:
-        import json as _json_perf
-        records = _json_perf.loads(perf_path.read_text(encoding="utf-8"))
+        records = json.loads(perf_path.read_text(encoding="utf-8"))
         if not isinstance(records, list):
             return feedback
 
@@ -1728,7 +1742,9 @@ def _load_nxt_performance_feedback() -> Dict:
             for item in items:
                 ret = item.get("return_pct", 0)
                 all_returns.append(ret)
-                sector = item.get("sector", "기타")
+                raw_sector = item.get("sector", "기타")
+                # 이모지 제거 정규화 (_score_individual_supply와 동일 기준)
+                sector = _strip_sector_emoji(raw_sector)
                 if sector not in sector_wins:
                     sector_wins[sector] = [0, 0]
                 sector_wins[sector][1] += 1
@@ -1822,17 +1838,14 @@ def _score_individual_supply(targets: List[Dict]) -> List[Dict]:
 
         # ── NXT 성적 피드백 보정 ──
         sector = t.get("sector", "")
-        # 섹터 이름 정규화 (이모지 제거)
-        clean_sector = sector.replace("💾 ", "").replace("🔋 ", "").replace("🏗️ ", "") \
-                             .replace("⚡ ", "").replace("🛡️ ", "").replace("🚀 ", "") \
-                             .strip() if sector else ""
+        clean_sector = _strip_sector_emoji(sector)
         wr = sector_wr.get(clean_sector, 0.5)
         if wr >= 0.7:
             score += 10  # 승률 70%+ 섹터 → 보너스
         elif wr <= 0.3 and perf_fb.get("total_trades", 0) >= 10:
             score -= 10  # 승률 30% 이하 섹터 → 페널티 (충분한 데이터 시)
 
-        t["supply_score"] = score
+        t["supply_score"] = max(0, score)
 
         # ── 외국인 수급 이탈 참조 태그 ──
         latest_fg = flow.get("latest_foreign_amt", 0)

@@ -18,8 +18,6 @@ import time
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
-
 logger = logging.getLogger("BH.AlgoDetector")
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data_store"
@@ -52,8 +50,42 @@ class AlgoDetector:
         self._sector_map: dict[str, str] = {}         # code → sector
 
     def load_targets(self) -> list[dict]:
-        """감시 대상 종목 로드 (추천 + 보유)."""
+        """감시 대상 종목 로드 (추천 + 보유).
+
+        volume/sector는 recommendation.json에 없으므로
+        universe.json + sector_etf_map.json에서 보충.
+        """
         targets = {}
+
+        # 0) 보충 데이터 미리 로드
+        uni_map = {}  # code → {volume, sector, ...}
+        uni_path = DATA_DIR / "universe.json"
+        if uni_path.exists():
+            try:
+                uni_raw = json.loads(uni_path.read_text(encoding="utf-8"))
+                if isinstance(uni_raw, dict):
+                    uni_map = uni_raw
+                elif isinstance(uni_raw, list):
+                    for u in uni_raw:
+                        c = u.get("code", "")
+                        if c:
+                            uni_map[c] = u
+            except Exception:
+                pass
+
+        # sector_etf_map.json → 종목→섹터 역매핑
+        sector_reverse = {}  # code → sector_name
+        sem_path = DATA_DIR / "sector_etf_map.json"
+        if sem_path.exists():
+            try:
+                sem = json.loads(sem_path.read_text(encoding="utf-8"))
+                for sector_name, info in sem.items():
+                    for sc in info.get("stocks", []):
+                        sc_code = sc.get("code", "") if isinstance(sc, dict) else str(sc)
+                        if sc_code:
+                            sector_reverse[sc_code] = sector_name
+            except Exception:
+                pass
 
         # 1) recommendation.json
         rec_path = DATA_DIR / "recommendation.json"
@@ -64,16 +96,27 @@ class AlgoDetector:
                 for s in stocks:
                     code = s.get("code", "")
                     if code:
+                        # volume: recommendation에 없으면 universe에서 보충
+                        vol = s.get("volume", 0)
+                        if not vol:
+                            vol = uni_map.get(code, {}).get("volume", 0)
+                        # sector: recommendation에 없으면 sector_etf_map → universe 순
+                        sector = s.get("sector", "")
+                        if not sector:
+                            sector = sector_reverse.get(code, "")
+                        if not sector:
+                            sector = uni_map.get(code, {}).get("sector", "")
+
                         targets[code] = {
                             "code": code,
                             "name": s.get("name", code),
                             "prev_close": s.get("close", 0),
-                            "prev_volume": s.get("volume", 0),
-                            "sector": s.get("sector", ""),
+                            "prev_volume": vol,
+                            "sector": sector,
                             "source": "recommendation",
                         }
-                        if s.get("sector"):
-                            self._sector_map[code] = s["sector"]
+                        if sector:
+                            self._sector_map[code] = sector
             except Exception as e:
                 logger.warning(f"recommendation.json 로드 실패: {e}")
 
@@ -85,14 +128,17 @@ class AlgoDetector:
                 if isinstance(positions, dict):
                     for code, p in positions.items():
                         if code not in targets:
+                            sector = p.get("sector", "") or sector_reverse.get(code, "")
                             targets[code] = {
                                 "code": code,
                                 "name": p.get("name", code),
                                 "prev_close": p.get("entry_price", 0),
-                                "prev_volume": 0,
-                                "sector": p.get("sector", ""),
+                                "prev_volume": uni_map.get(code, {}).get("volume", 0),
+                                "sector": sector,
                                 "source": "position",
                             }
+                            if sector:
+                                self._sector_map[code] = sector
             except Exception as e:
                 logger.warning(f"positions.json 로드 실패: {e}")
 
@@ -119,9 +165,8 @@ class AlgoDetector:
             chg_rate = price_resp.get("change_rate", 0)
             volume = price_resp.get("volume", 0)
             strength = price_resp.get("strength", 0)
-            prev_close = t.get("prev_close", 0) or cp
 
-            # 호가 잔량 조회 (빅오더 감지용)
+            # 호가 잔량 조회 (빅오더 감지용 — 장중에도 bid_ask_ratio 반환)
             spread_resp = self.kis.fetch_expected_price(code)
             bar = 0
             if spread_resp.get("success"):

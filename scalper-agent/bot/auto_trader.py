@@ -610,7 +610,6 @@ class AutoTrader:
             _ps_dir = Path(__file__).parent.parent / "data_store" / "learning" / "pattern_scan"
             if _ps_dir.exists():
                 # 어제 날짜 패턴스캔 (전일 장마감 후 생성됨)
-                import glob as _glob_ps
                 _ps_files = sorted(_ps_dir.glob("*.json"), reverse=True)
                 if _ps_files:
                     try:
@@ -988,7 +987,7 @@ class AutoTrader:
             etf_tag = " [ETF]" if w.get("is_etf") else ""
             mtm_tag = " [MTM]" if w.get("regime") == "MOMENTUM" else ""
             sm_tag = " [스마트머니]" if w.get("smart_money") else ""
-            extra_tag = sm_tag or etf_tag or mtm_tag
+            extra_tag = sm_tag + etf_tag + mtm_tag
             lines.append(
                 f"  📡 {w['name']}({code}){extra_tag} 점수:{w['score']:.0f} "
                 f"금액:{w['buy_amount']:,}원 "
@@ -1081,7 +1080,9 @@ class AutoTrader:
 
                 # 갭업이어도 목표가까지 5% 이상 남으면 → 매수 OK
                 # 갭업인데 목표가까지 5% 미만 → 리스크 대비 수익 부족 → 패스
-                if gap_pct >= 3.0 and upside_to_tp < 5.0:
+                # 단, 스마트머니(DUAL_SURGE 90점+외인100억) 종목은 면제
+                is_smart = watch.get("smart_money", False)
+                if gap_pct >= 3.0 and upside_to_tp < 5.0 and not is_smart:
                     expired.append(code)
                     await self._alert(
                         f"⛔ 갭업+업사이드 부족: {watch['name']}({code})\n"
@@ -1090,6 +1091,9 @@ class AutoTrader:
                         f"   R:R 불리 - 오늘 패스"
                     )
                     continue
+                elif gap_pct >= 3.0 and upside_to_tp < 5.0 and is_smart:
+                    conditions_detail.append(f"스마트머니 갭업면제({gap_pct:+.1f}%)")
+                    logger.info(f"[스마트머니] {watch['name']} 갭업+업사이드부족이지만 면제")
                 elif gap_pct >= 3.0 and upside_to_tp >= 5.0:
                     # 갭업이지만 목표가 여유 있음 → 매수 계속 진행
                     conditions_detail.append(f"갭업{gap_pct:+.1f}%→목표{upside_to_tp:.0f}%남음")
@@ -2050,7 +2054,7 @@ class AutoTrader:
                         # 매도 전 수량 확인 (PnL 계산용)
                         pre_bal_fs = self.trader.fetch_balance()
                         actual_qty_fs = 1
-                        for p_item in pre_bal_fs.get("positions", []):
+                        for p_item in (pre_bal_fs or {}).get("positions", []):
                             if p_item["code"] == code:
                                 actual_qty_fs = p_item.get("qty", 1)
                                 break

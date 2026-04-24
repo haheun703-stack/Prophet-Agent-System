@@ -14,7 +14,7 @@ import logging
 import time
 from datetime import datetime, time as dtime
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable
 
 logger = logging.getLogger("BH.AuctionScanner")
 
@@ -64,43 +64,52 @@ def scan_auction_once(stocks: list[dict], kis) -> list[dict]:
         name = s.get("name", code)
         prev_close = s.get("close", 0)
 
-        resp = kis.fetch_expected_price(code)
-        if not resp.get("success"):
-            logger.debug(f"[AuctionScanner] {name}({code}) 조회 실패: {resp.get('message', '')}")
+        try:
+            resp = kis.fetch_expected_price(code)
+            if not resp.get("success"):
+                logger.debug(f"[AuctionScanner] {name}({code}) 조회 실패: {resp.get('message', '')}")
+                failed += 1
+                continue
+
+            # 동시호가 시간 아닐 때는 스킵 (정규장 데이터 혼입 방지)
+            if not resp.get("is_auction", False):
+                skipped += 1
+                continue
+
+            exp_price = resp.get("expected_price", 0)
+            exp_vol = resp.get("expected_volume", 0)
+            chg_rate = resp.get("change_rate", 0)
+            bar = resp.get("bid_ask_ratio", 0)
+
+            if not exp_price:
+                failed += 1
+                continue
+
+            # 전일 종가가 없으면 API 응답값 사용
+            if prev_close <= 0:
+                prev_close = resp.get("prev_close", exp_price)
+
+            # change_rate가 0이고 prev_close가 있으면 직접 계산
+            if chg_rate == 0 and prev_close > 0 and exp_price > 0:
+                chg_rate = round((exp_price - prev_close) / prev_close * 100, 2)
+
+            # 시그널 판정
+            signal = _classify_signal(chg_rate, exp_vol, bar)
+
+            results.append({
+                "code": code,
+                "name": name,
+                "prev_close": prev_close,
+                "expected_price": exp_price,
+                "change_rate": chg_rate,
+                "expected_volume": exp_vol,
+                "bid_ask_ratio": bar,
+                "signal": signal,
+            })
+        except Exception as e:
+            logger.warning(f"[AuctionScanner] {name}({code}) 개별 스캔 에러: {e}")
             failed += 1
             continue
-
-        # 동시호가 시간 아닐 때는 스킵 (정규장 데이터 혼입 방지)
-        if not resp.get("is_auction", False):
-            skipped += 1
-            continue
-
-        exp_price = resp["expected_price"]
-        exp_vol = resp.get("expected_volume", 0)
-        chg_rate = resp.get("change_rate", 0)
-        bar = resp.get("bid_ask_ratio", 0)
-
-        # 전일 종가가 없으면 API 응답값 사용
-        if prev_close <= 0:
-            prev_close = resp.get("prev_close", exp_price)
-
-        # change_rate가 0이고 prev_close가 있으면 직접 계산
-        if chg_rate == 0 and prev_close > 0 and exp_price > 0:
-            chg_rate = round((exp_price - prev_close) / prev_close * 100, 2)
-
-        # 시그널 판정
-        signal = _classify_signal(chg_rate, exp_vol, bar)
-
-        results.append({
-            "code": code,
-            "name": name,
-            "prev_close": prev_close,
-            "expected_price": exp_price,
-            "change_rate": chg_rate,
-            "expected_volume": exp_vol,
-            "bid_ask_ratio": bar,
-            "signal": signal,
-        })
 
         time.sleep(0.15)  # KIS API 초당 제한 (20건/초)
 
@@ -225,9 +234,12 @@ def save_auction_result(results: list[dict]):
         "count": len(results),
         "results": results,
     }
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2),
-                    encoding="utf-8")
-    logger.info(f"동시호가 결과 저장: {path} ({len(results)}종목)")
+    try:
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2),
+                        encoding="utf-8")
+        logger.info(f"동시호가 결과 저장: {path} ({len(results)}종목)")
+    except Exception as e:
+        logger.error(f"동시호가 결과 저장 실패: {e}")
 
 
 async def run_auction_scanner(
@@ -276,7 +288,7 @@ async def run_auction_scanner(
         now_str = datetime.now().strftime("%H:%M")
         logger.info(f"[AuctionScanner] 스캔 #{scan_count} ({now_str})")
 
-        results = scan_auction_once(stocks, kis)
+        results = await asyncio.to_thread(scan_auction_once, stocks, kis)
         if not results:
             await asyncio.sleep(interval)
             continue
