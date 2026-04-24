@@ -3886,8 +3886,19 @@ class BodyHunterBot:
                             continue
                         high = p.get("high", 0)
                         low = p.get("low", 0)
+                        current = p.get("current_price", 0)
+                        entry = pos.get("entry_price", 0)
                         tp = pos.get("tp", 0)
                         sl = pos.get("sl", 0)
+
+                        # 서킷 브레이커: -10% 이상 하락 시 SL 미설정이어도 강제 청산
+                        if entry > 0 and current > 0:
+                            dd_pct = (current - entry) / entry * 100
+                            if dd_pct <= -10:
+                                portfolio.close_position(code, current, "CIRCUIT_BREAKER")
+                                pp_closed.append(f"{pos['name']} CIRCUIT(-{abs(dd_pct):.1f}%)")
+                                continue
+
                         if tp > 0 and high >= tp:
                             portfolio.close_position(code, tp, "TARGET")
                             pp_closed.append(f"{pos['name']} TARGET")

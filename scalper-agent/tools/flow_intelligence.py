@@ -836,16 +836,45 @@ def generate_flow_intensity_data(top_n: int = 15, min_cap: int = 2000) -> dict:
             "_csv_date": _last_csv_date,
         })
 
-    # 강도순 정렬
-    results.sort(key=lambda x: -x["intensity_pct"])
-    top = results[:top_n]
+    # ── 품질 스코어링 (intensity만이 아닌 복합 스코어) ──
+    for r in results:
+        score = r["intensity_pct"] * 10          # 기본: 수급 강도
+
+        # 과열 감점 (5일 +20% 이상)
+        if r["is_overheated"]:
+            score *= 0.3
+
+        # 쌍매수 가점 (외인+기관 동시 유입)
+        if r["dual_buy"]:
+            score += 20
+
+        # 연속 매수일 가점
+        consec = max(r["consec_foreign"], r["consec_inst"])
+        score += consec * 5
+
+        # 쌍연속 (외인+기관 모두 3일+) 강한 신호
+        if r["consec_foreign"] >= 3 and r["consec_inst"] >= 3:
+            score += 15
+
+        # 급등 후 매수 감점 (5일 +10% 이상이면 추격 위험)
+        if r["pct_5d"] >= 10:
+            score *= 0.5
+
+        r["quality_score"] = round(score, 1)
+
+    # 품질 스코어순 정렬 (intensity가 아닌 복합 스코어)
+    results.sort(key=lambda x: -x["quality_score"])
+
+    # 과열 종목 제외 후 TOP-N 선별
+    filtered = [r for r in results if not r["is_overheated"]]
+    top = filtered[:top_n]
 
     # 랭크 부여
     for i, r in enumerate(top, 1):
         r["rank"] = i
 
     dual_cnt = sum(1 for r in top if r["dual_buy"])
-    heat_cnt = sum(1 for r in top if r["is_overheated"])
+    heat_cnt = sum(1 for r in results if r["is_overheated"])
 
     # CSV 최신 날짜 사용 (last_trading_day()는 전일 반환이라 장 마감 후 1일 차이)
     csv_date = None

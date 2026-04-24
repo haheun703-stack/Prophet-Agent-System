@@ -2043,7 +2043,7 @@ class TradingCOO:
                 from tools.flow_intelligence import generate_flow_intensity_data
                 from data.upload_flow_intensity import upload_flow_intensity
                 intensity_data = await asyncio.to_thread(
-                    generate_flow_intensity_data, 15, 2000
+                    generate_flow_intensity_data, 7, 2000
                 )
                 if intensity_data and intensity_data.get("top_stocks"):
                     intensity_count = len(intensity_data["top_stocks"])
