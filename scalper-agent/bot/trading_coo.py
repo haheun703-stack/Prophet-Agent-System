@@ -866,12 +866,13 @@ class TradingCOO:
         전부 non-critical → 개별 실패해도 G4 진행.
         B6 실패 시 tv_init_ok=False 기록 (이후 B9 TV스캔 스킵 판단용).
 
-        잡 목록 (B1~B6):
-          B1 _job_war_startup       — 전쟁모드 시작 (TelegramBot)
-          B2 _job_start_tick_polling — 체결 폴링 시작 (TelegramBot)
-          B4 job_gap_support        — 갭 지지/저항 (AutoTrader)
-          B5 _job_paper_register    — PAPER 등록 (TelegramBot)
-          B6 _job_intraday_tv_init  — TV 스캔 초기화 (TelegramBot)
+        잡 목록 (B1~B6 + B5R):
+          B1  _job_war_startup       — 전쟁모드 시작 (TelegramBot)
+          B2  _job_start_tick_polling — 체결 폴링 시작 (TelegramBot)
+          B4  job_gap_support        — 갭 지지/저항 (AutoTrader)
+          B5  _job_paper_register    — PAPER 등록 (TelegramBot)
+          B5R _job_nxt_paper_reprice — NXT Paper 시가 재정산 (COO)
+          B6  _job_intraday_tv_init  — TV 스캔 초기화 (TelegramBot)
         """
         logger.info("[COO] ═══ G3 INTRADAY_INIT 시작 ═══")
         self.group_status["G3"] = GroupStatus.RUNNING
@@ -915,6 +916,12 @@ class TradingCOO:
             logger.info("[COO] B2 tick_polling 백그라운드 시작")
         else:
             logger.warning("[COO] bot 미연결 — B1/B2/B5/B6 스킵")
+
+        # NXT Paper 시가 재정산 (A5P 08:00 폴백 → 09:00 실시가 반영)
+        jobs.append((
+            "B5R_nxt_paper_reprice",
+            self._job_nxt_paper_reprice(context),
+        ))
 
         # AutoTrader 잡 (1개)
         if self.auto_trader:
@@ -2206,15 +2213,18 @@ class TradingCOO:
                 if pos.get("entry_date", "") >= today:
                     continue  # 오늘 등록된 건 스킵
 
-                # 시가 조회
+                # 시가 조회 (08:00 장전 → stck_oprc=0 → current_price 폴백)
                 open_price = pos["entry_price"]
                 if self.auto_trader and hasattr(self.auto_trader, 'trader'):
                     try:
                         p = await asyncio.to_thread(
                             self.auto_trader.trader.fetch_price, code
                         )
-                        if p.get("success") and p.get("open", 0) > 0:
-                            open_price = p["open"]
+                        if p.get("success"):
+                            if p.get("open", 0) > 0:
+                                open_price = p["open"]
+                            elif p.get("current_price", 0) > 0:
+                                open_price = p["current_price"]
                     except Exception:
                         pass
 
@@ -2229,6 +2239,37 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[A5P] NXT Paper 아침 청산 실패 (무시): {e}")
             return {"nxt_paper_morning_close": f"ERROR: {e}"}
+
+    # ─────────────────────────────────────────────
+    # B5R: NXT Paper 시가 재정산 (G3 09:00+)
+    # ─────────────────────────────────────────────
+    async def _job_nxt_paper_reprice(self, context=None) -> dict:
+        """A5P(08:00) 폴백 가격 → 장 개시 후 실제 시가로 재정산."""
+        try:
+            from data.paper_portfolio import PaperPortfolio
+            portfolio = PaperPortfolio()
+
+            kis = None
+            if self.auto_trader and hasattr(self.auto_trader, 'trader'):
+                kis = self.auto_trader.trader
+            elif self.bot and hasattr(self.bot, 'trader'):
+                kis = self.bot.trader
+
+            if not kis:
+                return {"nxt_paper_reprice": "KIS 미연결"}
+
+            updated = await asyncio.to_thread(
+                portfolio.reprice_nxt_morning_sells, kis
+            )
+            if updated:
+                logger.info(
+                    f"[B5R] NXT Paper 시가 재정산 {len(updated)}건: "
+                    + ", ".join(updated)
+                )
+            return {"nxt_paper_reprice": len(updated)}
+        except Exception as e:
+            logger.warning(f"[B5R] NXT Paper 시가 재정산 실패: {e}")
+            return {"nxt_paper_reprice": f"ERROR: {e}"}
 
     # ─────────────────────────────────────────────
     # C26: NXT Paper Trading 등록 (G7 Stage 3)

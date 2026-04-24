@@ -154,6 +154,57 @@ class PaperPortfolio:
                      f"({pnl_pct:+.2f}%) [{reason}] (잔여: {self.cash:,})")
         return trade
 
+    def reprice_nxt_morning_sells(self, kis, today: str = None) -> list:
+        """09:05 실제 시가로 NXT_MORNING_SELL 거래 재정산.
+
+        A5P(08:00)에서 current_price 폴백으로 청산된 NXT 거래를
+        장 개시 후 실제 시가(stck_oprc)로 업데이트.
+        """
+        if today is None:
+            today = datetime.now().strftime("%Y-%m-%d")
+
+        updated = []
+        for trade in self.closed_trades:
+            if (trade["reason"] not in ("NXT_MORNING_SELL", "TOP_MORNING_SELL")
+                    or trade["exit_date"] != today):
+                continue
+
+            try:
+                p = kis.fetch_price(trade["code"])
+                if not p.get("success"):
+                    continue
+                open_price = p.get("open", 0)
+                if open_price <= 0:
+                    continue
+                if trade["exit_price"] == open_price:
+                    continue
+
+                old_exit = trade["exit_price"]
+                entry = trade["entry_price"]
+                shares = trade["shares"]
+
+                trade["exit_price"] = open_price
+                trade["pnl_pct"] = round(
+                    (open_price - entry) / entry * 100, 2
+                ) if entry > 0 else 0
+                trade["pnl_krw"] = (open_price - entry) * shares
+
+                # cash 재조정 (기존 exit과의 차이만큼)
+                self.cash += (open_price - old_exit) * shares
+
+                updated.append(
+                    f"{trade['name']} {old_exit:,}→{open_price:,} "
+                    f"({trade['pnl_pct']:+.1f}%)"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"[PaperPortfolio] 시가 재정산 실패 {trade['code']}: {e}"
+                )
+
+        if updated:
+            self._save()
+        return updated
+
     def _calc_hold_days(self, entry_date: str) -> int:
         try:
             start = datetime.strptime(entry_date, "%Y-%m-%d")
