@@ -412,14 +412,12 @@ class AutoTrader:
         # 0.5) /내일 사용자 지정 종목 우선
         user_picks_used = False
         try:
-            import json as _json_at
-            from datetime import date as _date_at
             picks_path = Path(__file__).parent.parent / "data_store" / "tomorrow_picks.json"
             if picks_path.exists():
                 with open(picks_path, "r", encoding="utf-8") as f:
-                    picks_data = _json_at.load(f)
+                    picks_data = json.load(f)
                 pick_date = picks_data.get("date", "")
-                today_str = _date_at.today().strftime("%Y-%m-%d")
+                today_str = date.today().strftime("%Y-%m-%d")
                 if pick_date == today_str and picks_data.get("picks"):
                     # 유효한 오늘자 picks → recommendation 대신 사용
                     from data.morning_recommendation import load_recommendation
@@ -436,7 +434,7 @@ class AutoTrader:
                         to_path = Path(__file__).parent.parent / "data_store" / "trade_objects.json"
                         if to_path.exists():
                             with open(to_path, "r", encoding="utf-8") as f:
-                                to_data = _json_at.load(f)
+                                to_data = json.load(f)
                             for t in to_data.get("objects", []):
                                 to_map_picks[t.get("code", "")] = t
                     except Exception:
@@ -602,9 +600,6 @@ class AutoTrader:
         auction_boosted = 0
         smart_money_count = 0
         try:
-            import json as _json_auc
-            from datetime import date as _date_auc
-
             # ── 스마트머니 맵 로드 (pattern_scan → DUAL_SURGE 90점↑ + 외인 100억↑) ──
             _smart_money = {}  # {code: {score, foreign_amt, name}}
             _ps_dir = Path(__file__).parent.parent / "data_store" / "learning" / "pattern_scan"
@@ -613,7 +608,7 @@ class AutoTrader:
                 _ps_files = sorted(_ps_dir.glob("*.json"), reverse=True)
                 if _ps_files:
                     try:
-                        _ps_data = _json_auc.loads(_ps_files[0].read_text(encoding="utf-8"))
+                        _ps_data = json.loads(_ps_files[0].read_text(encoding="utf-8"))
                         for item in _ps_data.get("items", []):
                             if (item.get("pattern") == "DUAL_SURGE"
                                     and item.get("score", 0) >= 90):
@@ -633,10 +628,10 @@ class AutoTrader:
 
             auc_path = Path(__file__).parent.parent / "data_store" / "auction_scan.json"
             if auc_path.exists():
-                auc_data = _json_auc.loads(auc_path.read_text(encoding="utf-8"))
+                auc_data = json.loads(auc_path.read_text(encoding="utf-8"))
                 auc_ts = auc_data.get("timestamp", "")
                 # 오늘 날짜 스캔만 사용
-                if _date_auc.today().strftime("%Y-%m-%d") in auc_ts:
+                if date.today().strftime("%Y-%m-%d") in auc_ts:
                     auc_map = {}
                     for ar in auc_data.get("results", []):
                         auc_map[ar.get("code", "")] = ar
@@ -1822,9 +1817,10 @@ class AutoTrader:
                     if not result or not result.get("success"):
                         logger.error(f"TP 매도 실패 {code}: {result} — 포지션 유지")
                         continue
+                    gain = (cp - entry) * actual_qty
+                    self._record_trade_pnl(code, gain, "take_profit")
                     self._positions.pop(code, None)
                     self._save_positions()
-                    gain = cp - entry
                     await self._alert(
                         f"익절\n{name}({code}) @ {cp:,}원\n"
                         f"진입:{entry:,} -> 현재:{cp:,} (+{gain:,})"
@@ -2592,10 +2588,9 @@ class AutoTrader:
                             merge_eq_to_premium_levels(pl_data[code], eq_info)
                             eq_count += 1
                     if eq_count > 0:
-                        import json as _json
                         out_path = PL_DIR / f"{date.today().isoformat()}.json"
                         with open(out_path, "w", encoding="utf-8") as f:
-                            _json.dump(pl_data, f, ensure_ascii=False, indent=2)
+                            json.dump(pl_data, f, ensure_ascii=False, indent=2)
             except Exception as e:
                 logger.warning(f"Equal Level 실패: {e}")
 
@@ -2628,7 +2623,6 @@ class AutoTrader:
             if gap_results:
                 try:
                     from strategies.premium_levels import load_premium_levels, PL_DIR
-                    import json as _json
                     pl_data = load_premium_levels()
                     for code, gap_info in gap_results.items():
                         if code in pl_data:
@@ -2637,7 +2631,7 @@ class AutoTrader:
                     if merged > 0:
                         out_path = PL_DIR / f"{date.today().isoformat()}.json"
                         with open(out_path, "w", encoding="utf-8") as f:
-                            _json.dump(pl_data, f, ensure_ascii=False, indent=2)
+                            json.dump(pl_data, f, ensure_ascii=False, indent=2)
                 except Exception as e:
                     logger.warning(f"GAP→PL 머지 실패: {e}")
 
@@ -2665,7 +2659,6 @@ class AutoTrader:
                 from strategies.premium_levels import (
                     load_premium_levels, merge_or_levels, PL_DIR,
                 )
-                import json as _json
                 pl_data = load_premium_levels()
                 merged = 0
                 for code, or_info in results.items():
@@ -2675,7 +2668,7 @@ class AutoTrader:
                 if merged > 0:
                     out_path = PL_DIR / f"{date.today().isoformat()}.json"
                     with open(out_path, "w", encoding="utf-8") as f:
-                        _json.dump(pl_data, f, ensure_ascii=False, indent=2)
+                        json.dump(pl_data, f, ensure_ascii=False, indent=2)
             except Exception as e:
                 logger.warning(f"OR→PL 병합 실패: {e}")
 
@@ -2824,8 +2817,6 @@ class AutoTrader:
                 result = self.trader.nxt_safe_buy(code, per_stock)
                 if result.get("success"):
                     # NXT 포지션 기록
-                    if not hasattr(self, '_nxt_positions'):
-                        self._nxt_positions = {}
                     pi = self.trader.fetch_price(code)
                     entry_price = pi.get("current_price", 0) if pi and pi.get("success") else 0
                     self._nxt_positions[code] = {
@@ -2853,8 +2844,6 @@ class AutoTrader:
         if not nw_cfg.get("enabled", False):
             return
 
-        if not hasattr(self, '_nxt_positions'):
-            self._nxt_positions = {}
         self._load_nxt_positions()
 
         if not self._nxt_positions:

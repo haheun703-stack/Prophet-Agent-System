@@ -967,8 +967,8 @@ class KISTrader:
                 "tr_id": "FHKST01010200",
             }
             params = {"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code}
-            import requests as _req
-            resp = _req.get(
+            import requests
+            resp = requests.get(
                 f"{broker.base_url}/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn",
                 headers=headers, params=params, timeout=5,
             )
