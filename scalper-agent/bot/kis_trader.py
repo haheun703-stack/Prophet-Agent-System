@@ -898,9 +898,9 @@ class KISTrader:
         return False
 
     def check_spread(self, code: str) -> dict:
-        """호가 스프레드 체크
+        """호가 스프레드 + 호가잔량 비율 체크
 
-        Returns: {ok, spread_pct, ask, bid, message}
+        Returns: {ok, spread_pct, ask, bid, bid_ask_ratio, message}
         """
         try:
             broker = self._get_broker()
@@ -924,8 +924,14 @@ class KISTrader:
             ask1 = _safe_int(d.get("askp1", 0))
             bid1 = _safe_int(d.get("bidp1", 0))
 
+            # 호가잔량 합계 → bid_ask_ratio (매수우위 비율)
+            total_ask = _safe_int(d.get("total_askp_rsqn", 0))
+            total_bid = _safe_int(d.get("total_bidp_rsqn", 0))
+            bid_ask_ratio = round(total_bid / total_ask * 100, 1) if total_ask > 0 else 0
+
             if ask1 <= 0 or bid1 <= 0:
-                return {"ok": True, "spread_pct": 0, "message": "호가 조회 실패 - 통과"}
+                return {"ok": True, "spread_pct": 0, "bid_ask_ratio": bid_ask_ratio,
+                        "message": "호가 조회 실패 - 통과"}
 
             mid = (ask1 + bid1) / 2
             spread_pct = (ask1 - bid1) / mid * 100
@@ -934,17 +940,18 @@ class KISTrader:
             if spread_pct > max_spread:
                 return {
                     "ok": False, "spread_pct": round(spread_pct, 2),
-                    "ask": ask1, "bid": bid1,
+                    "ask": ask1, "bid": bid1, "bid_ask_ratio": bid_ask_ratio,
                     "message": f"스프레드 {spread_pct:.2f}% > {max_spread}% - 주문 보류",
                 }
             return {
                 "ok": True, "spread_pct": round(spread_pct, 2),
-                "ask": ask1, "bid": bid1,
+                "ask": ask1, "bid": bid1, "bid_ask_ratio": bid_ask_ratio,
                 "message": f"스프레드 {spread_pct:.2f}% OK",
             }
         except Exception as e:
             logger.warning(f"스프레드 체크 실패 {code}: {e}")
-            return {"ok": True, "spread_pct": 0, "message": f"스프레드 체크 실패: {e} - 통과"}
+            return {"ok": True, "spread_pct": 0, "bid_ask_ratio": 0,
+                    "message": f"스프레드 체크 실패: {e} - 통과"}
 
     def fetch_expected_price(self, code: str) -> dict:
         """동시호가 예상체결가 조회 (08:30~09:00, 15:20~15:30)

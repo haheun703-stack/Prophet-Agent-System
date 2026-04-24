@@ -166,11 +166,9 @@ class AlgoDetector:
             volume = price_resp.get("volume", 0)
             strength = price_resp.get("strength", 0)
 
-            # 호가 잔량 조회 (빅오더 감지용 — 장중에도 bid_ask_ratio 반환)
-            spread_resp = self.kis.fetch_expected_price(code)
-            bar = 0
-            if spread_resp.get("success"):
-                bar = spread_resp.get("bid_ask_ratio", 0)
+            # 호가 잔량 비율 조회 (빅오더 감지용)
+            spread_resp = self.kis.check_spread(code)
+            bar = spread_resp.get("bid_ask_ratio", 0)
 
             # 거래량 비율 (전일 대비)
             prev_vol = t.get("prev_volume", 0)

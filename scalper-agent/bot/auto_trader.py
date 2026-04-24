@@ -744,9 +744,11 @@ class AutoTrader:
         if not self.is_running:
             lines = ["📋 매수 후보 (자동매매 OFF - 리포트만)"]
             for c in candidates:
+                _aw = c.get("auction_warning", "")
+                _aw_tag = f"\n    ⚠️ {_aw}" if _aw else ""
                 lines.append(
                     f"  {c['name']}({c['code']}) 점수:{c['total_score']:.0f} "
-                    f"SL:{c['sl']:,} TP:{c['tp']:,}"
+                    f"SL:{c['sl']:,} TP:{c['tp']:,}{_aw_tag}"
                 )
                 # 프리미엄 레벨 1줄 추가
                 try:
@@ -974,6 +976,7 @@ class AutoTrader:
                 "holding_days": c.get("holding_days", 10),
                 # ── 스마트머니 (DUAL_SURGE 90점↑ + 외인100억↑) ──
                 "smart_money": c.get("smart_money", False),
+                "auction_warning": c.get("auction_warning", ""),
             }
             registered += 1
 
@@ -983,10 +986,12 @@ class AutoTrader:
             mtm_tag = " [MTM]" if w.get("regime") == "MOMENTUM" else ""
             sm_tag = " [스마트머니]" if w.get("smart_money") else ""
             extra_tag = sm_tag + etf_tag + mtm_tag
+            _aw = w.get("auction_warning", "")
+            _aw_line = f"\n    ⚠️ {_aw}" if _aw else ""
             lines.append(
                 f"  📡 {w['name']}({code}){extra_tag} 점수:{w['score']:.0f} "
                 f"금액:{w['buy_amount']:,}원 "
-                f"({w['split_count']}분할×{w['split_amount']:,}원)"
+                f"({w['split_count']}분할×{w['split_amount']:,}원){_aw_line}"
             )
         if skipped:
             lines.append(f"  ⛔ {skipped}종목 차트필터 거부")
