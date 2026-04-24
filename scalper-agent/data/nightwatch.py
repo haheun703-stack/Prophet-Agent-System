@@ -1693,9 +1693,71 @@ def _load_investor_flow(code: str, days: int = 3) -> Dict:
         return empty
 
 
+def _load_nxt_performance_feedback() -> Dict:
+    """NXT 성적 피드백 데이터 로드 (학습 가중치 보정용).
+
+    최근 20일 NXT 성적에서 섹터별/패턴별 승률을 계산하여 반환.
+    Returns: {"sector_win_rate": {"반도체": 0.75, ...},
+              "pattern_win_rate": {"EXPLOSION": 0.8, ...},
+              "avg_return": 3.2, "total_trades": 40}
+    """
+    perf_path = Path(__file__).resolve().parent.parent / "data_store" / "learning" / "nxt_performance.json"
+    feedback = {
+        "sector_win_rate": {},
+        "pattern_win_rate": {},
+        "avg_return": 0,
+        "total_trades": 0,
+    }
+    if not perf_path.exists():
+        return feedback
+
+    try:
+        import json as _json_perf
+        records = _json_perf.loads(perf_path.read_text(encoding="utf-8"))
+        if not isinstance(records, list):
+            return feedback
+
+        # 최근 20건만 사용
+        recent = records[-20:]
+
+        sector_wins = {}  # sector → [win_count, total_count]
+        all_returns = []
+
+        for rec in recent:
+            items = rec.get("items", [])
+            for item in items:
+                ret = item.get("return_pct", 0)
+                all_returns.append(ret)
+                sector = item.get("sector", "기타")
+                if sector not in sector_wins:
+                    sector_wins[sector] = [0, 0]
+                sector_wins[sector][1] += 1
+                if ret > 0:
+                    sector_wins[sector][0] += 1
+
+        for sector, (wins, total) in sector_wins.items():
+            if total >= 3:  # 최소 3건 이상만 유의미
+                feedback["sector_win_rate"][sector] = round(wins / total, 2)
+
+        if all_returns:
+            feedback["avg_return"] = round(sum(all_returns) / len(all_returns), 2)
+            feedback["total_trades"] = len(all_returns)
+
+    except Exception as e:
+        logger.warning(f"NXT 성적 피드백 로드 실패: {e}")
+
+    return feedback
+
+
 def _score_individual_supply(targets: List[Dict]) -> List[Dict]:
-    """개별 종목 수급 점수 산출 (0~100). ETF는 면제(100점)."""
+    """개별 종목 수급 점수 산출 (0~100). ETF는 면제(100점).
+
+    NXT 성적 피드백 루프: 과거 섹터별 승률을 가중치 보정에 반영.
+    """
     tv_data = _load_tv_scanner_data()
+    perf_fb = _load_nxt_performance_feedback()
+    sector_wr = perf_fb.get("sector_win_rate", {})
+
     for t in targets:
         if t.get("is_etf"):
             t["supply_score"] = 100
@@ -1757,6 +1819,18 @@ def _score_individual_supply(targets: List[Dict]) -> List[Dict]:
             score += 10  # 기타법인 50억+ 대량매수
         elif etc_billion >= 20:
             score += 5   # 기타법인 20억+ 소량매수
+
+        # ── NXT 성적 피드백 보정 ──
+        sector = t.get("sector", "")
+        # 섹터 이름 정규화 (이모지 제거)
+        clean_sector = sector.replace("💾 ", "").replace("🔋 ", "").replace("🏗️ ", "") \
+                             .replace("⚡ ", "").replace("🛡️ ", "").replace("🚀 ", "") \
+                             .strip() if sector else ""
+        wr = sector_wr.get(clean_sector, 0.5)
+        if wr >= 0.7:
+            score += 10  # 승률 70%+ 섹터 → 보너스
+        elif wr <= 0.3 and perf_fb.get("total_trades", 0) >= 10:
+            score -= 10  # 승률 30% 이하 섹터 → 페널티 (충분한 데이터 시)
 
         t["supply_score"] = score
 

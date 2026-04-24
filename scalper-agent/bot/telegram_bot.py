@@ -2929,6 +2929,10 @@ class BodyHunterBot:
         # jq.run_daily(self._job_paper_eod, time=kst_time(15, 25))     # COO_MANAGED: G5
         logger.info("PAPER 트레이딩 등록: 5분 체크 유지 (등록/EOD는 COO 관리)")
 
+        # ── 장중 알고리즘 감지 (60초마다) ──
+        jq.run_repeating(self._job_algo_detect, interval=60, first=120)  # G4 B14
+        logger.info("장중 알고리즘 감지 등록: 60초 반복 (09:05~15:15)")
+
         # ── 장중 TV 실시간 스캔 (30분마다 유니버스 전체) ──
         # jq.run_daily(self._job_intraday_tv_init, time=kst_time(9, 30))  # COO_MANAGED: G3
         jq.run_repeating(self._job_intraday_tv_scan, interval=1800, first=1800)  # G4 B9 유지
@@ -4036,6 +4040,48 @@ class BodyHunterBot:
             logger.info(f"[TV Intraday] 초기화 완료: {len(self._tv_avgs)}종목")
         except Exception as e:
             logger.error(f"[TV Intraday] 초기화 실패: {e}")
+
+    async def _job_algo_detect(self, context):
+        """60초 반복 — 장중 알고리즘 감지 (B14)
+
+        추천+보유 종목의 체결강도/거래량/호가창 이상 감지 + 테마 동시급등 트래킹.
+        """
+        if not is_trading_day():
+            return
+        now = datetime.now()
+        # 09:05~15:15 장중만
+        now_min = now.hour * 60 + now.minute
+        if now_min < 545 or now_min > 915:
+            return
+
+        try:
+            from engine.algo_detector import (
+                AlgoDetector, format_algo_alert, save_algo_result,
+            )
+
+            # 최초 실행 시 detector 인스턴스 생성
+            if not hasattr(self, "_algo_detector"):
+                self._algo_detector = AlgoDetector(self.trader)
+
+            det = self._algo_detector
+            targets = det.load_targets()
+            if not targets:
+                return
+
+            results = await asyncio.to_thread(det.scan_once, targets)
+            themes = det.detect_theme_moves(results)
+
+            if results or themes:
+                msg = format_algo_alert(results, themes)
+                if msg:
+                    chat_id = self.chat_id
+                    if chat_id:
+                        await context.bot.send_message(
+                            chat_id=chat_id, text=msg)
+                save_algo_result(results, themes)
+                logger.info(f"[AlgoDetect] {len(results)}종목 {len(themes)}테마 감지")
+        except Exception as e:
+            logger.error(f"[AlgoDetect] 실패: {e}")
 
     async def _job_intraday_tv_scan(self, context):
         """30분 반복 — 장중 TV 스캔 + 강신호 Telegram (entry_monitor 통합)"""

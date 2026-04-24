@@ -946,6 +946,76 @@ class KISTrader:
             logger.warning(f"스프레드 체크 실패 {code}: {e}")
             return {"ok": True, "spread_pct": 0, "message": f"스프레드 체크 실패: {e} - 통과"}
 
+    def fetch_expected_price(self, code: str) -> dict:
+        """동시호가 예상체결가 조회 (08:30~09:00, 15:20~15:30)
+
+        check_spread와 동일 API (inquire-asking-price-exp-ccn)의 output2 사용.
+
+        Returns: {success, expected_price, expected_volume, change_rate,
+                  prev_close, total_ask_vol, total_bid_vol, bid_ask_ratio}
+        """
+        try:
+            broker = self._get_broker()
+            token = broker.access_token
+            if not token.startswith("Bearer "):
+                token = f"Bearer {token}"
+            headers = {
+                "content-type": "application/json; charset=utf-8",
+                "authorization": token,
+                "appkey": broker.api_key,
+                "appsecret": broker.api_secret,
+                "tr_id": "FHKST01010200",
+            }
+            params = {"fid_cond_mrkt_div_code": "J", "fid_input_iscd": code}
+            import requests as _req
+            resp = _req.get(
+                f"{broker.base_url}/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn",
+                headers=headers, params=params, timeout=5,
+            )
+            data = resp.json()
+            o1 = data.get("output1", {})
+            o2 = data.get("output2", {})
+
+            # output2: 예상체결 데이터
+            exp_price = _safe_int(o2.get("antc_cnpr", 0))
+            exp_vol = _safe_int(o2.get("antc_vol", 0))
+            exp_chg_rate = _safe_float(o2.get("antc_cntg_prdy_ctrt", 0))
+            exp_vs = _safe_int(o2.get("antc_cntg_vrss", 0))  # 전일대비
+
+            # output1: 호가잔량 합계
+            total_ask = _safe_int(o1.get("total_askp_rsqn", 0))
+            total_bid = _safe_int(o1.get("total_bidp_rsqn", 0))
+            bid_ask_ratio = (total_bid / total_ask * 100) if total_ask > 0 else 0
+
+            if exp_price <= 0:
+                # 동시호가 시간 외이면 현재가로 대체
+                cp = _safe_int(o2.get("stck_prpr", 0))
+                if cp > 0:
+                    return {
+                        "success": True, "expected_price": cp,
+                        "expected_volume": 0, "change_rate": 0,
+                        "prev_close": cp, "is_auction": False,
+                        "total_ask_vol": total_ask, "total_bid_vol": total_bid,
+                        "bid_ask_ratio": round(bid_ask_ratio, 1),
+                    }
+                return {"success": False, "message": "예상체결가 없음 (장외시간)"}
+
+            prev_close = exp_price - exp_vs if exp_vs != 0 else exp_price
+            return {
+                "success": True,
+                "expected_price": exp_price,
+                "expected_volume": exp_vol,
+                "change_rate": round(exp_chg_rate, 2),
+                "prev_close": prev_close,
+                "is_auction": True,
+                "total_ask_vol": total_ask,
+                "total_bid_vol": total_bid,
+                "bid_ask_ratio": round(bid_ask_ratio, 1),
+            }
+        except Exception as e:
+            logger.warning(f"예상체결가 조회 실패 {code}: {e}")
+            return {"success": False, "message": str(e)}
+
     # ═══════════════════════════════════════
     #  매매 일지
     # ═══════════════════════════════════════

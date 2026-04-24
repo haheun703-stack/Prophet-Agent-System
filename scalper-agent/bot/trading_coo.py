@@ -6,7 +6,8 @@ Trading COO (Chief Operating Officer) — 매매봇 운영 총괄 시스템
 기존 모듈을 절대 수정하지 않고, 실행 순서 보장 + 예외 격리 + 상태 기록.
 
 7-Group 구조:
-  G1 MORNING_PREP   — 08:00~08:50 (데이터 검증, 추천 생성, 브레인)
+  G1 MORNING_PREP   — 06:30~08:30 (데이터 검증, 추천 생성, 브레인)
+  A15 동시호가 스캐너 — 08:30~08:53 (예상체결가 모니터링, 갭 알림)
   G2 MORNING_LAUNCH  — 08:55~09:05 (선취매 머지, 자동매매 ON)
   G3 INTRADAY_INIT   — 09:00~09:35 (Eye/MACD/TV 초기화)
   G4 INTRADAY_LOOP   — 09:35~15:10 (30초 루프, 포지션 감시)
@@ -971,6 +972,8 @@ class TradingCOO:
         "B12": {"name": "_job_preclose_scan",  "interval": "once",  "critical": False,
                 "source": "bot"},
         "B13": {"name": "_send_preclose_brief", "interval": "once", "critical": False,
+                "source": "bot"},
+        "B14": {"name": "_job_algo_detect",     "interval": "60s",  "critical": False,
                 "source": "bot"},
     }
 
@@ -2685,6 +2688,65 @@ class TradingCOO:
             logger.warning(f"[A11] US 야간 필터 실패 (무시): {e}")
             return {"us_filter": f"ERROR: {e}"}
 
+    async def _job_auction_scan(self, context=None) -> dict:
+        """A15: 동시호가 스캐너 — 08:30~08:53 예상체결가 모니터링 + 텔레그램 알림.
+
+        recommendation.json 추천 종목의 예상체결가/체결량을 30초 간격으로 스캔.
+        갭업/갭다운/거래폭발 감지 시 텔레그램 경고.
+        08:53 최종 서머리 전송 (G2 08:55 직전).
+        """
+        from tools.trading_calendar import is_trading_day
+        if not is_trading_day():
+            logger.info("[A15] 비거래일 — 동시호가 스캐너 스킵")
+            return {"auction_scan": "SKIP_NON_TRADING"}
+
+        try:
+            from engine.auction_scanner import run_auction_scanner
+
+            # KIS 트레이더 확보
+            kis = None
+            if self.auto_trader:
+                kis = getattr(self.auto_trader, "kis", None)
+            if not kis:
+                logger.warning("[A15] KIS 트레이더 미연결 — 스킵")
+                return {"auction_scan": "NO_KIS"}
+
+            # 텔레그램 전송 함수 생성
+            async def send_fn(text: str):
+                sent = False
+                if context and self.bot and getattr(self.bot, "chat_id", None):
+                    try:
+                        await context.bot.send_message(
+                            chat_id=self.bot.chat_id, text=text)
+                        sent = True
+                    except Exception as te:
+                        logger.warning(f"[A15] context.bot 실패: {te}")
+                if not sent:
+                    alert_fn = getattr(self.auto_trader, "_send_alert", None) if self.auto_trader else None
+                    if alert_fn:
+                        if asyncio.iscoroutinefunction(alert_fn):
+                            await alert_fn(text)
+                        else:
+                            await asyncio.to_thread(alert_fn, text)
+
+            # 타임아웃: 최대 25분 (08:30→08:55 사이 안전 마진)
+            result = await asyncio.wait_for(
+                run_auction_scanner(
+                    kis=kis,
+                    send_fn=send_fn,
+                    interval=30,
+                ),
+                timeout=1500,  # 25분
+            )
+            logger.info(f"[A15] 동시호가 스캐너 완료: {result}")
+            return {"auction_scan": "OK", **result}
+        except asyncio.TimeoutError:
+            logger.warning("[A15] 동시호가 스캐너 타임아웃 (25분)")
+            return {"auction_scan": "TIMEOUT"}
+        except Exception as e:
+            logger.warning(f"[A15] 동시호가 스캐너 실패 (무시): {e}")
+            return {"auction_scan": f"ERROR: {e}"}
+
     async def _job_daytrading_picks(self, context=None, mode: str = "confirmed") -> dict:
         """단타 TOP픽 Hybrid 발행.
 
@@ -3540,6 +3602,10 @@ class TradingCOO:
         # ── G1 MORNING_PREP (06:30) ──
         jq.run_daily(self.run_g1, time=kst_time(6, 30))
         logger.info("[COO] G1 MORNING_PREP 등록: 06:30 KST")
+
+        # ── A15 동시호가 스캐너 (08:30) ──
+        jq.run_daily(self._job_auction_scan, time=kst_time(8, 30))
+        logger.info("[COO] A15 동시호가 스캐너 등록: 08:30 KST")
 
         # ── G2 MORNING_LAUNCH (08:55) ──
         jq.run_daily(self.run_g2, time=kst_time(8, 55))

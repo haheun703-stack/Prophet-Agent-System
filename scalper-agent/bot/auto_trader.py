@@ -597,6 +597,75 @@ class AutoTrader:
                 f"→ 최대 1종목, 사이즈 50%"
             )
 
+        # 1.9) 동시호가 스캔 결과 반영 (P0 auction_scanner 연동)
+        auction_filtered = 0
+        auction_boosted = 0
+        try:
+            import json as _json_auc
+            auc_path = Path(__file__).parent.parent / "data_store" / "auction_scan.json"
+            if auc_path.exists():
+                auc_data = _json_auc.loads(auc_path.read_text(encoding="utf-8"))
+                auc_ts = auc_data.get("timestamp", "")
+                # 오늘 날짜 스캔만 사용
+                from datetime import date as _date_auc
+                if _date_auc.today().strftime("%Y-%m-%d") in auc_ts:
+                    auc_map = {}
+                    for ar in auc_data.get("results", []):
+                        auc_map[ar.get("code", "")] = ar
+
+                    new_candidates = []
+                    for c in candidates:
+                        code = c["code"]
+                        auc = auc_map.get(code)
+                        if not auc:
+                            new_candidates.append(c)
+                            continue
+
+                        sig = auc.get("signal", "NORMAL")
+
+                        # 갭다운 위험 → 제외
+                        if sig == "GAP_DOWN_DANGER":
+                            logger.info(f"[동시호가] {c['name']} 폭락({auc.get('change_rate', 0):+.1f}%) → 제외")
+                            auction_filtered += 1
+                            continue
+
+                        # 갭다운 → 보류 경고 (제외하진 않되 점수 감소)
+                        if sig == "GAP_DOWN":
+                            c["total_score"] = c.get("total_score", 0) - 15
+                            c["auction_warning"] = f"갭다운 {auc.get('change_rate', 0):+.1f}%"
+                            logger.info(f"[동시호가] {c['name']} 갭다운 → 점수 -15")
+
+                        # 갭업 → 추격 주의 (추격 매수 X, 점수는 유지)
+                        if sig == "GAP_UP_STRONG":
+                            c["total_score"] = c.get("total_score", 0) - 10
+                            c["auction_warning"] = f"강갭업 {auc.get('change_rate', 0):+.1f}% (추격주의)"
+                            logger.info(f"[동시호가] {c['name']} 강갭업 → 점수 -10 (추격주의)")
+
+                        # 거래폭발 + 매수우위 → 보너스
+                        if sig == "VOL_BULL":
+                            c["total_score"] = c.get("total_score", 0) + 10
+                            auction_boosted += 1
+                            logger.info(f"[동시호가] {c['name']} 거래폭발+매수 → 점수 +10")
+
+                        # 갭업 (적정) → 보너스
+                        if sig == "GAP_UP":
+                            c["total_score"] = c.get("total_score", 0) + 5
+                            auction_boosted += 1
+                            logger.info(f"[동시호가] {c['name']} 갭업 → 점수 +5")
+
+                        new_candidates.append(c)
+
+                    candidates = new_candidates
+                    # 점수 재정렬
+                    candidates.sort(key=lambda x: x.get("total_score", 0), reverse=True)
+
+                    if auction_filtered or auction_boosted:
+                        await _send(
+                            f"📊 동시호가 반영: 제외 {auction_filtered} / 보너스 {auction_boosted}"
+                        )
+        except Exception as e:
+            logger.warning(f"동시호가 연동 실패 (무시): {e}")
+
         # 2) 추천 없으면 사전감지 폴백
         if not candidates:
             try:
