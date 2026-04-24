@@ -600,14 +600,43 @@ class AutoTrader:
         # 1.9) 동시호가 스캔 결과 반영 (P0 auction_scanner 연동)
         auction_filtered = 0
         auction_boosted = 0
+        smart_money_count = 0
         try:
             import json as _json_auc
+            from datetime import date as _date_auc
+
+            # ── 스마트머니 맵 로드 (pattern_scan → DUAL_SURGE 90점↑ + 외인 100억↑) ──
+            _smart_money = {}  # {code: {score, foreign_amt, name}}
+            _ps_dir = Path(__file__).parent.parent / "data_store" / "learning" / "pattern_scan"
+            if _ps_dir.exists():
+                # 어제 날짜 패턴스캔 (전일 장마감 후 생성됨)
+                import glob as _glob_ps
+                _ps_files = sorted(_ps_dir.glob("*.json"), reverse=True)
+                if _ps_files:
+                    try:
+                        _ps_data = _json_auc.loads(_ps_files[0].read_text(encoding="utf-8"))
+                        for item in _ps_data.get("items", []):
+                            if (item.get("pattern") == "DUAL_SURGE"
+                                    and item.get("score", 0) >= 90):
+                                _ent = item.get("entities_today", {})
+                                _foreign = abs(float(_ent.get("foreign", 0) or 0))
+                                if _foreign >= 100:  # 외인 100억↑
+                                    _smart_money[item["code"]] = {
+                                        "score": item["score"],
+                                        "foreign": _foreign,
+                                        "name": item.get("name", item["code"]),
+                                    }
+                        if _smart_money:
+                            logger.info(f"[스마트머니] {len(_smart_money)}종목 감지: "
+                                        f"{', '.join(v['name'] for v in _smart_money.values())}")
+                    except Exception as e:
+                        logger.warning(f"pattern_scan 로드 실패: {e}")
+
             auc_path = Path(__file__).parent.parent / "data_store" / "auction_scan.json"
             if auc_path.exists():
                 auc_data = _json_auc.loads(auc_path.read_text(encoding="utf-8"))
                 auc_ts = auc_data.get("timestamp", "")
                 # 오늘 날짜 스캔만 사용
-                from datetime import date as _date_auc
                 if _date_auc.today().strftime("%Y-%m-%d") in auc_ts:
                     auc_map = {}
                     for ar in auc_data.get("results", []):
@@ -622,8 +651,9 @@ class AutoTrader:
                             continue
 
                         sig = auc.get("signal", "NORMAL")
+                        is_smart = code in _smart_money
 
-                        # 갭다운 위험 → 제외
+                        # 갭다운 위험 → 제외 (스마트머니라도 폭락은 제외)
                         if sig == "GAP_DOWN_DANGER":
                             logger.info(f"[동시호가] {c['name']} 폭락({auc.get('change_rate', 0):+.1f}%) → 제외")
                             auction_filtered += 1
@@ -635,23 +665,44 @@ class AutoTrader:
                             c["auction_warning"] = f"갭다운 {auc.get('change_rate', 0):+.1f}%"
                             logger.info(f"[동시호가] {c['name']} 갭다운 → 점수 -15")
 
-                        # 갭업 → 추격 주의 (추격 매수 X, 점수는 유지)
-                        if sig == "GAP_UP_STRONG":
-                            c["total_score"] = c.get("total_score", 0) - 10
-                            c["auction_warning"] = f"강갭업 {auc.get('change_rate', 0):+.1f}% (추격주의)"
-                            logger.info(f"[동시호가] {c['name']} 강갭업 → 점수 -10 (추격주의)")
+                        # 갭업 → 스마트머니 면제 or 추격 주의
+                        elif sig == "GAP_UP_STRONG":
+                            if is_smart:
+                                sm = _smart_money[code]
+                                c["total_score"] = c.get("total_score", 0) + 10
+                                c["smart_money"] = True
+                                c["auction_warning"] = (
+                                    f"스마트머니 추격 (외인{sm['foreign']:.0f}억 "
+                                    f"DUAL_SURGE {sm['score']}점)"
+                                )
+                                smart_money_count += 1
+                                auction_boosted += 1
+                                logger.info(
+                                    f"[스마트머니] {c['name']} 강갭업이지만 "
+                                    f"DUAL_SURGE {sm['score']}점+외인{sm['foreign']:.0f}억 "
+                                    f"→ 감점면제 + 보너스 +10"
+                                )
+                            else:
+                                c["total_score"] = c.get("total_score", 0) - 10
+                                c["auction_warning"] = f"강갭업 {auc.get('change_rate', 0):+.1f}% (추격주의)"
+                                logger.info(f"[동시호가] {c['name']} 강갭업 → 점수 -10 (추격주의)")
 
                         # 거래폭발 + 매수우위 → 보너스
-                        if sig == "VOL_BULL":
+                        elif sig == "VOL_BULL":
                             c["total_score"] = c.get("total_score", 0) + 10
                             auction_boosted += 1
                             logger.info(f"[동시호가] {c['name']} 거래폭발+매수 → 점수 +10")
 
-                        # 갭업 (적정) → 보너스
-                        if sig == "GAP_UP":
-                            c["total_score"] = c.get("total_score", 0) + 5
+                        # 갭업 (적정) → 보너스 (스마트머니면 추가)
+                        elif sig == "GAP_UP":
+                            bonus = 10 if is_smart else 5
+                            c["total_score"] = c.get("total_score", 0) + bonus
+                            if is_smart:
+                                c["smart_money"] = True
+                                smart_money_count += 1
                             auction_boosted += 1
-                            logger.info(f"[동시호가] {c['name']} 갭업 → 점수 +5")
+                            logger.info(f"[동시호가] {c['name']} 갭업 → 점수 +{bonus}"
+                                        f"{' (스마트머니)' if is_smart else ''}")
 
                         new_candidates.append(c)
 
@@ -660,8 +711,9 @@ class AutoTrader:
                     candidates.sort(key=lambda x: x.get("total_score", 0), reverse=True)
 
                     if auction_filtered or auction_boosted:
+                        _sm_tag = f" / 스마트머니 {smart_money_count}" if smart_money_count else ""
                         await _send(
-                            f"📊 동시호가 반영: 제외 {auction_filtered} / 보너스 {auction_boosted}"
+                            f"📊 동시호가 반영: 제외 {auction_filtered} / 보너스 {auction_boosted}{_sm_tag}"
                         )
         except Exception as e:
             logger.warning(f"동시호가 연동 실패 (무시): {e}")
@@ -926,6 +978,8 @@ class AutoTrader:
                 "is_etf": c.get("is_etf", False),
                 "etf_category": c.get("etf_category", ""),
                 "holding_days": c.get("holding_days", 10),
+                # ── 스마트머니 (DUAL_SURGE 90점↑ + 외인100억↑) ──
+                "smart_money": c.get("smart_money", False),
             }
             registered += 1
 
@@ -933,7 +987,8 @@ class AutoTrader:
         for code, w in self._entry_watch.items():
             etf_tag = " [ETF]" if w.get("is_etf") else ""
             mtm_tag = " [MTM]" if w.get("regime") == "MOMENTUM" else ""
-            extra_tag = etf_tag or mtm_tag
+            sm_tag = " [스마트머니]" if w.get("smart_money") else ""
+            extra_tag = sm_tag or etf_tag or mtm_tag
             lines.append(
                 f"  📡 {w['name']}({code}){extra_tag} 점수:{w['score']:.0f} "
                 f"금액:{w['buy_amount']:,}원 "
