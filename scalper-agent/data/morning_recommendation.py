@@ -1042,6 +1042,21 @@ def _step5_cross_validate(
     except Exception as _sg_e:
         logger.warning(f"[step5] 연속급등 맵 로드 실패(무시): {_sg_e}")
 
+    # ── 수급 강도 맵 (C35 flow_intensity 결과) ──
+    _flow_intensity_map = {}  # {code: {name, quality_score, intensity_pct, ...}}
+    try:
+        import json as _json_fi
+        _fi_path = Path(__file__).resolve().parent.parent / "data_store" / "flow_intensity.json"
+        if _fi_path.exists():
+            _fi_data = _json_fi.loads(_fi_path.read_text(encoding="utf-8"))
+            for st in _fi_data.get("top_stocks", []):
+                if st.get("code"):
+                    _flow_intensity_map[st["code"]] = st
+        if _flow_intensity_map:
+            logger.info(f"[step5] 수급강도 맵: {len(_flow_intensity_map)}종목")
+    except Exception as _fi_e:
+        logger.warning(f"[step5] 수급강도 맵 로드 실패(무시): {_fi_e}")
+
     # 모든 종목 코드 수집
     all_codes = set()
     all_codes.update(relay.get("stocks", {}).keys())
@@ -1113,6 +1128,10 @@ def _step5_cross_validate(
     if _surge_only:
         all_codes.update(_surge_only)
         logger.info(f"[step5] surge-only {len(_surge_only)}종목 합류 (경량 패스)")
+    _fi_only = set(_flow_intensity_map.keys()) - all_codes
+    if _fi_only:
+        all_codes.update(_fi_only)
+        logger.info(f"[step5] flow_intensity-only {len(_fi_only)}종목 합류 (경량 패스)")
 
     _fib_cache = {}  # 피보나치 분석 캐시 (코드별 1회만)
 
@@ -1600,6 +1619,16 @@ def _step5_cross_validate(
             sources.append(f"surge({_sg['change_pct']:+.0f}%:+10)")
             cross += 1
 
+        # ── 수급 강도 보너스 (flow_intensity TOP7 → +10~+15) ──
+        fi_sc = 0.0
+        if code in _flow_intensity_map:
+            _fi = _flow_intensity_map[code]
+            _fi_qs = _fi.get("quality_score", 0)
+            # 쌍매수이면 +15, 아니면 +10
+            fi_sc = 15.0 if _fi.get("dual_buy") else 10.0
+            sources.append(f"fi(q{_fi_qs:.0f}:+{fi_sc:.0f})")
+            cross += 1
+
         # ── 합산 ──────────────────────────────
         raw_total = (relay_sc + premove_sc + tech_sc + bargain_sc + cross_bonus
                      + nat_sc + news_pen + obv_pen + rel_pen
@@ -1616,7 +1645,8 @@ def _step5_cross_validate(
                      + us_relay_sc    # US→KR 릴레이 보너스
                      + bomb_sc        # v4.1: 수급폭탄 보너스 (전종목)
                      + dual_buy_sc    # 대량 쌍매수 보너스
-                     + surge_sc)      # 연속급등 보너스
+                     + surge_sc       # 연속급등 보너스
+                     + fi_sc)         # 수급 강도 보너스
 
         # ── US 모드 조정 ──────────────────────
         # DEFENSIVE: 전체 점수 20% 감점 (보수적 진입)

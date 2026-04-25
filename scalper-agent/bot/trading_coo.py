@@ -2049,9 +2049,15 @@ class TradingCOO:
                 if intensity_data and intensity_data.get("top_stocks"):
                     intensity_count = len(intensity_data["top_stocks"])
                     await asyncio.to_thread(upload_flow_intensity, intensity_data)
+                    # 로컬 저장 → morning_recommendation 후보 소스로 사용
+                    _fi_path = DATA_STORE / "flow_intensity.json"
+                    _fi_path.write_text(
+                        json.dumps(intensity_data, ensure_ascii=False, indent=2),
+                        encoding="utf-8",
+                    )
                     top1 = intensity_data["top_stocks"][0]
                     logger.info(
-                        f"[C35] 수급강도 TOP{intensity_count}: "
+                        f"[C35] 수급강도 TOP{intensity_count} → {_fi_path.name} 저장: "
                         f"1위 {top1['name']}({top1['intensity_pct']}%)"
                     )
             except Exception as _ie:
