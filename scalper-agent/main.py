@@ -18,7 +18,7 @@ import sys
 import argparse
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import yaml
@@ -223,7 +223,7 @@ def run_demo(config, logger, watch_codes):
             vol = int(vol * 4)  # 트렌드 전환점에서 거래량 스파이크
 
         candles.append({
-            'timestamp': datetime(2026, 2, 18, 9, 0) + __import__('datetime').timedelta(minutes=i),
+            'timestamp': datetime(2026, 2, 18, 9, 0) + timedelta(minutes=i),
             'open': o, 'high': h, 'low': l, 'close': price, 'volume': vol,
         })
 

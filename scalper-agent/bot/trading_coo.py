@@ -2046,16 +2046,19 @@ class TradingCOO:
                 intensity_data = await asyncio.to_thread(
                     generate_flow_intensity_data, 7, 2000
                 )
-                if intensity_data and intensity_data.get("top_stocks"):
-                    intensity_count = len(intensity_data["top_stocks"])
+                _top_stocks = (intensity_data or {}).get("top_stocks") or []
+                if _top_stocks:
+                    intensity_count = len(_top_stocks)
                     await asyncio.to_thread(upload_flow_intensity, intensity_data)
                     # 로컬 저장 → morning_recommendation 후보 소스로 사용
                     _fi_path = DATA_STORE / "flow_intensity.json"
-                    _fi_path.write_text(
+                    _tmp_fi = _fi_path.with_suffix(".tmp")
+                    _tmp_fi.write_text(
                         json.dumps(intensity_data, ensure_ascii=False, indent=2),
                         encoding="utf-8",
                     )
-                    top1 = intensity_data["top_stocks"][0]
+                    _tmp_fi.replace(_fi_path)  # 원자적 교체
+                    top1 = _top_stocks[0]
                     logger.info(
                         f"[C35] 수급강도 TOP{intensity_count} → {_fi_path.name} 저장: "
                         f"1위 {top1['name']}({top1['intensity_pct']}%)"
@@ -3220,9 +3223,21 @@ class TradingCOO:
                         f"  {s['name']} {s['change_pct']:+.1f}%"
                     )
 
-            if lines and self.telegram_bot:
+            if lines:
                 msg = "\n".join(lines)
-                await self.telegram_bot.send_admin(msg)
+                sent = False
+                if context and self.bot and getattr(self.bot, "chat_id", None):
+                    try:
+                        await context.bot.send_message(
+                            chat_id=self.bot.chat_id, text=msg,
+                        )
+                        sent = True
+                    except Exception:
+                        pass
+                if not sent:
+                    alert_fn = getattr(self.auto_trader, "_send_alert", None) if self.auto_trader else None
+                    if alert_fn:
+                        await asyncio.to_thread(alert_fn, msg)
                 logger.info(f"[C39] 대량쌍매수 {dual.get('detected',0)}종목 "
                             f"+ 연속급등 {surge.get('count',0)}종목 알림 발송")
 

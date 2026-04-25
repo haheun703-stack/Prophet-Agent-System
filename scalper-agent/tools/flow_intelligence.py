@@ -881,12 +881,9 @@ def generate_flow_intensity_data(top_n: int = 15, min_cap: int = 2000) -> dict:
         })
 
     # ── 품질 스코어링 (intensity만이 아닌 복합 스코어) ──
+    # 순서: 가점 먼저 → 감점(배수) 마지막 (감점이 가점을 상쇄하도록)
     for r in results:
         score = r["intensity_pct"] * 10          # 기본: 수급 강도
-
-        # 과열 감점 (5일 +20% 이상)
-        if r["is_overheated"]:
-            score *= 0.3
 
         # 쌍매수 가점 (외인+기관 동시 유입)
         if r["dual_buy"]:
@@ -899,6 +896,11 @@ def generate_flow_intensity_data(top_n: int = 15, min_cap: int = 2000) -> dict:
         # 쌍연속 (외인+기관 모두 3일+) 강한 신호
         if r["consec_foreign"] >= 3 and r["consec_inst"] >= 3:
             score += 15
+
+        # ── 감점은 가점 합산 후 적용 (배수 감점이 전체에 영향) ──
+        # 과열 감점 (5일 +20% 이상)
+        if r["is_overheated"]:
+            score *= 0.3
 
         # 급등 후 매수 감점 (5일 +10% 이상이면 추격 위험)
         if r["pct_5d"] >= 10:
@@ -918,7 +920,7 @@ def generate_flow_intensity_data(top_n: int = 15, min_cap: int = 2000) -> dict:
         r["rank"] = i
 
     dual_cnt = sum(1 for r in top if r["dual_buy"])
-    heat_cnt = sum(1 for r in results if r["is_overheated"])
+    heat_cnt = sum(1 for r in results if r["is_overheated"])  # 전체 대상 기준
 
     # CSV 최신 날짜 사용 (last_trading_day()는 전일 반환이라 장 마감 후 1일 차이)
     csv_date = None
@@ -943,7 +945,7 @@ def generate_flow_intensity_data(top_n: int = 15, min_cap: int = 2000) -> dict:
 
     logger.info(
         f"[수급강도] {scanned}종목 스캔 → TOP{len(top)} "
-        f"(쌍매수 {dual_cnt}, 과열 {heat_cnt})"
+        f"(TOP내 쌍매수 {dual_cnt}, 전체 과열제외 {heat_cnt})"
     )
     return out
 

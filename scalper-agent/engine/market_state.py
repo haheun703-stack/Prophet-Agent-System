@@ -4,7 +4,7 @@ Market State - 시장 상태 관리
 장 시간, 거래일, 동시호가 등 시장 상태 감지
 """
 
-from datetime import datetime, time, date
+from datetime import datetime, time, timedelta
 
 from data.trading_calendar import is_trading_day as _is_trading_day
 
@@ -53,7 +53,7 @@ class MarketState:
             return False
         now = self.now()
         close_time = datetime.combine(now.date(), self.MARKET_CLOSE)
-        threshold = close_time - __import__('datetime').timedelta(minutes=self.close_minutes)
+        threshold = close_time - timedelta(minutes=self.close_minutes)
         return now >= threshold and now < close_time
 
     def minutes_until_close(self) -> int:

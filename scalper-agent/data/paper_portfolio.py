@@ -98,8 +98,8 @@ class PaperPortfolio:
                 return False
             cost = entry_price * shares
 
-        # SL 미설정 시 기본 -5% 자동 적용 (대형손실 방지)
-        if sl <= 0:
+        # SL 미설정(기본값 0) 시 기본 -5% 자동 적용 (대형손실 방지)
+        if sl == 0:
             sl = int(entry_price * 0.95)
 
         self.cash -= cost
