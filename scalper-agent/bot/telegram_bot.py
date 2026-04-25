@@ -3535,12 +3535,16 @@ class BodyHunterBot:
             # ── 차트 일괄 생성 (프로파일 포함) ──
             charts = await asyncio.to_thread(generate_charts_batch, all_codes, code_names)
             summary["generated"] = len(charts)
-            date_str = _get_latest_data_date()
+            # KRX 데이터 수집일 (T-1) — 차트 생성/점수 계산용
+            krx_date_str = _get_latest_data_date()
+            # Supabase 업로드 날짜 = 당일 (프론트엔드 조회 기준)
+            from datetime import datetime as _dt_nat
+            date_str = _dt_nat.now().strftime("%Y%m%d")
 
             # 점수 일괄 조회 (Supabase 메타데이터용)
             scores = {}
             try:
-                scores = await asyncio.to_thread(score_nationality_batch, all_codes, date_str)
+                scores = await asyncio.to_thread(score_nationality_batch, all_codes, krx_date_str)
             except Exception:
                 pass
 
