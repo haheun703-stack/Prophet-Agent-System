@@ -27,6 +27,55 @@ FLOW_DIR = DATA_STORE / "flow"
 # 리포트 차수 캐시 (일중 변화 추적용)
 _prev_report = {}  # {"frgn_buy": [...], "inst_buy": [...]}
 
+# ── CSV 컬럼 인덱스 상수 (헤더 기반 자동 매핑) ──
+# 수급 CSV 헤더:
+#   date,종가,전일대비,외국인_수량,기관_수량,개인_수량,외국인_금액,기관_금액,개인_금액,기타법인_금액,기타법인_수량
+_COL_MAP_CACHE = {}  # {frozenset(header_tuple): {col_name: idx}}
+
+
+def _parse_flow_csv(filepath: Path, tail_n: int = 0) -> list[dict]:
+    """수급 CSV를 헤더 기반으로 파싱. 컬럼 이름으로 접근 → 인덱스 실수 원천 차단.
+
+    Args:
+        filepath: CSV 파일 경로
+        tail_n: 마지막 N행만 반환 (0=전체)
+    Returns:
+        list of dict (각 행이 {컬럼명: 값})
+    """
+    text = filepath.read_text(encoding="utf-8").strip()
+    if not text:
+        return []
+    lines = text.split("\n")
+    if len(lines) < 2:
+        return []
+
+    header = lines[0].split(",")
+    header = [h.strip() for h in header]
+    data_lines = lines[1:]
+
+    if tail_n > 0 and len(data_lines) > tail_n:
+        data_lines = data_lines[-tail_n:]
+
+    rows = []
+    for line in data_lines:
+        vals = line.split(",")
+        if len(vals) < len(header):
+            continue
+        row = {}
+        for i, col in enumerate(header):
+            row[col] = vals[i].strip()
+        rows.append(row)
+    return rows
+
+
+def _csv_float(row: dict, key: str, default: float = 0.0) -> float:
+    """dict에서 float 안전 추출."""
+    v = row.get(key, "")
+    try:
+        return float(v) if v else default
+    except (ValueError, TypeError):
+        return default
+
 # 장중 수급 누적 파일 (매일 리셋)
 INTRADAY_CUMUL_PATH = DATA_STORE / "intraday_flow_cumulative.json"
 
@@ -757,29 +806,19 @@ def generate_flow_intensity_data(top_n: int = 15, min_cap: int = 2000) -> dict:
 
         mtype = _get_market_type(code)
 
-        lines = f.read_text(encoding="utf-8").strip().split("\n")
-        # 헤더 행 건너뛰기
-        if lines and lines[0].startswith("date"):
-            lines = lines[1:]
-        if len(lines) < 5:
+        rows = _parse_flow_csv(f, tail_n=5)
+        if len(rows) < 5:
             continue
 
         recent = []
         _last_csv_date = None
-        for line in lines[-5:]:
-            parts = line.split(",")
-            if len(parts) < 4:
-                continue
-            try:
-                # CSV 컬럼: [0]date [1]종가 [2]전일대비 [3]외국인_수량 [4]기관_수량
-                #           [5]개인_수량 [6]외국인_금액 [7]기관_금액 [8]개인_금액
-                #           [9]기타법인_금액 [10]기타법인_수량
-                fn = float(parts[6]) if len(parts) > 6 and parts[6] else 0    # 외국인_금액(백만원)
-                ins = float(parts[7]) if len(parts) > 7 and parts[7] else 0   # 기관_금액(백만원)
-                close = float(parts[1]) if parts[1] else 0                    # 종가(원)
-                _last_csv_date = parts[0].strip()
-            except (ValueError, IndexError):
-                continue
+        for row in rows:
+            fn = _csv_float(row, "외국인_금액")
+            ins = _csv_float(row, "기관_금액")
+            close = _csv_float(row, "종가")
+            dt = row.get("date", "")
+            if dt:
+                _last_csv_date = dt
             recent.append({"f": fn, "i": ins, "close": close})
 
         if len(recent) < 5 or recent[-1]["close"] < 1000:
@@ -950,29 +989,17 @@ def detect_massive_dual_buy(min_total: float = MASSIVE_DUAL_MIN_TOTAL_억,
         if not cap or cap < min_cap:
             continue
 
-        lines = f.read_text(encoding="utf-8").strip().split("\n")
-        # 헤더 행 건너뛰기
-        if lines and lines[0].startswith("date"):
-            lines = lines[1:]
-        if len(lines) < 2:
+        rows = _parse_flow_csv(f, tail_n=2)
+        if len(rows) < 1:
             continue
 
         scanned += 1
 
-        # 마지막 행 = 직전 거래일
-        last_line = lines[-1]
-        parts = last_line.split(",")
-        if len(parts) < 8:
-            continue
-
-        try:
-            # CSV 컬럼: [0]date [1]종가 [6]외국인_금액 [7]기관_금액 (백만원)
-            dt = parts[0].strip()
-            fn = float(parts[6]) if parts[6] else 0      # 외국인_금액(백만원)
-            ins = float(parts[7]) if parts[7] else 0     # 기관_금액(백만원)
-            close = float(parts[1]) if parts[1] else 0   # 종가(원)
-        except (ValueError, IndexError):
-            continue
+        last = rows[-1]
+        dt = last.get("date", "")
+        fn = _csv_float(last, "외국인_금액")
+        ins = _csv_float(last, "기관_금액")
+        close = _csv_float(last, "종가")
 
         if csv_date is None or dt > csv_date:
             csv_date = dt
@@ -987,14 +1014,10 @@ def detect_massive_dual_buy(min_total: float = MASSIVE_DUAL_MIN_TOTAL_억,
 
         # 전일 종가 대비 등락 (있으면)
         pct_1d = 0.0
-        if len(lines) >= 3:
-            try:
-                prev_parts = lines[-2].split(",")
-                prev_close = float(prev_parts[1])  # [1]=종가
-                if prev_close > 0:
-                    pct_1d = (close / prev_close - 1) * 100
-            except (ValueError, IndexError):
-                pass
+        if len(rows) >= 2:
+            prev_close = _csv_float(rows[-2], "종가")
+            if prev_close > 0:
+                pct_1d = (close / prev_close - 1) * 100
 
         results.append({
             "code": code,
