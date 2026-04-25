@@ -1746,6 +1746,7 @@ class TradingCOO:
             ("C36_accumulation_radar", self._job_accumulation_radar(context)),
             ("C37_oneshot_stealth", self._job_oneshot_stealth(context)),
             ("C38_foreign_flow", self._job_foreign_flow_upload(context)),
+            ("C39_massive_dual_alert", self._job_massive_dual_buy_alert(context)),
         ]
         s4 = await self.run_parallel_async(stage4_jobs, timeout_per_job=300)
         results.extend(s4)
@@ -3159,6 +3160,74 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[C38] foreign_flow 업로드 실패 (무시): {e}")
             return {"foreign_flow": f"ERROR: {e}"}
+
+    async def _job_massive_dual_buy_alert(self, context=None) -> dict:
+        """C39: 대량 쌍매수 + 연속급등 감지 → JSON 저장 + 텔레그램 알림.
+
+        매일 16:40 G7에서 실행.
+        - detect_massive_dual_buy(): 외인+기관 합산 100억+ 쌍매수
+        - detect_consecutive_surge(): 전일 +20% 급등 종목 (연속상한가 후보)
+        → 결과를 massive_dual_buy.json / consecutive_surge.json 저장
+        → 텔레그램 알림 (상위 10종목)
+        """
+        try:
+            from tools.flow_intelligence import (
+                detect_massive_dual_buy, detect_consecutive_surge,
+            )
+
+            dual = await asyncio.to_thread(detect_massive_dual_buy)
+            surge = await asyncio.to_thread(detect_consecutive_surge)
+
+            # JSON 저장
+            dual_path = DATA_STORE / "massive_dual_buy.json"
+            surge_path = DATA_STORE / "consecutive_surge.json"
+
+            if dual:
+                dual_path.write_text(
+                    json.dumps(dual, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            if surge:
+                surge_path.write_text(
+                    json.dumps(surge, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+
+            # 텔레그램 알림 구성
+            lines = []
+            if dual and dual.get("stocks"):
+                top = dual["stocks"][:10]
+                lines.append(f"[대량 쌍매수] {dual['date']} — {dual['detected']}종목 감지")
+                lines.append("")
+                for s in top:
+                    lines.append(
+                        f"#{s['rank']} {s['name']} "
+                        f"외{s['foreign_억']:+.0f} 기{s['inst_억']:+.0f} "
+                        f"합{s['total_억']:.0f}억 {s['pct_1d']:+.1f}%"
+                    )
+
+            if surge and surge.get("stocks"):
+                lines.append("")
+                lines.append(f"[연속급등 후보] {surge['date']} +20%↑ — {surge['count']}종목")
+                for s in surge["stocks"]:
+                    lines.append(
+                        f"  {s['name']} {s['change_pct']:+.1f}%"
+                    )
+
+            if lines and self.telegram_bot:
+                msg = "\n".join(lines)
+                await self.telegram_bot.send_admin(msg)
+                logger.info(f"[C39] 대량쌍매수 {dual.get('detected',0)}종목 "
+                            f"+ 연속급등 {surge.get('count',0)}종목 알림 발송")
+
+            return {
+                "massive_dual": dual.get("detected", 0) if dual else 0,
+                "consecutive_surge": surge.get("count", 0) if surge else 0,
+            }
+
+        except Exception as e:
+            logger.warning(f"[C39] 대량쌍매수/연속급등 감지 실패 (무시): {e}")
+            return {"massive_dual_alert": f"ERROR: {e}"}
 
     async def _job_nxt_performance(self, context=None) -> dict:
         """C33: 어제 NXT TOP 5 성적표.

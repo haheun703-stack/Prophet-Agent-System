@@ -1013,6 +1013,35 @@ def _step5_cross_validate(
     except Exception as _bw_e:
         logger.warning(f"[step5] bomb 맵 로드 실패(무시): {_bw_e}")
 
+    # ── 대량 쌍매수 맵 (C39 결과) ──
+    _dual_buy_map = {}  # {code: {total_억, foreign_억, inst_億, ...}}
+    try:
+        import json as _json_db
+        _db_path = Path(__file__).resolve().parent.parent / "data_store" / "massive_dual_buy.json"
+        if _db_path.exists():
+            _db_data = _json_db.loads(_db_path.read_text(encoding="utf-8"))
+            for st in _db_data.get("stocks", []):
+                _dual_buy_map[st["code"]] = st
+        if _dual_buy_map:
+            logger.info(f"[step5] 대량쌍매수 맵: {len(_dual_buy_map)}종목")
+    except Exception as _db_e:
+        logger.warning(f"[step5] 대량쌍매수 맵 로드 실패(무시): {_db_e}")
+
+    # ── 연속급등 맵 (C39 결과) ──
+    _surge_map = {}  # {code: {change_pct, ...}}
+    try:
+        import json as _json_sg
+        _sg_path = Path(__file__).resolve().parent.parent / "data_store" / "consecutive_surge.json"
+        if _sg_path.exists():
+            _sg_data = _json_sg.loads(_sg_path.read_text(encoding="utf-8"))
+            for st in _sg_data.get("stocks", []):
+                if st.get("code"):
+                    _surge_map[st["code"]] = st
+        if _surge_map:
+            logger.info(f"[step5] 연속급등 맵: {len(_surge_map)}종목")
+    except Exception as _sg_e:
+        logger.warning(f"[step5] 연속급등 맵 로드 실패(무시): {_sg_e}")
+
     # 모든 종목 코드 수집
     all_codes = set()
     all_codes.update(relay.get("stocks", {}).keys())
@@ -1074,6 +1103,16 @@ def _step5_cross_validate(
     if _bomb_only_codes:
         all_codes.update(_bomb_only_codes)
         logger.info(f"[v4.3] bomb-only {len(_bomb_only_codes)}종목 all_codes 합류 (7SECRET 스킵, 경량 패스)")
+
+    # ── 대량쌍매수/연속급등 종목 합류 (7SECRET 완료 후 → 경량 패스) ──
+    _dual_only = set(_dual_buy_map.keys()) - all_codes
+    if _dual_only:
+        all_codes.update(_dual_only)
+        logger.info(f"[step5] dual_buy-only {len(_dual_only)}종목 합류 (경량 패스)")
+    _surge_only = set(_surge_map.keys()) - all_codes
+    if _surge_only:
+        all_codes.update(_surge_only)
+        logger.info(f"[step5] surge-only {len(_surge_only)}종목 합류 (경량 패스)")
 
     _fib_cache = {}  # 피보나치 분석 캐시 (코드별 1회만)
 
@@ -1545,6 +1584,22 @@ def _step5_cross_validate(
             sources.append(f"bomb({_bw['signal']}:+{bomb_sc:.0f})")
             cross += 1
 
+        # ── 대량 쌍매수 보너스 (+12) ──
+        dual_buy_sc = 0.0
+        if code in _dual_buy_map:
+            _db = _dual_buy_map[code]
+            dual_buy_sc = 12.0
+            sources.append(f"dual_buy({_db['total_억']:.0f}억:+12)")
+            cross += 1
+
+        # ── 연속급등 보너스 (+10) ──
+        surge_sc = 0.0
+        if code in _surge_map:
+            _sg = _surge_map[code]
+            surge_sc = 10.0
+            sources.append(f"surge({_sg['change_pct']:+.0f}%:+10)")
+            cross += 1
+
         # ── 합산 ──────────────────────────────
         raw_total = (relay_sc + premove_sc + tech_sc + bargain_sc + cross_bonus
                      + nat_sc + news_pen + obv_pen + rel_pen
@@ -1559,7 +1614,9 @@ def _step5_cross_validate(
                      + largecap_sc    # 대형주 수급 감지
                      + stealth_sc     # 선매집 잠복 보너스
                      + us_relay_sc    # US→KR 릴레이 보너스
-                     + bomb_sc)       # v4.1: 수급폭탄 보너스 (전종목)
+                     + bomb_sc        # v4.1: 수급폭탄 보너스 (전종목)
+                     + dual_buy_sc    # 대량 쌍매수 보너스
+                     + surge_sc)      # 연속급등 보너스
 
         # ── US 모드 조정 ──────────────────────
         # DEFENSIVE: 전체 점수 20% 감점 (보수적 진입)

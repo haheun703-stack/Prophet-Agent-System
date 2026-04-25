@@ -758,6 +758,9 @@ def generate_flow_intensity_data(top_n: int = 15, min_cap: int = 2000) -> dict:
         mtype = _get_market_type(code)
 
         lines = f.read_text(encoding="utf-8").strip().split("\n")
+        # 헤더 행 건너뛰기
+        if lines and lines[0].startswith("date"):
+            lines = lines[1:]
         if len(lines) < 5:
             continue
 
@@ -768,10 +771,12 @@ def generate_flow_intensity_data(top_n: int = 15, min_cap: int = 2000) -> dict:
             if len(parts) < 4:
                 continue
             try:
-                # CSV 컬럼: [0]날짜 [1]기관 [2]기타법인 [3]개인 [4]외국인 ... [-2]종가
-                fn = float(parts[4]) if len(parts) > 4 and parts[4] else 0    # 외국인_금액
-                ins = float(parts[1]) if parts[1] else 0                       # 기관_금액
-                close = float(parts[-2])
+                # CSV 컬럼: [0]date [1]종가 [2]전일대비 [3]외국인_수량 [4]기관_수량
+                #           [5]개인_수량 [6]외국인_금액 [7]기관_금액 [8]개인_금액
+                #           [9]기타법인_금액 [10]기타법인_수량
+                fn = float(parts[6]) if len(parts) > 6 and parts[6] else 0    # 외국인_금액(백만원)
+                ins = float(parts[7]) if len(parts) > 7 and parts[7] else 0   # 기관_금액(백만원)
+                close = float(parts[1]) if parts[1] else 0                    # 종가(원)
                 _last_csv_date = parts[0].strip()
             except (ValueError, IndexError):
                 continue
@@ -901,4 +906,172 @@ def generate_flow_intensity_data(top_n: int = 15, min_cap: int = 2000) -> dict:
         f"[수급강도] {scanned}종목 스캔 → TOP{len(top)} "
         f"(쌍매수 {dual_cnt}, 과열 {heat_cnt})"
     )
+    return out
+
+
+# ─────────────────────────────────────────────
+# D-1 대량 쌍매수 감지 (전일 외인+기관 합산 100억+ DUAL)
+# ─────────────────────────────────────────────
+MASSIVE_DUAL_MIN_TOTAL_억 = 100   # 합산 최소 100억
+MASSIVE_DUAL_MIN_CAP_억 = 2000    # 시총 최소 2000억
+
+def detect_massive_dual_buy(min_total: float = MASSIVE_DUAL_MIN_TOTAL_억,
+                             min_cap: int = MASSIVE_DUAL_MIN_CAP_억) -> dict:
+    """전일 외인+기관 합산 대량 쌍매수 종목 감지.
+
+    수급 CSV 마지막 행(직전 거래일)에서:
+    - 외인 > 0 AND 기관 > 0 (쌍매수)
+    - 합산 >= min_total(억)
+    - 시총 >= min_cap(억)
+
+    Returns:
+        {"date": str, "scanned": int, "detected": int,
+         "stocks": [{"code","name","foreign_억","inst_억","total_억","cap_억","close","pct_1d"}]}
+    """
+    uni_path = DATA_STORE / "universe.json"
+    if not uni_path.exists():
+        logger.error("universe.json 없음")
+        return {}
+
+    universe = json.loads(uni_path.read_text(encoding="utf-8"))
+    results = []
+    scanned = 0
+    csv_date = None
+
+    for f in FLOW_DIR.glob("*_investor.csv"):
+        code = f.name.split("_")[0]
+        info = universe.get(code, {})
+        name = info.get("name", "?")
+
+        if _is_etf(name):
+            continue
+
+        cap = info.get("cap_억", 0)
+        if not cap or cap < min_cap:
+            continue
+
+        lines = f.read_text(encoding="utf-8").strip().split("\n")
+        # 헤더 행 건너뛰기
+        if lines and lines[0].startswith("date"):
+            lines = lines[1:]
+        if len(lines) < 2:
+            continue
+
+        scanned += 1
+
+        # 마지막 행 = 직전 거래일
+        last_line = lines[-1]
+        parts = last_line.split(",")
+        if len(parts) < 8:
+            continue
+
+        try:
+            # CSV 컬럼: [0]date [1]종가 [6]외국인_금액 [7]기관_금액 (백만원)
+            dt = parts[0].strip()
+            fn = float(parts[6]) if parts[6] else 0      # 외국인_금액(백만원)
+            ins = float(parts[7]) if parts[7] else 0     # 기관_금액(백만원)
+            close = float(parts[1]) if parts[1] else 0   # 종가(원)
+        except (ValueError, IndexError):
+            continue
+
+        if csv_date is None or dt > csv_date:
+            csv_date = dt
+
+        # 쌍매수 필터: 외인 > 0 AND 기관 > 0
+        if fn <= 0 or ins <= 0:
+            continue
+
+        total_억 = (fn + ins) / 100  # 백만원 → 억
+        if total_억 < min_total:
+            continue
+
+        # 전일 종가 대비 등락 (있으면)
+        pct_1d = 0.0
+        if len(lines) >= 3:
+            try:
+                prev_parts = lines[-2].split(",")
+                prev_close = float(prev_parts[1])  # [1]=종가
+                if prev_close > 0:
+                    pct_1d = (close / prev_close - 1) * 100
+            except (ValueError, IndexError):
+                pass
+
+        results.append({
+            "code": code,
+            "name": name,
+            "foreign_억": round(fn / 100, 1),
+            "inst_억": round(ins / 100, 1),
+            "total_억": round(total_억, 1),
+            "cap_억": cap,
+            "close": int(close),
+            "pct_1d": round(pct_1d, 1),
+        })
+
+    # 합산 금액 내림차순 정렬
+    results.sort(key=lambda x: -x["total_억"])
+
+    # 랭크
+    for i, r in enumerate(results, 1):
+        r["rank"] = i
+
+    if csv_date is None:
+        from data.trading_calendar import last_trading_day
+        csv_date = last_trading_day().isoformat()
+
+    out = {
+        "date": csv_date,
+        "scanned": scanned,
+        "detected": len(results),
+        "stocks": results,
+    }
+
+    logger.info(
+        f"[대량쌍매수] {scanned}종목 스캔 → {len(results)}종목 감지 "
+        f"(합산 {min_total}억+, 시총 {min_cap}억+)"
+    )
+    return out
+
+
+def detect_consecutive_surge(min_pct: float = 20.0) -> dict:
+    """전일 +20% 이상 급등 종목 감지 (연속상한가 추적용).
+
+    learning/journal/daily/ 최신 파일에서 gainers_top10 추출.
+
+    Returns:
+        {"date": str, "stocks": [{"code","name","change_pct","volume_ratio"}]}
+    """
+    journal_dir = DATA_STORE / "learning" / "journal" / "daily"
+    if not journal_dir.exists():
+        logger.warning("journal/daily 디렉토리 없음")
+        return {}
+
+    # 최신 journal 파일
+    files = sorted(journal_dir.glob("*.json"), reverse=True)
+    if not files:
+        return {}
+
+    data = json.loads(files[0].read_text(encoding="utf-8"))
+    date_str = data.get("date", files[0].stem)
+    gainers = data.get("gainers_top10", [])
+
+    surges = []
+    for g in gainers:
+        pct = g.get("change_rate", g.get("pct", 0))
+        if pct >= min_pct:
+            surges.append({
+                "code": g.get("code", ""),
+                "name": g.get("name", "?"),
+                "change_pct": round(pct, 1),
+                "volume_ratio": round(g.get("volume_ratio", 0), 1),
+                "cap_억": g.get("cap", 0),
+                "sector": g.get("sector", "?"),
+            })
+
+    out = {
+        "date": date_str,
+        "count": len(surges),
+        "stocks": surges,
+    }
+
+    logger.info(f"[연속급등] {date_str} +{min_pct}% 이상: {len(surges)}종목")
     return out
