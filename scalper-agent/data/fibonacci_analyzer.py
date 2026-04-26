@@ -272,29 +272,31 @@ def fib_score_adjustment(code: str, name: str = "", lookback: int = 120) -> Dict
     cp = result.current_price
 
     # 1. 되돌림 지지선 부근에서 반등 → 매수 기회 (+점수)
+    # 4/26 학습: fib 팩터 46건 D+1 avg -0.30% → 가산 50% 축소
     for lv in result.retracement_levels:
         dist = abs(cp - lv.price) / cp * 100
         if dist < 3:  # 지지선 3% 이내
             if lv.ratio == 0.618:
-                adj += 15  # 황금비 지지 → 강한 매수 시그널
+                adj += 7   # 황금비 지지 (15→7, 4/26 학습)
             elif lv.ratio == 0.5:
-                adj += 10
+                adj += 5   # (10→5)
             elif lv.ratio == 0.382:
-                adj += 8
+                adj += 4   # (8→4)
             break  # 가장 가까운 것만
 
     # 2. 확장 타겟 접근 → 차익실현 구간 (-점수)
     for lv in result.extension_levels:
         dist = abs(cp - lv.price) / cp * 100
         if dist < 3 and lv.ratio >= 1.272:
-            adj -= 5  # 타겟 근접 → 추격 매수 자제
+            adj -= 5  # 타겟 근접 → 추격 매수 자제 (유지)
             break
 
     # 3. 상방 여력 반영
+    # 4/26 학습: 상방 여력 가산도 축소 (5→3)
     if result.upside_pct > 15:
-        adj += 5   # 상방 여력 충분
+        adj += 3   # 상방 여력 충분 (5→3)
     elif result.upside_pct < 3:
-        adj -= 5   # 상방 여력 부족
+        adj -= 5   # 상방 여력 부족 (유지)
 
     # 4. 피보나치 기반 TP/SL 계산
     # SL: 가장 가까운 아래 지지선 아래 2%

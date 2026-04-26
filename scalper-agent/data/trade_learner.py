@@ -39,10 +39,12 @@ DEFAULT_BUCKETS = {
 
 
 def _score_to_bucket(score: float) -> str:
-    if score >= 100:
-        return "100_plus"
-    elif score >= 80:
-        return "80_99"
+    # 4/26 학습: softcap 2단계 압축 반영 — 새 점수 분포에 맞춤
+    # raw 120+ → final 92+ / raw 100-119 → final 86-92 / raw 80-99 → 80-86
+    if score >= 92:
+        return "100_plus"   # 과대평가 구간 (raw 120+)
+    elif score >= 86:
+        return "80_99"      # 최적 구간 (raw 100-119)
     elif score >= 60:
         return "60_79"
     elif score >= 40:

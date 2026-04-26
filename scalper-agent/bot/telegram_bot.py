@@ -2428,7 +2428,7 @@ class BodyHunterBot:
                 msg = format_predawn_alert(targets)
                 msg_lines.append(msg)
             elif not predawn_pos:
-                msg_lines.append("선취매 대상 없음 (조건: AAA/AA + FORCE_BUY + 100점+)")
+                msg_lines.append("선취매 대상 없음 (조건: AAA/AA + FORCE_BUY + 90점+)")
 
             nw_enabled = nw_cfg.get("enabled", False)
             alert_only = nw_cfg.get("alert_only", True)

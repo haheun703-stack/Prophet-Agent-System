@@ -1359,17 +1359,17 @@ def _step5_cross_validate(
             sources.append(f"opp:{sector}({opp_bonus:+.0f})")
 
         # ── 로테이션: 다음 섹터 보너스 / 반전 페널티 ──
-        # 학습 피드백: sector_hot/rotation 적중률 0%, avg -6% → 후행 지표
-        # hot_early/staging만 소폭 보너스, hot_mid는 이미 늦음
+        # 4/26 학습: rotation 24건 D+1 +1.38% 적중67% → 수익성 높은 팩터, 가중치 상향
+        # hot_early가 핵심 (초기 진입이 수익의 원천)
         rotation_bonus = 0.0
         if rot_info:
             rot_src = rot_info.get("rotation_source", "")
             if rot_src == "hot_early":
-                rotation_bonus = 8.0    # HOT 초기 (15→8 축소, 후행 위험)
+                rotation_bonus = 12.0   # HOT 초기 (8→12, 4/26 학습)
             elif rot_src == "staging":
-                rotation_bonus = 5.0    # 스테이징 (8→5)
+                rotation_bonus = 8.0    # 스테이징 (5→8)
             elif rot_src == "hot_mid":
-                rotation_bonus = 0.0    # HOT 중기 → 이미 늦음 (5→0)
+                rotation_bonus = 0.0    # HOT 중기 → 이미 늦음 (유지)
             elif rot_src == "reversal_exit":
                 rotation_bonus = -20.0  # 반전 유지
 
@@ -1557,14 +1557,15 @@ def _step5_cross_validate(
             _max_flow = max(_frgn_b if _is_frgn_buy else 0,
                            _inst_b if _is_inst_buy else 0)
             # 매수 금액 규모별 점수
+            # 4/26 학습: largecap_flow 16건 D+1 +1.61% 적중69% → 최고 수익 팩터, 가중치 상향
             if _max_flow >= 1000:      # 1000억+ 대량매수
-                largecap_sc = 20.0
+                largecap_sc = 26.0     # (20→26)
             elif _max_flow >= 500:     # 500억+
-                largecap_sc = 15.0
+                largecap_sc = 20.0     # (15→20)
             elif _max_flow >= 100:     # 100억+
-                largecap_sc = 8.0
+                largecap_sc = 12.0     # (8→12)
             elif _max_flow >= 50:      # 50억+
-                largecap_sc = 4.0
+                largecap_sc = 6.0      # (4→6)
             # 쌍매수 배수
             if largecap_sc > 0 and _is_frgn_buy and _is_inst_buy:
                 largecap_sc *= 1.3
@@ -1659,8 +1660,9 @@ def _step5_cross_validate(
             raw_total *= 0.8
             sources.append("US_DEF(x0.8)")
         elif _us_mode == "AGGRESSIVE":
-            raw_total *= 1.1
-            sources.append("US_AGG(x1.1)")
+            # 4/26 학습: US_AGG 40건 D+1 avg -0.44% → 가산 축소 (x1.1→x1.05)
+            raw_total *= 1.05
+            sources.append("US_AGG(x1.05)")
 
         # ── 브레인 학습 가중치 적용 ──────────────
         brain_adj = _apply_brain_adjustment(
@@ -1686,14 +1688,18 @@ def _step5_cross_validate(
             sources.append(f"fib({fib_adj:+.0f})")
         raw_total += fib_adj
 
-        # ── 과신호 소프트캡 (학습: 점수대별 적중률 역전 현상) ──
-        # 4/8 학습 결과: 80+점=37% / 50~80점=78% → 고점수가 오히려 부진
-        # 80점 이상부터 점진적 압축: 80 + (초과분 * 0.12)
-        # 예: 150점 → 80 + 70*0.12 = 88.4 / 100점 → 80 + 20*0.12 = 82.4
+        # ── 과신호 소프트캡 (2단계 압축) ──
+        # 4/26 학습: 100~119점=D+1 +3.33%(최적) / 120+=+0.09%(과대평가)
+        # 80~120: 완만 압축(30%) → 100~119 구간 보호
+        # 120+: 강한 압축(8%) → 과대평가 억제
+        # 예: 110점 → 80 + 30*0.30 = 89 / 150점 → 80 + 40*0.30 + 30*0.08 = 94.4
         if raw_total > 80:
-            excess = raw_total - 80
-            compressed = excess * 0.12  # 초과분 88% 압축 (4/8: 0.25→0.12)
             old_raw = raw_total
+            excess = raw_total - 80
+            if excess <= 40:  # 80~120 구간
+                compressed = excess * 0.30  # 초과분 70% 압축 (0.12→0.30)
+            else:  # 120+ 구간
+                compressed = 40 * 0.30 + (excess - 40) * 0.08  # 120 초과는 강압축
             raw_total = 80 + compressed
             sources.append(f"softcap(-{old_raw - raw_total:.0f})")
             logger.info(f"  [소프트캡] {name}: {old_raw:.0f}→{raw_total:.0f}")

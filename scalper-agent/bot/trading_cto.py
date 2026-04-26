@@ -64,7 +64,7 @@ class TradingCTO:
             "min_score": 3,
             "budget_pct": 30,
             "max_positions": 1,
-            "predawn_min_score": 100,
+            "predawn_min_score": 90,   # 4/26: softcap 2단계 반영 (100→90, raw120+=final92)
             "predawn_budget_pct": 40,
             "min_score_tier1": 20,
             "min_score_tier2": 30,
