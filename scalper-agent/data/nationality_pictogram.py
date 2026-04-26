@@ -444,7 +444,6 @@ def generate_charts_batch(
     # 200종목 5일치 CSV가 있으면 ~10초, 없으면 KRX API 호출 → 타임아웃 300초
     all_profiles = {}
     try:
-        import signal as _sig
         from data.nationality_profiler import analyze_nationality_behavior
 
         import threading

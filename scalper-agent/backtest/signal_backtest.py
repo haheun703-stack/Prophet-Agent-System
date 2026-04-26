@@ -10,7 +10,7 @@ os.chdir(os.path.join(os.path.dirname(__file__), ".."))
 
 import pandas as pd
 import numpy as np
-from collections import defaultdict, Counter
+from collections import defaultdict
 
 
 def compute_stochastic(close, high, low, k_period=14, slow_k=3, slow_d=3):
