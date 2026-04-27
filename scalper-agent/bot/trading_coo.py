@@ -58,7 +58,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, time as dtime, timezone, timedelta
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Coroutine, Dict, List, Optional, Tuple
+from typing import Callable, Coroutine, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("BH.COO")
 
@@ -2481,7 +2481,7 @@ class TradingCOO:
     async def _job_stealth_scan(self, context=None) -> dict:
         """C28: 기관 선매집 탐지 스캔 → stealth_scan.json + Supabase 업로드."""
         try:
-            from data.stealth_scanner import scan_stealth_accumulation, format_stealth_alert
+            from data.stealth_scanner import scan_stealth_accumulation
 
             result = await asyncio.to_thread(scan_stealth_accumulation)
             summary = result.get("summary", {})
@@ -3262,11 +3262,43 @@ class TradingCOO:
             from data.upload_inst_accumulation import upload_inst_accumulation
 
             result = await asyncio.to_thread(scan_inst_accumulation)
-            if not result or not result.get("early_stocks"):
+            if not result or (
+                not result.get("early_stocks") and not result.get("running_stocks")
+            ):
                 logger.warning("[C40] 기관 연속매수 감지 종목 없음")
                 return {"inst_accumulation": "SKIP"}
 
             ok = await asyncio.to_thread(upload_inst_accumulation, result)
+
+            # 텔레그램 알림 (TOP 5 초기 매집)
+            early = result.get("early_stocks", [])[:5]
+            if early:
+                lines = [f"[기관매집 레이더] 초기 {result.get('early_count', 0)}종목"]
+                for s in early:
+                    tag = f" *{s['tag']}" if s.get("tag") else ""
+                    lines.append(
+                        f"  {s['name']} 기관{s['inst_consec']}d "
+                        f"+{s['inst_cum']:.0f}억 "
+                        f"5d{s['ret5']:+.1f}%{tag}"
+                    )
+                msg = "\n".join(lines)
+                sent = False
+                if context and self.bot and getattr(self.bot, "chat_id", None):
+                    try:
+                        await context.bot.send_message(
+                            chat_id=self.bot.chat_id, text=msg,
+                        )
+                        sent = True
+                    except Exception:
+                        pass
+                if not sent:
+                    alert_fn = (
+                        getattr(self.auto_trader, "_send_alert", None)
+                        if self.auto_trader else None
+                    )
+                    if alert_fn:
+                        await asyncio.to_thread(alert_fn, msg)
+
             logger.info(
                 f"[C40] 기관매집 {'완료' if ok else '실패'} — "
                 f"초기 {result.get('early_count', 0)}종목 / "

@@ -26,7 +26,7 @@ def upload_inst_accumulation(data: dict) -> bool:
     Returns:
         bool: 성공 여부
     """
-    if not data or not data.get("early_stocks"):
+    if not data or (not data.get("early_stocks") and not data.get("running_stocks")):
         logger.warning("빈 데이터 — 업로드 스킵")
         return False
 
@@ -43,7 +43,7 @@ def upload_inst_accumulation(data: dict) -> bool:
             "total_count": data.get("total_count", 0),
             "early_count": data.get("early_count", 0),
             "running_count": data.get("running_count", 0),
-            "early_stocks": data["early_stocks"],
+            "early_stocks": data.get("early_stocks", []),
             "running_stocks": data.get("running_stocks", []),
         }
 

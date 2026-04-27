@@ -15,7 +15,6 @@ import json
 import logging
 from datetime import datetime, date, timedelta
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger("BH.CTO")
 

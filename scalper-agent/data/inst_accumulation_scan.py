@@ -17,53 +17,21 @@ logger = logging.getLogger("BH.InstAccScan")
 
 DATA_STORE = Path(__file__).resolve().parent.parent / "data_store"
 
-
-def _parse_flow_csv_light(filepath: Path) -> list[dict]:
-    """수급 CSV 헤더 기반 파싱 (경량 버전)."""
-    try:
-        text = filepath.read_text(encoding="utf-8").strip()
-    except Exception:
-        return []
-    if not text:
-        return []
-    lines = text.split("\n")
-    if len(lines) < 2:
-        return []
-
-    header = [h.strip() for h in lines[0].split(",")]
-    rows = []
-    for line in lines[1:]:
-        vals = line.split(",")
-        if len(vals) < len(header):
-            continue
-        row = {}
-        for i, col in enumerate(header):
-            row[col] = vals[i].strip()
-        rows.append(row)
-    return rows
-
-
-def _safe_float(row: dict, key: str) -> float:
-    v = row.get(key, "")
-    try:
-        return float(v) if v else 0.0
-    except (ValueError, TypeError):
-        return 0.0
-
-
-def _safe_int(row: dict, key: str) -> int:
-    v = row.get(key, "")
-    try:
-        return int(float(v)) if v else 0
-    except (ValueError, TypeError):
-        return 0
+# 기존 유틸 사용 (규칙 C2: 새 함수 전 기존 유틸 확인)
+try:
+    from tools.flow_intelligence import _parse_flow_csv, _csv_float
+except ImportError:
+    # standalone 실행 시 fallback
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from tools.flow_intelligence import _parse_flow_csv, _csv_float
 
 
 def _count_consecutive(rows: list[dict], key: str) -> int:
     """최근부터 역순으로 연속 양수 일수."""
     count = 0
     for r in reversed(rows):
-        if _safe_float(r, key) > 0:
+        if _csv_float(r, key) > 0:
             count += 1
         else:
             break
@@ -123,7 +91,23 @@ def scan_inst_accumulation(
         if not info:
             continue
 
-        rows = _parse_flow_csv_light(csv_path)
+        try:
+            rows = _parse_flow_csv(csv_path)
+        except Exception:
+            continue
+        if len(rows) < 5:
+            continue
+
+        # [H1] 날짜 정렬 + 중복 제거 (concat 데이터 정합성)
+        rows.sort(key=lambda r: r.get("date", ""))
+        seen_dates = set()
+        deduped = []
+        for r in rows:
+            d = r.get("date", "")
+            if d and d not in seen_dates:
+                seen_dates.add(d)
+                deduped.append(r)
+        rows = deduped
         if len(rows) < 5:
             continue
 
@@ -134,22 +118,25 @@ def scan_inst_accumulation(
 
         # 기관 누적 (백만원 → 억)
         inst_cum = sum(
-            _safe_float(r, "기관_금액") for r in rows[-inst_consec:]
+            _csv_float(r, "기관_금액") for r in rows[-inst_consec:]
         ) / 100
 
         # 외인 연속매수 일수
         frgn_consec = _count_consecutive(rows, "외국인_금액")
 
         # 수익률
-        close_now = _safe_int(rows[-1], "종가")
-        close_5 = _safe_int(rows[-5], "종가") if len(rows) >= 5 else 0
-        close_10 = _safe_int(rows[-10], "종가") if len(rows) >= 10 else 0
+        close_now = int(_csv_float(rows[-1], "종가"))
+        # [H2] 거래정지/데이터오류(종가=0) 필터
+        if close_now <= 0:
+            continue
+        close_5 = int(_csv_float(rows[-5], "종가")) if len(rows) >= 5 else 0
+        close_10 = int(_csv_float(rows[-10], "종가")) if len(rows) >= 10 else 0
 
         ret5 = ((close_now / close_5) - 1) * 100 if close_5 else 0
         ret10 = ((close_now / close_10) - 1) * 100 if close_10 else 0
 
-        today_inst = _safe_float(rows[-1], "기관_금액") / 100
-        today_frgn = _safe_float(rows[-1], "외국인_금액") / 100
+        today_inst = _csv_float(rows[-1], "기관_금액") / 100
+        today_frgn = _csv_float(rows[-1], "외국인_금액") / 100
 
         # 태그
         tag = ""
@@ -183,7 +170,8 @@ def scan_inst_accumulation(
     running.sort(key=lambda x: x["inst_consec"], reverse=True)
 
     today_str = date.today().isoformat()
-    data_date = early[0]["last_date"] if early else today_str
+    all_stocks = early or running
+    data_date = all_stocks[0]["last_date"] if all_stocks else today_str
 
     output = {
         "date": data_date,
@@ -205,7 +193,7 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     result = scan_inst_accumulation()
     if result:
-        print(f"\n기관 {3}일+ 연속매수: 총 {result['total_count']}종목")
+        print(f"\n기관 3일+ 연속매수: 총 {result['total_count']}종목")
         print(f"초기(5일<15%): {result['early_count']}종목\n")
         for r in result["early_stocks"][:20]:
             tag = f" *{r['tag']}" if r["tag"] else ""
