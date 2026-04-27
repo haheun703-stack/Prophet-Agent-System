@@ -1747,6 +1747,7 @@ class TradingCOO:
             ("C37_oneshot_stealth", self._job_oneshot_stealth(context)),
             ("C38_foreign_flow", self._job_foreign_flow_upload(context)),
             ("C39_massive_dual_alert", self._job_massive_dual_buy_alert(context)),
+            ("C40_inst_accumulation", self._job_inst_accumulation(context)),
         ]
         s4 = await self.run_parallel_async(stage4_jobs, timeout_per_job=300)
         results.extend(s4)
@@ -3249,6 +3250,33 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[C39] 대량쌍매수/연속급등 감지 실패 (무시): {e}")
             return {"massive_dual_alert": f"ERROR: {e}"}
+
+    async def _job_inst_accumulation(self, context=None) -> dict:
+        """C40: 기관 연속매수 초기 감지 → FLOWX 업로드.
+
+        시총 1000억+ 종목 중 기관 3일+ 연속 순매수 종목을 감지,
+        아직 급등 전(5일<15%)인 초기 매집 종목을 Supabase에 업로드.
+        """
+        try:
+            from data.inst_accumulation_scan import scan_inst_accumulation
+            from data.upload_inst_accumulation import upload_inst_accumulation
+
+            result = await asyncio.to_thread(scan_inst_accumulation)
+            if not result or not result.get("early_stocks"):
+                logger.warning("[C40] 기관 연속매수 감지 종목 없음")
+                return {"inst_accumulation": "SKIP"}
+
+            ok = await asyncio.to_thread(upload_inst_accumulation, result)
+            logger.info(
+                f"[C40] 기관매집 {'완료' if ok else '실패'} — "
+                f"초기 {result.get('early_count', 0)}종목 / "
+                f"진행 {result.get('running_count', 0)}종목"
+            )
+            return {"inst_accumulation": result.get("total_count", 0)}
+
+        except Exception as e:
+            logger.warning(f"[C40] 기관 연속매수 감지 실패 (무시): {e}")
+            return {"inst_accumulation": f"ERROR: {e}"}
 
     async def _job_nxt_performance(self, context=None) -> dict:
         """C33: 어제 NXT TOP 5 성적표.
