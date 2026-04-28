@@ -1748,6 +1748,7 @@ class TradingCOO:
             ("C38_foreign_flow", self._job_foreign_flow_upload(context)),
             ("C39_massive_dual_alert", self._job_massive_dual_buy_alert(context)),
             ("C40_inst_accumulation", self._job_inst_accumulation(context)),
+            ("C41_pension_scan", self._job_pension_scan(context)),
         ]
         s4 = await self.run_parallel_async(stage4_jobs, timeout_per_job=300)
         results.extend(s4)
@@ -3309,6 +3310,55 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[C40] 기관 연속매수 감지 실패 (무시): {e}")
             return {"inst_accumulation": f"ERROR: {e}"}
+
+    async def _job_pension_scan(self, context=None) -> dict:
+        """C41: 연기금+금투 합류 타이밍 스캔 → FLOWX 업로드.
+
+        연기금 3-5일 연속매수 종목 중 금투(금융투자)가 합류한 종목 감지.
+        백테스트: D+5 +1.59%, 외인 방향 무관.
+        """
+        try:
+            from data.pension_finance_scan import scan_pension_finance
+            from data.upload_pension_scan import upload_pension_scan
+
+            result = await asyncio.to_thread(scan_pension_finance)
+            if not result or (
+                not result.get("best_stocks") and not result.get("standby_stocks")
+            ):
+                logger.warning("[C41] 연기금+금투 스캔 종목 없음")
+                return {"pension_scan": "SKIP"}
+
+            ok = await asyncio.to_thread(upload_pension_scan, result)
+
+            # 텔레그램 알림 (핵심후보 TOP 5)
+            best_fresh = result.get("best_fresh", [])
+            if best_fresh and hasattr(self, "_tg_alert"):
+                lines = ["연기금+금투 합류 (D+5 +1.6%)"]
+                for s in best_fresh[:5]:
+                    lines.append(
+                        f"  {s['name']} {s['pension_consec']}d "
+                        f"연{s['pension_cum']:+.0f}억 "
+                        f"금{s['fi_today']:+.0f}억 "
+                        f"5d{s['ret5']:+.1f}%"
+                    )
+                standby_count = result.get("standby_count", 0)
+                if standby_count:
+                    lines.append(f"  +대기 {standby_count}종목")
+                msg = "\n".join(lines)
+                alert_fn = self._tg_alert
+                if alert_fn:
+                    await asyncio.to_thread(alert_fn, msg)
+
+            logger.info(
+                f"[C41] 연기금스캔 {'완료' if ok else '실패'} — "
+                f"핵심 {result.get('best_count', 0)}종목 / "
+                f"대기 {result.get('standby_count', 0)}종목"
+            )
+            return {"pension_scan": result.get("total_count", 0)}
+
+        except Exception as e:
+            logger.warning(f"[C41] 연기금+금투 스캔 실패 (무시): {e}")
+            return {"pension_scan": f"ERROR: {e}"}
 
     async def _job_nxt_performance(self, context=None) -> dict:
         """C33: 어제 NXT TOP 5 성적표.

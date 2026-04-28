@@ -45,6 +45,7 @@ CORE_FILES = [
     "coo_run_log.json",
     "circuit_breaker.json",
     "oneshot_stealth.json",
+    "quant_investor_extra.json",
 ]
 
 # 학습 데이터 (항상 동기화)
