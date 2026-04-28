@@ -33,10 +33,16 @@ def upload_daytrading_performance(report: dict) -> bool:
         cum = report.get("cumulative", {})
         items = report.get("items", [])
 
+        # 종목별 bucket_metrics 조회
+        try:
+            from data.trade_learner import get_bucket_metrics
+        except ImportError:
+            get_bucket_metrics = None
+
         # items를 직렬화 가능한 형태로 정리
         items_json = []
         for it in items:
-            items_json.append({
+            item_data = {
                 "rank": it.get("rank"),
                 "code": it.get("code"),
                 "name": it.get("name"),
@@ -48,7 +54,14 @@ def upload_daytrading_performance(report: dict) -> bool:
                 "low_price": it.get("low_price"),
                 "return_pct": it.get("return_pct"),
                 "volume": it.get("volume"),
-            })
+            }
+
+            # bucket_metrics 추가 (4개 핵심 지표)
+            if get_bucket_metrics:
+                score = it.get("score", 50)
+                item_data["bucket_metrics"] = get_bucket_metrics(score)
+
+            items_json.append(item_data)
 
         row = {
             "date": report["date"],

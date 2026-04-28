@@ -49,10 +49,16 @@ def upload_daytrading_picks(out: dict) -> bool:
 
         ewy = out.get("ewy_signal") or {}
 
+        # 종목별 bucket_metrics 조회
+        try:
+            from data.trade_learner import get_bucket_metrics
+        except ImportError:
+            get_bucket_metrics = None
+
         # 개별 pick을 직렬화 가능한 형태로 정리
         picks_json = []
         for p in picks:
-            picks_json.append({
+            pick_data = {
                 "rank": picks.index(p) + 1,
                 "code": p.get("code"),
                 "name": p.get("name"),
@@ -81,7 +87,14 @@ def upload_daytrading_picks(out: dict) -> bool:
                 "etf_alt_code": p.get("etf_alt_code"),
                 "etf_alt_name": p.get("etf_alt_name"),
                 "etf_alt_theme": p.get("etf_alt_theme"),
-            })
+            }
+
+            # bucket_metrics 추가 (4개 핵심 지표)
+            if get_bucket_metrics:
+                score = p.get("final_score") or p.get("score") or 50
+                pick_data["bucket_metrics"] = get_bucket_metrics(score)
+
+            picks_json.append(pick_data)
 
         row = {
             "date": today,

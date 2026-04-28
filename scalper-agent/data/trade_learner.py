@@ -30,12 +30,16 @@ SIGNAL_LOG_PATH = _LEARN_DIR / "signal_log.json"
 
 # ─── 보수적 기본값 (데이터 부족 시) ─────────────────────
 DEFAULT_BUCKETS = {
-    "100_plus":  {"avg_1d": 2.0, "avg_3d": 3.5, "avg_5d": 5.0, "hit_rate": 0.65, "n": 0},
-    "80_99":     {"avg_1d": 1.5, "avg_3d": 2.5, "avg_5d": 3.5, "hit_rate": 0.58, "n": 0},
-    "60_79":     {"avg_1d": 0.8, "avg_3d": 1.5, "avg_5d": 2.0, "hit_rate": 0.50, "n": 0},
-    "40_59":     {"avg_1d": 0.3, "avg_3d": 0.5, "avg_5d": 0.8, "hit_rate": 0.42, "n": 0},
-    "under_40":  {"avg_1d": 0.0, "avg_3d": 0.0, "avg_5d": 0.0, "hit_rate": 0.30, "n": 0},
+    "100_plus":  {"avg_1d": 2.0, "avg_3d": 3.5, "avg_5d": 5.0, "hit_rate": 0.65, "tp_sl_avg": 1.5, "max_1d_avg": 4.0, "n": 0},
+    "80_99":     {"avg_1d": 1.5, "avg_3d": 2.5, "avg_5d": 3.5, "hit_rate": 0.58, "tp_sl_avg": 1.0, "max_1d_avg": 3.0, "n": 0},
+    "60_79":     {"avg_1d": 0.8, "avg_3d": 1.5, "avg_5d": 2.0, "hit_rate": 0.50, "tp_sl_avg": 0.5, "max_1d_avg": 2.0, "n": 0},
+    "40_59":     {"avg_1d": 0.3, "avg_3d": 0.5, "avg_5d": 0.8, "hit_rate": 0.42, "tp_sl_avg": 0.0, "max_1d_avg": 1.0, "n": 0},
+    "under_40":  {"avg_1d": 0.0, "avg_3d": 0.0, "avg_5d": 0.0, "hit_rate": 0.30, "tp_sl_avg": -0.5, "max_1d_avg": 0.5, "n": 0},
 }
+
+# TP/SL 시뮬레이션 기준값
+TP_PCT = 3.0   # 목표가 +3%
+SL_PCT = -5.0  # 손절가 -5%
 
 
 def _score_to_bucket(score: float) -> str:
@@ -85,6 +89,27 @@ def get_expected_return(score: float, hold_days: int = 3) -> float:
     elif hold_days <= 3:
         return bk.get("avg_3d", 1.0)
     return bk.get("avg_5d", 1.5)
+
+
+def get_bucket_metrics(score: float) -> dict:
+    """점수대별 4개 핵심 지표 반환 (FLOWX 다중 표기용)
+
+    Returns:
+        {"avg_5d": float, "tp_sl": float, "win_rate": float, "max_1d": float,
+         "n": int, "bucket": str}
+    """
+    data = load_bucket_returns()
+    bucket = _score_to_bucket(score)
+    bk = data.get("buckets", DEFAULT_BUCKETS).get(bucket, DEFAULT_BUCKETS["60_79"])
+
+    return {
+        "avg_5d": round(bk.get("avg_5d", 0), 2),
+        "tp_sl": round(bk.get("tp_sl_avg", 0), 2),
+        "win_rate": round(bk.get("hit_rate", 0.5) * 100, 1),
+        "max_1d": round(bk.get("max_1d_avg", 0), 2),
+        "n": bk.get("n", 0),
+        "bucket": bucket,
+    }
 
 
 # ─── 트레이드 로그 관리 ────────────────────────────────
@@ -204,8 +229,25 @@ def update_bucket_returns(closed_trades: list = None):
         old_hr = bk.get("hit_rate", 0.5)
         hit = 1.0 if pnl > 0 else 0.0
         bk["hit_rate"] = round(old_hr * (1 - alpha) + hit * alpha, 3)
-        bk["n"] = new_n
 
+        # TP/SL 시뮬 수익 업데이트 (close_reason 기반)
+        reason = t.get("close_reason", "")
+        if reason == "TARGET":
+            tp_sl_pnl = TP_PCT
+        elif reason == "STOP":
+            tp_sl_pnl = SL_PCT
+        else:
+            tp_sl_pnl = pnl  # 시간/가디언 청산 → 실제 수익 사용
+        old_tp_sl = bk.get("tp_sl_avg", 0)
+        bk["tp_sl_avg"] = round(old_tp_sl * (1 - alpha) + tp_sl_pnl * alpha, 3)
+
+        # D+1 최고가 수익률 업데이트 (max_high_pct 제공 시)
+        max_high = t.get("max_high_pct")
+        if max_high is not None:
+            old_max = bk.get("max_1d_avg", 0)
+            bk["max_1d_avg"] = round(old_max * (1 - alpha) + max_high * alpha, 3)
+
+        bk["n"] = new_n
         buckets[bucket] = bk
 
     data["buckets"] = buckets
@@ -299,7 +341,7 @@ def bootstrap_from_signal_log() -> dict:
 
     logger.info(f"[Bootstrap] signal_log에서 {len(all_trades)}건 추출")
 
-    # N일 후 수익률 계산 (daily CSV에서)
+    # N일 후 수익률 + TP/SL 시뮬 + D+1 최고가 계산 (daily CSV에서)
     for t in all_trades:
         code = t["code"]
         csv_path = _DAILY_DIR / f"{code}.csv"
@@ -316,6 +358,10 @@ def bootstrap_from_signal_log() -> dict:
                     col_map[c] = "date"
                 elif cl in ("종가", "close", "Close"):
                     col_map[c] = "close"
+                elif cl in ("고가", "high", "High"):
+                    col_map[c] = "high"
+                elif cl in ("저가", "low", "Low"):
+                    col_map[c] = "low"
             df = df.rename(columns=col_map)
 
             if "date" not in df.columns or "close" not in df.columns:
@@ -329,6 +375,36 @@ def bootstrap_from_signal_log() -> dict:
                 continue
             idx = idx_list[0]
             entry = t["entry"]
+
+            # D+1 최고가 수익률
+            if idx + 1 < len(df) and "high" in df.columns:
+                d1_high = float(df.iloc[idx + 1]["high"])
+                t["max_1d"] = round((d1_high - entry) / entry * 100, 2)
+
+            # TP/SL 시뮬레이션 (D+1~5 구간)
+            tp_price = entry * (1 + TP_PCT / 100)
+            sl_price = entry * (1 + SL_PCT / 100)
+            tp_sl_result = None
+            for d in range(1, min(6, len(df) - idx)):
+                row = df.iloc[idx + d]
+                d_high = float(row.get("high", 0)) if "high" in df.columns else 0
+                d_low = float(row.get("low", 0)) if "low" in df.columns else 0
+                d_close = float(row["close"])
+
+                if d_low > 0 and d_low <= sl_price:
+                    tp_sl_result = SL_PCT
+                    break
+                if d_high > 0 and d_high >= tp_price:
+                    tp_sl_result = TP_PCT
+                    break
+            if tp_sl_result is None:
+                # TP/SL 미도달 → 5일차 종가 기준
+                if idx + 5 < len(df):
+                    c5 = float(df.iloc[idx + 5]["close"])
+                    tp_sl_result = round((c5 - entry) / entry * 100, 2)
+                else:
+                    tp_sl_result = t.get("pnl_1d", 0)
+            t["tp_sl"] = tp_sl_result
 
             # 3일 후, 5일 후 수익률
             if idx + 3 < len(df):
@@ -353,10 +429,14 @@ def bootstrap_from_signal_log() -> dict:
         avg_1d = sum(t.get("pnl_1d", 0) for t in bucket_trades) / n
         pnl_3d = [t["pnl_3d"] for t in bucket_trades if "pnl_3d" in t]
         pnl_5d = [t["pnl_5d"] for t in bucket_trades if "pnl_5d" in t]
+        tp_sl_list = [t["tp_sl"] for t in bucket_trades if "tp_sl" in t]
+        max_1d_list = [t["max_1d"] for t in bucket_trades if "max_1d" in t]
 
         avg_3d = sum(pnl_3d) / len(pnl_3d) if pnl_3d else avg_1d * 2
         avg_5d = sum(pnl_5d) / len(pnl_5d) if pnl_5d else avg_1d * 3
         hit_rate = sum(1 for t in bucket_trades if t.get("pnl_1d", 0) > 0) / n
+        tp_sl_avg = sum(tp_sl_list) / len(tp_sl_list) if tp_sl_list else avg_1d
+        max_1d_avg = sum(max_1d_list) / len(max_1d_list) if max_1d_list else avg_1d * 2
 
         # 기본값과 블렌딩 (데이터 적으면 기본값 비중 높게)
         confidence = min(1.0, n / 20)  # 20개 이상이면 100% 실데이터
@@ -367,6 +447,8 @@ def bootstrap_from_signal_log() -> dict:
             "avg_3d": round(avg_3d * confidence + defaults["avg_3d"] * (1 - confidence), 3),
             "avg_5d": round(avg_5d * confidence + defaults["avg_5d"] * (1 - confidence), 3),
             "hit_rate": round(hit_rate * confidence + defaults["hit_rate"] * (1 - confidence), 3),
+            "tp_sl_avg": round(tp_sl_avg * confidence + defaults["tp_sl_avg"] * (1 - confidence), 3),
+            "max_1d_avg": round(max_1d_avg * confidence + defaults["max_1d_avg"] * (1 - confidence), 3),
             "n": n,
         }
 
@@ -395,7 +477,9 @@ def main():
                   f"1D {bk['avg_1d']:+5.2f}% | "
                   f"3D {bk['avg_3d']:+5.2f}% | "
                   f"5D {bk['avg_5d']:+5.2f}% | "
-                  f"적중 {bk['hit_rate']*100:4.1f}% | "
+                  f"TP/SL {bk.get('tp_sl_avg', 0):+5.2f}% | "
+                  f"max1D {bk.get('max_1d_avg', 0):+5.2f}% | "
+                  f"승률 {bk['hit_rate']*100:4.1f}% | "
                   f"n={bk['n']}")
         print(f"\n저장: {BUCKET_PATH}")
 
