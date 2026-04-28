@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""연기금+금투 합류 스캔 → Supabase 업로드.
+"""매집 합류 시그널 → Supabase 업로드.
 
-FLOWX "연기금 매집 타이밍" 패널에 표시.
+FLOWX "매집 합류 시그널" 패널에 표시.
 테이블: intelligence_pension_scan (date PK, upsert)
 
 COO G7 Stage4 C41에서 호출:

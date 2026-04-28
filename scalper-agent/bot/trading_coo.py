@@ -3333,7 +3333,7 @@ class TradingCOO:
             # 텔레그램 알림 (핵심후보 TOP 5)
             best_fresh = result.get("best_fresh", [])
             if best_fresh and hasattr(self, "_tg_alert"):
-                lines = ["연기금+금투 합류 (D+5 +1.6%)"]
+                lines = ["[매집 합류 시그널] (D+5 +1.6%)"]
                 for s in best_fresh[:5]:
                     lines.append(
                         f"  {s['name']} {s['pension_consec']}d "
