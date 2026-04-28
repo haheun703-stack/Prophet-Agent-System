@@ -244,6 +244,94 @@ def load_universe() -> dict:
     return {}
 
 
+def patch_universe_from_quant(min_cap: int = 200) -> int:
+    """quant_investor_extra에 있지만 universe에 없는 종목을 KRX Open API로 보충.
+
+    pykrx 장애 시 build_universe()가 일부 종목을 놓칠 수 있으므로,
+    quant_investor_extra.json과 대조하여 누락 종목을 추가한다.
+
+    Returns:
+        추가된 종목 수
+    """
+    quant_path = DATA_DIR / "quant_investor_extra.json"
+    if not quant_path.exists():
+        logger.info("quant_investor_extra.json 없음 — 패치 스킵")
+        return 0
+
+    universe = load_universe()
+    if not universe:
+        logger.warning("universe.json 비어있음 — 패치 스킵")
+        return 0
+
+    raw = json.loads(quant_path.read_text(encoding="utf-8"))
+    daily = raw.get("daily", {})
+
+    # 미등록 종목 찾기
+    missing_codes = [code for code in daily if code not in universe]
+    if not missing_codes:
+        logger.info("universe 패치: 누락 종목 없음")
+        return 0
+
+    # KRX Open API로 시총 + 시장 정보 조회
+    try:
+        from data.krx_openapi_client import fetch_stock_daily
+    except ImportError:
+        logger.warning("krx_openapi_client 없음 — 패치 스킵")
+        return 0
+
+    today = datetime.now().strftime("%Y%m%d")
+    krx = fetch_stock_daily(today, market="all")
+    if not krx:
+        # 어제 시도
+        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
+        krx = fetch_stock_daily(yesterday, market="all")
+
+    if not krx:
+        logger.warning("KRX API 데이터 없음 — 패치 스킵")
+        return 0
+
+    # 기존 섹터 매핑 재활용
+    old_sector = {}
+    for code, info in universe.items():
+        if isinstance(info, dict) and info.get("sector"):
+            old_sector[code] = info["sector"]
+
+    added = 0
+    for code in missing_codes:
+        krx_info = krx.get(code, {})
+        if not krx_info:
+            continue
+
+        cap_val = krx_info.get("mktcap_b", 0)
+        if cap_val < min_cap:
+            continue
+
+        market = krx_info.get("market", "KOSPI")
+        name = daily[code].get("name", krx_info.get("name", ""))
+
+        universe[code] = {
+            "name": name,
+            "market": market,
+            "suffix": ".KS" if market == "KOSPI" else ".KQ",
+            "mkt_code": "J" if market == "KOSPI" else "Q",
+            "sector": old_sector.get(code, "기타"),
+            "volume": krx_info.get("volume", 0),
+            "per": 0,
+            "pbr": 0,
+            "cap_億": round(cap_val, 1),
+        }
+        added += 1
+
+    if added > 0:
+        with open(UNIVERSE_FILE, "w", encoding="utf-8") as f:
+            json.dump(universe, f, ensure_ascii=False, indent=2)
+        logger.info(f"universe 패치: {added}종목 추가 (총 {len(universe)})")
+    else:
+        logger.info("universe 패치: 추가 대상 없음")
+
+    return added
+
+
 # ═══════════════════════════════════════════════════
 #  Naver Finance API 기반 유니버스 빌드 (pykrx 실패 시 fallback)
 # ═══════════════════════════════════════════════════
