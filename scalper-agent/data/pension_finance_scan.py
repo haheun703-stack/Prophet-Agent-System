@@ -18,7 +18,6 @@ COO G7 Stage4 C41에서 호출:
 """
 import json
 import logging
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -121,7 +120,7 @@ def scan_pension_finance() -> Optional[dict]:
         else:
             fi_joined = ""
 
-        # 5d 수���률 (CSV)
+        # 5d 수익률 (CSV)
         ret5 = 0.0
         close_now = 0
         csv_path = FLOW_DIR / f"{code}_investor.csv"
@@ -161,7 +160,7 @@ def scan_pension_finance() -> Optional[dict]:
             "close": close_now,
         }
 
-        if fi_joined == "TODAY":
+        if fi_joined in ("TODAY", "YESTERDAY"):
             best_stocks.append(entry)
         elif fi_joined == "" and ret5 < 5:
             # 대기: 연기금만 매수중, 금투 아직, 덜 오른 것
@@ -171,7 +170,7 @@ def scan_pension_finance() -> Optional[dict]:
     best_stocks.sort(key=lambda x: -x["pension_cum"])
     standby_stocks.sort(key=lambda x: -x["pension_cum"])
 
-    # 아직 덜 오��� 핵심 후보 분리
+    # 아직 덜 오른 핵심 후보 분리
     best_fresh = [s for s in best_stocks if s["ret5"] < 5]
 
     result = {

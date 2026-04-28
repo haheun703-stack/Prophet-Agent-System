@@ -3332,7 +3332,7 @@ class TradingCOO:
 
             # 텔레그램 알림 (핵심후보 TOP 5)
             best_fresh = result.get("best_fresh", [])
-            if best_fresh and hasattr(self, "_tg_alert"):
+            if best_fresh:
                 lines = ["[매집 합류 시그널] (D+5 +1.6%)"]
                 for s in best_fresh[:5]:
                     lines.append(
@@ -3345,9 +3345,22 @@ class TradingCOO:
                 if standby_count:
                     lines.append(f"  +대기 {standby_count}종목")
                 msg = "\n".join(lines)
-                alert_fn = self._tg_alert
-                if alert_fn:
-                    await asyncio.to_thread(alert_fn, msg)
+                sent = False
+                if context and self.bot and getattr(self.bot, "chat_id", None):
+                    try:
+                        await context.bot.send_message(
+                            chat_id=self.bot.chat_id, text=msg,
+                        )
+                        sent = True
+                    except Exception:
+                        pass
+                if not sent:
+                    alert_fn = (
+                        getattr(self.auto_trader, "_send_alert", None)
+                        if self.auto_trader else None
+                    )
+                    if alert_fn:
+                        await asyncio.to_thread(alert_fn, msg)
 
             logger.info(
                 f"[C41] 연기금스캔 {'완료' if ok else '실패'} — "
