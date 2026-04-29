@@ -8,8 +8,9 @@ FLOWX 패널명: "매집 합류 시그널"
   연기금 3일+ + 금투 매수 + 외인 매도 → D+5 +1.58% (동일)
   최적 타이밍: 연기금 3~4일차에 금투가 들어오는 시점
 
-감지 방식: 최근 10거래일 중 연기금 매수 5일+ (빈도 기반)
+감지 방식: 최근 10거래일 중 연기금 매수 7일+ (빈도 기반)
   → 하루 쉬어도 패턴을 놓치지 않음 (연속 방식 대비 개선)
+  → pension_score 기반 TOP 랭킹 (ranked_stocks)
 
 데이터 소스:
   - quant_investor_extra.json (퀀트봇 pykrx, 매일 17:28 갱신)
@@ -215,12 +216,14 @@ def scan_pension_finance() -> Optional[dict]:
         "ranked_stocks": ranked_stocks,
     }
 
-    logger.info(
-        f"연기금스캔 완료: 핵심 {len(best_stocks)}종목 "
-        f"(덜오른 {len(best_fresh)}) / 대기 {len(standby_stocks)}종목 "
-        f"/ TOP1={ranked_stocks[0]['name']}({ranked_stocks[0]['pension_score']}점)"
-        if ranked_stocks else "연기금스캔 완료: 0종목"
-    )
+    if ranked_stocks:
+        logger.info(
+            f"연기금스캔 완료: 핵심 {len(best_stocks)}종목 "
+            f"(덜오른 {len(best_fresh)}) / 대기 {len(standby_stocks)}종목 "
+            f"/ TOP1={ranked_stocks[0]['name']}({ranked_stocks[0]['pension_score']}점)"
+        )
+    else:
+        logger.info("연기금스캔 완료: 0종목")
     return result
 
 

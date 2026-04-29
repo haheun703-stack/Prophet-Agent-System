@@ -3314,7 +3314,8 @@ class TradingCOO:
     async def _job_pension_scan(self, context=None) -> dict:
         """C41: 연기금+금투 합류 타이밍 스캔 → FLOWX 업로드.
 
-        연기금 3-5일 연속매수 종목 중 금투(금융투자)가 합류한 종목 감지.
+        연기금 7일+(10일 윈도우 빈도 기반) 종목 중 금투가 합류한 종목 감지.
+        pension_score 기반 TOP 랭킹 + Supabase 업로드.
         백테스트: D+5 +1.59%, 외인 방향 무관.
         """
         try:
