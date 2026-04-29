@@ -2082,7 +2082,7 @@ def run_evening_recommendation() -> RecommendationReport:
     t0 = time.time()
     logger.info("[Step 1.7] 섹터 모멘텀 분석 (전체 23개 섹터)...")
     try:
-        from data.sector_momentum import analyze_sectors, get_hot_sector_codes, format_telegram_report as fmt_sector
+        from data.sector_momentum import analyze_sectors, get_hot_sector_codes
         sector_momentum_report = analyze_sectors()
         if sector_momentum_report:
             hot_sects = [s for s in sector_momentum_report.sectors
