@@ -53,9 +53,10 @@ def upload_pension_scan(data: dict) -> bool:
             .execute()
 
         ranked = data.get("ranked_stocks", [])
-        top1 = ranked[0] if ranked else (data["best_stocks"][0] if data["best_stocks"] else {})
+        best = data.get("best_stocks", [])
+        top1 = ranked[0] if ranked else (best[0] if best else {})
         logger.info(
-            f"연기금스캔 업로드 완료: {data['date']} · "
+            f"연기금스캔 업로드 완료: {data.get('date', '?')} · "
             f"TOP1={top1.get('name', '?')}({top1.get('pension_score', 0)}점) · "
             f"핵심 {data.get('best_count', 0)}종목 / "
             f"대기 {data.get('standby_count', 0)}종목"

@@ -3311,16 +3311,20 @@ class TradingCOO:
             logger.warning(f"[C40] 기관 연속매수 감지 실패 (무시): {e}")
             return {"inst_accumulation": f"ERROR: {e}"}
 
-    async def _job_pension_scan(self, context=None) -> dict:
+    async def _job_pension_scan(self, context=None, _is_retry=False) -> dict:
         """C41: 연기금+금투 합류 타이밍 스캔 → FLOWX 업로드.
 
         연기금 7일+(10일 윈도우 빈도 기반) 종목 중 금투가 합류한 종목 감지.
         pension_score 기반 TOP 랭킹 + Supabase 업로드.
         백테스트: D+5 +1.59%, 외인 방향 무관.
+
+        quant_investor_extra.json 갱신(~17:32)보다 먼저 실행되면
+        데이터가 전날이므로, 35분 후 1회 재시도를 예약한다.
         """
         try:
             from data.pension_finance_scan import scan_pension_finance
             from data.upload_pension_scan import upload_pension_scan
+            from datetime import date as _date
 
             result = await asyncio.to_thread(scan_pension_finance)
             if not result or (
@@ -3328,6 +3332,17 @@ class TradingCOO:
             ):
                 logger.warning("[C41] 연기금+금투 스캔 종목 없음")
                 return {"pension_scan": "SKIP"}
+
+            # 날짜 검증: quant 데이터가 오늘인지 확인
+            today_str = _date.today().strftime("%Y-%m-%d")
+            data_date = result.get("date", "")
+            if data_date != today_str and not _is_retry:
+                logger.warning(
+                    f"[C41] quant 미갱신 ({data_date} ≠ {today_str}) "
+                    f"— 업로드 스킵, 35분 후 재시도 예약"
+                )
+                asyncio.create_task(self._pension_scan_delayed_retry(context))
+                return {"pension_scan": f"STALE({data_date})"}
 
             ok = await asyncio.to_thread(upload_pension_scan, result)
 
@@ -3341,11 +3356,13 @@ class TradingCOO:
                         else "어제" if s.get("fi_joined") == "YESTERDAY"
                         else "대기"
                     )
+                    p_cum = s.get('pension_cum', 0) or 0
+                    f_today = s.get('fi_today', 0) or 0
                     lines.append(
-                        f"  {i}. {s['name']} {s.get('pension_score', 0)}점 "
-                        f"연{s['pension_buy_days']}d "
-                        f"누적{s['pension_cum']:+.0f}억 "
-                        f"금투{s['fi_today']:+.0f}억 "
+                        f"  {i}. {s.get('name','?')} {s.get('pension_score', 0)}점 "
+                        f"연{s.get('pension_buy_days', 0)}d "
+                        f"누적{p_cum:+.0f}억 "
+                        f"금투{f_today:+.0f}억 "
                         f"[{joined_tag}]"
                     )
                 standby_count = result.get("standby_count", 0)
@@ -3379,6 +3396,16 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[C41] 연기금+금투 스캔 실패 (무시): {e}")
             return {"pension_scan": f"ERROR: {e}"}
+
+    async def _pension_scan_delayed_retry(self, context=None):
+        """C41 지연 재시도 — quant_investor_extra 갱신(~17:32) 대기 후 1회 재실행."""
+        try:
+            await asyncio.sleep(35 * 60)  # 35분 대기
+            logger.info("[C41] 지연 재시도 시작 (quant 갱신 대기 완료)")
+            result = await self._job_pension_scan(context, _is_retry=True)
+            logger.info(f"[C41] 지연 재시도 결과: {result}")
+        except Exception as e:
+            logger.warning(f"[C41] 지연 재시도 실패: {e}")
 
     async def _job_nxt_performance(self, context=None) -> dict:
         """C33: 어제 NXT TOP 5 성적표.
