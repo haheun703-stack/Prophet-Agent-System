@@ -3057,9 +3057,8 @@ class TradingCOO:
             }
 
             # 로컬 캐시 저장 (장중 수급 리포트에서 교차 체크용)
-            import json as _json
             cache_path = Path(__file__).resolve().parent.parent / "data_store" / "accumulation_radar.json"
-            cache_path.write_text(_json.dumps(radar_data, ensure_ascii=False, indent=2), encoding="utf-8")
+            cache_path.write_text(json.dumps(radar_data, ensure_ascii=False, indent=2), encoding="utf-8")
 
             # Supabase 업로드
             await asyncio.to_thread(upload_accumulation_radar, radar_data)
@@ -3071,7 +3070,7 @@ class TradingCOO:
                 tag = t.get("tag", "")
                 dual_mark = "🔥" if t.get("last_dual") and "쌍" not in tag else ""
                 lines.append(
-                    f"  {t['name']} | 외인{t.get('frgn_days',0)}일 "
+                    f"  {t.get('name','?')} | 외인{t.get('frgn_days',0)}일 "
                     f"가속{t.get('accel_b',0):+.0f}억 | "
                     f"5일{t.get('chg5',0):+.1f}% | [{tag}]{dual_mark}"
                 )
@@ -3083,8 +3082,8 @@ class TradingCOO:
                     await context.bot.send_message(
                         chat_id=self.bot.chat_id, text=msg)
                     sent = True
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"[C36] 텔레그램 전송 실패: {e}")
             if not sent:
                 alert_fn = getattr(self.auto_trader, "_send_alert", None) if self.auto_trader else None
                 if alert_fn:
@@ -3376,8 +3375,8 @@ class TradingCOO:
                             chat_id=self.bot.chat_id, text=msg,
                         )
                         sent = True
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"[C41] 텔레그램 전송 실패: {e}")
                 if not sent:
                     alert_fn = (
                         getattr(self.auto_trader, "_send_alert", None)

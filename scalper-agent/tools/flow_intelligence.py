@@ -308,7 +308,7 @@ async def generate_intraday_flow_report(kis_trader, round_num: int) -> str:
         out_frgn = prev_frgn - frgn_buy_codes
         if new_frgn or out_frgn:
             lines.append(f"\n[변동]")
-            if new_frgn:
+            if new_frgn and frgn_buy:
                 names = [s["name"] for s in frgn_buy if s.get("code") in new_frgn]
                 lines.append(f"  외인 신규진입: {', '.join(names[:3])}")
             if out_frgn:
@@ -1138,7 +1138,7 @@ def detect_foreign_dump(
         if _is_etf(name):
             continue
 
-        cap = info.get("cap_億", 0) or info.get("cap_억", 0)
+        cap = info.get("cap_억", 0)
         if not cap or cap < min_cap:
             continue
 
