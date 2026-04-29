@@ -1738,7 +1738,7 @@ def _step5_cross_validate(
         # ── TV 강매집 최소 점수 보장 + 과열 페널티 ──────────────
         # 4/8 학습: QUIET_ACC(85)=75%적중+3.9% / QUIET_ACC(90+)=0%적중
         #           EXPLOSION(70)=25%적중-4.1% / EXPLOSION(75)=33%적중+1.6%
-        if _tv_pattern == "QUIET_ACCUMULATION" and 83 <= _tv_score <= 87:
+        if _tv_pattern == "QUIET_ACCUMULATION" and 83 <= _tv_score <= 89:
             # ★ 최적 구간: 75% 적중 — 적극 보장
             tv_floor = max(18.0, tv_direct * 0.6)
             if total < tv_floor:

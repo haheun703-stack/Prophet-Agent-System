@@ -283,8 +283,8 @@ class AutoTrader:
                             logger.error(f"가격 fallback 전부 실패 {code} — 포지션 등록 불가")
                             continue
                     target_state = self._init_dynamic_target(code, name, cp)
-                    sl = target_state.dynamic_sl if target_state else item["sl"]
-                    tp = target_state.dynamic_tp if target_state else item["tp"]
+                    sl = target_state.dynamic_sl if target_state else item.get("sl", int(cp * 0.95))
+                    tp = target_state.dynamic_tp if target_state else item.get("tp", int(cp * 1.10))
 
                     self._positions[code] = {
                         "entry_price": cp,

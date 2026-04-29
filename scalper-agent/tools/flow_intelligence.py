@@ -30,9 +30,6 @@ _prev_report = {}  # {"frgn_buy": [...], "inst_buy": [...]}
 # ── CSV 컬럼 인덱스 상수 (헤더 기반 자동 매핑) ──
 # 수급 CSV 헤더:
 #   date,종가,전일대비,외국인_수량,기관_수량,개인_수량,외국인_금액,기관_금액,개인_금액,기타법인_금액,기타법인_수량
-_COL_MAP_CACHE = {}  # {frozenset(header_tuple): {col_name: idx}}
-
-
 def _parse_flow_csv(filepath: Path, tail_n: int = 0) -> list[dict]:
     """수급 CSV를 헤더 기반으로 파싱. 컬럼 이름으로 접근 → 인덱스 실수 원천 차단.
 

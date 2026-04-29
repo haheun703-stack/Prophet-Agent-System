@@ -3249,7 +3249,7 @@ class TradingCOO:
 
         except Exception as e:
             logger.warning(f"[C39] 대량쌍매수/연속급등 감지 실패 (무시): {e}")
-            return {"massive_dual_alert": f"ERROR: {e}"}
+            return {"massive_dual": 0, "consecutive_surge": 0}
 
     async def _job_inst_accumulation(self, context=None) -> dict:
         """C40: 기관 연속매수 초기 감지 → FLOWX 업로드.
