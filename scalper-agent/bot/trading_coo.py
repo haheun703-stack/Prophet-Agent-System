@@ -3336,7 +3336,7 @@ class TradingCOO:
                 lines = ["[매집 합류 시그널] (D+5 +1.6%)"]
                 for s in best_fresh[:5]:
                     lines.append(
-                        f"  {s['name']} {s['pension_consec']}d "
+                        f"  {s['name']} {s['pension_buy_days']}d "
                         f"연{s['pension_cum']:+.0f}억 "
                         f"금{s['fi_today']:+.0f}억 "
                         f"5d{s['ret5']:+.1f}%"

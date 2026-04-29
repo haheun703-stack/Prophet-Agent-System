@@ -54,7 +54,7 @@ def upload_pension_scan(data: dict) -> bool:
         top1 = data["best_stocks"][0] if data["best_stocks"] else {}
         logger.info(
             f"연기금스캔 업로드 완료: {data['date']} · "
-            f"TOP1={top1.get('name', '?')}({top1.get('pension_consec', 0)}d) · "
+            f"TOP1={top1.get('name', '?')}({top1.get('pension_buy_days', 0)}d) · "
             f"핵심 {data.get('best_count', 0)}종목 / "
             f"대기 {data.get('standby_count', 0)}종목"
         )

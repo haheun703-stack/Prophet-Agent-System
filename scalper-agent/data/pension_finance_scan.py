@@ -8,6 +8,9 @@ FLOWX 패널명: "매집 합류 시그널"
   연기금 3일+ + 금투 매수 + 외인 매도 → D+5 +1.58% (동일)
   최적 타이밍: 연기금 3~4일차에 금투가 들어오는 시점
 
+감지 방식: 최근 10거래일 중 연기금 매수 5일+ (빈도 기반)
+  → 하루 쉬어도 패턴을 놓치지 않음 (연속 방식 대비 개선)
+
 데이터 소스:
   - quant_investor_extra.json (퀀트봇 pykrx, 매일 17:28 갱신)
   - flow/*_investor.csv (종가, 5d 수익률 계산)
@@ -90,21 +93,20 @@ def scan_pension_finance() -> Optional[dict]:
             continue
         latest_date = sorted_dates[-1]
 
-        # 연기금 연속매수 카운트 (최근→과거)
-        pension_consec = 0
-        for d in reversed(sorted_dates):
-            if dates[d].get("pension_net", 0) > 0:
-                pension_consec += 1
-            else:
-                break
+        # 연기금 매수일수 (최근 10거래일 중 매수한 날 수)
+        # 하루 쉬어도 패턴을 놓치지 않도록 연속 대신 빈도 기반
+        window = sorted_dates[-10:]  # 최근 10거래일
+        pension_buy_days = sum(
+            1 for d in window if dates[d].get("pension_net", 0) > 0
+        )
 
-        if pension_consec < 3 or pension_consec > 5:
+        if pension_buy_days < 7:
             continue
 
-        # 연기금 누적
+        # 연기금 누적 (윈도우 전체)
         pension_cum = sum(
             dates[d].get("pension_net", 0)
-            for d in sorted_dates[-pension_consec:]
+            for d in window if dates[d].get("pension_net", 0) > 0
         )
 
         # 금투 오늘/어제
@@ -151,7 +153,7 @@ def scan_pension_finance() -> Optional[dict]:
             "name": name,
             "sector": info.get("sector", ""),
             "cap": cap,
-            "pension_consec": pension_consec,
+            "pension_buy_days": pension_buy_days,
             "pension_cum": round(pension_cum, 1),
             "fi_today": round(fi_today, 1),
             "fi_3d": round(fi_3d, 1),
@@ -179,9 +181,9 @@ def scan_pension_finance() -> Optional[dict]:
         "best_count": len(best_stocks),
         "best_fresh_count": len(best_fresh),
         "standby_count": len(standby_stocks),
-        "best_stocks": best_stocks[:20],
-        "best_fresh": best_fresh[:15],
-        "standby_stocks": standby_stocks[:15],
+        "best_stocks": best_stocks[:50],
+        "best_fresh": best_fresh[:30],
+        "standby_stocks": standby_stocks[:30],
     }
 
     logger.info(
@@ -200,14 +202,14 @@ if __name__ == "__main__":
         print(f"\n기준일: {r['date']}")
         print(f"핵심후보: {r['best_count']}종목 (덜오른것 {r['best_fresh_count']})")
         print(f"대기: {r['standby_count']}종목\n")
-        print("=== 핵심후보 (연기금3-5d + 금투 오늘 진입) ===")
+        print("=== 핵심후보 (연기금5d+ + 금투 진입) ===")
         for s in r["best_stocks"][:10]:
-            print(f"  {s['name']:12s} 연기금{s['pension_consec']}d "
+            print(f"  {s['name']:12s} 연기금{s['pension_buy_days']}d "
                   f"누적{s['pension_cum']:>+.0f}억 "
                   f"금투{s['fi_today']:>+.0f}억 "
                   f"5d{s['ret5']:>+.1f}%")
         print(f"\n=== 대기 (금투 미진입, 5d<5%) ===")
         for s in r["standby_stocks"][:10]:
-            print(f"  {s['name']:12s} 연기금{s['pension_consec']}d "
+            print(f"  {s['name']:12s} 연기금{s['pension_buy_days']}d "
                   f"누적{s['pension_cum']:>+.0f}억 "
                   f"5d{s['ret5']:>+.1f}%")
