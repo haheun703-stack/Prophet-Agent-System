@@ -3330,16 +3330,22 @@ class TradingCOO:
 
             ok = await asyncio.to_thread(upload_pension_scan, result)
 
-            # 텔레그램 알림 (핵심후보 TOP 5)
-            best_fresh = result.get("best_fresh", [])
-            if best_fresh:
-                lines = ["[매집 합류 시그널] (D+5 +1.6%)"]
-                for s in best_fresh[:5]:
+            # 텔레그램 알림 (수급 강도 TOP 5)
+            ranked = result.get("ranked_stocks", [])
+            if ranked:
+                lines = [f"[매집 합류 시그널] 수급TOP (D+5 +1.6%)"]
+                for i, s in enumerate(ranked[:5], 1):
+                    joined_tag = (
+                        "오늘" if s.get("fi_joined") == "TODAY"
+                        else "어제" if s.get("fi_joined") == "YESTERDAY"
+                        else "대기"
+                    )
                     lines.append(
-                        f"  {s['name']} {s['pension_buy_days']}d "
-                        f"연{s['pension_cum']:+.0f}억 "
-                        f"금{s['fi_today']:+.0f}억 "
-                        f"5d{s['ret5']:+.1f}%"
+                        f"  {i}. {s['name']} {s.get('pension_score', 0)}점 "
+                        f"연{s['pension_buy_days']}d "
+                        f"누적{s['pension_cum']:+.0f}억 "
+                        f"금투{s['fi_today']:+.0f}억 "
+                        f"[{joined_tag}]"
                     )
                 standby_count = result.get("standby_count", 0)
                 if standby_count:

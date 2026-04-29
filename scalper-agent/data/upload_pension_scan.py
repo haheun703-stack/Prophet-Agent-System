@@ -45,16 +45,18 @@ def upload_pension_scan(data: dict) -> bool:
             "best_stocks": data.get("best_stocks", []),
             "best_fresh": data.get("best_fresh", []),
             "standby_stocks": data.get("standby_stocks", []),
+            "ranked_stocks": data.get("ranked_stocks", []),
         }
 
         client.table("intelligence_pension_scan") \
             .upsert(row, on_conflict="date") \
             .execute()
 
-        top1 = data["best_stocks"][0] if data["best_stocks"] else {}
+        ranked = data.get("ranked_stocks", [])
+        top1 = ranked[0] if ranked else (data["best_stocks"][0] if data["best_stocks"] else {})
         logger.info(
             f"연기금스캔 업로드 완료: {data['date']} · "
-            f"TOP1={top1.get('name', '?')}({top1.get('pension_buy_days', 0)}d) · "
+            f"TOP1={top1.get('name', '?')}({top1.get('pension_score', 0)}점) · "
             f"핵심 {data.get('best_count', 0)}종목 / "
             f"대기 {data.get('standby_count', 0)}종목"
         )

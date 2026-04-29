@@ -42,8 +42,29 @@ ETF_PREFIXES = [
 ]
 
 
+def _calc_pension_score(entry: dict) -> int:
+    """수급 강도 점수 산출.
+
+    공식:
+      연기금일수 × 15      (7d=105 ~ 10d=150)  꾸준함
+    + 연기금누적 / 10      (100억=10점)          규모
+    + min(금투오늘×2, 60)  (30억=60점, cap)      합류 강도
+    + TODAY +20 / YESTERDAY +10                   신선도
+    + 덜오름(ret5<5%) +15                        매수여지
+    """
+    score = (
+        entry["pension_buy_days"] * 15
+        + entry["pension_cum"] / 10
+        + min(max(entry["fi_today"], 0) * 2, 60)
+        + (20 if entry["fi_joined"] == "TODAY"
+           else 10 if entry["fi_joined"] == "YESTERDAY" else 0)
+        + (15 if entry["ret5"] < 5 else 0)
+    )
+    return round(score)
+
+
 def scan_pension_finance() -> Optional[dict]:
-    """연기금 3-5일 연속매수 + 금투 합류 종목 스캔.
+    """연기금 7일+ 매수(10일 윈도우) + 금투 합류 종목 스캔.
 
     Returns:
         {
@@ -53,6 +74,7 @@ def scan_pension_finance() -> Optional[dict]:
             "standby_count": int,   # 연기금만, 금투 아직
             "best_stocks": [...],   # 핵심후보
             "standby_stocks": [...],  # 대기 리스트
+            "ranked_stocks": [...],   # 점수 기반 TOP 정렬
         }
     """
     if not QUANT_JSON.exists():
@@ -161,6 +183,7 @@ def scan_pension_finance() -> Optional[dict]:
             "ret5": round(ret5, 1),
             "close": close_now,
         }
+        entry["pension_score"] = _calc_pension_score(entry)
 
         if fi_joined in ("TODAY", "YESTERDAY"):
             best_stocks.append(entry)
@@ -175,6 +198,11 @@ def scan_pension_finance() -> Optional[dict]:
     # 아직 덜 오른 핵심 후보 분리
     best_fresh = [s for s in best_stocks if s["ret5"] < 5]
 
+    # 점수 기반 TOP 랭킹 (핵심 + 대기 전체 통합 정렬)
+    all_scored = best_stocks + standby_stocks
+    all_scored.sort(key=lambda x: -x["pension_score"])
+    ranked_stocks = all_scored[:10]
+
     result = {
         "date": f"{latest_date[:4]}-{latest_date[4:6]}-{latest_date[6:]}" if len(latest_date) == 8 else latest_date,
         "total_count": len(best_stocks) + len(standby_stocks),
@@ -184,11 +212,14 @@ def scan_pension_finance() -> Optional[dict]:
         "best_stocks": best_stocks[:50],
         "best_fresh": best_fresh[:30],
         "standby_stocks": standby_stocks[:30],
+        "ranked_stocks": ranked_stocks,
     }
 
     logger.info(
         f"연기금스캔 완료: 핵심 {len(best_stocks)}종목 "
-        f"(덜오른 {len(best_fresh)}) / 대기 {len(standby_stocks)}종목"
+        f"(덜오른 {len(best_fresh)}) / 대기 {len(standby_stocks)}종목 "
+        f"/ TOP1={ranked_stocks[0]['name']}({ranked_stocks[0]['pension_score']}점)"
+        if ranked_stocks else "연기금스캔 완료: 0종목"
     )
     return result
 
@@ -202,7 +233,17 @@ if __name__ == "__main__":
         print(f"\n기준일: {r['date']}")
         print(f"핵심후보: {r['best_count']}종목 (덜오른것 {r['best_fresh_count']})")
         print(f"대기: {r['standby_count']}종목\n")
-        print("=== 핵심후보 (연기금5d+ + 금투 진입) ===")
+
+        print("=== TOP 랭킹 (수급 강도 점수) ===")
+        for i, s in enumerate(r.get("ranked_stocks", []), 1):
+            print(f"  {i:>2}. {s['name']:12s} {s['pension_score']:>3}점 "
+                  f"연{s['pension_buy_days']}d "
+                  f"누적{s['pension_cum']:>+.0f}억 "
+                  f"금투{s['fi_today']:>+.0f}억 "
+                  f"합류={s['fi_joined'] or '-':4s} "
+                  f"5d{s['ret5']:>+.1f}%")
+
+        print(f"\n=== 핵심후보 (연기금7d+ + 금투 진입) ===")
         for s in r["best_stocks"][:10]:
             print(f"  {s['name']:12s} 연기금{s['pension_buy_days']}d "
                   f"누적{s['pension_cum']:>+.0f}억 "
