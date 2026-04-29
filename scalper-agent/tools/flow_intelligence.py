@@ -1100,3 +1100,127 @@ def detect_consecutive_surge(min_pct: float = 20.0) -> dict:
 
     logger.info(f"[연속급등] {date_str} +{min_pct}% 이상: {len(surges)}종목")
     return out
+
+
+def detect_foreign_dump(
+    consec_days: int = 3,
+    min_total_억: float = 100.0,
+    min_cap: int = 500,
+    overheat_pct: float = 50.0,
+    overheat_days: int = 5,
+) -> dict:
+    """외인 투매/과열 종목 감지 → 매수금지·감점 태그.
+
+    3가지 패턴:
+    1. FOREIGN_DUMP: 외인 consec_days일 연속 매도 + 합산 -min_total_억 이상
+    2. FOREIGN_FLIP: 전일 외인 매수 → 당일 매도 전환 (일중반전)
+    3. THEME_OVERHEAT: overheat_days일 내 +overheat_pct%↑ + 외인 매도 전환
+
+    Returns:
+        {code: {"tag": "FOREIGN_DUMP"|"FOREIGN_FLIP"|"THEME_OVERHEAT",
+                "penalty": -20|-15|-25,
+                "detail": str,
+                "foreign_3d_억": float, "pct_5d": float}}
+    """
+    uni_path = DATA_STORE / "universe.json"
+    if not uni_path.exists():
+        return {}
+
+    universe = json.loads(uni_path.read_text(encoding="utf-8"))
+    result = {}
+    scanned = 0
+
+    for f in FLOW_DIR.glob("*_investor.csv"):
+        code = f.name.split("_")[0]
+        info = universe.get(code, {})
+        name = info.get("name", "?")
+
+        if _is_etf(name):
+            continue
+
+        cap = info.get("cap_億", 0) or info.get("cap_억", 0)
+        if not cap or cap < min_cap:
+            continue
+
+        rows = _parse_flow_csv(f, tail_n=max(consec_days + 1, overheat_days + 1))
+        if len(rows) < consec_days:
+            continue
+
+        scanned += 1
+
+        # 최근 N일 외인 금액 (백만원 단위)
+        recent = rows[-consec_days:]
+        foreign_vals = [_csv_float(r, "외국인_금액") for r in recent]
+        foreign_sum_억 = sum(foreign_vals) / 100  # 백만→억
+
+        # 종가 추이
+        close_now = _csv_float(rows[-1], "종가")
+        close_prev = _csv_float(rows[-2], "종가") if len(rows) >= 2 else 0
+
+        # ── 패턴 1: FOREIGN_DUMP (연속 매도 + 대량) ──
+        all_sell = all(v < 0 for v in foreign_vals)
+        if all_sell and abs(foreign_sum_억) >= min_total_억:
+            result[code] = {
+                "tag": "FOREIGN_DUMP",
+                "penalty": -20,
+                "name": name,
+                "cap": cap,
+                "foreign_sum_억": round(foreign_sum_억, 1),
+                "consec_sell_days": consec_days,
+                "detail": (
+                    f"외인{consec_days}일연속매도 "
+                    f"합산{foreign_sum_억:+.0f}억"
+                ),
+            }
+            continue  # 가장 강한 태그 → 다른 패턴 스킵
+
+        # ── 패턴 2: FOREIGN_FLIP (전일 매수→당일 매도 반전) ──
+        if len(rows) >= 2:
+            f_yesterday = _csv_float(rows[-2], "외국인_금액")
+            f_today = _csv_float(rows[-1], "외국인_금액")
+            # 전일 +30억 이상 매수 → 당일 -30억 이상 매도 (급반전)
+            if f_yesterday > 3000 and f_today < -3000:  # 백만원 단위
+                result[code] = {
+                    "tag": "FOREIGN_FLIP",
+                    "penalty": -15,
+                    "name": name,
+                    "cap": cap,
+                    "foreign_sum_억": round((f_yesterday + f_today) / 100, 1),
+                    "detail": (
+                        f"외인반전 전일{f_yesterday/100:+.0f}억"
+                        f"→당일{f_today/100:+.0f}억"
+                    ),
+                }
+                continue
+
+        # ── 패턴 3: THEME_OVERHEAT (급등 후 외인 매도 전환) ──
+        if len(rows) >= overheat_days:
+            close_5d_ago = _csv_float(rows[-overheat_days], "종가")
+            if close_5d_ago > 0 and close_now > 0:
+                pct_5d = (close_now / close_5d_ago - 1) * 100
+                f_today = _csv_float(rows[-1], "외국인_금액")
+                f_yesterday = _csv_float(rows[-2], "외국인_금액") if len(rows) >= 2 else 0
+                # 5일 +50% 이상 + 최근 2일 외인 매도
+                if pct_5d >= overheat_pct and f_today < 0 and f_yesterday < 0:
+                    result[code] = {
+                        "tag": "THEME_OVERHEAT",
+                        "penalty": -25,
+                        "name": name,
+                        "cap": cap,
+                        "pct_5d": round(pct_5d, 1),
+                        "foreign_sum_억": round(
+                            (f_today + f_yesterday) / 100, 1
+                        ),
+                        "detail": (
+                            f"{overheat_days}d{pct_5d:+.0f}% "
+                            f"외인매도전환"
+                        ),
+                    }
+
+    logger.info(
+        f"[외인던지기] {scanned}종목 스캔 → {len(result)}종목 감지 "
+        f"(DUMP:{sum(1 for v in result.values() if v['tag']=='FOREIGN_DUMP')} "
+        f"FLIP:{sum(1 for v in result.values() if v['tag']=='FOREIGN_FLIP')} "
+        f"OVERHEAT:{sum(1 for v in result.values() if v['tag']=='THEME_OVERHEAT')})"
+    )
+    return result

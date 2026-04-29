@@ -1057,6 +1057,16 @@ def _step5_cross_validate(
     except Exception as _fi_e:
         logger.warning(f"[step5] 수급강도 맵 로드 실패(무시): {_fi_e}")
 
+    # ── 외인 던지기 맵 (FOREIGN_DUMP / FLIP / OVERHEAT) ──
+    _foreign_dump_map = {}  # {code: {tag, penalty, detail, ...}}
+    try:
+        from tools.flow_intelligence import detect_foreign_dump as _detect_fd
+        _foreign_dump_map = _detect_fd()
+        if _foreign_dump_map:
+            logger.info(f"[step5] 외인던지기 맵: {len(_foreign_dump_map)}종목")
+    except Exception as _fd_e:
+        logger.warning(f"[step5] 외인던지기 맵 로드 실패(무시): {_fd_e}")
+
     # 모든 종목 코드 수집
     all_codes = set()
     all_codes.update(relay.get("stocks", {}).keys())
@@ -1630,6 +1640,15 @@ def _step5_cross_validate(
             sources.append(f"fi(q{_fi_qs:.0f}:+{fi_sc:.0f})")
             cross += 1
 
+        # ── 외인 던지기 감점 (FOREIGN_DUMP -20 / FLIP -15 / OVERHEAT -25) ──
+        fdump_pen = 0.0
+        if code in _foreign_dump_map:
+            _fd = _foreign_dump_map[code]
+            fdump_pen = _fd["penalty"]
+            sources.append(f"{_fd['tag']}({fdump_pen:+.0f})")
+            if _fd["tag"] == "THEME_OVERHEAT":
+                cross = 0  # 과열 종목은 교차검증 무효화
+
         # ── 합산 ──────────────────────────────
         raw_total = (relay_sc + premove_sc + tech_sc + bargain_sc + cross_bonus
                      + nat_sc + news_pen + obv_pen + rel_pen
@@ -1647,7 +1666,8 @@ def _step5_cross_validate(
                      + bomb_sc        # v4.1: 수급폭탄 보너스 (전종목)
                      + dual_buy_sc    # 대량 쌍매수 보너스
                      + surge_sc       # 연속급등 보너스
-                     + fi_sc)         # 수급 강도 보너스
+                     + fi_sc          # 수급 강도 보너스
+                     + fdump_pen)     # 외인 던지기 감점
 
         # ── US 모드 조정 ──────────────────────
         # DEFENSIVE: 전체 점수 20% 감점 (보수적 진입)
