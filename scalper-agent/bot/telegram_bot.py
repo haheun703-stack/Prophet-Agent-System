@@ -3618,10 +3618,12 @@ class BodyHunterBot:
 
         logger.info("유니버스 자동 리빌드 시작...")
         try:
-            from data.universe_builder import build_universe
+            from data.universe_builder import build_universe, patch_universe_from_quant
             uni = await asyncio.to_thread(build_universe)
-            log_event("UNIVERSE", f"리빌드 {len(uni)}종목")
-            logger.info(f"유니버스 리빌드 완료: {len(uni)}종목 (로그만)")
+            # quant_investor_extra 미등록 종목 보충 (pykrx 장애 대비)
+            patched = await asyncio.to_thread(patch_universe_from_quant)
+            log_event("UNIVERSE", f"리빌드 {len(uni)}종목 + 패치 {patched}종목")
+            logger.info(f"유니버스 리빌드 완료: {len(uni)} + 패치 {patched} (로그만)")
         except Exception as e:
             logger.error(f"유니버스 리빌드 실패: {e}")
 
