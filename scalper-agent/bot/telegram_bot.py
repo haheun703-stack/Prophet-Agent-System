@@ -1359,7 +1359,6 @@ class BodyHunterBot:
             return
 
         try:
-            from data.realtime_monitor import RealtimeMonitor
             rtm = self.auto_trader._get_rt_monitor()
             positions = rtm.get_positions()
 
