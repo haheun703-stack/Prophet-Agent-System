@@ -217,6 +217,7 @@ def convert_recommendation_to_flowx(
             "signal_type": signal_type,
             "volume_ratio": round(tv_ratio, 2),
             "momentum_regime": s.get("regime", "NORMAL"),
+            "frgn_joined": s.get("tv_frgn_joined", False),
         })
 
     # 2) 전쟁릴레이 종목 (war_relay_stocks) — 상위 5개만

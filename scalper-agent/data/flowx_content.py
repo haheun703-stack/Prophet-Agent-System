@@ -347,6 +347,8 @@ def _panel_accumulation_radar() -> list:
             "trading_value": round(sig.get("trading_value", 0), 1),
             "change_pct": round(sig.get("change_pct", 0), 2),
             "detail": sig.get("detail", "")[:80],
+            "frgn_joined": sig.get("frgn_joined", False),
+            "frgn_amount": round(sig.get("frgn_amount", 0), 1),
         })
 
     return result
