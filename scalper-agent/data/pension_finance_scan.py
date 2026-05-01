@@ -145,9 +145,10 @@ def scan_pension_finance() -> Optional[dict]:
         else:
             fi_joined = ""
 
-        # 5d 수익률 (CSV)
+        # 5d 수익률 + 외인 순매수 (CSV)
         ret5 = 0.0
         close_now = 0
+        frgn_today = 0.0  # 외인 오늘 순매수 (억원)
         csv_path = FLOW_DIR / f"{code}_investor.csv"
         if csv_path.exists():
             try:
@@ -168,6 +169,9 @@ def scan_pension_finance() -> Optional[dict]:
                     if c_now > 0 and c_5 > 0:
                         ret5 = ((c_now / c_5) - 1) * 100
                         close_now = int(c_now)
+                # 외인 오늘 순매수 (백만원 → 억원)
+                if rows:
+                    frgn_today = _csv_float(rows[-1], "외국인_금액") / 100
             except Exception:
                 pass
 
@@ -181,6 +185,8 @@ def scan_pension_finance() -> Optional[dict]:
             "fi_today": round(fi_today, 1),
             "fi_3d": round(fi_3d, 1),
             "fi_joined": fi_joined,
+            "frgn_today": round(frgn_today, 1),
+            "frgn_joined": frgn_today >= 1.0,  # 외인 1억+ 순매수
             "ret5": round(ret5, 1),
             "close": close_now,
         }
