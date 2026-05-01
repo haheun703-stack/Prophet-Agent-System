@@ -3209,21 +3209,21 @@ class TradingCOO:
             lines = []
             if dual and dual.get("stocks"):
                 top = dual["stocks"][:10]
-                lines.append(f"[대량 쌍매수] {dual['date']} — {dual['detected']}종목 감지")
+                lines.append(f"[대량 쌍매수] {dual.get('date','?')} — {dual.get('detected',0)}종목 감지")
                 lines.append("")
                 for s in top:
                     lines.append(
-                        f"#{s['rank']} {s['name']} "
-                        f"외{s['foreign_억']:+.0f} 기{s['inst_억']:+.0f} "
-                        f"합{s['total_억']:.0f}억 {s['pct_1d']:+.1f}%"
+                        f"#{s.get('rank','?')} {s.get('name','?')} "
+                        f"외{s.get('foreign_억',0):+.0f} 기{s.get('inst_億',0):+.0f} "
+                        f"합{s.get('total_億',0):.0f}억 {s.get('pct_1d',0):+.1f}%"
                     )
 
             if surge and surge.get("stocks"):
                 lines.append("")
-                lines.append(f"[연속급등 후보] {surge['date']} +20%↑ — {surge['count']}종목")
+                lines.append(f"[연속급등 후보] {surge.get('date','?')} +20%↑ — {surge.get('count',0)}종목")
                 for s in surge["stocks"]:
                     lines.append(
-                        f"  {s['name']} {s['change_pct']:+.1f}%"
+                        f"  {s.get('name','?')} {s.get('change_pct',0):+.1f}%"
                     )
 
             if lines:
@@ -3235,8 +3235,8 @@ class TradingCOO:
                             chat_id=self.bot.chat_id, text=msg,
                         )
                         sent = True
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"[C39] 텔레그램 직접 전송 실패: {e}")
                 if not sent:
                     alert_fn = getattr(self.auto_trader, "_send_alert", None) if self.auto_trader else None
                     if alert_fn:
@@ -3277,11 +3277,11 @@ class TradingCOO:
             if early:
                 lines = [f"[기관매집 레이더] 초기 {result.get('early_count', 0)}종목"]
                 for s in early:
-                    tag = f" *{s['tag']}" if s.get("tag") else ""
+                    tag = f" *{s.get('tag','')}" if s.get("tag") else ""
                     lines.append(
-                        f"  {s['name']} 기관{s['inst_consec']}d "
-                        f"+{s['inst_cum']:.0f}억 "
-                        f"5d{s['ret5']:+.1f}%{tag}"
+                        f"  {s.get('name','?')} 기관{s.get('inst_consec',0)}d "
+                        f"+{s.get('inst_cum',0):.0f}억 "
+                        f"5d{s.get('ret5',0):+.1f}%{tag}"
                     )
                 msg = "\n".join(lines)
                 sent = False
@@ -3291,8 +3291,8 @@ class TradingCOO:
                             chat_id=self.bot.chat_id, text=msg,
                         )
                         sent = True
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"[C40] 텔레그램 직접 전송 실패: {e}")
                 if not sent:
                     alert_fn = (
                         getattr(self.auto_trader, "_send_alert", None)

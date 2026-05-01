@@ -302,7 +302,7 @@ def scan_premove(top_n: int = 5, as_of: str = None) -> List[PreMoveCandidate]:
         try:
             tech = swing_analyze(day_df.copy())
             rsi = tech.get("rsi", 50.0)
-        except:
+        except Exception:
             pass
 
         # 거래량 비율
@@ -313,7 +313,7 @@ def scan_premove(top_n: int = 5, as_of: str = None) -> List[PreMoveCandidate]:
             ma20 = vol.rolling(20).mean().iloc[-1]
             if ma20 > 0:
                 vol_ratio = float(vol.iloc[-1] / ma20)
-        except:
+        except Exception:
             pass
 
         candidates.append(PreMoveCandidate(
