@@ -41,6 +41,21 @@ logger = logging.getLogger("BH.TVScanner")
 # 억원 단위 변환
 _BILLION = 1e8
 
+# ETF/ETN 브랜드 키워드 — 매집합류에서 ETF 노이즈 제거용
+_ETF_KEYWORDS = (
+    "KODEX", "TIGER", "ACE", "KIWOOM", "SOL ", "HANARO", "KOSEF", "ARIRANG",
+    "BNK", "PLUS ", "FOCUS", "TIMEFOLIO", "RISE ", "TIME ", "ITF ", "1Q ",
+    "KoAct", "WON ", "UNICORN", "Active", "액티브", "KBSTAR",
+    "ETF", "ETN", "인버스", "레버리지",
+)
+
+
+def _is_etf_name(name: str) -> bool:
+    """종목명 기반 ETF/ETN 판별"""
+    if not name:
+        return False
+    return any(kw in name for kw in _ETF_KEYWORDS)
+
 
 # =============================================================================
 # 데이터 구조
@@ -61,6 +76,10 @@ class TVSignal:
     pattern: str                  # EXPLOSION / QUIET_ACCUMULATION / GRADUAL_BUILDUP / NORMAL
     score: float                  # 0 ~ 100 종합 스코어
     detail: str                   # 요약 텍스트
+    # 외인/기관 합류 정보 (enrich_signals_with_flow 에서 채움)
+    frgn_amount: float = 0.0     # 외인 순매수 금액 (억원, 양수=매수)
+    inst_amount: float = 0.0     # 기관 순매수 금액 (억원, 양수=매수)
+    frgn_joined: bool = False    # 외인 합류 여부 (1억+ 순매수)
 
 
 # =============================================================================
@@ -249,12 +268,14 @@ def _score_signal(tv_ratio: float, change_pct: float, tv_5d_trend: float,
 def scan_trading_value(
     universe: dict,
     min_tv_billion: float = 10.0,
+    exclude_etf: bool = True,
 ) -> list[TVSignal]:
     """유니버스 전체 거래대금 스캔
 
     Args:
         universe: {code: {name, sector, cap_억, ...}}
         min_tv_billion: 최소 거래대금 (억원) — 잡주 필터
+        exclude_etf: ETF/ETN 자동 제외 (기본 True)
 
     Returns:
         TVSignal 리스트 (score 내림차순, NORMAL 제외)
@@ -262,6 +283,7 @@ def scan_trading_value(
     signals = []
     scanned = 0
     skipped = 0
+    etf_skipped = 0
 
     codes = list(universe.keys())
     t0 = time.time()
@@ -270,6 +292,11 @@ def scan_trading_value(
         info = universe.get(code, {})
         name = info.get("name", code)
         sector = info.get("sector", "")
+
+        # ETF 자동 제외 — 단타 매집합류 시그널에서 ETF는 노이즈
+        if exclude_etf and _is_etf_name(name):
+            etf_skipped += 1
+            continue
 
         metrics = _calc_tv_metrics(code)
         if metrics is None:
@@ -330,10 +357,66 @@ def scan_trading_value(
 
     elapsed = time.time() - t0
     logger.info(
-        f"[TV Scanner] {scanned}종목 스캔 ({skipped} 스킵) "
+        f"[TV Scanner] {scanned}종목 스캔 ({skipped} 스킵, {etf_skipped} ETF제외) "
         f"→ {len(signals)}개 이상신호 감지 ({elapsed:.1f}s)"
     )
 
+    return signals
+
+
+# =============================================================================
+# 외인/기관 합류 정보 Enrichment
+# =============================================================================
+
+# 외인 합류 판정 기준: 1억원 이상 순매수 (백테스트 결과 D+1 +0.97%)
+_FRGN_JOINED_THRESHOLD = 1.0  # 억원
+
+
+def enrich_signals_with_flow(signals: list[TVSignal]) -> list[TVSignal]:
+    """TV 시그널에 외인/기관 당일 수급 정보를 추가
+
+    investor CSV의 최신 행을 읽어서 frgn_amount, inst_amount, frgn_joined 채움.
+    QUIET_ACCUMULATION + frgn_joined=True → 외인합류 매집 (D+1 +0.97%)
+    """
+    flow_dir = DATA_DIR / "flow"
+    enriched = 0
+
+    for sig in signals:
+        inv_file = flow_dir / f"{sig.code}_investor.csv"
+        if not inv_file.exists():
+            continue
+
+        try:
+            # 마지막 행만 빠르게 읽기
+            text = inv_file.read_text(encoding="utf-8").strip()
+            lines = text.split("\n")
+            if len(lines) < 2:
+                continue
+            header = [h.strip() for h in lines[0].split(",")]
+            last_vals = lines[-1].split(",")
+            last_row = {
+                col: last_vals[i].strip()
+                for i, col in enumerate(header)
+                if i < len(last_vals)
+            }
+
+            # 금액: 백만원 단위 → 억원 변환 (/100)
+            frgn_amt = float(last_row.get("외국인_금액", "0") or "0") / 100
+            inst_amt = float(last_row.get("기관_금액", "0") or "0") / 100
+
+            sig.frgn_amount = round(frgn_amt, 1)
+            sig.inst_amount = round(inst_amt, 1)
+            sig.frgn_joined = frgn_amt >= _FRGN_JOINED_THRESHOLD
+            enriched += 1
+        except Exception as e:
+            logger.debug(f"[{sig.code}] 수급 enrichment 실패: {e}")
+            continue
+
+    frgn_count = sum(1 for s in signals if s.frgn_joined)
+    logger.info(
+        f"[TV Enrich] {enriched}/{len(signals)}종목 수급 결합 → "
+        f"외인합류 {frgn_count}종목"
+    )
     return signals
 
 
@@ -1018,5 +1101,6 @@ if __name__ == "__main__":
         _print_single(args.code, universe)
     else:
         signals = scan_trading_value(universe, min_tv_billion=args.min_tv)
+        enrich_signals_with_flow(signals)
         save_tv_results(signals)
         _print_signals(signals, top=args.top, pattern_filter=args.pattern)

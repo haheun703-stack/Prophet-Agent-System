@@ -74,6 +74,7 @@ class RecommendedStock:
     tv_ratio: float = 1.0             # 거래대금 비율 (20일 평균 대비)
     tv_pattern: str = "NORMAL"        # EXPLOSION / QUIET_ACCUMULATION / EARLY_ACCUMULATION / GRADUAL_BUILDUP
     tv_score: float = 0.0             # TV 스캐너 점수 (0~100)
+    tv_frgn_joined: bool = False      # 외인합류 매집 (외인 1억+ 순매수)
     # 피보나치 레벨 분석
     fib_adj: float = 0.0              # 피보나치 점수 가감 (-10 ~ +20)
     fib_position: str = ""            # 위치 설명 ("0.618 지지 부근" 등)
@@ -1486,6 +1487,15 @@ def _step5_cross_validate(
                 tv_direct += cluster_bonus
                 sources.append(f"tv_cluster(+{cluster_bonus})")
 
+            # 외인합류 보너스 (백테스트: 외인합류 D+1 +0.97% vs 미합류 -0.61%)
+            _frgn_joined = (_tv.get("frgn_joined", False) if isinstance(_tv, dict)
+                            else getattr(_tv, "frgn_joined", False))
+            _frgn_amt_tv = (_tv.get("frgn_amount", 0) if isinstance(_tv, dict)
+                            else getattr(_tv, "frgn_amount", 0))
+            if _frgn_joined and _tv_pat == "QUIET_ACCUMULATION":
+                tv_direct += 8  # 외인합류 매집 보너스
+                sources.append(f"tv_frgn_joined(+8,{_frgn_amt_tv:+.0f}억)")
+
         # ── TV 잔존 효과 (오늘 TV 미감지지만 과거 강신호 있었던 종목) ──
         if tv_direct == 0 and tv_persistence and code in tv_persistence:
             pinfo = tv_persistence[code]
@@ -2538,6 +2548,7 @@ def run_evening_recommendation() -> RecommendationReport:
             s.tv_ratio = _tv.tv_ratio
             s.tv_pattern = _tv.pattern
             s.tv_score = _tv.score
+            s.tv_frgn_joined = getattr(_tv, "frgn_joined", False)
 
     # MOMENTUM 부스트 후 재정렬 (TOP 8에 MOMENTUM 종목 우선 배치)
     if mtm_boost_count > 0:
@@ -4138,6 +4149,7 @@ def run_war_mode_recommendation() -> RecommendationReport:
                 s.tv_ratio = tv.get("tv_ratio", 1.0)
                 s.tv_pattern = tv.get("pattern", "NORMAL")
                 s.tv_score = tv.get("score", 0.0)
+                s.tv_frgn_joined = tv.get("frgn_joined", False)
                 # 전쟁모드 TV 부스트 (최대 +5점)
                 if tv.get("pattern") in ("QUIET_ACCUMULATION", "EXPLOSION", "EARLY_ACCUMULATION"):
                     tv_boost = min(tv.get("score", 0) * 0.05, 5)

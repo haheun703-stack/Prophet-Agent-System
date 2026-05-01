@@ -1916,7 +1916,7 @@ class TradingCOO:
         G6 병렬 단계에서 독립 스캔하여 C7 검증 전 갱신 보장.
         """
         try:
-            from data.trading_value_scanner import scan_trading_value, save_tv_results
+            from data.trading_value_scanner import scan_trading_value, save_tv_results, enrich_signals_with_flow
             import json
             from pathlib import Path
 
@@ -1947,9 +1947,11 @@ class TradingCOO:
                 future = ex.submit(scan_trading_value, universe, min_tv_billion=10.0)
                 try:
                     signals = future.result(timeout=180)
+                    enrich_signals_with_flow(signals)
                     save_tv_results(signals)
-                    logger.info(f"[C5T] TV 스캐너 갱신 완료: {len(signals)}개 시그널")
-                    return {"tv_scanner": "OK", "signals": len(signals)}
+                    frgn_cnt = sum(1 for s in signals if s.frgn_joined)
+                    logger.info(f"[C5T] TV 스캐너 갱신 완료: {len(signals)}개 시그널 (외인합류 {frgn_cnt})")
+                    return {"tv_scanner": "OK", "signals": len(signals), "frgn_joined": frgn_cnt}
                 except FuturesTimeout:
                     logger.warning("[C5T] TV 스캐너 타임아웃 (180s)")
                     return {"tv_scanner": "TIMEOUT"}
