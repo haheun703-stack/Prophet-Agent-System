@@ -35,6 +35,13 @@ def upload_pension_scan(data: dict) -> bool:
             logger.error("Supabase 클라이언트 없음")
             return False
 
+        # 등급별 카운트 (프론트엔드 요약 표시용)
+        all_stocks = data.get("best_stocks", []) + data.get("standby_stocks", [])
+        grade_counts = {"S": 0, "A": 0, "B": 0, "C": 0}
+        for st in all_stocks:
+            g = st.get("pension_grade", "C")
+            grade_counts[g] = grade_counts.get(g, 0) + 1
+
         row = {
             "date": data["date"],
             "updated_at": datetime.now().isoformat(),
@@ -42,15 +49,31 @@ def upload_pension_scan(data: dict) -> bool:
             "best_count": data.get("best_count", 0),
             "best_fresh_count": data.get("best_fresh_count", 0),
             "standby_count": data.get("standby_count", 0),
+            "grade_s": grade_counts["S"],
+            "grade_a": grade_counts["A"],
+            "grade_b": grade_counts["B"],
             "best_stocks": data.get("best_stocks", []),
             "best_fresh": data.get("best_fresh", []),
             "standby_stocks": data.get("standby_stocks", []),
             "ranked_stocks": data.get("ranked_stocks", []),
         }
 
-        client.table("intelligence_pension_scan") \
-            .upsert(row, on_conflict="date") \
-            .execute()
+        try:
+            client.table("intelligence_pension_scan") \
+                .upsert(row, on_conflict="date") \
+                .execute()
+        except Exception as upsert_err:
+            # grade_s/a/b 컬럼 미존재 시 컬럼 제거 후 재시도
+            if "grade_" in str(upsert_err):
+                logger.warning("grade 컬럼 미존재 — 등급 필드 제외 후 재시도")
+                row.pop("grade_s", None)
+                row.pop("grade_a", None)
+                row.pop("grade_b", None)
+                client.table("intelligence_pension_scan") \
+                    .upsert(row, on_conflict="date") \
+                    .execute()
+            else:
+                raise
 
         ranked = data.get("ranked_stocks", [])
         best = data.get("best_stocks", [])
@@ -58,6 +81,7 @@ def upload_pension_scan(data: dict) -> bool:
         logger.info(
             f"연기금스캔 업로드 완료: {data.get('date', '?')} · "
             f"TOP1={top1.get('name', '?')}({top1.get('pension_score', 0)}점) · "
+            f"등급 S={grade_counts['S']} A={grade_counts['A']} B={grade_counts['B']} · "
             f"핵심 {data.get('best_count', 0)}종목 / "
             f"대기 {data.get('standby_count', 0)}종목"
         )
