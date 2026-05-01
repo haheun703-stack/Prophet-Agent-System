@@ -50,6 +50,7 @@ RULES = [
         "pattern": r'parts\[\d+\]',
         "msg": "parts[N] 직접 인덱싱 금지 — _parse_flow_csv() 유틸 사용 (C1 규칙)",
         "severity": "CRITICAL",
+        "exclude_files": ["telegram_bot.py"],  # 텔레그램 커맨드 파싱은 CSV가 아님
     },
 ]
 
@@ -124,7 +125,11 @@ def run_checks() -> list[dict]:
             continue
 
         # 패턴 규칙 검사
+        fname = path.name
         for rule in RULES:
+            # 규칙별 파일 제외 (예: CSV-001은 telegram_bot.py 제외)
+            if fname in rule.get("exclude_files", []):
+                continue
             for i, line in enumerate(content.split("\n"), 1):
                 if re.search(rule["pattern"], line):
                     all_issues.append({

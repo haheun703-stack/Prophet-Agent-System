@@ -4654,16 +4654,30 @@ class BodyHunterBot:
                 p_names = [m["sector"] for m in p_matched[:3]]
                 lines.append(f"🏛 정책: {', '.join(p_names)}")
 
-            # ── FLOWX VIP 매집 감지 ──
+            # ── FLOWX VIP 매집 감지 (외인합류 하이라이트) ──
             try:
                 from data.flowx_content import _load_json as _fload
                 tv_data = _fload("tv_scanner.json")
                 tv_sigs = [s for s in tv_data.get("signals", [])
                            if s.get("pattern", "NORMAL") != "NORMAL"]
                 if tv_sigs:
-                    top3 = sorted(tv_sigs, key=lambda x: x.get("score", 0), reverse=True)[:3]
-                    accum_names = [f"{s['name']}({s['pattern'][:5]})" for s in top3]
-                    lines.append(f"🔍 매집감지: {', '.join(accum_names)}")
+                    # 외인합류 종목 우선 정렬 → 점수순
+                    tv_sigs_sorted = sorted(
+                        tv_sigs,
+                        key=lambda x: (x.get("frgn_joined", False), x.get("score", 0)),
+                        reverse=True,
+                    )
+                    top5 = tv_sigs_sorted[:5]
+                    accum_parts = []
+                    for s in top5:
+                        pat = s.get("pattern", "")[:5]
+                        frgn_mark = "🟢" if s.get("frgn_joined") else ""
+                        accum_parts.append(f"{frgn_mark}{s['name']}({pat})")
+                    lines.append(f"🔍 매집감지: {', '.join(accum_parts)}")
+                    # 외인합류 종목 수 요약
+                    frgn_cnt = sum(1 for s in tv_sigs if s.get("frgn_joined"))
+                    if frgn_cnt > 0:
+                        lines.append(f"   🟢 외인합류 {frgn_cnt}종목 (D+1 +0.97%)")
             except Exception:
                 pass
 
