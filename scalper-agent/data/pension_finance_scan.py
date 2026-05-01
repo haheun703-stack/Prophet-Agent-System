@@ -192,6 +192,19 @@ def scan_pension_finance() -> Optional[dict]:
         }
         entry["pension_score"] = _calc_pension_score(entry)
 
+        # 매수등급: 금투합류 × 외인합류 × 덜오름 조합 (백테스트 근거)
+        _is_fi = fi_joined == "TODAY"
+        _is_early = ret5 < 5.0
+        _is_frgn = frgn_today >= 1.0
+        if _is_fi and _is_frgn and _is_early:
+            entry["pension_grade"] = "S"   # 삼중합류 D+5 +1.09%
+        elif _is_fi and _is_early:
+            entry["pension_grade"] = "A"   # 이중합류 D+5 +0.42%
+        elif fi_joined == "" and _is_frgn:
+            entry["pension_grade"] = "B"   # 발화대기 D+5 +0.52%
+        else:
+            entry["pension_grade"] = "C"
+
         if fi_joined in ("TODAY", "YESTERDAY"):
             best_stocks.append(entry)
         elif fi_joined == "" and ret5 < 5:
@@ -222,11 +235,24 @@ def scan_pension_finance() -> Optional[dict]:
         "ranked_stocks": ranked_stocks,
     }
 
+    # 로컬 JSON 저장 (morning_recommendation에서 pension_grade 참조)
+    save_path = DATA_STORE / "pension_scan.json"
+    try:
+        save_path.write_text(
+            json.dumps(result, ensure_ascii=False, indent=1),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        logger.warning(f"pension_scan.json 저장 실패: {e}")
+
     if ranked_stocks:
+        s_cnt = sum(1 for s in all_scored if s.get("pension_grade") == "S")
+        a_cnt = sum(1 for s in all_scored if s.get("pension_grade") == "A")
         logger.info(
             f"연기금스캔 완료: 핵심 {len(best_stocks)}종목 "
             f"(덜오른 {len(best_fresh)}) / 대기 {len(standby_stocks)}종목 "
-            f"/ TOP1={ranked_stocks[0]['name']}({ranked_stocks[0]['pension_score']}점)"
+            f"/ TOP1={ranked_stocks[0]['name']}({ranked_stocks[0]['pension_score']}점) "
+            f"/ 등급 S={s_cnt} A={a_cnt}"
         )
     else:
         logger.info("연기금스캔 완료: 0종목")

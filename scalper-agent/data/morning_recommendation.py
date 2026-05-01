@@ -1068,6 +1068,25 @@ def _step5_cross_validate(
     except Exception as _fd_e:
         logger.warning(f"[step5] 외인던지기 맵 로드 실패(무시): {_fd_e}")
 
+    # ── 연기금 매수등급 맵 (pension_scan.json → S/A/B/C) ──
+    _pension_grade_map = {}  # {code: "S"/"A"/"B"/"C"}
+    try:
+        import json as _json_pg
+        _pg_path = Path(__file__).resolve().parent.parent / "data_store" / "pension_scan.json"
+        if _pg_path.exists():
+            _pg_data = _json_pg.loads(_pg_path.read_text(encoding="utf-8"))
+            for _pg_list in (_pg_data.get("best_stocks", []),
+                             _pg_data.get("standby_stocks", [])):
+                for st in _pg_list:
+                    if st.get("code"):
+                        _pension_grade_map[st["code"]] = st.get("pension_grade", "C")
+            if _pension_grade_map:
+                _pg_s = sum(1 for v in _pension_grade_map.values() if v == "S")
+                _pg_a = sum(1 for v in _pension_grade_map.values() if v == "A")
+                logger.info(f"[step5] 연기금등급 맵: {len(_pension_grade_map)}종목 (S={_pg_s} A={_pg_a})")
+    except Exception as _pg_e:
+        logger.warning(f"[step5] 연기금등급 맵 로드 실패(무시): {_pg_e}")
+
     # 모든 종목 코드 수집
     all_codes = set()
     all_codes.update(relay.get("stocks", {}).keys())
@@ -1659,6 +1678,20 @@ def _step5_cross_validate(
             if _fd["tag"] == "THEME_OVERHEAT":
                 cross = 0  # 과열 종목은 교차검증 무효화
 
+        # ── 연기금 매수등급 보너스 (백테스트: S급 D+5 +1.09% / A급 +0.42%) ──
+        pension_sc = 0.0
+        _pg = _pension_grade_map.get(code, "")
+        if _pg == "S":
+            pension_sc = 15.0   # 삼중합류 (연기금+금투+외인+덜오름)
+            sources.append("pension(S:+15)")
+            cross += 1
+        elif _pg == "A":
+            pension_sc = 8.0    # 이중합류 (연기금+금투+덜오름)
+            sources.append("pension(A:+8)")
+        elif _pg == "B":
+            pension_sc = 5.0    # 발화대기 (연기금+외인, 금투미진입)
+            sources.append("pension(B:+5)")
+
         # ── 합산 ──────────────────────────────
         raw_total = (relay_sc + premove_sc + tech_sc + bargain_sc + cross_bonus
                      + nat_sc + news_pen + obv_pen + rel_pen
@@ -1677,7 +1710,8 @@ def _step5_cross_validate(
                      + dual_buy_sc    # 대량 쌍매수 보너스
                      + surge_sc       # 연속급등 보너스
                      + fi_sc          # 수급 강도 보너스
-                     + fdump_pen)     # 외인 던지기 감점
+                     + fdump_pen      # 외인 던지기 감점
+                     + pension_sc)    # 연기금 매수등급 보너스
 
         # ── US 모드 조정 ──────────────────────
         # DEFENSIVE: 전체 점수 20% 감점 (보수적 진입)
