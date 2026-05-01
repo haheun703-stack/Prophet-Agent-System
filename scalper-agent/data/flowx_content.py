@@ -318,15 +318,18 @@ def _panel_nationality_detail(rec: dict) -> list:
 
 def _panel_accumulation_radar() -> list:
     """trading_value_scanner → 매집 패턴 감지 종목"""
+    from data.trading_value_scanner import _is_etf_name
+
     tv_data = _load_json("tv_scanner.json")
     signals = tv_data.get("signals", [])
 
     if not signals:
         return []
 
-    # 패턴별 분류 + score 상위
+    # ETF 제외 + 패턴별 분류 + score 상위
+    filtered = [s for s in signals if not _is_etf_name(s.get("name", ""))]
     result = []
-    for sig in sorted(signals, key=lambda x: x.get("score", 0), reverse=True)[:10]:
+    for sig in sorted(filtered, key=lambda x: x.get("score", 0), reverse=True)[:10]:
         pattern = sig.get("pattern", "NORMAL")
         if pattern == "NORMAL":
             continue
