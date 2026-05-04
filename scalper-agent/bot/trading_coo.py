@@ -1749,6 +1749,7 @@ class TradingCOO:
             ("C39_massive_dual_alert", self._job_massive_dual_buy_alert(context)),
             ("C40_inst_accumulation", self._job_inst_accumulation(context)),
             ("C41_pension_scan", self._job_pension_scan(context)),
+            ("C42_pension_ownership", self._job_pension_ownership(context)),
         ]
         s4 = await self.run_parallel_async(stage4_jobs, timeout_per_job=300)
         results.extend(s4)
@@ -3407,6 +3408,36 @@ class TradingCOO:
             logger.info(f"[C41] 지연 재시도 결과: {result}")
         except Exception as e:
             logger.warning(f"[C41] 지연 재시도 실패: {e}")
+
+    async def _job_pension_ownership(self, context=None) -> dict:
+        """C42: 연기금 지분 추적기 — 국민연금 보유 추이 vs 주가 상관분석.
+
+        NPS_BASE_OWNERSHIP(DART 공시) + quant_investor_extra(매일 순매수)
+        → 연기금 매수 추이 vs 주가 상관계수 → FLOWX 업로드.
+        """
+        try:
+            from data.pension_ownership_tracker import track_pension_ownership
+            from data.upload_pension_ownership import upload_pension_ownership
+
+            result = await asyncio.to_thread(track_pension_ownership)
+            if not result or not result.get("stocks"):
+                logger.warning("[C42] 연기금보유추적 종목 없음")
+                return {"pension_ownership": "SKIP"}
+
+            ok = await asyncio.to_thread(upload_pension_ownership, result)
+            summary = result.get("summary", {})
+            logger.info(
+                f"[C42] 연기금보유추적 {'완료' if ok else '실패'} — "
+                f"{result.get('total_tracked', 0)}종목 · "
+                f"매집 {summary.get('accumulating_count', 0)} / "
+                f"매도 {summary.get('distributing_count', 0)} · "
+                f"상관 {summary.get('avg_correlation', 0):.3f}"
+            )
+            return {"pension_ownership": result.get("total_tracked", 0)}
+
+        except Exception as e:
+            logger.warning(f"[C42] 연기금보유추적 실패 (무시): {e}")
+            return {"pension_ownership": f"ERROR: {e}"}
 
     async def _job_nxt_performance(self, context=None) -> dict:
         """C33: 어제 NXT TOP 5 성적표.
