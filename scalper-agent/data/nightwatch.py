@@ -1377,23 +1377,11 @@ def _inject_bomb_targets(nxt_targets: List[Dict]) -> int:
     except Exception:
         uni = {}
 
-    # NXT 대상종목 필터 (KRX전용은 NXT에서 거래 불가)
-    nxt_eligible = set()
-    nxt_path = DATA_DIR / "nxt_eligible.json"
-    if nxt_path.exists():
-        try:
-            nxt_data = json.loads(nxt_path.read_text(encoding="utf-8"))
-            nxt_eligible = set(nxt_data.get("stocks", {}).keys())
-        except Exception:
-            pass
+    # NXT eligible 필터는 select_sectors_and_targets() 통합 필터에서 처리
 
     for b in watchlist:
         code = b.get("code", "")
         if code in existing_codes:
-            continue
-
-        # NXT 대상이 아닌 종목은 NXT 매매 불가 → 스킵
-        if nxt_eligible and code not in nxt_eligible:
             continue
 
         bomb_adj = b.get("bomb_adj", 15)
@@ -2073,6 +2061,22 @@ def select_sectors_and_targets(
     _accum_injected = _inject_early_accumulation_targets(nxt_targets)
     if _accum_injected:
         logger.info(f"[NXT-ACCUM] 매집 초기 미발화 {_accum_injected}개 주입")
+
+    # ── NXT 대상종목 통합 필터 (모든 inject 경로 이후 1회 적용) ──
+    nxt_eligible = set()
+    _nxt_path = DATA_DIR / "nxt_eligible.json"
+    if _nxt_path.exists():
+        try:
+            _nxt_data = json.loads(_nxt_path.read_text(encoding="utf-8"))
+            nxt_eligible = set(_nxt_data.get("stocks", {}).keys())
+        except Exception:
+            pass
+    if nxt_eligible:
+        before_nxt_filter = len(nxt_targets)
+        nxt_targets = [t for t in nxt_targets if t.get("code", "") in nxt_eligible]
+        removed = before_nxt_filter - len(nxt_targets)
+        if removed:
+            logger.info(f"[NXT-ELIGIBLE] NXT 비대상 {removed}개 제거 ({before_nxt_filter}→{len(nxt_targets)})")
 
     # ── 개별 수급 필터 ──
     pre_count = len(nxt_targets)
