@@ -1762,6 +1762,23 @@ def _score_individual_supply(targets: List[Dict]) -> List[Dict]:
     perf_fb = _load_nxt_performance_feedback()
     sector_wr = perf_fb.get("sector_win_rate", {})
 
+    # EWY TOP20 맵 로드 (비중 1%+ 대형주 보너스)
+    _ewy_top20_map = {}  # {code: {weight, weight_change}}
+    try:
+        _ew_path = DATA_DIR / "ewy_holdings.json"
+        if _ew_path.exists():
+            _ew_data = json.loads(_ew_path.read_text(encoding="utf-8"))
+            for item in _ew_data.get("top20", []):
+                if item.get("code"):
+                    _ewy_top20_map[item["code"]] = {
+                        "weight": item.get("weight", 0),
+                        "weight_change": item.get("weight_change", 0),
+                    }
+            if _ewy_top20_map:
+                logger.info(f"[NXT-EWY] TOP20 맵 로드: {len(_ewy_top20_map)}종목")
+    except Exception as _ew_e:
+        logger.warning(f"[NXT-EWY] TOP20 맵 로드 실패(무시): {_ew_e}")
+
     for t in targets:
         if t.get("is_etf"):
             t["supply_score"] = 100
@@ -1834,6 +1851,18 @@ def _score_individual_supply(targets: List[Dict]) -> List[Dict]:
             score -= 10  # 승률 30% 이하 섹터 → 페널티 (충분한 데이터 시)
 
         t["supply_score"] = max(0, score)
+
+        # ── EWY 비중 보너스 (패시브 외인 매수 지속) ──
+        _ewy_info = _ewy_top20_map.get(code)
+        if _ewy_info:
+            _ew = _ewy_info.get("weight", 0)
+            _ewc = _ewy_info.get("weight_change", 0)
+            if _ew >= 1.0:
+                t["supply_score"] += 5  # 비중 1%+ 대형주
+                t.setdefault("_sources", []).append(f"ewy_top20(w={_ew:.1f}%:+5)")
+            if _ewc > 0:
+                t["supply_score"] += 3  # 비중 증가 중
+                t.setdefault("_sources", []).append(f"ewy_up({_ewc:+.2f}%:+3)")
 
         # ── 외국인 수급 이탈 참조 태그 ──
         latest_fg = flow.get("latest_foreign_amt", 0)
