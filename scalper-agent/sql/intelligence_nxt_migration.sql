@@ -4,12 +4,20 @@
 -- ============================================
 CREATE TABLE IF NOT EXISTS intelligence_nxt_picks (
     date        DATE PRIMARY KEY,
+    mode        TEXT DEFAULT 'confirmed', -- 'confirmed' (16:35 최종 확정)
     nxt_score   REAL,                    -- nightwatch 종합 점수 (-10~+10)
     signal      TEXT,                    -- "🟢 매수 고려" 등
     sectors     JSONB,                   -- 추천 섹터 TOP 3
     picks       JSONB,                   -- [{rank, code, name, sector, supply_score, entry_price}]
     created_at  TIMESTAMPTZ DEFAULT now()
 );
+
+-- ※ 기존 테이블에 mode 컬럼 추가 (이미 존재하면 무시)
+ALTER TABLE intelligence_nxt_picks
+ADD COLUMN IF NOT EXISTS mode TEXT DEFAULT 'confirmed';
+
+-- 기존 데이터 mode 채우기
+UPDATE intelligence_nxt_picks SET mode = 'confirmed' WHERE mode IS NULL;
 
 ALTER TABLE intelligence_nxt_picks ENABLE ROW LEVEL SECURITY;
 

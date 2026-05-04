@@ -175,6 +175,7 @@ def extract_nxt_top5(target_date: str = None) -> dict | None:
 
     result = {
         "date": date.today().isoformat(),
+        "mode": "confirmed",
         "updated": datetime.now().isoformat(),
         "nxt_score": nw.get("total_score", 0),
         "nxt_signal": f"{nw.get('signal', '🟡')} {nw.get('signal_text', '관망')}",

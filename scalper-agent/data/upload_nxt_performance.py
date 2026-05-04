@@ -41,17 +41,32 @@ def upload_nxt_picks(picks_data: dict) -> bool:
 
         row = {
             "date": picks_data["date"],
+            "mode": picks_data.get("mode", "confirmed"),
             "nxt_score": picks_data.get("nxt_score", 0),
             "signal": picks_data.get("nxt_signal", ""),
             "sectors": picks_data.get("recommended_sectors", []),
             "picks": picks_json,
         }
 
-        client.table("intelligence_nxt_picks") \
-            .upsert(row, on_conflict="date") \
-            .execute()
+        try:
+            client.table("intelligence_nxt_picks") \
+                .upsert(row, on_conflict="date") \
+                .execute()
+        except Exception as upsert_err:
+            # mode 컬럼 미존재 시 제거 후 재시도
+            if "mode" in str(upsert_err):
+                logger.warning("mode 컬럼 미존재 — mode 제외 후 재시도")
+                row.pop("mode", None)
+                client.table("intelligence_nxt_picks") \
+                    .upsert(row, on_conflict="date") \
+                    .execute()
+            else:
+                raise
 
-        logger.info(f"NXT 픽 업로드 완료: {picks_data['date']} · {len(picks)}종목")
+        logger.info(
+            f"NXT 픽 업로드 완료: {picks_data['date']} · "
+            f"mode={picks_data.get('mode', 'confirmed')} · {len(picks)}종목"
+        )
         return True
 
     except Exception as e:
