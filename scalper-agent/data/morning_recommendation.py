@@ -858,6 +858,10 @@ def _detect_tv_clusters(tv_signals: dict, universe: dict) -> dict:
         if sc < 60:
             continue
 
+        # EXPLOSION 패턴은 클러스터 보너스 제외 (실측 -1.42% 역효과)
+        if pat == "EXPLOSION":
+            continue
+
         entry = (code, name, pat, sc, tvr)
 
         # 그룹 클러스터
@@ -926,9 +930,16 @@ def _detect_tv_clusters(tv_signals: dict, universe: dict) -> dict:
             "members": [(name, pat, tvr) for _, name, pat, _, tvr in entries],
         })
 
+    # ── 클러스터 과열 감지: 3~4개 동시 → 보너스 50% 감소 (실측 -1.56% 역효과) ──
+    n_clusters = len(cluster_info)
+    if 3 <= n_clusters <= 4:
+        for code in tv_cluster_map:
+            tv_cluster_map[code] = max(1, int(tv_cluster_map[code] * 0.5))
+        logger.info(f"[TV Cluster] 과열 감지: {n_clusters}개 클러스터 → 보너스 50% 감소")
+
     if cluster_info:
         logger.info(
-            f"[TV Cluster] {len(cluster_info)}개 클러스터 감지: "
+            f"[TV Cluster] {n_clusters}개 클러스터 감지: "
             + ", ".join(f"{c['name']}({c['count']}종목,+{c['bonus']})" for c in cluster_info)
         )
 
@@ -2269,6 +2280,15 @@ def run_evening_recommendation() -> RecommendationReport:
         logger.info(f"[CAP] 최종: {len(all_codes_set)}종목 (우선 {len(prioritized)}, 추가 {len(all_codes_set) - len(prioritized)})")
 
     codes_names = list(all_codes_set)
+
+    # ── ETF 제외 (ETF는 Step 5d에서 별도 추천) ──
+    _ETF_PREFIXES = ('KODEX', 'TIGER', 'RISE', 'ACE', 'SOL', 'PLUS',
+                     'HANARO', 'KoAct', 'KIWOOM', 'WON', 'ITF', '1Q', 'TIME')
+    _before_etf = len(codes_names)
+    codes_names = [(c, n) for c, n in codes_names if not n.startswith(_ETF_PREFIXES)]
+    _etf_removed = _before_etf - len(codes_names)
+    if _etf_removed:
+        logger.info(f"[ETF필터] ETF {_etf_removed}개 제외 (일반추천에서)")
 
     # ── 타임아웃 가드: Step 3 진입 전 ──
     _timeout_result = _check_pipeline_timeout("Step3(기술분석)", report)
