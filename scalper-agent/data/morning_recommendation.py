@@ -1098,6 +1098,32 @@ def _step5_cross_validate(
     except Exception as _pg_e:
         logger.warning(f"[step5] 연기금등급 맵 로드 실패(무시): {_pg_e}")
 
+    # ── EWY 비중 변동 맵 (ewy_holdings.json → 비중 변화) ──
+    _ewy_change_map = {}  # {code: weight_change}
+    _ewy_new_set = set()  # 신규 편입 코드
+    _ewy_removed_set = set()  # 편출 코드
+    try:
+        import json as _json_ew
+        _ew_path = Path(__file__).resolve().parent.parent / "data_store" / "ewy_holdings.json"
+        if _ew_path.exists():
+            _ew_data = _json_ew.loads(_ew_path.read_text(encoding="utf-8"))
+            for ch in _ew_data.get("changes", []):
+                if ch.get("code"):
+                    _ewy_change_map[ch["code"]] = ch.get("weight_change", 0)
+            for ne in _ew_data.get("new_entries", []):
+                if ne.get("code"):
+                    _ewy_new_set.add(ne["code"])
+            for rm in _ew_data.get("removed", []):
+                if rm.get("code"):
+                    _ewy_removed_set.add(rm["code"])
+            if _ewy_change_map or _ewy_new_set:
+                logger.info(
+                    f"[step5] EWY맵: 변동={len(_ewy_change_map)}종목 "
+                    f"편입={len(_ewy_new_set)} 편출={len(_ewy_removed_set)}"
+                )
+    except Exception as _ew_e:
+        logger.warning(f"[step5] EWY맵 로드 실패(무시): {_ew_e}")
+
     # 모든 종목 코드 수집
     all_codes = set()
     all_codes.update(relay.get("stocks", {}).keys())
@@ -1703,6 +1729,26 @@ def _step5_cross_validate(
             pension_sc = 5.0    # 발화대기 (연기금+외인, 금투미진입)
             sources.append("pension(B:+5)")
 
+        # ── EWY 비중 변동 보너스 (패시브 외인 자금 흐름) ──
+        ewy_sc = 0.0
+        if code in _ewy_new_set:
+            ewy_sc = 12.0  # 신규 편입 → 패시브 강제매수
+            sources.append("ewy(NEW:+12)")
+        elif code in _ewy_removed_set:
+            ewy_sc = -10.0  # 편출 → 패시브 강제매도
+            sources.append("ewy(REMOVED:-10)")
+        elif code in _ewy_change_map:
+            wc = _ewy_change_map[code]
+            if wc >= 0.3:
+                ewy_sc = 8.0   # LARGE UP
+                sources.append(f"ewy(+{wc:.2f}%:+8)")
+            elif wc >= 0.1:
+                ewy_sc = 4.0   # MEDIUM UP
+                sources.append(f"ewy(+{wc:.2f}%:+4)")
+            elif wc <= -0.3:
+                ewy_sc = -5.0  # LARGE DOWN
+                sources.append(f"ewy({wc:.2f}%:-5)")
+
         # ── 합산 ──────────────────────────────
         raw_total = (relay_sc + premove_sc + tech_sc + bargain_sc + cross_bonus
                      + nat_sc + news_pen + obv_pen + rel_pen
@@ -1722,7 +1768,8 @@ def _step5_cross_validate(
                      + surge_sc       # 연속급등 보너스
                      + fi_sc          # 수급 강도 보너스
                      + fdump_pen      # 외인 던지기 감점
-                     + pension_sc)    # 연기금 매수등급 보너스
+                     + pension_sc     # 연기금 매수등급 보너스
+                     + ewy_sc)        # EWY 비중 변동 보너스
 
         # ── US 모드 조정 ──────────────────────
         # DEFENSIVE: 전체 점수 20% 감점 (보수적 진입)

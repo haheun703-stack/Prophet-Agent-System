@@ -563,6 +563,7 @@ class TradingCOO:
           A9  _job_rebuild_universe  — 유니버스 리빌드 (TelegramBot)
           A10 _job_premove_scan      — 사전감지 (TelegramBot)
           A11 _job_us_overnight_filter — 미국장 야간 필터 (COO)
+          A11B ewy_holdings_collector — EWY 보유종목 수집+업로드 (A11 후 순차)
           A12 _job_daytrading_picks(confirmed) — 단타 TOP픽 확정 (A11 후 순차, 07:35)
         """
         logger.info("[COO] ═══ G1 MORNING_PREP 시작 ═══")
@@ -640,6 +641,21 @@ class TradingCOO:
 
         # 12개 잡 병렬 실행 — 개별 타임아웃 300초 (5분)
         results = await self.run_parallel_async(jobs, timeout_per_job=300)
+
+        # ── A11B: EWY 보유종목 수집 + 업로드 (A11 후 순차) ──
+        try:
+            from data.ewy_holdings_collector import collect_ewy_holdings
+            from data.upload_ewy_holdings import upload_ewy_holdings
+
+            ewy_result = await asyncio.to_thread(collect_ewy_holdings)
+            if ewy_result:
+                await asyncio.to_thread(upload_ewy_holdings, ewy_result)
+                logger.info(
+                    f"[COO] A11B EWY 수집 완료: "
+                    f"{ewy_result.get('total_stocks', 0)}종목"
+                )
+        except Exception as e:
+            logger.warning(f"[COO] A11B EWY 수집 실패 (무시): {e}")
 
         # ── A12: 단타 TOP픽 확정 (미국장 반영 · A11 후 순차) ──
         # A11이 EWY/KS200 데이터를 us_market_overnight.json에 저장 후 실행
