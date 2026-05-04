@@ -1776,8 +1776,10 @@ def _score_individual_supply(targets: List[Dict]) -> List[Dict]:
                     }
             if _ewy_top20_map:
                 logger.info(f"[NXT-EWY] TOP20 맵 로드: {len(_ewy_top20_map)}종목")
+            else:
+                logger.warning("[NXT-EWY] TOP20 데이터 없음 또는 구조 오류")
     except Exception as _ew_e:
-        logger.warning(f"[NXT-EWY] TOP20 맵 로드 실패(무시): {_ew_e}")
+        logger.warning(f"[NXT-EWY] TOP20 맵 로드 실패: {_ew_e}")
 
     for t in targets:
         if t.get("is_etf"):

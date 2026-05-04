@@ -58,7 +58,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, time as dtime, timezone, timedelta
 from enum import Enum
 from pathlib import Path
-from typing import Callable, Coroutine, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("BH.COO")
 
@@ -2003,8 +2003,7 @@ class TradingCOO:
 
             # H-2 수정: flow_collector(C3) 결과 확인 — STALE/실패 시 패턴 분류 신뢰 불가
             try:
-                from pathlib import Path as _P
-                flow_dir = _P(__file__).resolve().parent.parent / "data_store" / "flow"
+                flow_dir = Path(__file__).resolve().parent.parent / "data_store" / "flow"
                 # 오늘 수집된 _investor.csv 파일 존재 여부 체크 (10개 이상이면 정상)
                 today_ts = _dt.now(_KST).replace(tzinfo=None).timestamp()
                 recent = [f for f in flow_dir.glob("*_investor.csv")
@@ -3972,7 +3971,7 @@ class TradingCOO:
         logger.info("[COO] G7 EVENING_BRAIN 등록: 16:30 KST")
 
         # ── G7 자동복구: G6 done + G7 pending + 현재 16:35 이후 → 60초 후 재실행 ──
-        now_kst = datetime.now(timezone(timedelta(hours=9)))
+        now_kst = datetime.now(KST)
         g6_done = self.group_status.get("G6") in (
             GroupStatus.DONE, GroupStatus.PARTIAL)
         g7_pending = self.group_status.get("G7") == GroupStatus.PENDING

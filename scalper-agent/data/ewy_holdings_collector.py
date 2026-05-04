@@ -54,7 +54,8 @@ def _load_universe() -> dict:
     try:
         data = json.loads(UNIVERSE_PATH.read_text(encoding="utf-8"))
         return data
-    except Exception:
+    except Exception as e:
+        logger.warning(f"[EWY] universe.json 로드 실패: {e}")
         return {}
 
 
@@ -226,23 +227,16 @@ def _compare(today: dict, prev: dict) -> dict:
         w_change = round(t["weight"] - p["weight"], 4)
 
         if abs(w_change) < 0.05:
-            direction = "STABLE"
-        elif w_change > 0:
-            direction = "UP"
-        else:
-            direction = "DOWN"
+            continue  # 0.05% 미만 변동은 무시
+
+        direction = "UP" if w_change > 0 else "DOWN"
 
         if abs(w_change) >= 0.3:
             magnitude = "LARGE"
         elif abs(w_change) >= 0.1:
             magnitude = "MEDIUM"
-        elif abs(w_change) >= 0.05:
-            magnitude = "SMALL"
         else:
-            magnitude = "NONE"
-
-        if magnitude == "NONE":
-            continue
+            magnitude = "SMALL"
 
         changes.append({
             "code": code,

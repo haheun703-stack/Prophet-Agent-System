@@ -14,7 +14,6 @@ from pathlib import Path
 from datetime import datetime
 
 import pandas as pd
-import numpy as np
 
 # CLI 직접 실행 시 경로 보정
 if __name__ == "__main__":
