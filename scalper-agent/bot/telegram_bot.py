@@ -3024,14 +3024,29 @@ class BodyHunterBot:
             logger.error(f"CTO 초기화 실패 (기존 로직 폴백): {e}")
 
         # ═══ COO (Chief Operating Officer) 연결 ═══
-        try:
-            from bot.trading_coo import TradingCOO
-            self.coo = TradingCOO(self, self.auto_trader, cfo=self.cfo, cto=self.cto)
-            self.coo.setup_schedule(jq)
-            logger.info("COO 스케줄 등록 완료")
-        except Exception as e:
-            logger.error(f"COO 초기화 실패 (기존 스케줄은 정상): {e}")
-            self.coo = None
+        self.coo = None
+        for _coo_attempt in range(1, 4):
+            try:
+                from bot.trading_coo import TradingCOO
+                self.coo = TradingCOO(self, self.auto_trader, cfo=self.cfo, cto=self.cto)
+                self.coo.setup_schedule(jq)
+                logger.info("COO 스케줄 등록 완료")
+                break
+            except Exception as e:
+                logger.error(f"COO 초기화 실패 ({_coo_attempt}/3): {e}")
+                if _coo_attempt < 3:
+                    import time as _t; _t.sleep(5)
+        if self.coo is None:
+            logger.critical("COO 3회 초기화 실패 — G1~G7 스케줄 미등록 (긴급 알림)")
+            try:
+                import requests as _req
+                _tok = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+                _cid = os.environ.get("TELEGRAM_CHAT_ID", "")
+                if _tok and _cid:
+                    _req.post(f"https://api.telegram.org/bot{_tok}/sendMessage",
+                              json={"chat_id": _cid, "text": "⛔ COO 초기화 3회 실패 — G1~G7 미등록. VPS 수동 점검 필요!"}, timeout=10)
+            except Exception:
+                pass
 
     async def _job_flowx_universe_update(self, context):
         """FLOWX sector_universe 수급/거래량 UPDATE (15:40 — 정보봇 15:35 후)"""

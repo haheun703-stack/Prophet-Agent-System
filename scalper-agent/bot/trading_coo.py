@@ -58,7 +58,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, time as dtime, timezone, timedelta
 from enum import Enum
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Coroutine, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("BH.COO")
 
