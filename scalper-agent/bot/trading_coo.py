@@ -3006,11 +3006,18 @@ class TradingCOO:
                 logger.warning("[C32] NXT TOP 5 추출 불가 (nightwatch 없음 or 종가 실패)")
                 return {"nxt_top5": "SKIP"}
 
-            # Supabase 업로드
+            # Supabase 업로드 (intelligence_nxt_picks)
             try:
                 await asyncio.to_thread(upload_nxt_picks, picks_data)
             except Exception as ue:
                 logger.warning(f"[C32] Supabase 업로드 실패 (무시): {ue}")
+
+            # quant_nxt_picks 상세 스코어링 업로드
+            try:
+                from data.upload_nxt_performance import upload_quant_nxt_picks
+                await asyncio.to_thread(upload_quant_nxt_picks)
+            except Exception as qe:
+                logger.warning(f"[C32] quant_nxt_picks 업로드 실패 (무시): {qe}")
 
             # 텔레그램 송출
             msg = format_nxt_top5_telegram(picks_data)

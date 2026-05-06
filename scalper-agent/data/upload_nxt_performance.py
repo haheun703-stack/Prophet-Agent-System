@@ -4,11 +4,14 @@ NXT 야간매수 TOP 5 Supabase 업로드
 ===================================
 intelligence_nxt_picks: NXT TOP 5 추천 저장 (C32)
 intelligence_nxt_performance: NXT 성적표 저장 (C33)
+quant_nxt_picks: NXT 후보 상세 스코어링 저장 (C32 연동)
 """
 
 import logging
+from pathlib import Path
 
 logger = logging.getLogger("BH.NxtPerf")
+DATA_STORE = Path(__file__).resolve().parent.parent / "data_store"
 
 
 def upload_nxt_picks(picks_data: dict) -> bool:
@@ -239,4 +242,215 @@ def upload_oneshot_stealth(scan_data: dict) -> bool:
 
     except Exception as e:
         logger.error(f"원샷 잠복 업로드 실패: {e}")
+        return False
+
+
+def upload_quant_nxt_picks(target_date: str = None) -> bool:
+    """NXT 후보 상세 스코어링을 quant_nxt_picks 테이블에 업로드.
+
+    nightwatch nxt_targets + daily OHLCV + flow investor 데이터를 조합.
+
+    Args:
+        target_date: "2026-05-06" 형식. None이면 오늘.
+    """
+    import json
+    from datetime import date as _date
+
+    if not target_date:
+        target_date = _date.today().isoformat()
+
+    # ── nightwatch_report.json 로드 ──
+    nw_path = DATA_STORE / "nightwatch_report.json"
+    if not nw_path.exists():
+        logger.warning("nightwatch_report.json 없음 — quant_nxt_picks 스킵")
+        return False
+
+    try:
+        nw = json.loads(nw_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.error(f"nightwatch_report 파싱 실패: {e}")
+        return False
+
+    if nw.get("date", "") != target_date:
+        logger.warning(
+            f"nightwatch stale: report={nw.get('date')} != {target_date}"
+        )
+        return False
+
+    targets = nw.get("nxt_targets", [])
+    if not targets:
+        logger.warning("nxt_targets 비어있음 — quant_nxt_picks 스킵")
+        return False
+
+    # ── 보조 데이터 로더 ──
+    def _load_daily(code: str) -> dict:
+        """daily CSV에서 최근 20일 OHLCV 로드."""
+        fp = DATA_STORE / "daily" / f"{code}.csv"
+        if not fp.exists():
+            return {}
+        try:
+            import pandas as pd
+            df = pd.read_csv(fp, encoding="utf-8")
+            if df.empty:
+                return {}
+            last = df.iloc[-1]
+            close = float(last.get("종가", 0))
+            prev_close = float(df.iloc[-2].get("종가", 0)) if len(df) > 1 else close
+            ret_d0 = round((close / prev_close - 1) * 100, 2) if prev_close else 0
+
+            vol = float(last.get("거래량", 0))
+            vol_ma20 = float(df["거래량"].tail(20).mean()) if len(df) >= 20 else vol
+            vol_ratio = round(vol / vol_ma20, 2) if vol_ma20 > 0 else 0
+
+            ma20 = float(df["종가"].tail(20).mean()) if len(df) >= 20 else close
+            ma20_dev = round((close / ma20 - 1) * 100, 2) if ma20 else 0
+
+            # RSI 14
+            rsi = 50.0
+            if len(df) >= 15:
+                deltas = df["종가"].diff().tail(14)
+                gains = deltas.clip(lower=0).mean()
+                losses = (-deltas.clip(upper=0)).mean()
+                if losses > 0:
+                    rs = gains / losses
+                    rsi = round(100 - 100 / (1 + rs), 1)
+                elif gains > 0:
+                    rsi = 100.0
+
+            return {
+                "close": int(close),
+                "ret_d0": ret_d0,
+                "vol_ratio": vol_ratio,
+                "ma20_dev": ma20_dev,
+                "rsi": rsi,
+            }
+        except Exception:
+            return {}
+
+    def _load_flow(code: str) -> dict:
+        """flow investor CSV에서 수급 데이터 추출."""
+        fp = DATA_STORE / "flow" / f"{code}_investor.csv"
+        if not fp.exists():
+            return {}
+        try:
+            import pandas as pd
+            df = pd.read_csv(fp, encoding="utf-8")
+            if df.empty or len(df) < 2:
+                return {}
+
+            last = df.iloc[-1]
+            foreign_net = round(float(last.get("외국인_금액", 0)) / 10, 1)  # 백만→억
+            inst_net = round(float(last.get("기관_금액", 0)) / 10, 1)
+
+            # 연속 매수일 계산
+            def _streak(col_name):
+                vals = df[col_name].tolist()
+                streak = 0
+                for v in reversed(vals):
+                    if float(v) > 0:
+                        streak += 1
+                    else:
+                        break
+                return streak
+
+            foreign_streak = _streak("외국인_금액")
+            inst_streak = _streak("기관_금액")
+            dual_streak = min(foreign_streak, inst_streak)
+
+            # 5일 누적
+            tail5 = df.tail(5)
+            foreign_cum = round(float(tail5["외국인_금액"].sum()) / 10, 1)
+            inst_cum = round(float(tail5["기관_금액"].sum()) / 10, 1)
+
+            return {
+                "foreign_net": foreign_net,
+                "inst_net": inst_net,
+                "foreign_streak": foreign_streak,
+                "inst_streak": inst_streak,
+                "dual_streak": dual_streak,
+                "foreign_cum": foreign_cum,
+                "inst_cum": inst_cum,
+            }
+        except Exception:
+            return {}
+
+    # ── TV 데이터 로드 ──
+    tv_data = {}
+    tv_path = DATA_STORE / "tv_scanner.json"
+    if tv_path.exists():
+        try:
+            tv_raw = json.loads(tv_path.read_text(encoding="utf-8"))
+            if isinstance(tv_raw, dict):
+                tv_data = tv_raw
+        except Exception:
+            pass
+
+    # ── 행 구성 ──
+    rows = []
+    for t in targets:
+        if t.get("is_etf"):
+            continue
+        code = t.get("code", "")
+        if not code:
+            continue
+
+        daily = _load_daily(code)
+        flow = _load_flow(code)
+        tv_info = tv_data.get(code, {})
+
+        supply_score = t.get("supply_score", 0)
+        accum_score = flow.get("foreign_cum", 0) + flow.get("inst_cum", 0)
+
+        row = {
+            "date": target_date,
+            "ticker": code,
+            "name": t.get("name", ""),
+            "close": daily.get("close", 0),
+            "ret_d0": daily.get("ret_d0", 0),
+            "vol_ratio": daily.get("vol_ratio", 0),
+            "ma20_dev": daily.get("ma20_dev", 0),
+            "rsi": daily.get("rsi", 50),
+            "tv": round(float(tv_info.get("tv_ratio", 0) or 0), 1),
+            "foreign_net": flow.get("foreign_net", 0),
+            "inst_net": flow.get("inst_net", 0),
+            "foreign_streak": flow.get("foreign_streak", 0),
+            "inst_streak": flow.get("inst_streak", 0),
+            "dual_streak": flow.get("dual_streak", 0),
+            "foreign_cum": flow.get("foreign_cum", 0),
+            "inst_cum": flow.get("inst_cum", 0),
+            "accum_score": round(accum_score, 1),
+            "final_score": supply_score,
+            "pension_net": 0,
+            "finance_net": 0,
+            "pension_5d": 0,
+            "finance_5d": 0,
+        }
+        rows.append(row)
+
+    if not rows:
+        logger.warning("quant_nxt_picks 업로드 대상 0건")
+        return False
+
+    # ── Supabase 업로드 ──
+    try:
+        from data.upload_swing import _get_client
+        client = _get_client()
+        if not client:
+            return False
+
+        # 당일 기존 데이터 삭제 후 insert
+        client.table("quant_nxt_picks") \
+            .delete() \
+            .eq("date", target_date) \
+            .execute()
+
+        client.table("quant_nxt_picks") \
+            .insert(rows) \
+            .execute()
+
+        logger.info(f"quant_nxt_picks 업로드 완료: {target_date} · {len(rows)}종목")
+        return True
+
+    except Exception as e:
+        logger.error(f"quant_nxt_picks 업로드 실패: {e}")
         return False
