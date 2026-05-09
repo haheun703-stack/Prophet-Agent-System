@@ -132,9 +132,14 @@ def _get_kis_session() -> Optional[Tuple[str, dict]]:
 def _tg_alert_kis_failure(error):
     """KIS 토큰 3차 실패 시 텔레그램 긴급 알림."""
     try:
+        from dotenv import load_dotenv
+        # scalper-agent 상위 루트 .env 로드 (텔레그램 토큰 위치)
+        root_env = Path(__file__).resolve().parent.parent.parent / ".env"
+        load_dotenv(root_env, override=False)
         token = os.getenv("TELEGRAM_BOT_TOKEN")
         chat_id = os.getenv("TELEGRAM_CHAT_ID")
         if not token or not chat_id:
+            logger.warning("[TG] TELEGRAM_BOT_TOKEN 또는 CHAT_ID 미설정 — 알림 불가")
             return
         text = (
             "\U0001F6A8 [KIS 토큰 사망] 세션 생성 3차 최종 실패\n"
