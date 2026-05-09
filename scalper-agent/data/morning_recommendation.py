@@ -890,10 +890,8 @@ def _detect_tv_clusters(tv_signals: dict, universe: dict) -> dict:
         else:
             bonus = 8
 
-        # QUIET_ACCUMULATION 다중 동시 → 기관 동시매집 추가 보너스
-        qa_count = sum(1 for _, _, p, _, _ in entries if p == "QUIET_ACCUMULATION")
-        if qa_count >= 2:
-            bonus += 5
+        # QUIET_ACCUMULATION 다중 동시 보너스 제거 (5/9 학습: QA 80+ 적중 0~9%)
+        # qa_count 기반 보너스 폐지
 
         for code, name, pat, sc, tvr in entries:
             tv_cluster_map[code] = max(tv_cluster_map.get(code, 0), bonus)
@@ -1500,16 +1498,14 @@ def _step5_cross_validate(
             _tv_score = _tv_sc
 
             # TV 기본 점수 (패턴별 차등)
-            # 학습 피드백 (10일 21건): QUIET_ACC 90+→적중 0%, 85→75%, 72-82→50%
-            # 과열 매집(90+)은 이미 상승 완료 → 점수 대폭 축소
-            # EXPLOSION(70)은 적중 0%, avg -10% → 함정 시그널
+            # 학습 피드백 (5/9 누적): QA(90)=9%, QA(82)=0%, QA(80)=0%
+            # QA 80~90 전 구간 적중률 0~9% → 하드 차단
+            # QA 70~79만 초기 매집으로 제한적 활용
             if _tv_pat == "QUIET_ACCUMULATION":
-                if _tv_sc >= 90:
-                    tv_direct = 10     # 과열 매집 → 이미 상승 완료 (35→10)
-                elif _tv_sc >= 83:
-                    tv_direct = 25     # 최적 구간 유지
+                if _tv_sc >= 80:
+                    tv_direct = 0      # 80+ 전면 차단 (적중 0~9%)
                 elif _tv_sc >= 70:
-                    tv_direct = 20     # 초기 매집 (25→20)
+                    tv_direct = 8      # 초기 매집만 제한적 (20→8)
                 elif _tv_sc >= 60:
                     tv_direct = 12     # 약한 매집 (15→12)
             elif _tv_pat == "EXPLOSION":
@@ -1730,24 +1726,25 @@ def _step5_cross_validate(
             sources.append("pension(B:+5)")
 
         # ── EWY 비중 변동 보너스 (패시브 외인 자금 흐름) ──
+        # 5/9 학습: ewy(NEW) 80%적중 +6.79% → 최강 시그널, 가중치 대폭 상향
         ewy_sc = 0.0
         if code in _ewy_new_set:
-            ewy_sc = 12.0  # 신규 편입 → 패시브 강제매수
-            sources.append("ewy(NEW:+12)")
+            ewy_sc = 25.0  # 신규 편입 → 패시브 강제매수 (12→25)
+            sources.append("ewy(NEW:+25)")
         elif code in _ewy_removed_set:
-            ewy_sc = -10.0  # 편출 → 패시브 강제매도
-            sources.append("ewy(REMOVED:-10)")
+            ewy_sc = -15.0  # 편출 → 패시브 강제매도 (-10→-15)
+            sources.append("ewy(REMOVED:-15)")
         elif code in _ewy_change_map:
             wc = _ewy_change_map[code]
             if wc >= 0.3:
-                ewy_sc = 8.0   # LARGE UP
-                sources.append(f"ewy(+{wc:.2f}%:+8)")
+                ewy_sc = 15.0  # LARGE UP (8→15)
+                sources.append(f"ewy(+{wc:.2f}%:+15)")
             elif wc >= 0.1:
-                ewy_sc = 4.0   # MEDIUM UP
-                sources.append(f"ewy(+{wc:.2f}%:+4)")
+                ewy_sc = 8.0   # MEDIUM UP (4→8)
+                sources.append(f"ewy(+{wc:.2f}%:+8)")
             elif wc <= -0.3:
-                ewy_sc = -5.0  # LARGE DOWN
-                sources.append(f"ewy({wc:.2f}%:-5)")
+                ewy_sc = -8.0  # LARGE DOWN (-5→-8)
+                sources.append(f"ewy({wc:.2f}%:-8)")
 
         # ── 합산 ──────────────────────────────
         raw_total = (relay_sc + premove_sc + tech_sc + bargain_sc + cross_bonus
@@ -1837,39 +1834,23 @@ def _step5_cross_validate(
         # CORTEX 체제 배수 적용
         total = raw_total * regime_mult
 
-        # ── TV 강매집 최소 점수 보장 + 과열 페널티 ──────────────
-        # 4/8 학습: QUIET_ACC(85)=75%적중+3.9% / QUIET_ACC(90+)=0%적중
-        #           EXPLOSION(70)=25%적중-4.1% / EXPLOSION(75)=33%적중+1.6%
-        if _tv_pattern == "QUIET_ACCUMULATION" and 83 <= _tv_score <= 89:
-            # ★ 최적 구간: 75% 적중 — 적극 보장
-            tv_floor = max(18.0, tv_direct * 0.6)
-            if total < tv_floor:
-                logger.info(f"  [TV Floor] {name}: {total:.1f}→{tv_floor:.1f} (QUIET_ACC {_tv_score:.0f} 최적구간)")
-                total = tv_floor
-        elif _tv_pattern == "QUIET_ACCUMULATION" and _tv_score >= 90:
-            # ★ 과열 매집: 0% 적중 → 명시적 페널티 (4/8 신규)
-            _overheat_pen = 10.0
-            total -= _overheat_pen
-            sources.append(f"tv_overheat(-{_overheat_pen:.0f})")
-            logger.info(f"  [TV 과열] {name}: QUIET_ACC({_tv_score:.0f}) 과열 페널티 -{_overheat_pen}")
+        # ── TV 시그널 보정 (5/9 누적 학습 반영) ──────────────
+        # QA 80+: 적중 0~9% → 하드 차단 (floor 제거, 페널티)
+        # QA 70~79: 초기 매집 제한적 활용
+        # EXPLOSION 70~74: 25% 적중 → 페널티 유지
+        if _tv_pattern == "QUIET_ACCUMULATION" and _tv_score >= 80:
+            # ★ QA 80+ 전면 차단: 적중 0~9%, avg -4.8~-6.7%
+            _qa_pen = 15.0
+            total -= _qa_pen
+            sources.append(f"qa_block(-{_qa_pen:.0f},score{_tv_score:.0f})")
+            logger.info(f"  [QA 차단] {name}: QUIET_ACC({_tv_score:.0f}) 하드차단 -{_qa_pen}")
         elif _tv_pattern == "EXPLOSION" and 70 <= _tv_score < 75:
-            # ★ EXPLOSION 70~74: 25% 적중, -4.1% → 페널티 (4/8 신규)
             _expl_pen = 8.0
             total -= _expl_pen
             sources.append(f"expl_weak(-{_expl_pen:.0f})")
             logger.info(f"  [TV 약폭발] {name}: EXPLOSION({_tv_score:.0f}) 약신호 페널티 -{_expl_pen}")
         elif _tv_pattern == "EXPLOSION" and _tv_score >= 75:
             pass  # EXPLOSION 75+: 33% 적중 — floor 없음, 자연 점수만
-        elif _tv_pattern == "QUIET_ACCUMULATION" and 80 <= _tv_score < 83:
-            tv_floor = max(12.0, tv_direct * 0.4)  # 보통 구간
-            if total < tv_floor:
-                logger.info(f"  [TV Floor] {name}: {total:.1f}→{tv_floor:.1f} (QUIET_ACC {_tv_score:.0f})")
-                total = tv_floor
-        elif _tv_pattern in ("QUIET_ACCUMULATION",) and _tv_score >= 70:
-            tv_floor = 5.0  # 초기 매집 최소 보장
-            if total < tv_floor:
-                logger.info(f"  [TV Floor] {name}: {total:.1f}→{tv_floor:.1f} ({_tv_pattern} {_tv_score:.0f})")
-                total = tv_floor
 
         # 진입/SL/TP: 피보나치 우선 → premove → MACD → bargain → 기본값
         bargain_tp = int(b_info["pre_war_high"] * 0.8) if b_info.get("pre_war_high") else 0
@@ -3564,8 +3545,7 @@ def _calc_signal_type(grade: str, nat_detail: str, tv_ratio: float,
                       tv_pattern: str = "NORMAL") -> str:
     """grade → signal_type (FORCE_BUY/BUY/WATCH/AVOID) — upload_short와 동일"""
     inst_support = "기OK" in nat_detail or "기+" in nat_detail
-    if tv_pattern == "QUIET_ACCUMULATION" and grade in ("AAA", "AA", "A") and tv_ratio >= 2.0:
-        return "FORCE_BUY"
+    # QA FORCE_BUY 제거 (5/9: QA 80+ 적중 0~9%)
     if grade in ("AAA", "AA", "A") and inst_support and tv_ratio >= 1.5:
         return "FORCE_BUY"
     elif grade in ("AAA", "AA", "A", "BBB") and (inst_support or tv_ratio >= 1.3):
