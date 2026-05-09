@@ -160,6 +160,43 @@ def _get_top200_codes() -> list:
         return []
 
 
+def _run_nationality_fetch(nat_codes: list, snap_date: str):
+    """국적별 배치 크롤링 실행 + 스냅샷 저장. (ok, snap_saved) 반환."""
+    import asyncio
+    from data.krx_nationality_crawler import afetch_nationality_batch
+    from data.nationality_signal import save_daily_snapshot
+
+    try:
+        results = asyncio.run(afetch_nationality_batch(nat_codes, snap_date, snap_date))
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        try:
+            results = loop.run_until_complete(
+                afetch_nationality_batch(nat_codes, snap_date, snap_date))
+        finally:
+            loop.close()
+
+    ok = 0
+    snap_saved = 0
+    for code, df in results.items():
+        if df is not None and not df.empty:
+            ok += 1
+            try:
+                snap_data = {}
+                if "국가명" in df.columns and "거래량" in df.columns:
+                    for _, row in df.iterrows():
+                        country = str(row.get("국가명", "")).strip()
+                        vol = int(row.get("거래량", 0))
+                        if country:
+                            snap_data[country] = snap_data.get(country, 0) + vol
+                if snap_data:
+                    save_daily_snapshot(code, snap_date, snap_data)
+                    snap_saved += 1
+            except Exception as e:
+                logger.debug(f"스냅샷 저장 실패 {code}: {e}")
+    return ok, snap_saved
+
+
 def step3_nationality(force: bool = False):
     """3단계: 국적별 외국인 수급 (TOP200 + 추천 + 보유 + 감시 종목)
 
@@ -204,7 +241,16 @@ def step3_nationality(force: bool = False):
                 with open(fp, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 if isinstance(data, dict):
-                    nat_codes.update(data.keys())
+                    # candidates 키 안의 실제 종목코드만 추출 (메타키 제외)
+                    if "candidates" in data and isinstance(data["candidates"], dict):
+                        nat_codes.update(
+                            k for k in data["candidates"].keys()
+                            if k[:1].isdigit()
+                        )
+                    else:
+                        nat_codes.update(
+                            k for k in data.keys() if k[:1].isdigit()
+                        )
                 elif isinstance(data, list):
                     for item in data:
                         if isinstance(item, dict) and "code" in item:
@@ -246,42 +292,26 @@ def step3_nationality(force: bool = False):
     logger.info(f"[3/6] 국적별 대상: {len(nat_codes)}종목 (TOP200+추천+보유+감시)")
 
     try:
-        import asyncio
-        from data.krx_nationality_crawler import afetch_nationality_batch
-        from data.nationality_signal import save_daily_snapshot, _get_latest_data_date
+        from data.nationality_signal import _get_latest_data_date
 
         snap_date = _get_latest_data_date()
 
         # 1차: 단일일 fetch → 스냅샷 직접 저장 (collect_daily_snapshots 대체)
         # 세션 1회 생성, 모든 종목에 재사용 → 세션 만료 문제 방지
-        try:
-            results = asyncio.run(afetch_nationality_batch(nat_codes, snap_date, snap_date))
-        except RuntimeError:
-            # 이미 event loop 실행 중 — 새 loop 생성
-            loop = asyncio.new_event_loop()
-            try:
-                results = loop.run_until_complete(afetch_nationality_batch(nat_codes, snap_date, snap_date))
-            finally:
-                loop.close()
-        ok = 0
-        snap_saved = 0
-        for code, df in results.items():
-            if df is not None and not df.empty:
-                ok += 1
-                # 스냅샷 직접 저장: {code}_{date}.csv
-                try:
-                    snap_data = {}
-                    if "국가명" in df.columns and "거래량" in df.columns:
-                        for _, row in df.iterrows():
-                            country = str(row.get("국가명", "")).strip()
-                            vol = int(row.get("거래량", 0))
-                            if country:
-                                snap_data[country] = snap_data.get(country, 0) + vol
-                    if snap_data:
-                        save_daily_snapshot(code, snap_date, snap_data)
-                        snap_saved += 1
-                except Exception as e:
-                    logger.debug(f"스냅샷 저장 실패 {code}: {e}")
+        ok, snap_saved = _run_nationality_fetch(nat_codes, snap_date)
+
+        # 0건 폴백: snap_date 데이터 미반영 → 전거래일로 재시도
+        if ok == 0 and len(nat_codes) > 0:
+            from data.trading_calendar import last_trading_day
+            from datetime import datetime as _dt
+            fallback = last_trading_day(
+                _dt.strptime(snap_date, "%Y%m%d").date()
+            ).strftime("%Y%m%d")
+            if fallback != snap_date:
+                logger.warning(
+                    f"[3/6] 국적별 0건 → 전거래일({fallback}) 폴백 재시도")
+                ok, snap_saved = _run_nationality_fetch(nat_codes, fallback)
+                snap_date = fallback
 
         elapsed = int(time.time() - t0)
         logger.info(f"[3/6] 국적별 완료: {ok}/{len(nat_codes)} | 스냅샷: {snap_saved} ({snap_date}) | {elapsed}초")

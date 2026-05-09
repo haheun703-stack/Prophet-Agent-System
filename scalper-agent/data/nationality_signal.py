@@ -168,18 +168,13 @@ def collect_daily_snapshots(
 
 
 def _get_latest_data_date() -> str:
-    """KRX 국적 데이터 최신 가용일 추정 (T-1)
+    """KRX 국적 데이터 최신 가용일 추정 — 항상 직전 거래일
 
-    - 장 마감(15:30) 후 당일 데이터 반영 시점 불확실
-    - 안전하게 전 영업일 기준
+    KRX 당일 데이터 반영 시점이 불확실하므로 (18시 이후에도 미반영 사례 빈번)
+    안전하게 직전 거래일 기준으로 고정.
     """
     now = datetime.now()
-    if now.hour < 18:
-        # 장중/장마감 직후 → 직전 거래일
-        return last_trading_day(now.date()).strftime("%Y%m%d")
-    else:
-        # 18시 이후 → 당일 가능 (시도)
-        return now.strftime("%Y%m%d")
+    return last_trading_day(now.date()).strftime("%Y%m%d")
 
 
 # ═══════════════════════════════════════════

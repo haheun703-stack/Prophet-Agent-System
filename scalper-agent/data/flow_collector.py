@@ -124,8 +124,31 @@ def _get_kis_session() -> Optional[Tuple[str, dict]]:
                 logger.warning(f"[KIS] 세션 생성 실패 ({attempt+1}차): {e} — 재시도")
             else:
                 logger.critical(f"[KIS] 세션 생성 3차 최종 실패: {e}")
+                _tg_alert_kis_failure(e)
 
     return None
+
+
+def _tg_alert_kis_failure(error):
+    """KIS 토큰 3차 실패 시 텔레그램 긴급 알림."""
+    try:
+        token = os.getenv("TELEGRAM_BOT_TOKEN")
+        chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        if not token or not chat_id:
+            return
+        text = (
+            "\U0001F6A8 [KIS 토큰 사망] 세션 생성 3차 최종 실패\n"
+            f"오류: {error}\n"
+            "→ 수급 수집 전면 중단 상태\n"
+            "→ token.dat 삭제 후 재발급 필요"
+        )
+        _requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat_id, "text": text},
+            timeout=5,
+        )
+    except Exception:
+        pass
 
 
 # ============================================================
@@ -362,12 +385,20 @@ def collect_foreign_exhaustion(
     for code in codes:
         cache_file = FLOW_DIR / f"{code}_foreign_exh.csv"
         if not force and cache_file.exists():
-            cached = pd.read_csv(cache_file, index_col=0, parse_dates=True)
-            if len(cached) > 0:
-                last_date = cached.index[-1].strftime("%Y-%m-%d")
-                if last_date == today_str:
-                    results[code] = cached
+            if cache_file.stat().st_size == 0:
+                cache_file.unlink()
+            else:
+                try:
+                    cached = pd.read_csv(cache_file, index_col=0, parse_dates=True)
+                except Exception:
+                    cache_file.unlink()
+                    need_fetch.append(code)
                     continue
+                if len(cached) > 0:
+                    last_date = cached.index[-1].strftime("%Y-%m-%d")
+                    if last_date == today_str:
+                        results[code] = cached
+                        continue
         need_fetch.append(code)
 
     cache_count = len(results)

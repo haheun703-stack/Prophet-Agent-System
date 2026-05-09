@@ -387,13 +387,13 @@ def _build_single_parquet(
         raw_path = RAW_DIR / f"{code}.parquet"
         raw_tmp = RAW_DIR / f"{code}.parquet.tmp"
         df.to_parquet(raw_tmp)
-        raw_tmp.rename(raw_path)
+        raw_tmp.replace(raw_path)
 
         proc = build_processed(df.copy())
         proc_path = PROCESSED_DIR / f"{code}.parquet"
         proc_tmp = PROCESSED_DIR / f"{code}.parquet.tmp"
         proc.to_parquet(proc_tmp)
-        proc_tmp.rename(proc_path)
+        proc_tmp.replace(proc_path)
 
         return "ok"
     except Exception as e:
