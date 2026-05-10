@@ -81,6 +81,7 @@ MCAP_BONUS = [
 ]
 
 MIN_FINAL_SCORE = 60.0  # 최종 점수 컷오프
+LIMIT_UP_CANDIDATES_PATH = BASE / "data_store" / "limit_up" / "candidates.json"
 
 # ETF 브랜드 접두사 — 단타 픽에서 제외 (ETF 섹션 따로 집계하므로)
 ETF_BRAND_PREFIXES = (
@@ -285,6 +286,110 @@ def scan_large_caps(
     return candidates
 
 
+def scan_limit_up_followup(
+    min_score: float = 60.0,
+    top_n: int = 5,
+) -> list[dict]:
+    """
+    [트랙 C] 상한가 후속 진입 후보 - limit_up/candidates.json 활용
+
+    상한가 스캐너가 감지한 종목 중 연속성 점수 높은 것을
+    단타 픽 형식으로 변환.
+
+    기준:
+    - 연속성 점수 60+ (9팩터: 종가강도/거래량/회전율/수급/숏커버 등)
+    - 종가 강도 0.8+ (상한가 근처 마감 = 다음날 갭업 가능)
+    - ETF 제외
+    """
+    if not LIMIT_UP_CANDIDATES_PATH.exists():
+        return []
+
+    try:
+        data = json.loads(LIMIT_UP_CANDIDATES_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+    candidates = []
+    for item in data.get("limit_up", []):
+        score = item.get("score", 0)
+        if score < min_score:
+            continue
+
+        # 종가 강도 0.8+ (강한 마감만)
+        if item.get("close_strength", 0) < 0.8:
+            continue
+
+        # ETF 제외
+        if is_etf(item.get("name", "")):
+            continue
+
+        code = item["code"]
+        close = item.get("close", 0)
+        if close <= 0:
+            continue
+
+        # 수급 확인 (기관 또는 외인 매수)
+        frgn = item.get("frgn_net", 0)
+        inst = item.get("inst_net", 0)
+
+        # 눌림목 대기 진입 (백테스트 결과: 눌림목 EV +1.18% vs 시초가 -2.83%)
+        # 상한가 종가 대비 -5% 눌린 지점을 진입 타겟으로 설정
+        pullback_target = int(close * 0.95)    # -5% 눌림목 타겟
+        entry_low = int(close * 0.93)          # -7% 깊은 눌림 (더 좋은 진입)
+        entry_high = int(close * 0.97)         # -3% 얕은 눌림 (최소 기준)
+        tp1 = int(pullback_target * 1.05)      # 진입가 대비 +5%
+        tp2 = int(pullback_target * 1.10)      # 진입가 대비 +10%
+        sl = int(pullback_target * 0.85)       # 진입가 대비 -15%
+
+        # 태그에서 핵심 이유 추출
+        tags = item.get("tags", [])
+        reasons = [f"상한가 {item['change_pct']:+.1f}% 눌림목대기 (연속성 {score:.0f}점)"]
+        if "쌍끌이매수" in tags:
+            reasons.append("외인+기관 쌍끌이")
+        elif "기관매수" in tags:
+            reasons.append("기관 매수")
+        elif "외인매수" in tags:
+            reasons.append("외인 매수")
+
+        # 숏커버 태그 있으면 추가
+        short_tags = [t for t in tags if any(k in t for k in ("거래량", "소진율", "기관대량", "외인매도"))]
+        if short_tags:
+            reasons.append(short_tags[0])
+
+        mcap = item.get("market_cap_억", 0)
+
+        candidates.append({
+            "code": code,
+            "name": item.get("name", ""),
+            "mcap_억": mcap,
+            "score": score,
+            "buy_days": 0,
+            "inst_buy_days": 0,
+            "inst_joining": 1 if inst > 0 else 0,
+            "foreign_total_억": round(frgn / 100, 1),  # 백만→억
+            "inst_total_억": round(inst / 100, 1),
+            "dual_total_억": round((frgn + inst) / 100, 1),
+            "ratio_mcap_%": 0,
+            "price_change_%": item.get("change_pct", 0),
+            "close_start": close,
+            "close_end": close,
+            "pullback_target": pullback_target,
+            "dates": [],
+            "foreign_daily_억": [],
+            "inst_daily_억": [],
+            "track": "limit_up",
+            "entry_type": "pullback",
+            "pattern": item.get("pattern", ""),
+            "volume_ratio": item.get("volume_ratio", 0),
+            "turnover_pct": item.get("turnover_pct", 0),
+            "close_strength": item.get("close_strength", 0),
+            "limit_up_tags": tags,
+        })
+
+    candidates.sort(key=lambda x: -x["score"])
+    return candidates[:top_n]
+
+
 def load_insights() -> dict:
     """insights.json 로드 (없으면 빈 dict)"""
     if not INSIGHTS_PATH.exists():
@@ -360,8 +465,8 @@ def apply_daytrading_filters(
         if c["score"] < base_cutoff:
             continue
 
-        # [필터 2] 쌍매수 필수 — 기관 합류 1일+
-        if c.get("inst_joining", 0) == 0:
+        # [필터 2] 쌍매수 필수 — 기관 합류 1일+ (상한가 트랙은 수급 이미 검증됨)
+        if c.get("track") != "limit_up" and c.get("inst_joining", 0) == 0:
             continue
 
         # [가산 3] EWY 수혜 섹터 보너스
@@ -497,7 +602,10 @@ def format_flowx_post(picks: list[dict], ewy_signal: dict, mode: str = "confirme
 
         lines.append(f"{rank_emoji} <b>{p['name']}</b> ({p['code']}) · {p.get('sector','-')}")
         lines.append(f"   💰 현재가 {p['close_end']:,}원 · 시총 {int(p['mcap_억']):,}억")
-        lines.append(f"   🎯 진입 {p['entry_low']:,}~{p['entry_high']:,} · 목표 {p['tp1']:,} (+{p['upside_to_tp1_pct']:.1f}%)")
+        if p.get("track", "").startswith("C_"):
+            lines.append(f"   🎯 눌림목대기 {p['entry_low']:,}~{p['entry_high']:,} · 목표 {p['tp1']:,} (+{p['upside_to_tp1_pct']:.1f}%)")
+        else:
+            lines.append(f"   🎯 진입 {p['entry_low']:,}~{p['entry_high']:,} · 목표 {p['tp1']:,} (+{p['upside_to_tp1_pct']:.1f}%)")
         lines.append(f"   📊 {p['key_reasons']}")
         # 🔗 ETF 대안
         etf_code = p.get("etf_alt_code", "")
@@ -627,9 +735,79 @@ def main():
         p["track"] = "B_중소형주"
     print(f"  ✅ 트랙 B 최종: {len(picks_b)}개")
 
+    # ─── 트랙 C: 상한가 후속 (연속성 60+ 종목) ───
+    print("[트랙 C] 상한가 후속 진입 스캔 (연속성 60+, 종가강도 0.8+)...")
+    limit_candidates = scan_limit_up_followup(min_score=60, top_n=5)
+    print(f"  후보: {len(limit_candidates)}개")
+    # A/B와 중복 제거
+    existing_codes = {p["code"] for p in picks_a} | {p["code"] for p in picks_b}
+    limit_filtered = []
+    for c in limit_candidates:
+        if c["code"] in existing_codes:
+            continue
+        info = universe.get(c["code"], {})
+        sector = info.get("sector", "-")
+        close = c.get("close_end", 0)
+        if close <= 0:
+            continue
+
+        # 상한가 후속은 자체 점수 체계 사용 (5단계 필터 대신)
+        sector_bonus = EWY_CORE_SECTORS.get(sector, 0)
+        mcap_bonus = 0
+        for threshold, bonus in MCAP_BONUS:
+            if c["mcap_억"] >= threshold:
+                mcap_bonus = bonus
+                break
+
+        final_score = c["score"] + sector_bonus + mcap_bonus
+
+        # 눌림목 대기 진입 (백테스트 검증: 눌림목 EV +1.18%)
+        pullback_target = int(close * 0.95)    # -5% 눌림목 타겟
+        entry_low = int(close * 0.93)          # -7% 깊은 눌림
+        entry_high = int(close * 0.97)         # -3% 얕은 눌림
+        tp1 = int(pullback_target * 1.05)      # 진입가 +5%
+        tp2 = int(pullback_target * 1.10)      # 진입가 +10%
+        sl = int(pullback_target * 0.85)       # 진입가 -15%
+
+        # 이유
+        reasons = [f"상한가 {c['price_change_%']:+.1f}% 눌림목대기 (연속성 {c['score']:.0f}점)"]
+        limit_tags = c.get("limit_up_tags", [])
+        supply_tags = [t for t in limit_tags if any(k in t for k in ("쌍끌이", "기관", "외인"))]
+        if supply_tags:
+            reasons.append(supply_tags[0])
+        if sector_bonus > 0:
+            reasons.append(f"EWY 수혜 {sector}")
+
+        etf_alt = get_etf_for_stock(c.get("name", ""), sector)
+
+        limit_filtered.append({
+            **c,
+            "sector": sector,
+            "sector_bonus": sector_bonus,
+            "mcap_bonus": mcap_bonus,
+            "ewy_bonus": 0,
+            "learning_bonus": 0,
+            "wick_pct": 0,
+            "wick_pen": 0,
+            "final_score": round(final_score, 1),
+            "entry_low": entry_low,
+            "entry_high": entry_high,
+            "tp1": tp1,
+            "tp2": tp2,
+            "sl": sl,
+            "upside_to_tp1_pct": round((tp1 / pullback_target - 1) * 100, 1),
+            "key_reasons": " + ".join(reasons),
+            "track": "C_상한가후속",
+            "etf_alt_code": etf_alt["code"],
+            "etf_alt_name": etf_alt["name"],
+            "etf_alt_theme": etf_alt["theme"],
+        })
+    picks_c = limit_filtered[:2]  # TOP 2
+    print(f"  트랙 C 최종: {len(picks_c)}개")
+
     # 최종 결합
-    picks = picks_a + picks_b
-    print(f"  🎯 전체 TOP: {len(picks)}개 (A {len(picks_a)} + B {len(picks_b)})")
+    picks = picks_a + picks_b + picks_c
+    print(f"  전체 TOP: {len(picks)}개 (A {len(picks_a)} + B {len(picks_b)} + C {len(picks_c)})")
 
     # Step 3: 출력
     print()
@@ -637,11 +815,13 @@ def main():
     print(f"🏆 단타 TOP {len(picks)} (Dual Track)")
     print("=" * 90)
     for i, p in enumerate(picks, 1):
-        track_label = "🔷대형" if p.get("track","").startswith("A_") else "🟢중소"
+        t = p.get("track", "")
+        track_label = "🔷대형" if t.startswith("A_") else "🔴상한" if t.startswith("C_") else "🟢중소"
+        entry_label = "눌림" if t.startswith("C_") else "진입"
         print(f"{i}. {track_label} [{p['final_score']:5.1f}] {p['name']:15} ({p['code']}) "
               f"| {p.get('sector','-'):8} "
               f"| 현재 {p['close_end']:>8,} "
-              f"| 진입 {p['entry_low']:>8,}~{p['entry_high']:>8,} "
+              f"| {entry_label} {p['entry_low']:>8,}~{p['entry_high']:>8,} "
               f"| 목표 {p['tp1']:>8,}")
         print(f"     └ {p['key_reasons']}")
         inst_total = p.get('inst_total_억', 0)

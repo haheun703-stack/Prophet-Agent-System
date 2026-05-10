@@ -40,7 +40,6 @@ import sys
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -76,7 +75,7 @@ MAX_HOLD_DAYS = 20           # 최대 보유 기간 (영업일)
 #  데이터 로드 유틸
 # ═══════════════════════════════════════════════════════
 
-def _load_daily(code: str) -> Optional[pd.DataFrame]:
+def _load_daily(code: str) -> pd.DataFrame | None:
     """일봉 CSV 로드"""
     path = DAILY_DIR / f"{code}.csv"
     if not path.exists():
@@ -228,10 +227,7 @@ def _analyze_flow_6(code: str) -> dict:
                 break
         result["smart_consec"] = consec
 
-        # 쌍매수 (외인+기관 동시 2일+)
-        f_consec = sum(1 for v in reversed(frgn_series) if v > 0)
-        i_consec = sum(1 for v in reversed(inst_series) if v > 0)
-        # 정확한 연속 계산
+        # 쌍매수 (외인+기관 동시 연속매수 2일+)
         f_c, i_c = 0, 0
         for v in reversed(frgn_series):
             if v > 0:

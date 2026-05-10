@@ -28,6 +28,7 @@ _SOURCE_LABELS = {
     "nxt": "NXT",
     "daytrading_pick": "TOP픽",
     "morning": "모닝",  # 레거시 (v2부터 미사용)
+    "limit_up": "상한가",
 }
 
 

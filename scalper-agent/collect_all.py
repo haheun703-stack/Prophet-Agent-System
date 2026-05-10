@@ -342,6 +342,141 @@ def step4_parquet_build():
         return 0
 
 
+def step5b_limit_up_scan():
+    """5b단계: 상한가 스캐너 (당일 상한가/급등 + 순차급등 패턴)"""
+    logger.info("[5b] 상한가 스캐너 실행...")
+    t0 = time.time()
+    try:
+        from data.limit_up_scanner import (
+            scan_limit_up, scan_sequential_push, score_continuation,
+            analyze_short_proxy, LIMIT_UP_DIR, LIMIT_UP_CANDIDATES,
+        )
+        from dataclasses import asdict
+
+        uni_path = DATA_DIR / "universe.json"
+        if not uni_path.exists():
+            logger.warning("[5b] universe.json 없음, 스킵")
+            return 0
+
+        with open(uni_path, "r", encoding="utf-8") as f:
+            universe = json.load(f)
+
+        # 상한가/급등 스캔
+        limit_stocks = scan_limit_up(universe=universe)
+        for s in limit_stocks:
+            sp = getattr(s, '_short_proxy', None)
+            s.score = score_continuation(s, short_proxy=sp)
+        limit_stocks.sort(key=lambda x: -x.score)
+
+        # 순차급등 패턴 스캔
+        seq_stocks = scan_sequential_push(universe=universe)
+
+        # 저장
+        LIMIT_UP_DIR.mkdir(parents=True, exist_ok=True)
+        candidates = {
+            "scanned_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "limit_up": [asdict(s) for s in limit_stocks],
+            "sequential_push": [asdict(s) for s in seq_stocks[:30]],
+        }
+        with open(LIMIT_UP_CANDIDATES, "w", encoding="utf-8") as f:
+            json.dump(candidates, f, ensure_ascii=False, indent=2, default=str)
+
+        cnt = len(limit_stocks) + len(seq_stocks)
+        logger.info(
+            f"[5b] 상한가 스캔 완료: 상한가 {len(limit_stocks)}건 + "
+            f"순차급등 {len(seq_stocks)}건 ({int(time.time()-t0)}초)"
+        )
+        return cnt
+    except Exception as e:
+        logger.error(f"[5b] 상한가 스캔 실패: {e}")
+        return 0
+
+
+def step5c_limit_up_engine():
+    """5c단계: 상한가 눌림목 엔진 (시그널 감지 + 감시풀 관리)"""
+    logger.info("[5c] 상한가 눌림목 엔진 실행...")
+    t0 = time.time()
+    try:
+        from data.limit_up_engine import run_daily
+        result = run_daily(send_telegram=True)
+        new_sigs = result.get("new_signals", 0)
+        triggered = result.get("triggered", 0)
+        watch_cnt = result.get("watchlist_count", 0)
+        logger.info(
+            f"[5c] 엔진 완료: 신규시그널 {new_sigs}건 | "
+            f"트리거 {triggered}건 | 감시풀 {watch_cnt}건 "
+            f"({int(time.time()-t0)}초)"
+        )
+        return result
+    except Exception as e:
+        logger.error(f"[5c] 상한가 엔진 실패: {e}")
+        return {"error": str(e)}
+
+
+def step5d_limit_up_paper():
+    """5d단계: 상한가 페이퍼 트레이딩 (시그널 → 가상매매)"""
+    logger.info("[5d] 상한가 페이퍼 트레이딩 실행...")
+    t0 = time.time()
+    try:
+        from data.limit_up_paper_trader import run_paper_trading
+        result = run_paper_trading(send_telegram=True)
+        entries = result.get("new_entries", 0)
+        closed = result.get("closed", 0)
+        active = result.get("active", 0)
+        logger.info(
+            f"[5d] 페이퍼 완료: 진입 {entries}건 | "
+            f"청산 {closed}건 | 보유 {active}건 "
+            f"({int(time.time()-t0)}초)"
+        )
+        return result
+    except Exception as e:
+        logger.error(f"[5d] 페이퍼 트레이딩 실패: {e}")
+        return {"error": str(e)}
+
+
+def step5e_limit_up_upload():
+    """5e단계: 상한가 시그널 + 성적표 FLOWX 업로드"""
+    logger.info("[5e] 상한가 FLOWX 업로드...")
+    t0 = time.time()
+    try:
+        from data.upload_limit_up import upload_all
+        result = upload_all()
+        sig_ok = result.get("signals", False)
+        perf_ok = result.get("performance", False)
+        logger.info(
+            f"[5e] 업로드 완료: 시그널 {'OK' if sig_ok else 'FAIL'} | "
+            f"성적 {'OK' if perf_ok else 'FAIL'} ({int(time.time()-t0)}초)"
+        )
+        return result
+    except Exception as e:
+        logger.error(f"[5e] FLOWX 업로드 실패: {e}")
+        return {"error": str(e)}
+
+
+def step5f_tipping_point():
+    """5f단계: 수급 임계점 스캔 + FLOWX 업로드"""
+    logger.info("[5f] 수급 임계점 스캔...")
+    t0 = time.time()
+    try:
+        from data.tipping_point_scanner import scan_tipping_point
+        scan = scan_tipping_point()
+        coiled = len(scan.get("coiled", []))
+        warming = len(scan.get("warming", []))
+        logger.info(
+            f"[5f] 스캔 완료: 코일 {coiled} / 점화 {warming} "
+            f"({int(time.time()-t0)}초)"
+        )
+
+        # Supabase 업로드
+        from data.upload_tipping_scan import upload_tipping_scan
+        ok = upload_tipping_scan(scan)
+        logger.info(f"[5f] 업로드 {'OK' if ok else 'FAIL'}")
+        return {"coiled": coiled, "warming": warming, "uploaded": ok}
+    except Exception as e:
+        logger.error(f"[5f] 수급 임계점 실패: {e}")
+        return {"error": str(e)}
+
+
 def step5_spacex_report():
     """5단계: SpaceX 관련주 일일 모니터링 리포트"""
     logger.info("[5/6] SpaceX 관련주 리포트 생성...")
@@ -583,6 +718,31 @@ def main():
     results["spacex"] = step5_spacex_report()
     timings["step5_spacex"] = int(time.time() - t5sx)
 
+    # 5b. 상한가 스캐너 (일봉+수급 수집 후 실행)
+    t5b = time.time()
+    results["limit_up"] = step5b_limit_up_scan()
+    timings["step5b"] = int(time.time() - t5b)
+
+    # 5c. 상한가 눌림목 엔진 (스캔 결과 기반 시그널 + 감시풀)
+    t5c = time.time()
+    results["limit_up_engine"] = step5c_limit_up_engine()
+    timings["step5c"] = int(time.time() - t5c)
+
+    # 5d. 상한가 페이퍼 트레이딩 (시그널 → 가상매매)
+    t5d = time.time()
+    results["limit_up_paper"] = step5d_limit_up_paper()
+    timings["step5d"] = int(time.time() - t5d)
+
+    # 5e. 상한가 시그널 + 성적표 FLOWX 업로드
+    t5e = time.time()
+    results["limit_up_upload"] = step5e_limit_up_upload()
+    timings["step5e"] = int(time.time() - t5e)
+
+    # 5f. 수급 임계점 스캔 + 업로드
+    t5f = time.time()
+    results["tipping_point"] = step5f_tipping_point()
+    timings["step5f"] = int(time.time() - t5f)
+
     # 6. stock_data_daily 동기화
     t6 = time.time()
     results["sync"] = step6_sync_stock_data_daily()
@@ -600,7 +760,11 @@ def main():
     logger.info(f"전체 수집 완료: {elapsed}초 ({elapsed//60}분)")
     logger.info(f"  Step1+2: {timings['step1_2']}초 | Step3: {timings['step3']}초 | "
                 f"Step4: {timings['step4']}초 | Step5-SpaceX: {timings.get('step5_spacex',0)}초 | "
-                f"Step6: {timings['step6']}초")
+                f"Step5b-LimitUp: {timings.get('step5b',0)}초 | "
+                f"Step5c-Engine: {timings.get('step5c',0)}초 | "
+                f"Step5d-Paper: {timings.get('step5d',0)}초 | "
+                f"Step5e-Upload: {timings.get('step5e',0)}초 | "
+                f"Step5f-Tipping: {timings.get('step5f',0)}초 | Step6: {timings['step6']}초")
     logger.info(f"{'='*60}")
 
 
