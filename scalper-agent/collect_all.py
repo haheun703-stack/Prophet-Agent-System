@@ -35,6 +35,17 @@ import logging
 import argparse
 from pathlib import Path
 from datetime import datetime, date
+
+# Windows cp949 → UTF-8 강제 (이모지 출력 에러 방지)
+if sys.platform == "win32":
+    for stream in ("stdout", "stderr"):
+        s = getattr(sys, stream, None)
+        if s and hasattr(s, "reconfigure"):
+            try:
+                s.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
 from data.trading_calendar import is_trading_day
 
 # 프로젝트 루트 설정
@@ -66,6 +77,9 @@ DATA_DIR = SCRIPT_DIR / "data_store"
 DAILY_DIR = DATA_DIR / "daily"
 STOCK_DATA_DAILY = SCRIPT_DIR.parent / "stock_data_daily"
 
+# 수급 우선수집 기준 (시총 억 단위)
+FLOW_PRIORITY_CAP = 1500
+
 
 def get_universe_codes() -> list:
     """유니버스 종목 코드 리스트 반환"""
@@ -84,6 +98,108 @@ def get_universe_codes() -> list:
             codes.append(f.stem)
     logger.info(f"Fallback: daily 폴더에서 {len(codes)}종목 로드")
     return codes
+
+
+def get_flow_priority_codes(all_codes: list) -> tuple:
+    """수급 우선수집 대상 선별 → (priority_list, remaining_list)
+
+    Phase A (우선): 시총 FLOW_PRIORITY_CAP 이상 + 추천/보유/감시/상한가 이력
+    Phase B (잔여): 나머지 소형주 → 메인 파이프라인 비차단 백그라운드 수집
+    """
+    priority = set()
+
+    # 1) 시총 기준 필터 (universe.json 직접 로드)
+    uni_path = DATA_DIR / "universe.json"
+    try:
+        with open(uni_path, "r", encoding="utf-8") as f:
+            uni = json.load(f)
+        for code, info in uni.items():
+            if isinstance(info, dict) and info.get("cap_억", 0) >= FLOW_PRIORITY_CAP:
+                priority.add(code)
+        logger.debug(f"[FlowPriority] 시총 {FLOW_PRIORITY_CAP}억+: {len(priority)}종목")
+    except Exception:
+        pass
+
+    # 2) 추천/보유/감시 종목
+    special_files = {
+        "recommendation.json": lambda d: [s.get("code", "") for s in d.get("stocks", [])],
+        "watchlist.json": lambda d: [
+            (i.get("code", "") if isinstance(i, dict) else "")
+            for i in (d if isinstance(d, list) else [])
+        ],
+    }
+    for fname, extractor in special_files.items():
+        fp = DATA_DIR / fname
+        if fp.exists():
+            try:
+                with open(fp, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                codes_from = [c for c in extractor(data) if c]
+                priority.update(codes_from)
+            except Exception:
+                pass
+
+    # 보유 종목 (봇 포지션)
+    for pos_file in ["swing_candidates.json", "nxt_positions.json"]:
+        fp = DATA_DIR / pos_file
+        if fp.exists():
+            try:
+                with open(fp, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    if "candidates" in data and isinstance(data["candidates"], dict):
+                        priority.update(k for k in data["candidates"] if k[:1].isdigit())
+                    else:
+                        priority.update(k for k in data if k[:1].isdigit())
+                elif isinstance(data, list):
+                    for item in data:
+                        if isinstance(item, dict) and "code" in item:
+                            priority.add(item["code"])
+            except Exception:
+                pass
+
+    # 3) 상한가 엔진 감시/이력 종목
+    lu_dir = DATA_DIR / "limit_up"
+    for lu_file in ["watchlist.json", "candidates.json", "signals.json"]:
+        fp = lu_dir / lu_file
+        if fp.exists():
+            try:
+                with open(fp, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    # watchlist: items 안에 리스트
+                    items = data.get("items", data.get("signals", []))
+                    if isinstance(items, list):
+                        for item in items:
+                            if isinstance(item, dict) and "code" in item:
+                                priority.add(item["code"])
+                    # candidates: code 키 직접
+                    for k in data:
+                        if isinstance(k, str) and k[:1].isdigit() and len(k) == 6:
+                            priority.add(k)
+            except Exception:
+                pass
+
+    # 4) 핵심 종목 항상 포함
+    priority.update(["005930", "000660", "003570", "103140"])
+
+    # 5) SpaceX Tier 1~2
+    try:
+        from data.spacex_watchlist import SPACEX_STOCKS
+        priority.update(c for c, m in SPACEX_STOCKS.items() if m.get("tier", 9) <= 2)
+    except Exception:
+        pass
+
+    # all_codes 순서 유지하며 분리
+    priority_list = [c for c in all_codes if c in priority]
+    remaining_list = [c for c in all_codes if c not in priority]
+
+    logger.info(
+        f"[FlowPriority] 우선 {len(priority_list)}종목 "
+        f"(시총{FLOW_PRIORITY_CAP}억+ {sum(1 for c in priority_list if c in priority)}개 "
+        f"+ 추천/감시/상한가) | 잔여 {len(remaining_list)}종목"
+    )
+    return priority_list, remaining_list
 
 
 def step1_daily_ohlcv(codes: list, force: bool = False):
@@ -929,15 +1045,22 @@ def main():
 
     results = {}
     timings = {}
+    import threading
     from concurrent.futures import ThreadPoolExecutor
 
-    # ── Step 1+2+2b: 일봉 + 수급 + ETF 동시 실행 ──
+    # 수급 2단계 분할: 우선 종목 / 잔여 종목
+    priority_codes, remaining_codes = get_flow_priority_codes(codes)
+
+    # ── Step 1+2A+2b: 일봉 + 우선수급 + ETF 동시 실행 ──
+    bg_flow_thread = None  # 잔여 수급 백그라운드 스레드
     if not _should_skip("step1_2", resume_from):
-        logger.info("[1+2+2b] 일봉 + 수급 + ETF 동시 수집 시작...")
+        logger.info(
+            f"[1+2A+2b] 일봉(전체) + 수급(우선 {len(priority_codes)}종목) + ETF 동시 시작..."
+        )
         t12 = time.time()
         with ThreadPoolExecutor(max_workers=3) as executor:
             f1 = executor.submit(step1_daily_ohlcv, codes, args.force)
-            f2 = executor.submit(step2_supply_demand, codes, args.force)
+            f2a = executor.submit(step2_supply_demand, priority_codes, args.force)
             f2b = executor.submit(step2b_etf_ohlcv, args.force)
             # C3: 개별 try/except — 한쪽 실패해도 다른 쪽 결과 보존
             try:
@@ -946,9 +1069,9 @@ def main():
                 logger.error(f"[C3] Step1 일봉 스레드 실패: {e}")
                 results["daily"] = 0
             try:
-                results["flow"] = f2.result()
+                results["flow"] = f2a.result()
             except Exception as e:
-                logger.error(f"[C3] Step2 수급 스레드 실패: {e}")
+                logger.error(f"[C3] Step2A 수급(우선) 스레드 실패: {e}")
                 results["flow"] = {}
             try:
                 results["etf_daily"] = f2b.result()
@@ -956,15 +1079,31 @@ def main():
                 logger.error(f"[C3] Step2b ETF 스레드 실패: {e}")
                 results["etf_daily"] = 0
         timings["step1_2"] = int(time.time() - t12)
-        logger.info(f"[1+2+2b] 일봉+수급+ETF 동시 완료: {timings['step1_2']}초")
+        logger.info(
+            f"[1+2A+2b] 일봉+수급(우선)+ETF 완료: {timings['step1_2']}초 "
+            f"(우선 {len(priority_codes)}종목)"
+        )
         _save_checkpoint("step1_2", results.get("daily", 0), timings["step1_2"])
         _send_step_telegram(
-            "일봉+수급+ETF",
+            "일봉+수급(우선)+ETF",
             f"일봉 {results.get('daily',0)} | "
-            f"수급 {results.get('flow',{})} | "
+            f"수급(우선 {len(priority_codes)}) {results.get('flow',{})} | "
             f"ETF {results.get('etf_daily',0)} | "
             f"{timings['step1_2']}초"
         )
+
+        # ── Step 2B: 잔여 수급 백그라운드 수집 (메인 파이프라인 비차단) ──
+        if remaining_codes:
+            logger.info(
+                f"[2B] 잔여 수급 백그라운드 시작: {len(remaining_codes)}종목"
+            )
+            bg_flow_thread = threading.Thread(
+                target=step2_supply_demand,
+                args=(remaining_codes, args.force),
+                name="flow-bg",
+                daemon=False,
+            )
+            bg_flow_thread.start()
     else:
         logger.info("[SKIP] Step 1+2+2b (이미 완료)")
 
@@ -1068,8 +1207,8 @@ def main():
 
     elapsed = timings["total"]
     logger.info(f"{'='*60}")
-    logger.info(f"전체 수집 완료: {elapsed}초 ({elapsed//60}분)")
-    logger.info(f"  Step1+2: {timings.get('step1_2',0)}초 | Step3: {timings.get('step3',0)}초 | "
+    logger.info(f"메인 파이프라인 완료: {elapsed}초 ({elapsed//60}분)")
+    logger.info(f"  Step1+2A: {timings.get('step1_2',0)}초 | Step3: {timings.get('step3',0)}초 | "
                 f"Step4: {timings.get('step4',0)}초 | Step5-SpaceX: {timings.get('step5_spacex',0)}초 | "
                 f"Step5b-LimitUp: {timings.get('step5b',0)}초 | "
                 f"Step5c-Engine: {timings.get('step5c',0)}초 | "
@@ -1078,6 +1217,12 @@ def main():
                 f"Step5f-Tipping: {timings.get('step5f',0)}초 | "
                 f"Step6: {timings.get('step6',0)}초 | Step7-Health: {timings.get('step7',0)}초")
     logger.info(f"{'='*60}")
+
+    # ── Step 2B 대기: 잔여 수급 백그라운드 완료 대기 ──
+    if bg_flow_thread is not None and bg_flow_thread.is_alive():
+        logger.info(f"[2B] 잔여 수급 백그라운드 완료 대기 중...")
+        bg_flow_thread.join()
+        logger.info(f"[2B] 잔여 수급 백그라운드 완료 (총 {int(time.time()-t_start)}초)")
 
     # 체크포인트 정리 (전체 완료 시)
     if CHECKPOINT_PATH.exists():
