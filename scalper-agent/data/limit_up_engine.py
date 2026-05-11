@@ -38,6 +38,16 @@ import json
 import logging
 import sys
 from dataclasses import dataclass, field, asdict
+
+# Windows cp949 이모지 출력 에러 방지 (pythonw.exe 대응)
+if sys.platform == "win32":
+    for _stream in ("stdout", "stderr"):
+        _s = getattr(sys, _stream, None)
+        if _s and hasattr(_s, "reconfigure"):
+            try:
+                _s.reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
 from datetime import datetime, timedelta
 from pathlib import Path
 
