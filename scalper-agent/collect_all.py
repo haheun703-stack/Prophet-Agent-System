@@ -12,10 +12,18 @@
   4. Parquet 통합 빌드 (data_store/raw/, processed/)
   5. SpaceX 관련주 일일 모니터링 (data_store/spacex_report.json)
   6. stock_data_daily 동기화 (data_store/daily → stock_data_daily)
+  7. 데이터 건강성 검증 (open=0 등 이상 데이터 감지)
+
+자동화 안정성 (v2.0):
+  - Step-level 체크포인트 → 크래시 시 중단 지점부터 재개 (--resume)
+  - 데이터 건강성 자동 검증 (open=0, 커버리지 부족 등)
+  - 텔레그램 수집 요약 알림 (완료/실패 자동 발송)
+  - 진행률 중간 알림 (주요 Step 완료 시)
 
 사용법:
   python collect_all.py                  # 전체 수집 (당일 기준)
   python collect_all.py --force          # 캐시 무시 강제 수집
+  python collect_all.py --resume         # 크래시 지점부터 재개
   python collect_all.py --sync-only      # stock_data_daily 동기화만
 """
 
@@ -633,9 +641,245 @@ def _save_collect_result(steps: dict):
         logger.warning(f"수집 기록 저장 실패: {e}")
 
 
+# ═══════════════════════════════════════════════════════
+#  자동화 안정성 v2.0: 체크포인트 / 건강성검증 / 텔레그램
+# ═══════════════════════════════════════════════════════
+
+CHECKPOINT_PATH = DATA_DIR / "_collect_checkpoint.json"
+
+# Step 실행 순서 (체크포인트 기준)
+STEP_ORDER = [
+    "step1_2",      # 일봉 + 수급 + ETF (동시)
+    "step3",        # 국적별
+    "step4",        # Parquet
+    "step5_spacex", # SpaceX
+    "step5b",       # 상한가 스캐너
+    "step5c",       # 상한가 엔진
+    "step5d",       # 페이퍼 트레이딩
+    "step5e",       # FLOWX 업로드
+    "step5f",       # 수급 임계점
+    "step6",        # sync
+    "step7",        # 건강성 검증
+]
+
+
+def _save_checkpoint(step: str, result, elapsed: int = 0):
+    """Step 완료 시 체크포인트 저장 — 크래시 복구용"""
+    try:
+        cp = {}
+        if CHECKPOINT_PATH.exists():
+            with open(CHECKPOINT_PATH, "r", encoding="utf-8") as f:
+                cp = json.load(f)
+        # 날짜가 다르면 초기화
+        if cp.get("date") != date.today().strftime("%Y-%m-%d"):
+            cp = {"date": date.today().strftime("%Y-%m-%d"), "completed": {}}
+        cp["completed"][step] = {
+            "result": str(result)[:200],
+            "time": datetime.now().strftime("%H:%M:%S"),
+            "elapsed": elapsed,
+        }
+        cp["last_step"] = step
+        with open(CHECKPOINT_PATH, "w", encoding="utf-8") as f:
+            json.dump(cp, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.warning(f"체크포인트 저장 실패: {e}")
+
+
+def _get_resume_step() -> str | None:
+    """크래시 복구: 오늘 마지막 완료 Step 다음부터 재개할 Step 반환"""
+    if not CHECKPOINT_PATH.exists():
+        return None
+    try:
+        with open(CHECKPOINT_PATH, "r", encoding="utf-8") as f:
+            cp = json.load(f)
+        if cp.get("date") != date.today().strftime("%Y-%m-%d"):
+            return None
+        last = cp.get("last_step")
+        if not last or last not in STEP_ORDER:
+            return None
+        idx = STEP_ORDER.index(last)
+        if idx + 1 >= len(STEP_ORDER):
+            return None  # 모든 Step 완료됨
+        return STEP_ORDER[idx + 1]
+    except Exception:
+        return None
+
+
+def _should_skip(step: str, resume_from: str | None) -> bool:
+    """resume 모드에서 이미 완료된 Step은 스킵"""
+    if resume_from is None:
+        return False
+    if step not in STEP_ORDER or resume_from not in STEP_ORDER:
+        return False
+    return STEP_ORDER.index(step) < STEP_ORDER.index(resume_from)
+
+
+def step7_health_check(results: dict) -> dict:
+    """7단계: 수집 데이터 건강성 검증
+
+    검증 항목:
+      1. 일봉 OHLCV 커버리지 (universe 대비)
+      2. 시가=0 이상 데이터 감지
+      3. 수급 데이터 커버리지
+      4. 최신 날짜 정합성
+    """
+    logger.info("[7/7] 데이터 건강성 검증...")
+    t0 = time.time()
+    health = {"issues": [], "warnings": [], "ok": []}
+
+    today_str = date.today().strftime("%Y-%m-%d")
+
+    # 1) 일봉 커버리지 체크
+    try:
+        daily_files = list(DAILY_DIR.glob("*.csv"))
+        daily_count = len(daily_files)
+        if daily_count < 2500:
+            health["issues"].append(f"일봉 파일 부족: {daily_count}개 (기대: 2900+)")
+        else:
+            health["ok"].append(f"일봉: {daily_count}종목")
+    except Exception as e:
+        health["issues"].append(f"일봉 검증 실패: {e}")
+
+    # 2) 시가=0 이상 데이터 감지
+    try:
+        open_zero_codes = []
+        sample_count = 0
+        for f in DAILY_DIR.glob("*.csv"):
+            try:
+                with open(f, "r", encoding="utf-8") as fp:
+                    lines = fp.readlines()
+                if len(lines) < 2:
+                    continue
+                last = lines[-1].strip().split(",")
+                if last[0] == today_str and len(last) >= 5:
+                    sample_count += 1
+                    if float(last[1]) == 0 and float(last[4]) > 0:
+                        open_zero_codes.append(f.stem)
+            except Exception:
+                continue
+        if open_zero_codes:
+            health["warnings"].append(
+                f"시가=0 이상: {len(open_zero_codes)}종목 "
+                f"(예: {', '.join(open_zero_codes[:5])})"
+            )
+        if sample_count > 0:
+            health["ok"].append(f"오늘 데이터: {sample_count}종목 검증")
+    except Exception as e:
+        health["warnings"].append(f"시가=0 검증 실패: {e}")
+
+    # 3) 수급 커버리지 체크
+    try:
+        flow_dir = DATA_DIR / "flow"
+        inv_files = list(flow_dir.glob("*_investor.csv"))
+        exh_files = list(flow_dir.glob("*_foreign_exh.csv"))
+        flow_result = results.get("flow", {})
+        inv_count = flow_result.get("investor", 0) if isinstance(flow_result, dict) else 0
+        exh_count = flow_result.get("foreign_exh", 0) if isinstance(flow_result, dict) else 0
+        if inv_count < 2000:
+            health["warnings"].append(f"수급(investor) 부족: {inv_count}종목")
+        else:
+            health["ok"].append(f"수급: investor {inv_count} / exh {exh_count}")
+    except Exception as e:
+        health["warnings"].append(f"수급 검증 실패: {e}")
+
+    # 4) Parquet 빌드 체크
+    pq_count = results.get("parquet", 0)
+    if isinstance(pq_count, int) and pq_count < 20:
+        health["warnings"].append(f"Parquet 빌드 부족: {pq_count}건")
+
+    elapsed = int(time.time() - t0)
+    health["elapsed"] = elapsed
+
+    # 건강성 요약 로깅
+    if health["issues"]:
+        for issue in health["issues"]:
+            logger.error(f"[HEALTH] CRITICAL: {issue}")
+    if health["warnings"]:
+        for warn in health["warnings"]:
+            logger.warning(f"[HEALTH] WARNING: {warn}")
+    for ok in health["ok"]:
+        logger.info(f"[HEALTH] OK: {ok}")
+    logger.info(f"[7/7] 건강성 검증 완료 ({elapsed}초)")
+
+    return health
+
+
+def _send_collect_telegram(results: dict, timings: dict, health: dict):
+    """수집 완료 텔레그램 요약 발송"""
+    try:
+        from output.telegram_alert import TelegramAlert
+        tg = TelegramAlert()
+        if not tg.enabled:
+            logger.info("[Telegram 미설정] 수집 요약 생략")
+            return
+
+        total = timings.get("total", 0)
+        daily = results.get("daily", 0)
+        flow = results.get("flow", {})
+        inv = flow.get("investor", 0) if isinstance(flow, dict) else 0
+        exh = flow.get("foreign_exh", 0) if isinstance(flow, dict) else 0
+        etf = results.get("etf_daily", 0)
+        nat = results.get("nationality", 0)
+        pq = results.get("parquet", 0)
+        lu = results.get("limit_up", 0)
+
+        # 상한가 엔진 결과
+        engine = results.get("limit_up_engine", {})
+        eng_sigs = engine.get("new_signals", 0) if isinstance(engine, dict) else 0
+        eng_trig = engine.get("triggered", 0) if isinstance(engine, dict) else 0
+
+        # 건강성 요약
+        issues = health.get("issues", [])
+        warnings = health.get("warnings", [])
+        status = "FAIL" if issues else ("WARN" if warnings else "OK")
+        emoji = {"OK": "V", "WARN": "!", "FAIL": "X"}.get(status, "?")
+
+        lines = [
+            f"[{emoji}] 데이터 수집 완료 ({total//60}분{total%60}초)",
+            f"일봉: {daily} | ETF: {etf}",
+            f"수급: inv {inv} / exh {exh}",
+            f"국적별: {nat} | Parquet: {pq}",
+            f"상한가: 스캔 {lu} | 시그널 {eng_sigs} | 트리거 {eng_trig}",
+        ]
+
+        # 건강성 이슈
+        if issues:
+            lines.append(f"-- CRITICAL --")
+            for i in issues[:3]:
+                lines.append(f"  {i}")
+        if warnings:
+            lines.append(f"-- WARNING --")
+            for w in warnings[:3]:
+                lines.append(f"  {w}")
+        if not issues and not warnings:
+            lines.append("건강성: ALL OK")
+
+        msg = "\n".join(lines)
+        tg._send(msg)
+        logger.info("[Telegram] 수집 요약 발송 완료")
+    except Exception as e:
+        logger.warning(f"텔레그램 수집 요약 실패: {e}")
+
+
+def _send_step_telegram(step_name: str, detail: str = ""):
+    """주요 Step 완료 시 진행률 알림"""
+    try:
+        from output.telegram_alert import TelegramAlert
+        tg = TelegramAlert()
+        if not tg.enabled:
+            return
+        msg = f"[수집] {step_name} 완료"
+        if detail:
+            msg += f" | {detail}"
+        tg._send(msg)
+    except Exception:
+        pass  # 진행률 알림 실패는 무시
+
+
 def main():
     parser = argparse.ArgumentParser(description="독립 데이터 수집기")
     parser.add_argument("--force", action="store_true", help="캐시 무시 강제 수집")
+    parser.add_argument("--resume", action="store_true", help="크래시 지점부터 재개")
     parser.add_argument("--sync-only", action="store_true", help="stock_data_daily 동기화만")
     args = parser.parse_args()
 
@@ -666,6 +910,16 @@ def main():
         logger.info(f"보완 수집 완료: {elapsed}초")
         return
 
+    # 크래시 복구: --resume 시 마지막 체크포인트 다음 Step부터 재개
+    resume_from = None
+    if args.resume:
+        resume_from = _get_resume_step()
+        if resume_from:
+            logger.info(f"[RESUME] 크래시 복구: {resume_from} 부터 재개")
+            _send_step_telegram("RESUME", f"{resume_from} 부터 재개")
+        else:
+            logger.info("[RESUME] 체크포인트 없음 → 전체 수집")
+
     codes = get_universe_codes()
     if not codes:
         logger.error("유니버스 종목이 없습니다!")
@@ -677,76 +931,130 @@ def main():
     timings = {}
     from concurrent.futures import ThreadPoolExecutor
 
-    # DC-07: Step1(일봉) + Step2(수급) + Step2b(ETF) 동시 실행
-    logger.info("[1+2+2b] 일봉 + 수급 + ETF 동시 수집 시작...")
-    t12 = time.time()
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        f1 = executor.submit(step1_daily_ohlcv, codes, args.force)
-        f2 = executor.submit(step2_supply_demand, codes, args.force)
-        f2b = executor.submit(step2b_etf_ohlcv, args.force)
-        # C3: 개별 try/except — 한쪽 실패해도 다른 쪽 결과 보존
-        try:
-            results["daily"] = f1.result()
-        except Exception as e:
-            logger.error(f"[C3] Step1 일봉 스레드 실패: {e}")
-            results["daily"] = 0
-        try:
-            results["flow"] = f2.result()
-        except Exception as e:
-            logger.error(f"[C3] Step2 수급 스레드 실패: {e}")
-            results["flow"] = {}
-        try:
-            results["etf_daily"] = f2b.result()
-        except Exception as e:
-            logger.error(f"[C3] Step2b ETF 스레드 실패: {e}")
-            results["etf_daily"] = 0
-    timings["step1_2"] = int(time.time() - t12)
-    logger.info(f"[1+2+2b] 일봉+수급+ETF 동시 완료: {timings['step1_2']}초")
+    # ── Step 1+2+2b: 일봉 + 수급 + ETF 동시 실행 ──
+    if not _should_skip("step1_2", resume_from):
+        logger.info("[1+2+2b] 일봉 + 수급 + ETF 동시 수집 시작...")
+        t12 = time.time()
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            f1 = executor.submit(step1_daily_ohlcv, codes, args.force)
+            f2 = executor.submit(step2_supply_demand, codes, args.force)
+            f2b = executor.submit(step2b_etf_ohlcv, args.force)
+            # C3: 개별 try/except — 한쪽 실패해도 다른 쪽 결과 보존
+            try:
+                results["daily"] = f1.result()
+            except Exception as e:
+                logger.error(f"[C3] Step1 일봉 스레드 실패: {e}")
+                results["daily"] = 0
+            try:
+                results["flow"] = f2.result()
+            except Exception as e:
+                logger.error(f"[C3] Step2 수급 스레드 실패: {e}")
+                results["flow"] = {}
+            try:
+                results["etf_daily"] = f2b.result()
+            except Exception as e:
+                logger.error(f"[C3] Step2b ETF 스레드 실패: {e}")
+                results["etf_daily"] = 0
+        timings["step1_2"] = int(time.time() - t12)
+        logger.info(f"[1+2+2b] 일봉+수급+ETF 동시 완료: {timings['step1_2']}초")
+        _save_checkpoint("step1_2", results.get("daily", 0), timings["step1_2"])
+        _send_step_telegram(
+            "일봉+수급+ETF",
+            f"일봉 {results.get('daily',0)} | "
+            f"수급 {results.get('flow',{})} | "
+            f"ETF {results.get('etf_daily',0)} | "
+            f"{timings['step1_2']}초"
+        )
+    else:
+        logger.info("[SKIP] Step 1+2+2b (이미 완료)")
 
-    # 3. 국적별 (SpaceX 관련주 코드도 국적별 수집에 포함)
-    t3 = time.time()
-    results["nationality"] = step3_nationality(args.force)
-    timings["step3"] = int(time.time() - t3)
+    # ── Step 3: 국적별 ──
+    if not _should_skip("step3", resume_from):
+        t3 = time.time()
+        results["nationality"] = step3_nationality(args.force)
+        timings["step3"] = int(time.time() - t3)
+        _save_checkpoint("step3", results["nationality"], timings["step3"])
+    else:
+        logger.info("[SKIP] Step 3 국적별 (이미 완료)")
 
-    # 4. Parquet (DC-03: 병렬 + KIS 스킵)
-    t4 = time.time()
-    results["parquet"] = step4_parquet_build()
-    timings["step4"] = int(time.time() - t4)
+    # ── Step 4: Parquet ──
+    if not _should_skip("step4", resume_from):
+        t4 = time.time()
+        results["parquet"] = step4_parquet_build()
+        timings["step4"] = int(time.time() - t4)
+        _save_checkpoint("step4", results["parquet"], timings["step4"])
+    else:
+        logger.info("[SKIP] Step 4 Parquet (이미 완료)")
 
-    # 5. SpaceX 관련주 모니터링 리포트
-    t5sx = time.time()
-    results["spacex"] = step5_spacex_report()
-    timings["step5_spacex"] = int(time.time() - t5sx)
+    # ── Step 5: SpaceX ──
+    if not _should_skip("step5_spacex", resume_from):
+        t5sx = time.time()
+        results["spacex"] = step5_spacex_report()
+        timings["step5_spacex"] = int(time.time() - t5sx)
+        _save_checkpoint("step5_spacex", results["spacex"], timings["step5_spacex"])
+    else:
+        logger.info("[SKIP] Step 5 SpaceX (이미 완료)")
 
-    # 5b. 상한가 스캐너 (일봉+수급 수집 후 실행)
-    t5b = time.time()
-    results["limit_up"] = step5b_limit_up_scan()
-    timings["step5b"] = int(time.time() - t5b)
+    # ── Step 5b: 상한가 스캐너 ──
+    if not _should_skip("step5b", resume_from):
+        t5b = time.time()
+        results["limit_up"] = step5b_limit_up_scan()
+        timings["step5b"] = int(time.time() - t5b)
+        _save_checkpoint("step5b", results["limit_up"], timings["step5b"])
+    else:
+        logger.info("[SKIP] Step 5b 상한가 스캐너 (이미 완료)")
 
-    # 5c. 상한가 눌림목 엔진 (스캔 결과 기반 시그널 + 감시풀)
-    t5c = time.time()
-    results["limit_up_engine"] = step5c_limit_up_engine()
-    timings["step5c"] = int(time.time() - t5c)
+    # ── Step 5c: 상한가 엔진 ──
+    if not _should_skip("step5c", resume_from):
+        t5c = time.time()
+        results["limit_up_engine"] = step5c_limit_up_engine()
+        timings["step5c"] = int(time.time() - t5c)
+        _save_checkpoint("step5c", results.get("limit_up_engine", {}), timings["step5c"])
+    else:
+        logger.info("[SKIP] Step 5c 상한가 엔진 (이미 완료)")
 
-    # 5d. 상한가 페이퍼 트레이딩 (시그널 → 가상매매)
-    t5d = time.time()
-    results["limit_up_paper"] = step5d_limit_up_paper()
-    timings["step5d"] = int(time.time() - t5d)
+    # ── Step 5d: 페이퍼 트레이딩 ──
+    if not _should_skip("step5d", resume_from):
+        t5d = time.time()
+        results["limit_up_paper"] = step5d_limit_up_paper()
+        timings["step5d"] = int(time.time() - t5d)
+        _save_checkpoint("step5d", results.get("limit_up_paper", {}), timings["step5d"])
+    else:
+        logger.info("[SKIP] Step 5d 페이퍼 (이미 완료)")
 
-    # 5e. 상한가 시그널 + 성적표 FLOWX 업로드
-    t5e = time.time()
-    results["limit_up_upload"] = step5e_limit_up_upload()
-    timings["step5e"] = int(time.time() - t5e)
+    # ── Step 5e: FLOWX 업로드 ──
+    if not _should_skip("step5e", resume_from):
+        t5e = time.time()
+        results["limit_up_upload"] = step5e_limit_up_upload()
+        timings["step5e"] = int(time.time() - t5e)
+        _save_checkpoint("step5e", results.get("limit_up_upload", {}), timings["step5e"])
+    else:
+        logger.info("[SKIP] Step 5e FLOWX 업로드 (이미 완료)")
 
-    # 5f. 수급 임계점 스캔 + 업로드
-    t5f = time.time()
-    results["tipping_point"] = step5f_tipping_point()
-    timings["step5f"] = int(time.time() - t5f)
+    # ── Step 5f: 수급 임계점 ──
+    if not _should_skip("step5f", resume_from):
+        t5f = time.time()
+        results["tipping_point"] = step5f_tipping_point()
+        timings["step5f"] = int(time.time() - t5f)
+        _save_checkpoint("step5f", results.get("tipping_point", {}), timings["step5f"])
+    else:
+        logger.info("[SKIP] Step 5f 수급 임계점 (이미 완료)")
 
-    # 6. stock_data_daily 동기화
-    t6 = time.time()
-    results["sync"] = step6_sync_stock_data_daily()
-    timings["step6"] = int(time.time() - t6)
+    # ── Step 6: stock_data_daily 동기화 ──
+    if not _should_skip("step6", resume_from):
+        t6 = time.time()
+        results["sync"] = step6_sync_stock_data_daily()
+        timings["step6"] = int(time.time() - t6)
+        _save_checkpoint("step6", results["sync"], timings["step6"])
+    else:
+        logger.info("[SKIP] Step 6 sync (이미 완료)")
+
+    # ── Step 7: 데이터 건강성 검증 (NEW) ──
+    t7 = time.time()
+    health = step7_health_check(results)
+    timings["step7"] = int(time.time() - t7)
+    results["health"] = health
+    _save_checkpoint("step7", len(health.get("issues", [])), timings["step7"])
 
     # DC-08: 수집 시간 로깅
     timings["total"] = int(time.time() - t_start)
@@ -755,17 +1063,28 @@ def main():
     results["timings"] = timings
     _save_collect_result(results)
 
+    # 텔레그램 수집 완료 요약 알림
+    _send_collect_telegram(results, timings, health)
+
     elapsed = timings["total"]
     logger.info(f"{'='*60}")
     logger.info(f"전체 수집 완료: {elapsed}초 ({elapsed//60}분)")
-    logger.info(f"  Step1+2: {timings['step1_2']}초 | Step3: {timings['step3']}초 | "
-                f"Step4: {timings['step4']}초 | Step5-SpaceX: {timings.get('step5_spacex',0)}초 | "
+    logger.info(f"  Step1+2: {timings.get('step1_2',0)}초 | Step3: {timings.get('step3',0)}초 | "
+                f"Step4: {timings.get('step4',0)}초 | Step5-SpaceX: {timings.get('step5_spacex',0)}초 | "
                 f"Step5b-LimitUp: {timings.get('step5b',0)}초 | "
                 f"Step5c-Engine: {timings.get('step5c',0)}초 | "
                 f"Step5d-Paper: {timings.get('step5d',0)}초 | "
                 f"Step5e-Upload: {timings.get('step5e',0)}초 | "
-                f"Step5f-Tipping: {timings.get('step5f',0)}초 | Step6: {timings['step6']}초")
+                f"Step5f-Tipping: {timings.get('step5f',0)}초 | "
+                f"Step6: {timings.get('step6',0)}초 | Step7-Health: {timings.get('step7',0)}초")
     logger.info(f"{'='*60}")
+
+    # 체크포인트 정리 (전체 완료 시)
+    if CHECKPOINT_PATH.exists():
+        try:
+            CHECKPOINT_PATH.unlink()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
