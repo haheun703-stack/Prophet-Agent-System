@@ -353,7 +353,6 @@ class PaperTrader:
                     print(f"      RR: {rr:+.2f} | PnL: {pp.pnl_krw:+,.0f}원\n")
 
                     return {"action": "EXIT", "code": code, "position": pp}
-                    break
 
         elif action == "HOLD":
             pos_data = result.get("position")

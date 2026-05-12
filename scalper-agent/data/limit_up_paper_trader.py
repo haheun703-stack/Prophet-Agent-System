@@ -46,7 +46,7 @@ TIME_STOP_DAYS = 20
 # 품질 필터 임계값
 MIN_CONTINUATION_SCORE = 40.0  # 연속성 점수 하한 (0~19: 승률 0%, 20~39: 21%, 40+: 75%+)
 MAX_OVERHEAT_PCT = 250.0  # 과열도 상한 (분석 결과 150→250 완화)
-SKIP_FLOW_GRADES = ("C", "D")  # 수급 불량 등급
+SKIP_FLOW_GRADES = ("C", "F")  # 수급 불량 등급 (엔진 등급: S/A/B/C/F)
 # 포지션당 최대 비중 (가상자금 1000만원 기준 ~200만원)
 MAX_POSITION_PCT = 0.20
 MAX_POSITIONS = 5  # 상한가 동시 보유 최대
@@ -426,6 +426,9 @@ def _check_pullback_entries(pf, today: str) -> tuple[list, int]:
 
         # 눌림목 진입가 범위 확인
         signal_close = item.get("signal_close", 0)
+        if signal_close <= 0:
+            skipped += 1
+            continue
         pullback_trigger = int(signal_close * 0.90)  # -10% 눌림
         pullback_floor = int(signal_close * 0.85)    # -15% 이하면 스킵
 

@@ -213,9 +213,7 @@ def upload_limit_up_performance() -> bool:
         wins = sum(1 for t in lu_closed if t["pnl_pct"] > 0)
         avg_pnl = sum(t["pnl_pct"] for t in lu_closed) / total if total else 0
 
-        # 전략별 통계 (entry_type 기반은 closed_trades에 없으므로 근사)
-        # → entry_date 대비 hold_days가 짧으면 전략1(즉시), 길면 전략2(눌림)로 간주
-        # 정확한 분류를 위해 paper_trade_log 참조
+        # 전략별 통계 — paper_trade_log에서 entry 전략 분류 후 closed와 매칭
         s1_trades = 0
         s1_wins = 0
         s2_trades = 0
@@ -223,15 +221,25 @@ def upload_limit_up_performance() -> bool:
 
         paper_log_path = LIMIT_UP_DIR / "paper_trade_log.json"
         paper_log = _load_json(paper_log_path)
+        # code → strategy 매핑 (최신 entry 기준)
+        code_strategy = {}
         if isinstance(paper_log, list):
             for day_log in paper_log:
                 for action in day_log.get("actions", []):
                     if action.get("type") == "entry":
-                        strat = action.get("strategy", "")
-                        if strat == "next_day":
-                            s1_trades += 1
-                        elif strat == "pullback":
-                            s2_trades += 1
+                        code_strategy[action.get("code", "")] = action.get("strategy", "")
+
+        # closed_trades 기반 전략별 trades/wins 집계
+        for t in lu_closed:
+            strat = code_strategy.get(t.get("code", ""), "")
+            if strat == "next_day":
+                s1_trades += 1
+                if t.get("pnl_pct", 0) > 0:
+                    s1_wins += 1
+            elif strat == "pullback":
+                s2_trades += 1
+                if t.get("pnl_pct", 0) > 0:
+                    s2_wins += 1
 
         # 포트폴리오 평가액
         holdings_value = sum(

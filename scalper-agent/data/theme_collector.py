@@ -58,9 +58,14 @@ def download_theme_master() -> Dict:
     mst_path = os.path.join(tmp_dir, "theme_code.mst")
 
     try:
-        # SSL 우회 + 다운로드
-        ssl._create_default_https_context = ssl._create_unverified_context
-        urllib.request.urlretrieve(_THEME_MST_URL, zip_path)
+        # SSL 우회 + 다운로드 (로컬 컨텍스트만 — 글로벌 영향 없음)
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        req = urllib.request.Request(_THEME_MST_URL)
+        with urllib.request.urlopen(req, context=ctx) as resp:
+            with open(zip_path, "wb") as fp:
+                fp.write(resp.read())
         logger.info(f"[THEME] 마스터 파일 다운로드 완료: {zip_path}")
 
         # ZIP 해제

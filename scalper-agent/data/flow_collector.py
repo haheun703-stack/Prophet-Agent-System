@@ -142,7 +142,7 @@ def _tg_alert_kis_failure(error):
             logger.warning("[TG] TELEGRAM_BOT_TOKEN 또는 CHAT_ID 미설정 — 알림 불가")
             return
         text = (
-            "\U0001F6A8 [KIS 토큰 사망] 세션 생성 3차 최종 실패\n"
+            "[ALERT] KIS 토큰 사망 — 세션 생성 3차 최종 실패\n"
             f"오류: {error}\n"
             "→ 수급 수집 전면 중단 상태\n"
             "→ token.dat 삭제 후 재발급 필요"
@@ -563,45 +563,6 @@ def collect_short_balance(
     """
     logger.info("[공매도] KRX 데이터 제공 중단 — 수집 스킵")
     return {}
-    """(비활성) 원본 로직 보존
-    pykrx 공매도 API 깨짐 (2026-03 기준)
-    - 매 실행마다 probe(삼전 1건)로 API 복구 확인
-    - 복구 시 자동 수집 재개
-    - 미복구 시 캐시 반환
-
-    Returns: {code: DataFrame(date index)}
-    """
-    _ensure_dirs()
-
-    # 1) pykrx API 복구 확인 (probe 1건)
-    pykrx_results = _try_pykrx_short_balance(codes, months)
-
-    results = {}
-    cache_only = 0
-    fresh = 0
-
-    for code in codes:
-        # pykrx 신규 데이터 우선
-        if code in pykrx_results:
-            results[code] = pykrx_results[code]
-            fresh += 1
-            continue
-
-        cache_file = SHORT_DIR / f"{code}_short_bal.csv"
-        if cache_file.exists():
-            cached = pd.read_csv(cache_file, index_col=0, parse_dates=True)
-            if len(cached) > 0:
-                results[code] = cached
-                cache_only += 1
-                continue
-
-    if fresh > 0:
-        print(f"  공매도 잔고: 신규{fresh} + 캐시{cache_only} = {len(results)}종목")
-    elif cache_only > 0:
-        print(f"  공매도 잔고: 캐시 {cache_only}종목 반환 (pykrx API 미복구)")
-    else:
-        print(f"  공매도 잔고: 데이터 없음 (pykrx API 미복구, 캐시 없음)")
-    return results
 
 
 # ============================================================
@@ -616,25 +577,6 @@ def collect_short_volume(
     """공매도 거래량/거래대금 수집 — KRX 데이터 제공 중단 (2026-04~)"""
     logger.info("[공매도] KRX 데이터 제공 중단 — 수집 스킵")
     return {}
-    _ensure_dirs()  # 아래 원본 코드는 return으로 도달 불가 (보존용)
-
-    results = {}
-    cache_only = 0
-    for code in codes:
-        cache_file = SHORT_DIR / f"{code}_short_vol.csv"
-
-        if cache_file.exists():
-            cached = pd.read_csv(cache_file, index_col=0, parse_dates=True)
-            if len(cached) > 0:
-                results[code] = cached
-                cache_only += 1
-                continue
-
-    if cache_only > 0:
-        print(f"  공매도 거래량: 캐시 {cache_only}종목 반환")
-    else:
-        print(f"  공매도 거래량: 데이터 없음 (pykrx API 미복구)")
-    return results
 
 
 # ============================================================

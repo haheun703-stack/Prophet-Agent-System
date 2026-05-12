@@ -315,7 +315,7 @@ def show_status():
     _ensure_dirs()
 
     print(f"\n{'='*70}")
-    print(f"  📊 분봉 데이터 축적 현황")
+    print(f"  [분봉] 데이터 축적 현황")
     print(f"{'='*70}")
 
     total_files = 0

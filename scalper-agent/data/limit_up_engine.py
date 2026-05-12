@@ -262,9 +262,10 @@ def _analyze_flow_6(code: str) -> dict:
 
     # ── 거래량 압축률 ──
     all_series = [frgn_series, inst_series, indi_series]
-    if all(len(s) >= 5 for s in all_series):
+    min_len = min(len(s) for s in all_series)
+    if min_len >= 5:
         turnover = []
-        for i in range(len(frgn_series)):
+        for i in range(min_len):
             t = abs(frgn_series[i]) + abs(inst_series[i]) + abs(indi_series[i])
             turnover.append(t)
         if turnover:

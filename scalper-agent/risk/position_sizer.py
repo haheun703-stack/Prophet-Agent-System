@@ -68,7 +68,7 @@ class PositionSizer:
 
         # 6. 신뢰도 반영 (0.5~1.0 → 50%~100% 수량)
         confidence_factor = 0.5 + confidence * 0.5
-        final_qty = max(1, int(base_qty * confidence_factor))
+        final_qty = int(base_qty * confidence_factor)
 
         # 다시 현금 제한 확인
         final_qty = min(final_qty, usable_cash // price)

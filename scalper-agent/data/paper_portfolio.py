@@ -84,7 +84,7 @@ class PaperPortfolio:
 
     def open_position(self, code: str, name: str, entry_price: int,
                       shares: int, source: str, tp: int = 0,
-                      sl: int = 0, time_stop_days: int = 5) -> bool:
+                      sl: int = None, time_stop_days: int = 5) -> bool:
         """가상 매수"""
         if code in self.positions:
             logger.warning(f"[PaperPortfolio] {name} 이미 보유 중 — 스킵")
@@ -99,8 +99,9 @@ class PaperPortfolio:
                 return False
             cost = entry_price * shares
 
-        # SL 미설정(기본값 0) 시 기본 -5% 자동 적용 (대형손실 방지)
-        if sl == 0:
+        # SL 미설정 시 기본 -5% 자동 적용 (대형손실 방지)
+        # sl=0은 "SL 없음(만기청산만)" 의미 — Strategy 1 등에서 의도적 사용
+        if sl is None:
             sl = int(entry_price * 0.95)
 
         self.cash -= cost
@@ -211,9 +212,18 @@ class PaperPortfolio:
         return updated
 
     def _calc_hold_days(self, entry_date: str) -> int:
+        """영업일(월~금) 기준 보유일수 계산"""
         try:
-            start = datetime.strptime(entry_date, "%Y-%m-%d")
-            return (datetime.now() - start).days
+            start = datetime.strptime(entry_date, "%Y-%m-%d").date()
+            end = datetime.now().date()
+            days = 0
+            d = start
+            one_day = timedelta(days=1)
+            while d < end:
+                d += one_day
+                if d.weekday() < 5:  # 월(0)~금(4)
+                    days += 1
+            return days
         except Exception:
             return 0
 

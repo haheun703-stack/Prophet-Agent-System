@@ -1253,7 +1253,7 @@ def main():
             "mode": args.mode,
             "limit_up": [asdict(s) for s in limit_stocks],
         }
-        if args.mode == "all" and 'seq_stocks' in dir():
+        if args.mode == "all" and 'seq_stocks' in locals():
             candidates["sequential_push"] = [asdict(s) for s in seq_stocks]
 
         with open(LIMIT_UP_CANDIDATES, "w", encoding="utf-8") as f:
