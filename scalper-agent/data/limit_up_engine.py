@@ -54,6 +54,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from data.limit_up_scanner import score_continuation, LimitUpStock
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data_store"
 DAILY_DIR = DATA_DIR / "daily"
@@ -390,6 +392,29 @@ def _analyze_flow(code: str) -> dict:
     }
 
 
+def _calc_continuation_score(
+    code: str, name: str, sector: str,
+    close: int, change_pct: float, volume: int,
+    volume_ratio: float, tv_억: float, cap_억: float,
+    close_strength: float, consecutive_limit: int,
+    frgn_net: float = 0, inst_net: float = 0,
+) -> float:
+    """score_continuation 래퍼 - 엔진 스캔 데이터로 연속성 점수 계산"""
+    turnover = (tv_억 / cap_억 * 100) if cap_억 > 0 else 0
+    stock = LimitUpStock(
+        code=code, name=name, sector=sector,
+        close=close, change_pct=round(change_pct, 2),
+        volume=volume, volume_ratio=round(volume_ratio, 2),
+        trading_value_억=round(tv_억, 1),
+        market_cap_억=cap_억,
+        turnover_pct=round(turnover, 2),
+        close_strength=round(close_strength, 3),
+        frgn_net=frgn_net, inst_net=inst_net,
+        consecutive_limit=consecutive_limit,
+    )
+    return score_continuation(stock)
+
+
 def _make_split_plan(entry_type: str, signal_close: float,
                      entry_price: float = 0) -> list:
     """분할매수 3단계 계획 생성
@@ -575,6 +600,7 @@ class WatchItem:
     survival_reason: str = ""        # 생존/탈락 사유
     rotation_phase: str = ""         # 섹터 로테이션 페이즈
     rotation_favorable: bool = True  # 로테이션 유리 여부
+    continuation_score: float = 0.0  # 연속성 점수 (0~100)
     split_plan: list = field(default_factory=list)  # 분할매수 계획
 
 
@@ -751,6 +777,16 @@ def scan_new_signals(universe: dict = None) -> list[WatchItem]:
             if survival_warning:
                 reasons.append(survival_warning)
 
+            # ★ 연속성 점수 계산
+            cont_score = _calc_continuation_score(
+                code=code, name=name, sector=sector,
+                close=int(current_close), change_pct=change,
+                volume=int(volumes[-1]), volume_ratio=vol_ratio,
+                tv_억=tv, cap_억=cap, close_strength=close_strength,
+                consecutive_limit=history.total_limit_count,
+                frgn_net=flow["foreign_5d"], inst_net=flow["inst_5d"],
+            )
+
             # ★ 분할매수 계획
             split = _make_split_plan("next_day", current_close)
 
@@ -790,13 +826,15 @@ def scan_new_signals(universe: dict = None) -> list[WatchItem]:
                 survival_reason=flow["survival_reason"],
                 rotation_phase=rot["phase"],
                 rotation_favorable=rot["favorable"],
+                continuation_score=cont_score,
                 split_plan=split,
             )
             new_signals.append(signal)
             grade_icon = "🟢" if flow["grade"] in ("S", "A") else "🟡" if flow["grade"] == "B" else "🔴"
             logger.info(
                 f"[전략1] {name}({code}) 상한가 {history.total_limit_count}회차 "
-                f"| 원점+{history.overheat_pct:.0f}% | {grade_icon}수급[{flow['grade']}]{flow['grade_label']} "
+                f"| 원점+{history.overheat_pct:.0f}% | 연속성:{cont_score:.0f} "
+                f"| {grade_icon}수급[{flow['grade']}]{flow['grade_label']} "
                 f"| 스마트{flow['smart_total_5d']:+,}백만 | 소진{flow['sell_exhaustion']:.2f} "
                 f"| 생존{'✓' if flow['survival_ok'] else '✗'} | 로테이션:{rot['phase']}"
             )
@@ -874,6 +912,16 @@ def scan_new_signals(universe: dict = None) -> list[WatchItem]:
                 rot_icon = "🟢" if rot["favorable"] else "🟡"
                 reasons.append(f"{rot_icon}로테이션: {rot['phase']}")
 
+            # ★ 연속성 점수 계산
+            cont_score = _calc_continuation_score(
+                code=code, name=name, sector=sector,
+                close=int(current_close), change_pct=change,
+                volume=int(volumes[-1]), volume_ratio=vol_ratio,
+                tv_억=tv, cap_억=cap, close_strength=close_strength,
+                consecutive_limit=history.total_limit_count,
+                frgn_net=flow["foreign_5d"], inst_net=flow["inst_5d"],
+            )
+
             signal = WatchItem(
                 code=code,
                 name=name,
@@ -906,12 +954,14 @@ def scan_new_signals(universe: dict = None) -> list[WatchItem]:
                 survival_reason=flow["survival_reason"],
                 rotation_phase=rot["phase"],
                 rotation_favorable=rot["favorable"],
+                continuation_score=cont_score,
             )
             new_signals.append(signal)
             grade_icon = "🟢" if flow["grade"] in ("S", "A") else "🟡"
             logger.info(
                 f"[전략2] {name}({code}) 급등 {change:+.1f}% "
-                f"| 감시 ~{monitor_until} | {grade_icon}수급[{flow['grade']}]{flow['grade_label']} "
+                f"| 감시 ~{monitor_until} | 연속성:{cont_score:.0f} "
+                f"| {grade_icon}수급[{flow['grade']}]{flow['grade_label']} "
                 f"| 스마트{flow['smart_total_5d']:+,}백만 | 소진{flow['sell_exhaustion']:.2f} "
                 f"| 압축{flow['vol_compression']:.2f} | 로테이션:{rot['phase']}"
             )
@@ -1126,7 +1176,7 @@ def format_telegram_alert(signals: list[WatchItem]) -> str:
         lines.append(f"  현재가: {s.signal_close:,.0f}원 | 시총: {s.market_cap:,.0f}억")
 
         if s.entry_type == "next_day":
-            lines.append(f"  상한가 {s.limit_count}회차 | 원점+{s.overheat_pct:.0f}%")
+            lines.append(f"  상한가 {s.limit_count}회차 | 원점+{s.overheat_pct:.0f}% | 연속성:{s.continuation_score:.0f}")
         else:
             lines.append(f"  진입: {s.entry_price:,} (눌림 트리거)")
 
@@ -1240,6 +1290,16 @@ def run_daily(send_telegram: bool = True) -> dict:
     new_unique = [s for s in new_signals if s.code not in existing_codes]
     logger.info(f"  신규 시그널: {len(new_signals)}건 (중복제거 후 {len(new_unique)}건)")
 
+    # 기존 감시풀 종목의 continuation_score 보강 (이전 스캔에서 누락된 경우)
+    new_score_map = {s.code: s.continuation_score for s in new_signals if s.continuation_score > 0}
+    score_updated = 0
+    for w in watchlist:
+        if w.code in new_score_map and w.continuation_score == 0:
+            w.continuation_score = new_score_map[w.code]
+            score_updated += 1
+    if score_updated:
+        logger.info(f"  연속성 점수 보강: {score_updated}건")
+
     # 3. 감시풀 업데이트
     # 품질 유니버스에 없는 전략2(pullback) 종목 정리
     from data.quality_universe import build_quality_universe
@@ -1330,7 +1390,7 @@ def print_status():
             type_label = "상한가" if w.entry_type == "next_day" else "눌림목"
             print(f"  {w.name:10} ({w.code}) | {type_label} | "
                   f"시그널 {w.signal_date} | 종가 {w.signal_close:>8,.0f} | "
-                  f"이력 {w.limit_count}회 | 원점+{w.overheat_pct:.0f}%")
+                  f"이력 {w.limit_count}회 | 원점+{w.overheat_pct:.0f}% | 연속성:{w.continuation_score:.0f}")
             if w.entry_price > 0:
                 print(f"    -> 진입 {w.entry_low:,}~{w.entry_high:,} | 목표 {w.tp_price:,}")
 

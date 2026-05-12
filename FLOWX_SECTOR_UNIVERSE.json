@@ -1,0 +1,609 @@
+{
+  "version": "1.0",
+  "updated_at": "2026-03-21",
+  "note": "초기 시드 데이터. 정보봇이 매일 장마감 후 change_pct, volume_ratio, foreign_net 자동 갱신",
+  "tier_system": {
+    "5": "ETF/Index — 섹터 전체 방향의 글로벌 벤치마크",
+    "4": "Global Majors — 글로벌 시장 대장주 (주로 미국/유럽)",
+    "3": "Global Suppliers — 소부장/장비/중간재 (미국+유럽)",
+    "2": "KR Majors — 한국 대형주 (시총 상위)",
+    "1": "KR Supply Chain — 한국 소부장 (실매매 대상)"
+  },
+  "sectors": {
+    "semiconductor": {
+      "name": "반도체",
+      "name_en": "Semiconductor",
+      "icon": "chip",
+      "tiers": {
+        "5": [
+          {"name": "SOXX", "ticker": "SOXX", "market": "US", "desc": "iShares Semiconductor ETF"},
+          {"name": "SMH", "ticker": "SMH", "market": "US", "desc": "VanEck Semiconductor ETF"},
+          {"name": "XSD", "ticker": "XSD", "market": "US", "desc": "SPDR S&P Semiconductor"}
+        ],
+        "4": [
+          {"name": "NVIDIA", "ticker": "NVDA", "market": "US"},
+          {"name": "TSMC ADR", "ticker": "TSM", "market": "US"},
+          {"name": "Broadcom", "ticker": "AVGO", "market": "US"},
+          {"name": "ASML ADR", "ticker": "ASML", "market": "US"},
+          {"name": "Micron", "ticker": "MU", "market": "US"},
+          {"name": "AMD", "ticker": "AMD", "market": "US"},
+          {"name": "Lam Research", "ticker": "LRCX", "market": "US"},
+          {"name": "Applied Materials", "ticker": "AMAT", "market": "US"},
+          {"name": "Intel", "ticker": "INTC", "market": "US"},
+          {"name": "KLA Corp", "ticker": "KLAC", "market": "US"}
+        ],
+        "3": [
+          {"name": "Marvell", "ticker": "MRVL", "market": "US"},
+          {"name": "ON Semiconductor", "ticker": "ON", "market": "US"},
+          {"name": "Entegris", "ticker": "ENTG", "market": "US"},
+          {"name": "Monolithic Power", "ticker": "MPWR", "market": "US"},
+          {"name": "Lattice Semi", "ticker": "LSCC", "market": "US"},
+          {"name": "Tokyo Electron", "ticker": "8035.T", "market": "JP"}
+        ],
+        "2": [
+          {"name": "SK하이닉스", "ticker": "000660", "market": "KR"},
+          {"name": "삼성전자", "ticker": "005930", "market": "KR"},
+          {"name": "DB하이텍", "ticker": "000990", "market": "KR"},
+          {"name": "리노공업", "ticker": "058470", "market": "KR"}
+        ],
+        "1": [
+          {"name": "주성엔지니어링", "ticker": "036930", "market": "KR"},
+          {"name": "한미반도체", "ticker": "042700", "market": "KR"},
+          {"name": "원익IPS", "ticker": "240810", "market": "KR"},
+          {"name": "유진테크", "ticker": "084370", "market": "KR"},
+          {"name": "한화비전", "ticker": "014090", "market": "KR"},
+          {"name": "ISC", "ticker": "095340", "market": "KR"},
+          {"name": "피에스케이", "ticker": "319660", "market": "KR"},
+          {"name": "테크윙", "ticker": "089030", "market": "KR"},
+          {"name": "파크시스템스", "ticker": "140860", "market": "KR"},
+          {"name": "와이씨", "ticker": "232140", "market": "KR"}
+        ]
+      }
+    },
+
+    "shipbuilding": {
+      "name": "조선",
+      "name_en": "Shipbuilding",
+      "icon": "ship",
+      "tiers": {
+        "5": [
+          {"name": "BOAT", "ticker": "BOAT", "market": "US", "desc": "SonicShares Global Shipping ETF"},
+          {"name": "BDRY", "ticker": "BDRY", "market": "US", "desc": "Breakwave Dry Bulk Shipping"}
+        ],
+        "4": [
+          {"name": "Caterpillar Marine", "ticker": "CAT", "market": "US"},
+          {"name": "Wartsila", "ticker": "WRT1V.HE", "market": "EU"},
+          {"name": "Rolls-Royce", "ticker": "RYCEY", "market": "UK"}
+        ],
+        "3": [
+          {"name": "MAN Energy", "ticker": "R6C.DE", "market": "EU"},
+          {"name": "Alfa Laval", "ticker": "ALFA.ST", "market": "EU"},
+          {"name": "CSSC (중국)", "ticker": "600150.SS", "market": "CN"}
+        ],
+        "2": [
+          {"name": "HD한국조선", "ticker": "009540", "market": "KR"},
+          {"name": "삼성중공업", "ticker": "010140", "market": "KR"},
+          {"name": "한화오션", "ticker": "042660", "market": "KR"}
+        ],
+        "1": [
+          {"name": "HD현대중공업", "ticker": "267250", "market": "KR"},
+          {"name": "한화엔진", "ticker": "082740", "market": "KR"},
+          {"name": "동성화인텍", "ticker": "033500", "market": "KR"},
+          {"name": "세진중공업", "ticker": "075580", "market": "KR"},
+          {"name": "HD현대마린솔루션", "ticker": "443060", "market": "KR"},
+          {"name": "태광", "ticker": "023160", "market": "KR"}
+        ]
+      }
+    },
+
+    "defense": {
+      "name": "방산",
+      "name_en": "Defense",
+      "icon": "shield",
+      "tiers": {
+        "5": [
+          {"name": "ITA", "ticker": "ITA", "market": "US", "desc": "iShares U.S. Aerospace & Defense"},
+          {"name": "PPA", "ticker": "PPA", "market": "US", "desc": "Invesco Aerospace & Defense"},
+          {"name": "DFEN", "ticker": "DFEN", "market": "US", "desc": "Direxion Daily Aero & Def 3x"}
+        ],
+        "4": [
+          {"name": "Lockheed Martin", "ticker": "LMT", "market": "US"},
+          {"name": "RTX Corp", "ticker": "RTX", "market": "US"},
+          {"name": "Northrop Grumman", "ticker": "NOC", "market": "US"},
+          {"name": "General Dynamics", "ticker": "GD", "market": "US"},
+          {"name": "L3Harris", "ticker": "LHX", "market": "US"}
+        ],
+        "3": [
+          {"name": "BAE Systems", "ticker": "BAESY", "market": "UK"},
+          {"name": "Rheinmetall", "ticker": "RHM.DE", "market": "EU"},
+          {"name": "Leonardo", "ticker": "LDO.MI", "market": "EU"},
+          {"name": "Thales", "ticker": "HO.PA", "market": "EU"},
+          {"name": "Saab", "ticker": "SAAB-B.ST", "market": "EU"}
+        ],
+        "2": [
+          {"name": "한화에어로스페이스", "ticker": "012450", "market": "KR"},
+          {"name": "LIG넥스원", "ticker": "079550", "market": "KR"},
+          {"name": "한화시스템", "ticker": "272210", "market": "KR"},
+          {"name": "현대로템", "ticker": "064350", "market": "KR"}
+        ],
+        "1": [
+          {"name": "풍산", "ticker": "103140", "market": "KR"},
+          {"name": "한일단조", "ticker": "024720", "market": "KR"},
+          {"name": "만도식기기", "ticker": "311060", "market": "KR"},
+          {"name": "빅텍", "ticker": "065170", "market": "KR"},
+          {"name": "스페코", "ticker": "013810", "market": "KR"},
+          {"name": "한국항공우주", "ticker": "047810", "market": "KR"}
+        ]
+      }
+    },
+
+    "construction": {
+      "name": "건설",
+      "name_en": "Construction",
+      "icon": "building",
+      "tiers": {
+        "5": [
+          {"name": "XHB", "ticker": "XHB", "market": "US", "desc": "SPDR S&P Homebuilders ETF"},
+          {"name": "ITB", "ticker": "ITB", "market": "US", "desc": "iShares U.S. Home Construction"}
+        ],
+        "4": [
+          {"name": "D.R. Horton", "ticker": "DHI", "market": "US"},
+          {"name": "Lennar", "ticker": "LEN", "market": "US"},
+          {"name": "Caterpillar", "ticker": "CAT", "market": "US"},
+          {"name": "Vinci", "ticker": "DG.PA", "market": "EU"}
+        ],
+        "3": [
+          {"name": "Vulcan Materials", "ticker": "VMC", "market": "US"},
+          {"name": "Martin Marietta", "ticker": "MLM", "market": "US"},
+          {"name": "Holcim", "ticker": "HOLN.SW", "market": "EU"}
+        ],
+        "2": [
+          {"name": "현대건설", "ticker": "000720", "market": "KR"},
+          {"name": "대우건설", "ticker": "047040", "market": "KR"},
+          {"name": "GS건설", "ticker": "006360", "market": "KR"},
+          {"name": "DL이앤씨", "ticker": "375500", "market": "KR"}
+        ],
+        "1": [
+          {"name": "HDC현대산업개발", "ticker": "294870", "market": "KR"},
+          {"name": "계룡건설", "ticker": "013580", "market": "KR"},
+          {"name": "한신공영", "ticker": "004960", "market": "KR"},
+          {"name": "아이에스동서", "ticker": "010780", "market": "KR"}
+        ]
+      }
+    },
+
+    "bio": {
+      "name": "바이오",
+      "name_en": "Bio/Pharma",
+      "icon": "dna",
+      "tiers": {
+        "5": [
+          {"name": "XBI", "ticker": "XBI", "market": "US", "desc": "SPDR S&P Biotech ETF"},
+          {"name": "IBB", "ticker": "IBB", "market": "US", "desc": "iShares Biotech ETF"},
+          {"name": "ARKG", "ticker": "ARKG", "market": "US", "desc": "ARK Genomic Revolution"}
+        ],
+        "4": [
+          {"name": "Eli Lilly", "ticker": "LLY", "market": "US"},
+          {"name": "Novo Nordisk ADR", "ticker": "NVO", "market": "US"},
+          {"name": "AbbVie", "ticker": "ABBV", "market": "US"},
+          {"name": "Amgen", "ticker": "AMGN", "market": "US"},
+          {"name": "Regeneron", "ticker": "REGN", "market": "US"}
+        ],
+        "3": [
+          {"name": "BioNTech ADR", "ticker": "BNTX", "market": "US"},
+          {"name": "Moderna", "ticker": "MRNA", "market": "US"},
+          {"name": "Vertex", "ticker": "VRTX", "market": "US"},
+          {"name": "Gilead", "ticker": "GILD", "market": "US"}
+        ],
+        "2": [
+          {"name": "삼성바이오로직스", "ticker": "207940", "market": "KR"},
+          {"name": "셀트리온", "ticker": "068270", "market": "KR"},
+          {"name": "SK바이오팜", "ticker": "326030", "market": "KR"},
+          {"name": "유한양행", "ticker": "000100", "market": "KR"}
+        ],
+        "1": [
+          {"name": "알테오젠", "ticker": "196170", "market": "KR"},
+          {"name": "HLB", "ticker": "028300", "market": "KR"},
+          {"name": "리가켐바이오", "ticker": "141080", "market": "KR"},
+          {"name": "에이비엘바이오", "ticker": "298380", "market": "KR"},
+          {"name": "메디톡스", "ticker": "086900", "market": "KR"},
+          {"name": "파마리서치", "ticker": "214450", "market": "KR"}
+        ]
+      }
+    },
+
+    "finance": {
+      "name": "금융(증권/보험)",
+      "name_en": "Finance",
+      "icon": "bank",
+      "tiers": {
+        "5": [
+          {"name": "XLF", "ticker": "XLF", "market": "US", "desc": "Financial Select Sector SPDR"},
+          {"name": "KBE", "ticker": "KBE", "market": "US", "desc": "SPDR S&P Bank ETF"}
+        ],
+        "4": [
+          {"name": "JPMorgan", "ticker": "JPM", "market": "US"},
+          {"name": "Goldman Sachs", "ticker": "GS", "market": "US"},
+          {"name": "Morgan Stanley", "ticker": "MS", "market": "US"},
+          {"name": "Berkshire B", "ticker": "BRK-B", "market": "US"}
+        ],
+        "3": [
+          {"name": "Charles Schwab", "ticker": "SCHW", "market": "US"},
+          {"name": "Interactive Brokers", "ticker": "IBKR", "market": "US"},
+          {"name": "HSBC ADR", "ticker": "HSBC", "market": "US"},
+          {"name": "Nomura ADR", "ticker": "NMR", "market": "JP"}
+        ],
+        "2": [
+          {"name": "KB금융", "ticker": "105560", "market": "KR"},
+          {"name": "신한지주", "ticker": "055550", "market": "KR"},
+          {"name": "하나금융", "ticker": "086790", "market": "KR"},
+          {"name": "삼성생명", "ticker": "032830", "market": "KR"}
+        ],
+        "1": [
+          {"name": "키움증권", "ticker": "039490", "market": "KR"},
+          {"name": "미래에셋증권", "ticker": "006800", "market": "KR"},
+          {"name": "NH투자증권", "ticker": "005940", "market": "KR"},
+          {"name": "한국금융지주", "ticker": "071050", "market": "KR"},
+          {"name": "DB손보", "ticker": "005830", "market": "KR"},
+          {"name": "메리츠금융", "ticker": "138040", "market": "KR"}
+        ]
+      }
+    },
+
+    "auto": {
+      "name": "자동차",
+      "name_en": "Automotive",
+      "icon": "car",
+      "tiers": {
+        "5": [
+          {"name": "CARZ", "ticker": "CARZ", "market": "US", "desc": "First Trust S-Network Future Vehicles"},
+          {"name": "DRIV", "ticker": "DRIV", "market": "US", "desc": "Global X Autonomous & EV"}
+        ],
+        "4": [
+          {"name": "Tesla", "ticker": "TSLA", "market": "US"},
+          {"name": "Toyota ADR", "ticker": "TM", "market": "US"},
+          {"name": "BYD (OTC)", "ticker": "BYDDY", "market": "US"},
+          {"name": "Stellantis", "ticker": "STLA", "market": "US"}
+        ],
+        "3": [
+          {"name": "Aptiv", "ticker": "APTV", "market": "US"},
+          {"name": "BorgWarner", "ticker": "BWA", "market": "US"},
+          {"name": "Continental", "ticker": "CON.DE", "market": "EU"},
+          {"name": "Denso", "ticker": "6902.T", "market": "JP"}
+        ],
+        "2": [
+          {"name": "현대차", "ticker": "005380", "market": "KR"},
+          {"name": "기아", "ticker": "000270", "market": "KR"},
+          {"name": "현대모비스", "ticker": "012330", "market": "KR"}
+        ],
+        "1": [
+          {"name": "만도", "ticker": "204320", "market": "KR"},
+          {"name": "현대위아", "ticker": "011210", "market": "KR"},
+          {"name": "HL만도", "ticker": "204320", "market": "KR"},
+          {"name": "에스엘", "ticker": "005765", "market": "KR"},
+          {"name": "현대트랜시스", "ticker": "298040", "market": "KR"},
+          {"name": "세종공업", "ticker": "033530", "market": "KR"}
+        ]
+      }
+    },
+
+    "robot": {
+      "name": "로봇",
+      "name_en": "Robotics",
+      "icon": "robot",
+      "tiers": {
+        "5": [
+          {"name": "BOTZ", "ticker": "BOTZ", "market": "US", "desc": "Global X Robotics & AI ETF"},
+          {"name": "ROBO", "ticker": "ROBO", "market": "US", "desc": "ROBO Global Robotics & Auto"}
+        ],
+        "4": [
+          {"name": "Intuitive Surgical", "ticker": "ISRG", "market": "US"},
+          {"name": "Fanuc ADR", "ticker": "FANUY", "market": "US"},
+          {"name": "ABB Ltd", "ticker": "ABB", "market": "US"},
+          {"name": "Rockwell Auto", "ticker": "ROK", "market": "US"}
+        ],
+        "3": [
+          {"name": "Cognex", "ticker": "CGNX", "market": "US"},
+          {"name": "Keyence", "ticker": "6861.T", "market": "JP"},
+          {"name": "Siemens", "ticker": "SIE.DE", "market": "EU"},
+          {"name": "Yaskawa", "ticker": "6506.T", "market": "JP"}
+        ],
+        "2": [
+          {"name": "삼성전자(반도체장비)", "ticker": "005930", "market": "KR"},
+          {"name": "두산로보틱스", "ticker": "454910", "market": "KR"},
+          {"name": "레인보우로보틱스", "ticker": "277810", "market": "KR"}
+        ],
+        "1": [
+          {"name": "로보티즈", "ticker": "108490", "market": "KR"},
+          {"name": "유일로보틱스", "ticker": "388790", "market": "KR"},
+          {"name": "뉴로메카", "ticker": "443060", "market": "KR"},
+          {"name": "티로보틱스", "ticker": "117730", "market": "KR"},
+          {"name": "로보스타", "ticker": "090360", "market": "KR"}
+        ]
+      }
+    },
+
+    "energy": {
+      "name": "에너지(원전/신재생)",
+      "name_en": "Energy",
+      "icon": "bolt",
+      "tiers": {
+        "5": [
+          {"name": "XLE", "ticker": "XLE", "market": "US", "desc": "Energy Select Sector SPDR"},
+          {"name": "URA", "ticker": "URA", "market": "US", "desc": "Global X Uranium ETF"},
+          {"name": "ICLN", "ticker": "ICLN", "market": "US", "desc": "iShares Global Clean Energy"}
+        ],
+        "4": [
+          {"name": "Cameco", "ticker": "CCJ", "market": "US"},
+          {"name": "NextEra Energy", "ticker": "NEE", "market": "US"},
+          {"name": "Constellation Energy", "ticker": "CEG", "market": "US"},
+          {"name": "Vistra Corp", "ticker": "VST", "market": "US"}
+        ],
+        "3": [
+          {"name": "Vestas Wind", "ticker": "VWS.CO", "market": "EU"},
+          {"name": "Enphase Energy", "ticker": "ENPH", "market": "US"},
+          {"name": "First Solar", "ticker": "FSLR", "market": "US"},
+          {"name": "BWX Technologies", "ticker": "BWXT", "market": "US"}
+        ],
+        "2": [
+          {"name": "한국전력", "ticker": "015760", "market": "KR"},
+          {"name": "한국가스공사", "ticker": "036460", "market": "KR"},
+          {"name": "두산에너빌리티", "ticker": "034020", "market": "KR"}
+        ],
+        "1": [
+          {"name": "비에이치아이", "ticker": "083650", "market": "KR"},
+          {"name": "일진파워", "ticker": "094820", "market": "KR"},
+          {"name": "씨에스윈드", "ticker": "112610", "market": "KR"},
+          {"name": "HD현대에너지솔루션", "ticker": "322000", "market": "KR"},
+          {"name": "LS ELECTRIC", "ticker": "010120", "market": "KR"},
+          {"name": "효성중공업", "ticker": "298040", "market": "KR"}
+        ]
+      }
+    },
+
+    "game": {
+      "name": "게임",
+      "name_en": "Gaming",
+      "icon": "gamepad",
+      "tiers": {
+        "5": [
+          {"name": "HERO", "ticker": "HERO", "market": "US", "desc": "Global X Video Games & Esports"},
+          {"name": "ESPO", "ticker": "ESPO", "market": "US", "desc": "VanEck Video Gaming & Esports"}
+        ],
+        "4": [
+          {"name": "NVIDIA(GPU)", "ticker": "NVDA", "market": "US"},
+          {"name": "Microsoft(Xbox)", "ticker": "MSFT", "market": "US"},
+          {"name": "Sony ADR", "ticker": "SONY", "market": "US"},
+          {"name": "Tencent(OTC)", "ticker": "TCEHY", "market": "US"}
+        ],
+        "3": [
+          {"name": "EA", "ticker": "EA", "market": "US"},
+          {"name": "Take-Two", "ticker": "TTWO", "market": "US"},
+          {"name": "Roblox", "ticker": "RBLX", "market": "US"},
+          {"name": "Nintendo ADR", "ticker": "NTDOY", "market": "US"}
+        ],
+        "2": [
+          {"name": "크래프톤", "ticker": "259960", "market": "KR"},
+          {"name": "엔씨소프트", "ticker": "036570", "market": "KR"},
+          {"name": "넷마블", "ticker": "251270", "market": "KR"}
+        ],
+        "1": [
+          {"name": "펄어비스", "ticker": "263750", "market": "KR"},
+          {"name": "카카오게임즈", "ticker": "293490", "market": "KR"},
+          {"name": "컴투스", "ticker": "078340", "market": "KR"},
+          {"name": "위메이드", "ticker": "112040", "market": "KR"},
+          {"name": "시프트업", "ticker": "462870", "market": "KR"}
+        ]
+      }
+    },
+
+    "entertainment": {
+      "name": "엔터",
+      "name_en": "Entertainment",
+      "icon": "music",
+      "tiers": {
+        "5": [
+          {"name": "PEJ", "ticker": "PEJ", "market": "US", "desc": "Invesco Dynamic Leisure & Ent."}
+        ],
+        "4": [
+          {"name": "Walt Disney", "ticker": "DIS", "market": "US"},
+          {"name": "Netflix", "ticker": "NFLX", "market": "US"},
+          {"name": "Live Nation", "ticker": "LYV", "market": "US"},
+          {"name": "Warner Bros", "ticker": "WBD", "market": "US"}
+        ],
+        "3": [
+          {"name": "Spotify", "ticker": "SPOT", "market": "US"},
+          {"name": "Universal Music", "ticker": "UMG.AS", "market": "EU"},
+          {"name": "CJ ENM US", "ticker": "035760", "market": "KR"}
+        ],
+        "2": [
+          {"name": "HYBE", "ticker": "352820", "market": "KR"},
+          {"name": "SM", "ticker": "041510", "market": "KR"},
+          {"name": "JYP Ent.", "ticker": "035900", "market": "KR"},
+          {"name": "YG Ent.", "ticker": "122870", "market": "KR"}
+        ],
+        "1": [
+          {"name": "에스엠라이프디자인", "ticker": "063440", "market": "KR"},
+          {"name": "디어유", "ticker": "327260", "market": "KR"},
+          {"name": "CJ ENM", "ticker": "035760", "market": "KR"},
+          {"name": "스튜디오드래곤", "ticker": "253450", "market": "KR"},
+          {"name": "NEW", "ticker": "160550", "market": "KR"}
+        ]
+      }
+    },
+
+    "logistics": {
+      "name": "유통(해운/항공)",
+      "name_en": "Logistics & Transport",
+      "icon": "truck",
+      "tiers": {
+        "5": [
+          {"name": "IYT", "ticker": "IYT", "market": "US", "desc": "iShares Transportation Average"},
+          {"name": "SEA", "ticker": "SEA", "market": "US", "desc": "U.S. Global Sea to Sky Cargo"}
+        ],
+        "4": [
+          {"name": "FedEx", "ticker": "FDX", "market": "US"},
+          {"name": "UPS", "ticker": "UPS", "market": "US"},
+          {"name": "Maersk", "ticker": "MAERSK-B.CO", "market": "EU"},
+          {"name": "Delta Air", "ticker": "DAL", "market": "US"}
+        ],
+        "3": [
+          {"name": "ZIM Shipping", "ticker": "ZIM", "market": "US"},
+          {"name": "Hapag-Lloyd", "ticker": "HLAG.DE", "market": "EU"},
+          {"name": "Air France-KLM", "ticker": "AF.PA", "market": "EU"}
+        ],
+        "2": [
+          {"name": "HMM", "ticker": "011200", "market": "KR"},
+          {"name": "대한항공", "ticker": "003490", "market": "KR"},
+          {"name": "CJ대한통운", "ticker": "000120", "market": "KR"}
+        ],
+        "1": [
+          {"name": "팬오션", "ticker": "028670", "market": "KR"},
+          {"name": "한진칼", "ticker": "180640", "market": "KR"},
+          {"name": "티웨이항공", "ticker": "091810", "market": "KR"},
+          {"name": "흥아해운", "ticker": "003280", "market": "KR"},
+          {"name": "한솔로지스틱스", "ticker": "014790", "market": "KR"}
+        ]
+      }
+    },
+
+    "food": {
+      "name": "식품",
+      "name_en": "Food & Beverage",
+      "icon": "utensils",
+      "tiers": {
+        "5": [
+          {"name": "XLP", "ticker": "XLP", "market": "US", "desc": "Consumer Staples Select Sector"},
+          {"name": "PBJ", "ticker": "PBJ", "market": "US", "desc": "Invesco Dynamic Food & Beverage"}
+        ],
+        "4": [
+          {"name": "Nestle ADR", "ticker": "NSRGY", "market": "US"},
+          {"name": "PepsiCo", "ticker": "PEP", "market": "US"},
+          {"name": "Coca-Cola", "ticker": "KO", "market": "US"},
+          {"name": "Mondelez", "ticker": "MDLZ", "market": "US"}
+        ],
+        "3": [
+          {"name": "Tyson Foods", "ticker": "TSN", "market": "US"},
+          {"name": "Archer-Daniels", "ticker": "ADM", "market": "US"},
+          {"name": "Danone", "ticker": "BN.PA", "market": "EU"}
+        ],
+        "2": [
+          {"name": "CJ제일제당", "ticker": "097950", "market": "KR"},
+          {"name": "오리온", "ticker": "271560", "market": "KR"},
+          {"name": "농심", "ticker": "004370", "market": "KR"}
+        ],
+        "1": [
+          {"name": "삼양식품", "ticker": "003230", "market": "KR"},
+          {"name": "롯데웰푸드", "ticker": "280360", "market": "KR"},
+          {"name": "대상", "ticker": "001680", "market": "KR"},
+          {"name": "풀무원", "ticker": "017810", "market": "KR"},
+          {"name": "하이트진로", "ticker": "000080", "market": "KR"},
+          {"name": "매일유업", "ticker": "267980", "market": "KR"}
+        ]
+      }
+    }
+  },
+
+  "_supabase_schema": {
+    "table_name": "sector_universe",
+    "columns": {
+      "id": "uuid PRIMARY KEY DEFAULT gen_random_uuid()",
+      "sector_key": "text NOT NULL",
+      "sector_name": "text NOT NULL",
+      "tier": "integer NOT NULL CHECK (tier BETWEEN 1 AND 5)",
+      "stock_name": "text NOT NULL",
+      "ticker": "text NOT NULL",
+      "market": "text NOT NULL CHECK (market IN ('US','KR','EU','JP','CN','UK'))",
+      "desc": "text",
+      "change_pct": "real DEFAULT 0",
+      "volume_ratio": "real DEFAULT 1",
+      "foreign_net": "bigint DEFAULT 0",
+      "institution_net": "bigint DEFAULT 0",
+      "updated_at": "timestamptz DEFAULT now()"
+    },
+    "indexes": [
+      "CREATE INDEX idx_sector ON sector_universe(sector_key)",
+      "CREATE INDEX idx_tier ON sector_universe(sector_key, tier)",
+      "CREATE INDEX idx_ticker ON sector_universe(ticker)"
+    ]
+  },
+
+  "_supabase_schema_links": {
+    "table_name": "sector_links",
+    "note": "개별 기업 간 공급망 연결 관계. 스윔레인 커넥션 + 네트워크 그래프에서 사용.",
+    "columns": {
+      "id": "uuid PRIMARY KEY DEFAULT gen_random_uuid()",
+      "sector_key": "text NOT NULL",
+      "from_stock": "text NOT NULL",
+      "to_stock": "text NOT NULL",
+      "relation": "text NOT NULL",
+      "strength": "integer DEFAULT 1 CHECK (strength BETWEEN 1 AND 5)",
+      "updated_at": "timestamptz DEFAULT now()"
+    },
+    "indexes": [
+      "CREATE INDEX idx_links_sector ON sector_links(sector_key)",
+      "CREATE INDEX idx_links_from ON sector_links(from_stock)",
+      "CREATE INDEX idx_links_to ON sector_links(to_stock)"
+    ]
+  },
+
+  "links": {
+    "_note": "from → to[] 관계. 웹봇은 이걸 sector_links 테이블에 개별 행으로 INSERT 해야 함",
+
+    "semiconductor": [
+      {"from": "SOXX", "to": ["NVIDIA","TSMC","AMD","Intel","Broadcom"], "rel": "ETF 구성", "strength": 1},
+      {"from": "SMH", "to": ["NVIDIA","TSMC","ASML","Broadcom","AMD"], "rel": "ETF 구성", "strength": 1},
+      {"from": "NVIDIA", "to": ["TSMC","SK하이닉스","한미반도체"], "rel": "HBM/파운드리", "strength": 5},
+      {"from": "TSMC", "to": ["ASML","Applied Materials","Lam Research","주성엔지니어링"], "rel": "장비 공급", "strength": 4},
+      {"from": "ASML", "to": ["Tokyo Electron","한화비전"], "rel": "광학/노광 장비", "strength": 3},
+      {"from": "AMD", "to": ["TSMC","SK하이닉스"], "rel": "파운드리/HBM", "strength": 4},
+      {"from": "Micron", "to": ["SK하이닉스","Entegris"], "rel": "메모리 경쟁/소재", "strength": 2},
+      {"from": "Applied Materials", "to": ["주성엔지니어링","원익IPS","유진테크"], "rel": "증착/식각 장비", "strength": 4},
+      {"from": "Lam Research", "to": ["주성엔지니어링","피에스케이"], "rel": "식각/세정 장비", "strength": 3},
+      {"from": "KLA Corp", "to": ["리노공업","ISC"], "rel": "검사/테스트 장비", "strength": 3},
+      {"from": "SK하이닉스", "to": ["한미반도체","원익IPS","유진테크","테크윙"], "rel": "장비/패키징 납품", "strength": 5},
+      {"from": "삼성전자", "to": ["주성엔지니어링","한미반도체","피에스케이","ISC"], "rel": "장비/패키징 납품", "strength": 5},
+      {"from": "DB하이텍", "to": ["주성엔지니어링","유진테크"], "rel": "파운드리 장비", "strength": 3},
+      {"from": "리노공업", "to": ["ISC","테크윙"], "rel": "테스트 소켓", "strength": 2}
+    ],
+
+    "defense": [
+      {"from": "ITA", "to": ["Lockheed Martin","RTX Corp","Northrop Grumman","General Dynamics","L3Harris"], "rel": "ETF 구성", "strength": 1},
+      {"from": "Lockheed Martin", "to": ["BAE Systems","한화에어로스페이스","풍산"], "rel": "F-35 공급망", "strength": 5},
+      {"from": "RTX Corp", "to": ["Thales","LIG넥스원"], "rel": "미사일/레이더", "strength": 4},
+      {"from": "Northrop Grumman", "to": ["한화시스템","빅텍"], "rel": "무인기/우주", "strength": 3},
+      {"from": "General Dynamics", "to": ["현대로템"], "rel": "장갑차량", "strength": 3},
+      {"from": "한화에어로스페이스", "to": ["풍산","한일단조","한국항공우주"], "rel": "항공엔진/부품", "strength": 5},
+      {"from": "LIG넥스원", "to": ["빅텍"], "rel": "유도무기/통신", "strength": 4},
+      {"from": "현대로템", "to": ["한일단조"], "rel": "K2 전차 부품", "strength": 3}
+    ],
+
+    "shipbuilding": [
+      {"from": "HD한국조선", "to": ["HD현대중공업","한화엔진","세진중공업"], "rel": "그룹사/엔진", "strength": 5},
+      {"from": "삼성중공업", "to": ["동성화인텍","태광"], "rel": "LNG 단열/배관", "strength": 4},
+      {"from": "한화오션", "to": ["한화엔진"], "rel": "그룹사 엔진", "strength": 4},
+      {"from": "Rolls-Royce", "to": ["한화엔진"], "rel": "엔진 라이선스", "strength": 3},
+      {"from": "Wartsila", "to": ["HD현대중공업"], "rel": "엔진 기술제휴", "strength": 2}
+    ],
+
+    "bio": [
+      {"from": "Eli Lilly", "to": ["삼성바이오로직스"], "rel": "CMO 위탁생산", "strength": 4},
+      {"from": "Novo Nordisk", "to": ["삼성바이오로직스"], "rel": "CMO 위탁생산", "strength": 4},
+      {"from": "AbbVie", "to": ["셀트리온"], "rel": "바이오시밀러 경쟁", "strength": 2},
+      {"from": "Regeneron", "to": ["알테오젠"], "rel": "피하주사 기술제휴", "strength": 5},
+      {"from": "삼성바이오로직스", "to": ["에이비엘바이오"], "rel": "ADC 기술협력", "strength": 3},
+      {"from": "셀트리온", "to": ["파마리서치"], "rel": "원료의약품", "strength": 2},
+      {"from": "유한양행", "to": ["HLB","리가켐바이오"], "rel": "신약 라이선스", "strength": 4}
+    ],
+
+    "auto": [
+      {"from": "Tesla", "to": ["현대차","기아"], "rel": "EV 경쟁/부품", "strength": 2},
+      {"from": "현대차", "to": ["현대모비스","만도","현대위아","에스엘","현대트랜시스"], "rel": "그룹사 부품", "strength": 5},
+      {"from": "기아", "to": ["현대모비스","만도","세종공업"], "rel": "그룹사 부품", "strength": 5},
+      {"from": "Aptiv", "to": ["만도"], "rel": "자율주행 협력", "strength": 3},
+      {"from": "Denso", "to": ["현대모비스"], "rel": "전장부품 기술", "strength": 2}
+    ],
+
+    "_remaining_sectors_note": "금융/로봇/에너지/게임/엔터/유통/식품의 links는 정보봇이 추후 생성. 위 5개 섹터가 시드 데이터."
+  }
+}
