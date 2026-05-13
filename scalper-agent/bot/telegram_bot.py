@@ -605,6 +605,28 @@ class BodyHunterBot:
         except Exception as e:
             logger.error(f"[공매도시그널] 전송 실패: {e}")
 
+    async def _job_stealth_flow_alert(self, context):
+        """08:15 스텔스 수급 탐지 알림 — 매집/다이버전스/신용바닥"""
+        now = datetime.now(KST)
+        if not is_trading_day(now.date()):
+            return
+        try:
+            from tools.stealth_flow_detector import (
+                scan_stealth_flow, format_stealth_flow_alert
+            )
+            signals = scan_stealth_flow()
+            text = format_stealth_flow_alert(signals)
+            if text:
+                for chunk in _split_message(text):
+                    await context.bot.send_message(
+                        chat_id=self.chat_id, text=chunk
+                    )
+                logger.info("[스텔스수급] 알림 전송 완료")
+            else:
+                logger.info("[스텔스수급] 시그널 없음")
+        except Exception as e:
+            logger.error(f"[스텔스수급] 전송 실패: {e}")
+
     async def _job_premarket_risk_alert(self, context):
         """08:20 장전 종합 리스크 스캔 알림 — DART공시/뉴스/속보 위험종목"""
         now = datetime.now(KST)
@@ -3046,10 +3068,11 @@ class BodyHunterBot:
         jq.run_daily(self._job_flow_report_4, time=kst_time(14, 30))  # 4차 수급
         jq.run_daily(self._job_bomb_buy_alert, time=kst_time(15, 0))  # bomb 매수 알림
         jq.run_daily(self._job_preclose_limitup_alert, time=kst_time(15, 5))  # 상한가 임박
+        jq.run_daily(self._job_stealth_flow_alert, time=kst_time(8, 15))  # 스텔스 수급
         jq.run_daily(self._job_premarket_risk_alert, time=kst_time(8, 20))  # 장전 리스크
         jq.run_daily(self._job_investor_flow_alert, time=kst_time(8, 25))  # 수급 인텔리전스
         jq.run_daily(self._job_short_signal_alert, time=kst_time(8, 30))  # 공매도 8시그널
-        logger.info("수급 인텔리전스 등록: 08:20 장전리스크 + 08:25 수급인텔 + 08:30 공매도시그널 + 10:00~14:30 수급 + 15:00 매수 + 15:05 상한가임박")
+        logger.info("수급 인텔리전스 등록: 08:15 스텔스수급 + 08:20 장전리스크 + 08:25 수급인텔 + 08:30 공매도시그널 + 10:00~14:30 수급 + 15:00 매수 + 15:05 상한가임박")
 
         # COO_MANAGED: G7 — JARVIS BRAIN 자본 배분
         # jq.run_daily(self.auto_trader.job_brain_allocation, time=kst_time(16, 36))

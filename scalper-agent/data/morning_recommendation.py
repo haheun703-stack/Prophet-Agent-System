@@ -1102,6 +1102,16 @@ def _step5_cross_validate(
     except Exception as _if_e:
         logger.warning(f"[step5] 수급인텔 로드 실패(무시): {_if_e}")
 
+    # ── 스텔스 수급 탐지 맵 (매집+다이버전스+신용바닥) ──
+    _stealth_flow_map = {}  # {code: StealthSignal}
+    try:
+        from tools.stealth_flow_detector import scan_stealth_flow
+        _stealth_flow_map = scan_stealth_flow()
+        if _stealth_flow_map:
+            logger.info(f"[step5] 스텔스수급: {len(_stealth_flow_map)}시그널")
+    except Exception as _sf_e:
+        logger.warning(f"[step5] 스텔스수급 로드 실패(무시): {_sf_e}")
+
     # ── 연기금 매수등급 맵 (pension_scan.json → S/A/B/C) ──
     _pension_grade_map = {}  # {code: "S"/"A"/"B"/"C"}
     try:
@@ -1758,6 +1768,14 @@ def _step5_cross_validate(
                 if invflow_sc > 0:
                     cross += 1  # 외인/기관 매수 = 교차검증 1소스
 
+        # ── 스텔스 수급 보너스 (매집+다이버전스+신용바닥) ──
+        stflow_sc = 0.0
+        if code in _stealth_flow_map:
+            _stl = _stealth_flow_map[code]
+            stflow_sc = _stl.score
+            sources.append(f"{_stl.tag}(+{stflow_sc:.0f})")
+            cross += 1  # 멀티데이 수급 = 교차검증 1소스
+
         # ── 연기금 매수등급 보너스 (백테스트: S급 D+5 +1.09% / A급 +0.42%) ──
         pension_sc = 0.0
         _pg = _pension_grade_map.get(code, "")
@@ -1814,6 +1832,7 @@ def _step5_cross_validate(
                      + fdump_pen      # 외인 던지기 감점
                      + premarket_pen  # 장전 리스크 감점
                      + invflow_sc    # 투자자 수급 인텔리전스
+                     + stflow_sc     # 스텔스 수급 (매집+다이버전스+신용바닥)
                      + pension_sc     # 연기금 매수등급 보너스
                      + ewy_sc)        # EWY 비중 변동 보너스
 
