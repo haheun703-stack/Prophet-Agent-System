@@ -55,6 +55,7 @@ import numpy as np
 import pandas as pd
 
 from data.limit_up_scanner import score_continuation, LimitUpStock
+from utils.stock_utils import is_etf as _is_etf, load_daily
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data_store"
@@ -88,15 +89,7 @@ MAX_HOLD_DAYS = 20           # 최대 보유 기간 (영업일)
 # ═══════════════════════════════════════════════════════
 
 def _load_daily(code: str) -> pd.DataFrame | None:
-    """일봉 CSV 로드"""
-    path = DAILY_DIR / f"{code}.csv"
-    if not path.exists():
-        return None
-    try:
-        df = pd.read_csv(path, index_col=0, parse_dates=True)
-        return df.sort_index() if len(df) >= 5 else None
-    except Exception:
-        return None
+    return load_daily(code, DAILY_DIR)
 
 
 def _load_universe() -> dict:
@@ -106,17 +99,6 @@ def _load_universe() -> dict:
     with open(UNIVERSE_PATH, "r", encoding="utf-8") as f:
         return json.load(f)
 
-
-_ETF_KEYWORDS = (
-    "KODEX", "TIGER", "ACE", "KIWOOM", "SOL ", "HANARO", "KOSEF", "ARIRANG",
-    "BNK", "PLUS ", "FOCUS", "TIMEFOLIO", "RISE ", "TIME ", "ITF ", "1Q ",
-    "KoAct", "WON ", "UNICORN", "Active", "ETF", "ETN", "인버스", "레버리지",
-    "KBSTAR",
-)
-
-
-def _is_etf(name: str) -> bool:
-    return any(kw in name for kw in _ETF_KEYWORDS)
 
 
 # ═══════════════════════════════════════════════════════

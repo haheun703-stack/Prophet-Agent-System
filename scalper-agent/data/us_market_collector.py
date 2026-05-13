@@ -85,12 +85,37 @@ def collect_us_overnight() -> dict:
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
 
+    # ── 전체 티커 배치 다운로드 (단일 API 호출) ──────────
+    all_tickers = (
+        list(INDEX_TICKERS.keys())
+        + list(MACRO_TICKERS.keys())
+        + list(SECTOR_TICKERS.keys())
+        + INDIVIDUAL_TICKERS
+        + list(FOREIGN_BASKET_TICKERS.keys())
+    )
+    try:
+        bulk = yf.download(
+            " ".join(all_tickers), period="15d",
+            progress=False, group_by="ticker", threads=True,
+        )
+    except Exception as e:
+        logger.error(f"[US수집] yfinance 배치 다운로드 실패: {e}")
+        bulk = None
+
+    def _chg_1d(ticker: str) -> float | None:
+        return _calc_change(bulk, ticker, offset=1)
+
+    def _chg_nd(ticker: str, n: int) -> float | None:
+        return _calc_change(bulk, ticker, offset=n)
+
+    def _close(ticker: str) -> float | None:
+        return _get_close_from_bulk(bulk, ticker)
+
     # ── 1) 지수 수집 ─────────────────────────────────────
     for ticker, key in INDEX_TICKERS.items():
-        chg = _get_change_pct(yf, ticker)
+        chg = _chg_1d(ticker)
         if key == "vix":
-            # VIX는 등락률이 아니라 절대값이 중요
-            val = _get_last_close(yf, ticker)
+            val = _close(ticker)
             result["vix"] = round(val, 1) if val else 0
             result["vix_change"] = round(chg, 2) if chg is not None else 0
         elif key == "sox":
@@ -102,7 +127,7 @@ def collect_us_overnight() -> dict:
 
     # ── 2) 달러 + 금리 ───────────────────────────────────
     for ticker, key in MACRO_TICKERS.items():
-        val = _get_last_close(yf, ticker)
+        val = _close(ticker)
         if key == "dxy":
             result["dxy"] = round(val, 2) if val else 0
         elif key == "us_5y":
@@ -115,14 +140,13 @@ def collect_us_overnight() -> dict:
     y10 = result.get("us_10y_yield", 0)
     if y5 > 0 and y10 > 0:
         result["spread_5y_10y"] = round(y5 - y10, 3)
-    # us_3y_yield 는 5Y로 근사 (yfinance에 3Y 없음)
     result["us_3y_yield"] = result.get("us_5y_yield", 0)
     result["spread_3y_10y"] = result.get("spread_5y_10y", 0)
 
     # ── 3) 섹터 ETF ──────────────────────────────────────
     sector_etf = {}
     for ticker, kr_name in SECTOR_TICKERS.items():
-        chg = _get_change_pct(yf, ticker)
+        chg = _chg_1d(ticker)
         if chg is not None:
             sector_etf[ticker] = round(chg, 2)
     result["sector_etf"] = sector_etf
@@ -130,7 +154,7 @@ def collect_us_overnight() -> dict:
     # ── 4) 개별 미국주 ───────────────────────────────────
     individual_stocks = {}
     for ticker in INDIVIDUAL_TICKERS:
-        chg = _get_change_pct(yf, ticker)
+        chg = _chg_1d(ticker)
         if chg is not None:
             individual_stocks[ticker] = round(chg, 2)
     result["individual_stocks"] = individual_stocks
@@ -138,16 +162,15 @@ def collect_us_overnight() -> dict:
     # ── 4.5) 외국인 바스켓 지표 (한국 선행지표) ──────────
     foreign_basket = {}
     for ticker, key in FOREIGN_BASKET_TICKERS.items():
-        chg_1d = _get_change_pct(yf, ticker)
-        chg_5d = _get_change_pct_nd(yf, ticker, n=5)
-        close_val = _get_last_close(yf, ticker)
+        chg_1d = _chg_1d(ticker)
+        chg_5d = _chg_nd(ticker, 5)
+        close_val = _close(ticker)
         foreign_basket[key] = {
             "ticker": ticker,
             "change_1d": round(chg_1d, 2) if chg_1d is not None else 0,
             "change_5d": round(chg_5d, 2) if chg_5d is not None else 0,
             "close": round(close_val, 2) if close_val else 0,
         }
-        # 편의 필드 (상위 레벨)
         if key == "korea_etf":
             result["ewy_change"] = round(chg_1d, 2) if chg_1d is not None else 0
             result["ewy_change_5d"] = round(chg_5d, 2) if chg_5d is not None else 0
@@ -233,47 +256,46 @@ def collect_us_overnight() -> dict:
     return result
 
 
-def _get_change_pct(yf, ticker: str) -> float | None:
-    """yfinance로 전일 대비 등락률(%) 계산."""
+def _extract_ticker_series(bulk, ticker: str):
+    """배치 다운로드 결과에서 특정 티커의 Close 시리즈 추출."""
+    if bulk is None or bulk.empty:
+        return None
     try:
-        data = yf.Ticker(ticker)
-        hist = data.history(period="5d")
-        if hist is not None and len(hist) >= 2:
-            prev = float(hist["Close"].iloc[-2])
-            last = float(hist["Close"].iloc[-1])
-            if prev > 0:
-                return (last / prev - 1) * 100
+        if isinstance(bulk.columns, __import__("pandas").MultiIndex):
+            if ticker in bulk.columns.get_level_values(0):
+                series = bulk[ticker]["Close"].dropna()
+                return series if len(series) >= 1 else None
+        else:
+            series = bulk["Close"].dropna()
+            return series if len(series) >= 1 else None
+    except Exception:
+        return None
+
+
+def _calc_change(bulk, ticker: str, offset: int = 1) -> float | None:
+    """배치 데이터에서 N일 전 대비 등락률(%) 계산."""
+    series = _extract_ticker_series(bulk, ticker)
+    if series is None or len(series) < offset + 1:
+        return None
+    try:
+        prev = float(series.iloc[-(offset + 1)])
+        last = float(series.iloc[-1])
+        if prev > 0:
+            return (last / prev - 1) * 100
     except Exception as e:
-        logger.warning(f"[US수집] {ticker} 수집 실패: {e}")
+        logger.warning(f"[US수집] {ticker} 변동률 계산 실패: {e}")
     return None
 
 
-def _get_last_close(yf, ticker: str) -> float | None:
-    """yfinance로 최근 종가(절대값) 가져오기."""
+def _get_close_from_bulk(bulk, ticker: str) -> float | None:
+    """배치 데이터에서 최근 종가 추출."""
+    series = _extract_ticker_series(bulk, ticker)
+    if series is None:
+        return None
     try:
-        data = yf.Ticker(ticker)
-        hist = data.history(period="5d")
-        if hist is not None and len(hist) >= 1:
-            return float(hist["Close"].iloc[-1])
-    except Exception as e:
-        logger.warning(f"[US수집] {ticker} 절대값 수집 실패: {e}")
-    return None
-
-
-def _get_change_pct_nd(yf, ticker: str, n: int = 5) -> float | None:
-    """yfinance로 N일 전 대비 등락률(%) 계산."""
-    try:
-        data = yf.Ticker(ticker)
-        # n+2일치로 넉넉하게 받아서 실제 거래일 n일 전 종가 확보
-        hist = data.history(period=f"{n + 10}d")
-        if hist is not None and len(hist) >= n + 1:
-            prev = float(hist["Close"].iloc[-(n + 1)])
-            last = float(hist["Close"].iloc[-1])
-            if prev > 0:
-                return (last / prev - 1) * 100
-    except Exception as e:
-        logger.warning(f"[US수집] {ticker} {n}일 변동률 수집 실패: {e}")
-    return None
+        return float(series.iloc[-1])
+    except Exception:
+        return None
 
 
 def _save_json(data: dict):

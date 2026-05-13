@@ -34,6 +34,8 @@ load_dotenv(ROOT.parent / ".env")
 
 import pandas as pd
 
+from utils.stock_utils import parse_kis_1min
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
@@ -64,34 +66,7 @@ def _get_broker():
     )
 
 
-def _parse_1min(rows: list) -> Optional[pd.DataFrame]:
-    """KIS 1분봉 응답 → DataFrame"""
-    records = []
-    for r in rows:
-        dt_str = r.get("stck_bsop_date", "")
-        tm_str = r.get("stck_cntg_hour", "")
-        if not dt_str or not tm_str:
-            continue
-        try:
-            ts = pd.Timestamp(
-                f"{dt_str[:4]}-{dt_str[4:6]}-{dt_str[6:8]} "
-                f"{tm_str[:2]}:{tm_str[2:4]}:{tm_str[4:6]}"
-            )
-            records.append({
-                "datetime": ts,
-                "open": int(r.get("stck_oprc", 0)),
-                "high": int(r.get("stck_hgpr", 0)),
-                "low": int(r.get("stck_lwpr", 0)),
-                "close": int(r.get("stck_prpr", 0)),
-                "volume": int(r.get("cntg_vol", 0)),
-            })
-        except (ValueError, TypeError):
-            continue
-
-    if not records:
-        return None
-    df = pd.DataFrame(records).set_index("datetime").sort_index()
-    return df
+_parse_1min = parse_kis_1min  # 하위호환 별칭
 
 
 def _append_to_csv(df_5m: pd.DataFrame, path: Path):

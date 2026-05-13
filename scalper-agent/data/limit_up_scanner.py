@@ -32,6 +32,8 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from utils.stock_utils import is_etf as _is_etf, load_daily
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data_store"
 DAILY_DIR = DATA_DIR / "daily"
@@ -51,19 +53,6 @@ STRONG_SURGE_PCT = 15.0  # 강한 급등 (15%+)
 # ── 5% 초기매집 패턴 기준 ──
 INITIAL_PUSH_MIN = 4.0   # 초기 밀어올리기 최소 %
 INITIAL_PUSH_MAX = 8.0   # 초기 밀어올리기 최대 %
-
-# ── ETF/ETN 필터 ──
-_ETF_KEYWORDS = (
-    "KODEX", "TIGER", "ACE", "KIWOOM", "SOL ", "HANARO", "KOSEF", "ARIRANG",
-    "BNK", "PLUS ", "FOCUS", "TIMEFOLIO", "RISE ", "TIME ", "ITF ", "1Q ",
-    "KoAct", "WON ", "UNICORN", "Active", "액티브", "KBSTAR",
-    "ETF", "ETN", "인버스", "레버리지",
-)
-
-
-def _is_etf(name: str) -> bool:
-    """ETF/ETN 종목 여부"""
-    return any(kw in name for kw in _ETF_KEYWORDS)
 
 
 @dataclass
@@ -95,17 +84,7 @@ class LimitUpStock:
 # ═══════════════════════════════════════════════════════
 
 def _load_daily(code: str) -> Optional[pd.DataFrame]:
-    """일봉 CSV 로드"""
-    path = DAILY_DIR / f"{code}.csv"
-    if not path.exists():
-        return None
-    try:
-        df = pd.read_csv(path, index_col=0, parse_dates=True)
-        if len(df) < 5:
-            return None
-        return df.sort_index()
-    except Exception:
-        return None
+    return load_daily(code, DAILY_DIR)
 
 
 def _load_flow(code: str) -> Optional[pd.DataFrame]:

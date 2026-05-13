@@ -20,6 +20,8 @@ from typing import Dict, List, Optional, Tuple
 import pandas as pd
 import numpy as np
 
+from utils.stock_utils import parse_kis_1min
+
 logger = logging.getLogger(__name__)
 
 # 데이터 저장 경로
@@ -316,7 +318,7 @@ def _fetch_1min_safe(broker, code: str) -> Optional[pd.DataFrame]:
     if not all_rows:
         return None
 
-    return _parse_1min_data(all_rows)
+    return parse_kis_1min(all_rows)
 
 
 def _resample_minutes(df_1m: pd.DataFrame, freq: str) -> Optional[pd.DataFrame]:
@@ -430,35 +432,7 @@ def collect_today_5min_kis(codes=None):
     return collect_today_minutes(codes, save_1min=False)
 
 
-def _parse_1min_data(rows: List[dict]) -> Optional[pd.DataFrame]:
-    """KIS 1분봉 → DataFrame"""
-    records = []
-    for r in rows:
-        dt_str = r.get("stck_bsop_date", "")
-        tm_str = r.get("stck_cntg_hour", "")
-        if not dt_str or not tm_str:
-            continue
-
-        try:
-            ts = pd.Timestamp(f"{dt_str[:4]}-{dt_str[4:6]}-{dt_str[6:8]} "
-                              f"{tm_str[:2]}:{tm_str[2:4]}:{tm_str[4:6]}")
-            records.append({
-                "datetime": ts,
-                "open": int(r.get("stck_oprc", 0)),
-                "high": int(r.get("stck_hgpr", 0)),
-                "low": int(r.get("stck_lwpr", 0)),
-                "close": int(r.get("stck_prpr", 0)),
-                "volume": int(r.get("cntg_vol", 0)),
-            })
-        except (ValueError, TypeError):
-            continue
-
-    if not records:
-        return None
-
-    df = pd.DataFrame(records)
-    df = df.set_index("datetime").sort_index()
-    return df
+_parse_1min_data = parse_kis_1min  # 하위호환 별칭
 
 
 # ============================================================

@@ -17,7 +17,7 @@
 
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, Optional
+from typing import Dict
 
 import pandas as pd
 
@@ -148,20 +148,24 @@ class PykrxCollector:
             except Exception as e:
                 logger.warning(f"{market} 종목 리스트 수집 실패: {e}")
         
-        # 시총 기준 필터링
+        # 시총 기준 필터링 — 전체 시장 일괄 조회 (배치)
         cap_data = []
-        for ticker in all_tickers:
+        for market in markets:
             try:
-                cap = self.stock.get_market_cap_by_date(today, today, ticker)
-                if not cap.empty:
-                    market_cap = cap.iloc[-1]['시가총액']
-                    if market_cap >= min_market_cap:
-                        cap_data.append({'ticker': ticker, 'market_cap': market_cap})
-            except Exception:
-                continue
-        
+                cap_df = self.stock.get_market_cap_by_date(today, today, market=market)
+                if cap_df is not None and not cap_df.empty:
+                    for ticker in all_tickers:
+                        if ticker in cap_df.index:
+                            mcap = cap_df.loc[ticker, '시가총액']
+                            if mcap >= min_market_cap:
+                                cap_data.append({'ticker': ticker, 'market_cap': mcap})
+            except Exception as e:
+                logger.warning(f"{market} 시총 일괄조회 실패: {e}")
+
         # 시총 순 정렬 후 상위 N개
         df = pd.DataFrame(cap_data)
+        if df.empty:
+            return []
         df = df.sort_values('market_cap', ascending=False).head(max_stocks)
         
         universe = df['ticker'].tolist()

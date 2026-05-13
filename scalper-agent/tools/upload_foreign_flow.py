@@ -26,6 +26,8 @@ from collections import defaultdict
 import pandas as pd
 
 
+from utils.stock_utils import is_etf as _is_etf
+
 logger = logging.getLogger("BH.ForeignFlow")
 
 # ─────────────────────────────────────────────
@@ -59,22 +61,6 @@ LOOKBACK_DAYS = 5
 MIN_FOREIGN_TOTAL = 30  # 5일 누적 30억 이상만 업로드
 QUIET_THRESHOLD = 7.0
 
-# ETF/펀드 키워드 필터
-_ETF_KEYWORDS = [
-    "KODEX", "TIGER", "ACE", "KIWOOM", "SOL ", "HANARO", "KOSEF", "ARIRANG",
-    "BNK", "PLUS ", "FOCUS", "TIMEFOLIO", "RISE ", "TIME ", "ITF ", "1Q ",
-    "KoAct", "WON ", "UNICORN", "Active", "액티브",
-]
-
-
-def _is_etf(name: str) -> bool:
-    """ETF/펀드 여부 판별."""
-    if not name or name == "?":
-        return True
-    for kw in _ETF_KEYWORDS:
-        if kw in name:
-            return True
-    return False
 
 
 def load_universe() -> dict:

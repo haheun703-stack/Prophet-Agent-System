@@ -482,7 +482,7 @@ def _build_macro_report() -> dict:
         시장상태 = get_current_regime()
         전략 = get_regime_response(시장상태)
     except Exception:
-        from dataclasses import dataclass, field
+        pass
         전략 = None
 
     # 전략 → 쉬운 한국어

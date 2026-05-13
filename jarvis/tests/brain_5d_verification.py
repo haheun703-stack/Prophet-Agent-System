@@ -17,7 +17,6 @@ import copy
 from pathlib import Path
 from datetime import datetime, timedelta
 from unittest.mock import patch, MagicMock
-from typing import Dict, List
 
 # 프로젝트 루트 설정
 ROOT = Path(__file__).resolve().parent.parent.parent
@@ -217,7 +216,7 @@ def test_3_1_m2_stale():
 def test_3_2_all_worst_2d():
     """2D: 4개 지표 전부 동시 경고"""
     print("\n=== 3-2-A: 2D 4지표 전부 경고 ===")
-    from jarvis.regime_leading import RegimeLeadingReport, LeadingIndicator, _calc_preemptive_adjust
+    from jarvis.regime_leading import RegimeLeadingReport, _calc_preemptive_adjust
 
     report = RegimeLeadingReport(date=datetime.now().strftime("%Y-%m-%d"))
     # 4개 지표 전부 경고 상태

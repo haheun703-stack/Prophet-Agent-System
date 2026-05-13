@@ -32,6 +32,8 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from utils.stock_utils import is_etf as _is_etf_name, load_daily
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data_store"
 DAILY_DIR = DATA_DIR / "daily"
@@ -40,21 +42,6 @@ logger = logging.getLogger("BH.TVScanner")
 
 # 억원 단위 변환
 _BILLION = 1e8
-
-# ETF/ETN 브랜드 키워드 — 매집합류에서 ETF 노이즈 제거용
-_ETF_KEYWORDS = (
-    "KODEX", "TIGER", "ACE", "KIWOOM", "SOL ", "HANARO", "KOSEF", "ARIRANG",
-    "BNK", "PLUS ", "FOCUS", "TIMEFOLIO", "RISE ", "TIME ", "ITF ", "1Q ",
-    "KoAct", "WON ", "UNICORN", "Active", "액티브", "KBSTAR",
-    "ETF", "ETN", "인버스", "레버리지",
-)
-
-
-def _is_etf_name(name: str) -> bool:
-    """종목명 기반 ETF/ETN 판별"""
-    if not name:
-        return False
-    return any(kw in name for kw in _ETF_KEYWORDS)
 
 
 # =============================================================================
@@ -87,17 +74,7 @@ class TVSignal:
 # =============================================================================
 
 def _load_daily(code: str) -> Optional[pd.DataFrame]:
-    """일봉 CSV 로드"""
-    path = DAILY_DIR / f"{code}.csv"
-    if not path.exists():
-        return None
-    try:
-        df = pd.read_csv(path, index_col=0, parse_dates=True)
-        if len(df) < 21:
-            return None
-        return df.sort_index()
-    except Exception:
-        return None
+    return load_daily(code, DAILY_DIR, min_rows=21)
 
 
 def _calc_tv_metrics(code: str) -> Optional[dict]:

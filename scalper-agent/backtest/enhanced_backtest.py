@@ -24,7 +24,7 @@ load_dotenv(os.path.join(os.path.dirname(__file__), "../../.env"))
 
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
+from datetime import datetime
 from data.supply_analyzer import SupplyAnalyzer
 from data.universe_builder import load_universe
 

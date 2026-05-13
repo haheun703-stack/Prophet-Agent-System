@@ -18,6 +18,8 @@ import logging
 from pathlib import Path
 from datetime import datetime
 
+from utils.stock_utils import is_etf as _is_etf
+
 logger = logging.getLogger("BH.FlowIntel")
 
 SCALPER_DIR = Path(__file__).resolve().parent.parent
@@ -747,25 +749,8 @@ async def generate_bomb_buy_alert(kis_trader, top_n: int = 5) -> str:
 # ═══════════════════════════════════════
 #  수급 강도 TOP (FLOWX 스윙시스템 패널)
 # ═══════════════════════════════════════
-# ETF/펀드 키워드 필터
-_ETF_KEYWORDS = [
-    "KODEX", "TIGER", "ACE", "KIWOOM", "SOL ", "HANARO", "KOSEF", "ARIRANG",
-    "BNK", "PLUS ", "FOCUS", "TIMEFOLIO", "RISE ", "TIME ", "ITF ", "1Q ",
-    "KoAct", "WON ", "UNICORN", "Active", "액티브",
-]
-
 # 과열 기준: 5일 등락률 이 이상이면 과열 경고
 OVERHEAT_THRESHOLD_PCT = 20.0
-
-
-def _is_etf(name: str) -> bool:
-    """ETF/펀드 여부 판별."""
-    if not name or name == "?":
-        return True
-    for kw in _ETF_KEYWORDS:
-        if kw in name:
-            return True
-    return False
 
 
 def generate_flow_intensity_data(top_n: int = 15, min_cap: int = 2000) -> dict:

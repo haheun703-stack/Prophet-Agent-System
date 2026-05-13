@@ -14,7 +14,7 @@
 """
 
 import logging
-from typing import Dict, Optional, List
+from typing import Dict
 from datetime import datetime
 
 import pandas as pd
