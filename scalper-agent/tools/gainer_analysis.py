@@ -7,7 +7,7 @@ os.chdir(os.path.join(os.path.dirname(__file__), ".."))
 
 import pandas as pd
 import numpy as np
-from collections import Counter, defaultdict
+from collections import Counter
 
 with open('data_store/today_gainers.json', 'r', encoding='utf-8') as f:
     gainers = json.load(f)
