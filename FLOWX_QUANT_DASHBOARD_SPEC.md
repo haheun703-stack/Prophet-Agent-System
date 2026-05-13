@@ -1,7 +1,8 @@
-# [단타봇 → 웹봇] 퀀트 대시보드 5개 테이블
+# [단타봇 → 웹봇] 퀀트 대시보드 7개 테이블
 
-> 작성일: 2026-03-28 | 커밋: db12bd4
+> 작성일: 2026-03-28 | 최종갱신: 2026-05-13 | 커밋: d54934b
 > 빈페이지 방지: upsert 실패 시 전일 데이터 유지
+> v2: 테마별 수급(#6) + 테마별 모멘텀(#7) 추가 — KIS 302개 테마 기반
 
 ---
 
@@ -100,3 +101,88 @@
 3. SQL 파일: `sql/quant_market_brain_migration.sql`
 4. 스케줄: 16:45
 5. 데이터 설명: AI 6단계 시장분석 (매크로/원자재/섹터/수급/리스크/종합) + 투자비중 + 종목 서술
+
+---
+
+## [단타봇 → 웹봇] 테마별 수급 (v2 신규)
+
+1. 테이블명: `quant_theme_flow`
+2. 컬럼 구조:
+   - `date` DATE PK
+   - `themes` JSONB — 배열: {테마, 종목수, 테마전체, 기관_당일, 기관_3일, 기관_5일, 기관_연속일, 외인_당일, 외인_3일, 외인_5일, 외인_연속일, 판단, 설명, 보정점수}
+   - `top_inflow` JSONB — 자금 유입 TOP5 테마명
+   - `top_outflow` JSONB — 자금 이탈 TOP5 테마명
+   - `signal` TEXT — 한줄 요약 (예: "세트 자금 유입: 전기차충전소, 스마트폰, MLCC")
+   - `total_themes` INT — 분석 대상 테마 수
+   - `created_at` TIMESTAMPTZ
+3. 스케줄: 16:45
+4. 데이터 설명: KIS 302개 테마 기준 기관·외국인 순매수 집계.
+   기존 quant_sector_flow(23개 KRX 섹터)의 세분화 버전.
+   "전기전자"가 아닌 "MLCC", "2차전지", "HBM" 등 실제 세트매매 단위로 분석.
+   한 종목이 여러 테마에 속하므로 교차 집계됨.
+5. 소스 JSON: `scalper-agent/data_store/theme_flow.json`
+6. 생성 함수: `sector_institution_flow.py → analyze_theme_flow()`
+
+---
+
+## [단타봇 → 웹봇] 테마별 모멘텀 (v2 신규)
+
+1. 테이블명: `quant_theme_momentum`
+2. 컬럼 구조:
+   - `date` DATE PK
+   - `market_return_1d` REAL — 시장 전체 당일 수익률(%)
+   - `themes` JSONB — 배열: {테마, 상태(HOT/WARMING/NEUTRAL/COOLING/COLD), 순위, 종목수, 당일수익률, 3일수익률, 5일수익률, 상승비율, 가속도, 부스트, 주도주}
+   - `hot_themes` JSONB — HOT/WARMING 테마명 목록
+   - `cold_themes` JSONB — COLD/COOLING 테마명 목록
+   - `rotation_signal` TEXT — 테마 로테이션 요약
+   - `total_themes` INT — 분석 대상 테마 수
+   - `created_at` TIMESTAMPTZ
+3. 스케줄: 16:45
+4. 데이터 설명: KIS 302개 테마 기준 HOT/COLD 모멘텀.
+   기존 quant_sector_momentum(23개 KRX 섹터)의 세분화 버전.
+   Naver Finance API로 전체 종목 등락률을 조회한 뒤 테마별 평균 수익률·브레드쓰·가속도 계산.
+5. 소스 JSON: `scalper-agent/data_store/theme_momentum.json`
+6. 생성 함수: `sector_momentum.py → analyze_theme_momentum()`
+
+---
+
+## 기존 섹터(23개) vs 신규 테마(302개) 관계
+
+| 구분 | 기존 (섹터) | 신규 (테마) |
+|------|------------|------------|
+| 분류 기준 | KRX 23개 업종 | KIS 302개 테마코드 |
+| 예시 | "전기전자" = 반도체+2차전지+디스플레이 혼합 | "MLCC", "2차전지(생산)", "HBM" 각각 분리 |
+| 테이블 | quant_sector_flow, quant_sector_momentum | quant_theme_flow, quant_theme_momentum |
+| 용도 | 매크로 시야 (큰 그림) | 세트매매 단위 (실제 트레이딩) |
+| 공존 | 유지 — 매크로 관점 필요 | 추가 — 세분화된 테마 관점 |
+
+> **웹봇 참고**: 섹터 패널과 테마 패널을 탭으로 구분하거나, 테마를 메인으로 노출하고 섹터는 서브로 배치 권장.
+
+---
+
+## Supabase 테이블 생성 SQL
+
+```sql
+-- 6. 테마별 수급
+CREATE TABLE IF NOT EXISTS quant_theme_flow (
+  date       DATE PRIMARY KEY,
+  themes     JSONB NOT NULL DEFAULT '[]',
+  top_inflow JSONB NOT NULL DEFAULT '[]',
+  top_outflow JSONB NOT NULL DEFAULT '[]',
+  signal     TEXT NOT NULL DEFAULT '',
+  total_themes INT NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- 7. 테마별 모멘텀
+CREATE TABLE IF NOT EXISTS quant_theme_momentum (
+  date            DATE PRIMARY KEY,
+  market_return_1d REAL NOT NULL DEFAULT 0,
+  themes          JSONB NOT NULL DEFAULT '[]',
+  hot_themes      JSONB NOT NULL DEFAULT '[]',
+  cold_themes     JSONB NOT NULL DEFAULT '[]',
+  rotation_signal TEXT NOT NULL DEFAULT '',
+  total_themes    INT NOT NULL DEFAULT 0,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
