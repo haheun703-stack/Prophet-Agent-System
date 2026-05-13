@@ -29,29 +29,10 @@ STORE_DIR = Path(__file__).resolve().parent.parent / "data_store"
 _GRADE_ORDER = {"AAA": 0, "AA": 1, "A": 2, "BBB": 3, "BB": 4, "B": 5, "C": 6, "D": 7, "F": 8}
 
 
-# ── Supabase 클라이언트 (lazy init, upload_short.py와 동일 패턴) ──
-_supabase = None
-
-
-def _get_client():
-    global _supabase
-    if _supabase is not None:
-        return _supabase
-
-    from dotenv import load_dotenv
-    env_path = Path(__file__).resolve().parent.parent.parent / ".env"
-    load_dotenv(env_path)
-
-    url = os.environ.get("SUPABASE_URL", "")
-    key = os.environ.get("SUPABASE_KEY", "")
-    if not url or not key:
-        logger.error("SUPABASE_URL / SUPABASE_KEY 미설정")
-        return None
-
-    from supabase import create_client
-    _supabase = create_client(url, key)
-    logger.info(f"Supabase 연결: {url[:40]}...")
-    return _supabase
+# ── Supabase 클라이언트 (shared 모듈) ──
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+from shared.supabase_client import get_client as _get_client
 
 
 def _fetch_closing_prices(codes: list) -> dict:

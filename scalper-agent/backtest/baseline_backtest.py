@@ -152,7 +152,7 @@ def run_backtest():
     for code in codes[:10]:
         try:
             analyzer.analyze_full(code)
-        except:
+        except Exception:
             pass
 
     trading_days = get_trading_days_from_cache(analyzer, lookback=60)

@@ -87,7 +87,7 @@ def count_premove_signals(full, day_df):
                 price_range_3d = (prices.iloc[-3:].max() - prices.iloc[-3:].min()) / prices.iloc[-1] * 100
                 if price_range_3d < 3:
                     signals += 1
-    except:
+    except Exception:
         pass
 
     # 6. 기술적 정렬 (EMA+RSI+MACD)
@@ -101,7 +101,7 @@ def count_premove_signals(full, day_df):
         hist_dir = hist.get("direction", None) if isinstance(hist, dict) else None
         if ema_trend == "BULLISH" and 35 <= rsi_val <= 55 and hist_triggered and hist_dir == "BUY":
             signals += 1
-    except:
+    except Exception:
         pass
 
     return signals
@@ -308,7 +308,7 @@ def run_backtest():
     for code in codes[:10]:
         try:
             analyzer.analyze_full(code)
-        except:
+        except Exception:
             pass
 
     trading_days = get_trading_days_from_cache(analyzer, lookback=60)
@@ -380,7 +380,7 @@ def run_backtest():
                                     filter_stats.setdefault('rsi_excluded', 0)
                                     filter_stats['rsi_excluded'] += 1
                                     continue
-                        except:
+                        except Exception:
                             pass  # RSI 계산 실패 시 통과
 
                 else:

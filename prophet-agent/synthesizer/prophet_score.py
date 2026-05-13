@@ -110,7 +110,7 @@ class ProphetSynthesizer:
             today = datetime.now().strftime('%Y%m%d')
             name = stock.get_market_ticker_name(ticker)
             return name if name else ticker
-        except:
+        except Exception:
             return ticker
     
     def _log_result(self, result: Dict):

@@ -89,7 +89,7 @@ class CompositeStrategy(BaseStrategy):
                 signal = strategy.evaluate(code, candles)
                 if signal and signal.stop_loss > 0:
                     stop_losses.append(signal.stop_loss)
-            except:
+            except Exception:
                 continue
         return max(stop_losses) if stop_losses else 0
 

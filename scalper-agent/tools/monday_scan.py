@@ -76,12 +76,12 @@ def scan():
         try:
             if dp.exists():
                 daily_cache[code] = pd.read_csv(dp, index_col=0, parse_dates=True).sort_index()
-        except:
+        except Exception:
             pass
         try:
             if fp.exists():
                 flow_cache[code] = pd.read_csv(fp, index_col=0, parse_dates=True).sort_index()
-        except:
+        except Exception:
             pass
 
     print(f"일봉 로드: {len(daily_cache)}종목, 수급 로드: {len(flow_cache)}종목")

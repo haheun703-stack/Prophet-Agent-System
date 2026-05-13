@@ -130,7 +130,7 @@ def score_stock(close, high, low, volume, opn):
                 if price_low5 < price_low_prev and k_low5 > k_low_prev:
                     score += 8
                     signals.append('STO상승다이버전스')
-        except:
+        except Exception:
             pass
 
     # ═══ 2. 거래량 분석 ═══

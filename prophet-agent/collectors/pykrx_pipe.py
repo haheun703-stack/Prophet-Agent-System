@@ -157,7 +157,7 @@ class PykrxCollector:
                     market_cap = cap.iloc[-1]['시가총액']
                     if market_cap >= min_market_cap:
                         cap_data.append({'ticker': ticker, 'market_cap': market_cap})
-            except:
+            except Exception:
                 continue
         
         # 시총 순 정렬 후 상위 N개

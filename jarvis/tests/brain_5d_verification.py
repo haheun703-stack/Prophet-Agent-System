@@ -166,7 +166,7 @@ def test_3_1_yahoo_bad_ticker():
         try:
             from jarvis.cross_asset_stress import ASSET_PAIRS as ap
             ap.update(original_pairs)
-        except:
+        except Exception:
             pass
         record("검증3_엣지케이스", "Yahoo 티커 오류 → analyze_stress 생존",
                False, f"크래시: {e}")

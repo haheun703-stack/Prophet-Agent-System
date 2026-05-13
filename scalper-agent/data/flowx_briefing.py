@@ -26,29 +26,9 @@ _DATA_STORE = Path(__file__).resolve().parent.parent / "data_store"
 _ENV_PATH = Path(__file__).resolve().parent.parent.parent / ".env"
 
 
-# ── Supabase 클라이언트 (upload_short.py 패턴 재사용) ──
-_supabase = None
-
-
-def _get_client():
-    """Supabase 클라이언트 lazy 초기화"""
-    global _supabase
-    if _supabase is not None:
-        return _supabase
-
-    from dotenv import load_dotenv
-    load_dotenv(_ENV_PATH)
-
-    url = os.environ.get("SUPABASE_URL", "")
-    key = os.environ.get("SUPABASE_KEY", "")
-    if not url or not key:
-        logger.error("SUPABASE_URL / SUPABASE_KEY 미설정 (.env 확인)")
-        return None
-
-    from supabase import create_client
-    _supabase = create_client(url, key)
-    logger.info(f"Supabase 연결: {url[:40]}...")
-    return _supabase
+# ── Supabase 클라이언트 (shared 모듈) ──
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+from shared.supabase_client import get_client as _get_client
 
 
 # ── JSON 로더 ─────────────────────────────────────────

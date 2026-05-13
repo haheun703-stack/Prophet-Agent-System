@@ -108,7 +108,7 @@ class DartCollector:
                                     'quarter': quarter,
                                     'net_income': net_income.iloc[0].get('thstrm_amount', 0),
                                 })
-                    except:
+                    except Exception:
                         continue
             
             df = pd.DataFrame(eps_data)
@@ -135,7 +135,7 @@ class DartCollector:
                                 'year': year,
                                 'operating_profit': op.iloc[0].get('thstrm_amount', 0),
                             })
-                except:
+                except Exception:
                     continue
             
             return pd.DataFrame(profit_data)
