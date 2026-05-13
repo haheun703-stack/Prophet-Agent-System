@@ -14,11 +14,17 @@
 """
 import json
 import csv
+import sys
 import logging
 from pathlib import Path
+from collections import defaultdict
 from datetime import datetime
 
 from utils.stock_utils import is_etf as _is_etf
+
+# shared 모듈 경로
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+from shared.theme_service import get_raw_map as load_theme_map  # noqa: E402
 
 logger = logging.getLogger("BH.FlowIntel")
 
@@ -214,6 +220,111 @@ def _judge_flow(flow):
         return "혼조"
 
 
+def _build_theme_flow_summary(
+    frgn_buy: list, frgn_sell: list,
+    inst_buy: list, inst_sell: list,
+    max_themes: int = 8,
+) -> list[dict]:
+    """수급 TOP 종목들을 테마별로 그룹핑.
+
+    외인/기관 매수 TOP20 종목을 theme_map.json 기반으로 테마 분류.
+    2종목 이상 매수 유입된 테마만 반환 (세트 매매 감지).
+
+    Returns:
+        [{"theme", "buy_stocks", "buy_count", "sell_count",
+          "dual_count", "direction"}]
+    """
+    theme_map = load_theme_map()
+    if not theme_map:
+        return []
+
+    c2t = theme_map.get("code_to_themes", {})
+    themes_data = theme_map.get("themes", {})
+
+    # 세트매매와 무관한 노이즈 테마 필터
+    _NOISE = ("신규 상장", "상장주", "FTA", "뉴딜", "배당")
+
+    # 매수 종목 수집 (TOP 20, ETF 제외)
+    buy_set = {}  # code → {name, frgn, inst}
+    for s in (frgn_buy or [])[:20]:
+        code = s.get("code", "")
+        if code and not _is_etf(s.get("name", "")):
+            buy_set[code] = {"name": s.get("name", ""), "frgn": True, "inst": False}
+    for s in (inst_buy or [])[:20]:
+        code = s.get("code", "")
+        if code and not _is_etf(s.get("name", "")):
+            if code in buy_set:
+                buy_set[code]["inst"] = True
+            else:
+                buy_set[code] = {"name": s.get("name", ""), "frgn": False, "inst": True}
+
+    # 매도 종목 코드
+    sell_codes = set()
+    for s in (frgn_sell or [])[:20]:
+        code = s.get("code", "")
+        if code:
+            sell_codes.add(code)
+    for s in (inst_sell or [])[:20]:
+        code = s.get("code", "")
+        if code:
+            sell_codes.add(code)
+
+    # 테마별 그룹핑
+    theme_buy = defaultdict(list)
+    theme_sell_cnt = defaultdict(int)
+
+    for code, info in buy_set.items():
+        for entry in c2t.get(code, []):
+            theme_buy[entry["theme_name"]].append({
+                "code": code, "name": info["name"],
+                "frgn": info["frgn"], "inst": info["inst"],
+            })
+
+    for code in sell_codes:
+        for entry in c2t.get(code, []):
+            theme_sell_cnt[entry["theme_name"]] += 1
+
+    # 2종목 이상 매수 유입 테마만 (노이즈 제외)
+    results = []
+    for theme_name, stocks in theme_buy.items():
+        if len(stocks) < 2:
+            continue
+        if any(p in theme_name for p in _NOISE):
+            continue
+
+        # 테마 전체 종목수 (밀도 계산용)
+        total_in_theme = 0
+        for td in themes_data.values():
+            if td.get("name") == theme_name:
+                total_in_theme = len(td.get("codes", []))
+                break
+
+        dual = sum(1 for s in stocks if s["frgn"] and s["inst"])
+        sell_n = theme_sell_cnt.get(theme_name, 0)
+
+        if len(stocks) > sell_n:
+            direction = "매수"
+        elif sell_n > len(stocks):
+            direction = "매도"
+        else:
+            direction = "혼조"
+
+        density = len(stocks) / max(total_in_theme, 1)
+        results.append({
+            "theme": theme_name,
+            "buy_stocks": stocks,
+            "buy_count": len(stocks),
+            "sell_count": sell_n,
+            "dual_count": dual,
+            "direction": direction,
+            "density": density,
+        })
+
+    # 매수종목수 우선, 동률시 밀도(=더 구체적 테마) 우선
+    results.sort(key=lambda x: (-x["buy_count"], -x["density"], -x["dual_count"]))
+    return results[:max_themes]
+
+
 # ═══════════════════════════════════════
 #  장중 수급 리포트 (4회)
 # ═══════════════════════════════════════
@@ -335,6 +446,32 @@ async def generate_intraday_flow_report(kis_trader, round_num: int) -> str:
                         f"({rs.get('frgn_days',0)}일→{rs.get('frgn_days',0)+1}일째)")
         except Exception as e:
             logger.debug(f"매집 레이더 교차 체크 실패 (무시): {e}")
+
+    # ── 테마별 수급 흐름 ──
+    theme_summary = _build_theme_flow_summary(frgn_buy, frgn_sell, inst_buy, inst_sell)
+    if theme_summary:
+        lines.append(f"\n[테마별 수급 흐름]")
+        for ts in theme_summary:
+            arrow = "▲" if ts["direction"] == "매수" else (
+                "▼" if ts["direction"] == "매도" else "→")
+
+            parts = []
+            if ts["dual_count"]:
+                parts.append(f"쌍{ts['dual_count']}")
+            frgn_only = sum(1 for s in ts["buy_stocks"] if s["frgn"] and not s["inst"])
+            inst_only = sum(1 for s in ts["buy_stocks"] if not s["frgn"] and s["inst"])
+            if frgn_only:
+                parts.append(f"외{frgn_only}")
+            if inst_only:
+                parts.append(f"기{inst_only}")
+
+            flow_desc = " ".join(parts)
+            stock_names = ", ".join(s["name"] for s in ts["buy_stocks"][:4])
+            if len(ts["buy_stocks"]) > 4:
+                stock_names += f" 외{len(ts['buy_stocks']) - 4}"
+
+            lines.append(f"  {arrow} {ts['theme']} ({ts['buy_count']}종목) {flow_desc}")
+            lines.append(f"    {stock_names}")
 
     lines.append(f"\n━━━━━━━━━━━━━━━━━━━")
 
@@ -576,6 +713,10 @@ async def generate_15h_flow_buy_alert(kis_trader=None, min_rounds: int = 2, top_
     lines.append(f"━━━━━━━━━━━━━━━━━━━")
     lines.append(f"")
 
+    # 테마 정보 로드
+    theme_map = load_theme_map()
+    c2t = theme_map.get("code_to_themes", {}) if theme_map else {}
+
     for i, p in enumerate(picks, 1):
         mt = "[NXT]" if p["market_type"] == "NXT" else ""
         dual_mark = " 쌍매수" if p["is_dual"] else ""
@@ -591,7 +732,28 @@ async def generate_15h_flow_buy_alert(kis_trader=None, min_rounds: int = 2, top_
         if p["frgn_amt_억"] or p["inst_amt_억"]:
             lines.append(f"   누적: 외인 {p['frgn_amt_억']:.0f}억 + 기관 {p['inst_amt_억']:.0f}억")
 
+        # 테마 태그
+        themes = [e["theme_name"] for e in c2t.get(p['code'], [])][:3]
+        if themes:
+            lines.append(f"   테마: {', '.join(themes)}")
+
         lines.append(f"")
+
+    # ── 테마 세트 요약 ──
+    if c2t:
+        theme_groups = defaultdict(list)
+        for p in picks:
+            for entry in c2t.get(p['code'], []):
+                theme_groups[entry["theme_name"]].append(p['name'])
+
+        active = [(t, names) for t, names in theme_groups.items() if len(names) >= 2]
+        active.sort(key=lambda x: -len(x[1]))
+
+        if active:
+            lines.append(f"[테마 세트]")
+            for theme_name, names in active[:5]:
+                lines.append(f"  {theme_name}: {', '.join(names[:4])}")
+            lines.append(f"")
 
     lines.append(f"━━━━━━━━━━━━━━━━━━━")
     lines.append(f"  기준: {min_rounds}회+ 일관 매수 | 당일+10% 초과 제외")

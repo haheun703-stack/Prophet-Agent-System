@@ -305,11 +305,91 @@ def upload_market_brain() -> bool:
 
 
 # ═══════════════════════════════════════════════════════
+#  6. 테마별 수급 (KIS 302개 테마)
+# ═══════════════════════════════════════════════════════
+
+def upload_theme_flow() -> bool:
+    """quant_theme_flow 업로드"""
+    data = _load_json(STORE_DIR / "theme_flow.json")
+    if not data or not data.get("themes"):
+        logger.warning("[QUANT-DASH] theme_flow.json 없음 → 스킵")
+        return False
+
+    themes_clean = []
+    for t in data["themes"]:
+        themes_clean.append({
+            "테마": t.get("alias") or t.get("sector", ""),
+            "종목수": t.get("flow_stock_count", 0),
+            "테마전체": t.get("stock_count", 0),
+            "기관_당일": round(t.get("inst_1d", 0), 1),
+            "기관_3일": round(t.get("inst_3d", 0), 1),
+            "기관_5일": round(t.get("inst_5d", 0), 1),
+            "기관_연속일": t.get("inst_consecutive", 0),
+            "외인_당일": round(t.get("foreign_1d", 0), 1),
+            "외인_3일": round(t.get("foreign_3d", 0), 1),
+            "외인_5일": round(t.get("foreign_5d", 0), 1),
+            "외인_연속일": t.get("foreign_consecutive", 0),
+            "판단": t.get("agreement", "중립"),
+            "설명": t.get("agreement_desc", ""),
+            "보정점수": round(t.get("boost_score", 0), 1),
+        })
+
+    row = {
+        "date": data.get("data_date") or _today(),
+        "themes": themes_clean,
+        "top_inflow": data.get("top_inflow", []),
+        "top_outflow": data.get("top_outflow", []),
+        "signal": data.get("signal", ""),
+        "total_themes": data.get("total_themes", 0),
+    }
+    return _safe_upsert("quant_theme_flow", row)
+
+
+# ═══════════════════════════════════════════════════════
+#  7. 테마별 모멘텀 (KIS 302개 테마)
+# ═══════════════════════════════════════════════════════
+
+def upload_theme_momentum() -> bool:
+    """quant_theme_momentum 업로드"""
+    data = _load_json(STORE_DIR / "theme_momentum.json")
+    if not data or not data.get("themes"):
+        logger.warning("[QUANT-DASH] theme_momentum.json 없음 → 스킵")
+        return False
+
+    themes_clean = []
+    for t in data["themes"]:
+        themes_clean.append({
+            "테마": t.get("sector", ""),
+            "상태": t.get("phase", "NEUTRAL"),
+            "순위": t.get("rank", 0),
+            "종목수": t.get("stock_count", 0),
+            "당일수익률": round(t.get("avg_return_1d", 0), 2),
+            "3일수익률": round(t.get("avg_return_3d", 0), 2),
+            "5일수익률": round(t.get("avg_return_5d", 0), 2),
+            "상승비율": round(t.get("breadth_1d", 0), 2),
+            "가속도": round(t.get("acceleration", 0), 2),
+            "부스트": round(t.get("boost_score", 0), 1),
+            "주도주": t.get("top_movers", [])[:3],
+        })
+
+    row = {
+        "date": data.get("timestamp", _today())[:10],
+        "market_return_1d": round(data.get("market_return_1d", 0), 2),
+        "themes": themes_clean,
+        "hot_themes": data.get("hot_themes", []),
+        "cold_themes": data.get("cold_themes", []),
+        "rotation_signal": data.get("rotation_signal", ""),
+        "total_themes": data.get("total_themes", 0),
+    }
+    return _safe_upsert("quant_theme_momentum", row)
+
+
+# ═══════════════════════════════════════════════════════
 #  통합 실행
 # ═══════════════════════════════════════════════════════
 
 def run_quant_dashboard_upload() -> dict:
-    """5개 테이블 일괄 업로드. 실패해도 나머지 계속 진행."""
+    """7개 테이블 일괄 업로드. 실패해도 나머지 계속 진행."""
     results = {}
     uploads = [
         ("sector_flow", upload_sector_flow),
@@ -317,6 +397,8 @@ def run_quant_dashboard_upload() -> dict:
         ("sector_momentum", upload_sector_momentum),
         ("etf_recommendation", upload_etf_recommendation),
         ("market_brain", upload_market_brain),
+        ("theme_flow", upload_theme_flow),
+        ("theme_momentum", upload_theme_momentum),
     ]
 
     for name, func in uploads:

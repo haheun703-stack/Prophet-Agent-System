@@ -17,11 +17,16 @@ TIER2 Phase 1: 섹터 기관 수급 집계
 """
 import json
 import csv
+import sys
 import logging
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import Dict, List, Optional
+
+# shared 모듈 경로
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 logger = logging.getLogger(__name__)
 
@@ -570,34 +575,215 @@ def get_sector_flow_summary() -> dict:
         return {}
 
 
+# ═══════════════════════════════════════════════════════
+#  테마별 수급 분석 (theme_map 302개 테마 기준)
+# ═══════════════════════════════════════════════════════
+
+THEME_FLOW_PATH = DATA_DIR / "theme_flow.json"
+
+
+def analyze_theme_flow(days: int = 5, min_stocks: int = 3) -> dict:
+    """테마별 기관/외국인 수급 분석.
+
+    302개 KIS 테마 기준으로 종목 수급을 집계.
+    한 종목이 여러 테마에 속하므로 교차 집계됨.
+    (예: 삼성SDI → 2차전지(생산), ESS, OLED 각각에 수급 반영)
+
+    Args:
+        days: 분석 일수 (기본 5)
+        min_stocks: 최소 종목수 — flow 데이터 있는 종목 기준 (기본 3)
+
+    Returns:
+        {"timestamp", "data_date", "total_themes", "themes": [...],
+         "top_inflow", "top_outflow", "signal"}
+    """
+    from shared.theme_service import get_theme_entries, is_noise_theme, get_theme_size
+
+    # 1. flow CSV 보유 종목 수집 + 테마별 일간 수급 집계
+    theme_daily: Dict[str, Dict[str, dict]] = defaultdict(
+        lambda: defaultdict(lambda: {"inst": 0.0, "foreign": 0.0})
+    )
+    theme_flow_count: Dict[str, int] = defaultdict(int)
+    latest_date = ""
+    total_with_flow = 0
+
+    for f in FLOW_DIR.glob("*_investor.csv"):
+        code = f.name.split("_")[0]
+        entries = get_theme_entries(code)
+        if not entries:
+            continue
+
+        daily = _read_investor_csv(code, days)
+        if not daily:
+            continue
+
+        total_with_flow += 1
+
+        for entry in entries:
+            tname = entry["theme_name"]
+            if is_noise_theme(tname):
+                continue
+            theme_flow_count[tname] += 1
+
+            for d in daily:
+                dt = d["date"]
+                if dt > latest_date:
+                    latest_date = dt
+                theme_daily[tname][dt]["inst"] += d["inst_amt"]
+                theme_daily[tname][dt]["foreign"] += d["foreign_amt"]
+
+    # 2. 테마별 분석 (min_stocks 이상만)
+    theme_flows: List[SectorFlow] = []
+
+    for tname, daily_map in theme_daily.items():
+        fcount = theme_flow_count.get(tname, 0)
+        if fcount < min_stocks:
+            continue
+
+        sf = SectorFlow(
+            sector=tname,
+            alias=tname,
+            stock_count=get_theme_size(tname),
+            flow_stock_count=fcount,
+        )
+
+        sorted_dates = sorted(daily_map.keys())
+        inst_daily = [daily_map[d]["inst"] for d in sorted_dates]
+        foreign_daily = [daily_map[d]["foreign"] for d in sorted_dates]
+
+        sf.inst_1d = inst_daily[-1] if inst_daily else 0.0
+        sf.inst_3d = sum(inst_daily[-3:]) if inst_daily else 0.0
+        sf.inst_5d = sum(inst_daily)
+        sf.foreign_1d = foreign_daily[-1] if foreign_daily else 0.0
+        sf.foreign_3d = sum(foreign_daily[-3:]) if foreign_daily else 0.0
+        sf.foreign_5d = sum(foreign_daily)
+
+        sf.inst_consecutive = _count_consecutive(inst_daily)
+        sf.foreign_consecutive = _count_consecutive(foreign_daily)
+
+        agreement, desc, boost = _judge_agreement(sf)
+        sf.agreement = agreement
+        sf.agreement_desc = desc
+        sf.boost_score = boost
+
+        theme_flows.append(sf)
+
+    # 3. 정렬: 기관+외인 3일 합산 순매수 내림차순
+    theme_flows.sort(key=lambda s: s.inst_3d + s.foreign_3d, reverse=True)
+
+    top_inflow = [
+        sf.alias for sf in theme_flows[:5]
+        if sf.inst_3d + sf.foreign_3d > 0
+    ]
+    top_outflow = [
+        sf.alias for sf in theme_flows[-5:]
+        if sf.inst_3d + sf.foreign_3d < 0
+    ]
+
+    if top_inflow:
+        signal = f"세트 자금 유입: {', '.join(top_inflow[:3])}"
+    else:
+        signal = "뚜렷한 테마 쏠림 없음"
+
+    result = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "data_date": latest_date,
+        "total_themes": len(theme_flows),
+        "total_stocks_with_flow": total_with_flow,
+        "themes": [asdict(sf) for sf in theme_flows],
+        "top_inflow": top_inflow,
+        "top_outflow": top_outflow,
+        "signal": signal,
+    }
+
+    # 저장
+    try:
+        THEME_FLOW_PATH.write_text(
+            json.dumps(result, ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8",
+        )
+        logger.info(
+            f"[테마수급] 저장 완료: {THEME_FLOW_PATH.name} "
+            f"({len(theme_flows)}개 테마, {total_with_flow}종목)"
+        )
+    except Exception as e:
+        logger.error(f"[테마수급] 저장 실패: {e}")
+
+    return result
+
+
+def get_theme_flow_boost(theme_name: str) -> float:
+    """특정 테마의 수급 부스트 점수 반환.
+
+    Returns: -15.0 ~ +15.0
+    """
+    if not THEME_FLOW_PATH.exists():
+        return 0.0
+    try:
+        data = json.loads(THEME_FLOW_PATH.read_text("utf-8"))
+        for s in data.get("themes", []):
+            if s.get("sector") == theme_name or s.get("alias") == theme_name:
+                return s.get("boost_score", 0.0)
+        return 0.0
+    except Exception:
+        return 0.0
+
+
 # ─── CLI ──────────────────────────────────────────────
 if __name__ == "__main__":
-    import sys
     logging.basicConfig(level=logging.INFO)
 
-    print("섹터 기관 수급 분석 시작...")
-    report = analyze_sector_flow()
+    if "--theme" in sys.argv:
+        # 테마별 수급 분석
+        result = analyze_theme_flow()
+        themes = result.get("themes", [])
+        print(f"\n=== 테마별 수급 ({result.get('total_themes', 0)}개 테마, "
+              f"{result.get('total_stocks_with_flow', 0)}종목) ===")
+        print(f"데이터: {result.get('data_date', '')}")
+        print(f"시그널: {result.get('signal', '')}\n")
 
-    print(f"\n총 {report.total_sectors}개 섹터, {report.total_stocks_with_flow}종목 분석")
-    print(f"데이터 기준일: {report.data_date}\n")
+        buy = [t for t in themes if t["inst_3d"] + t["foreign_3d"] > 0][:10]
+        if buy:
+            print("🔥 자금 유입 테마 TOP 10:")
+            for i, t in enumerate(buy):
+                total = t["inst_3d"] + t["foreign_3d"]
+                print(f"  {i+1:2d}. {t['alias']:15s} "
+                      f"기관3D {t['inst_3d']:+8.0f}억 외인3D {t['foreign_3d']:+8.0f}억 "
+                      f"= {total:+8.0f}억 [{t['agreement']}]")
 
-    # 텔레그램 보고서 미리보기
-    msg = format_telegram_report(report)
-    try:
-        print(msg)
-    except UnicodeEncodeError:
-        # Windows cp949 fallback
-        sys.stdout.reconfigure(encoding="utf-8")
-        print(msg)
+        sell = [t for t in themes if t["inst_3d"] + t["foreign_3d"] < 0]
+        sell.sort(key=lambda t: t["inst_3d"] + t["foreign_3d"])
+        if sell:
+            print("\n🧊 자금 이탈 테마 TOP 5:")
+            for i, t in enumerate(sell[:5]):
+                total = t["inst_3d"] + t["foreign_3d"]
+                print(f"  {i+1:2d}. {t['alias']:15s} "
+                      f"기관3D {t['inst_3d']:+8.0f}억 외인3D {t['foreign_3d']:+8.0f}억 "
+                      f"= {total:+8.0f}억 [{t['agreement']}]")
+    else:
+        print("섹터 기관 수급 분석 시작...")
+        report = analyze_sector_flow()
 
-    # 상세 데이터 (--detail)
-    if "--detail" in sys.argv:
-        print("\n── 전체 섹터 상세 ──")
-        for s in report.sectors:
-            total = s["inst_3d"] + s["foreign_3d"]
-            print(
-                f"  {s['alias']:10s} | "
-                f"기관3D {s['inst_3d']:+8.0f}억 ({s['inst_consecutive']:+d}일) | "
-                f"외인3D {s['foreign_3d']:+8.0f}억 ({s['foreign_consecutive']:+d}일) | "
-                f"합계 {total:+8.0f}억 | {s['agreement']}"
-            )
+        print(f"\n총 {report.total_sectors}개 섹터, {report.total_stocks_with_flow}종목 분석")
+        print(f"데이터 기준일: {report.data_date}\n")
+
+        # 텔레그램 보고서 미리보기
+        msg = format_telegram_report(report)
+        try:
+            print(msg)
+        except UnicodeEncodeError:
+            # Windows cp949 fallback
+            sys.stdout.reconfigure(encoding="utf-8")
+            print(msg)
+
+        # 상세 데이터 (--detail)
+        if "--detail" in sys.argv:
+            print("\n── 전체 섹터 상세 ──")
+            for s in report.sectors:
+                total = s["inst_3d"] + s["foreign_3d"]
+                print(
+                    f"  {s['alias']:10s} | "
+                    f"기관3D {s['inst_3d']:+8.0f}억 ({s['inst_consecutive']:+d}일) | "
+                    f"외인3D {s['foreign_3d']:+8.0f}억 ({s['foreign_consecutive']:+d}일) | "
+                    f"합계 {total:+8.0f}억 | {s['agreement']}"
+                )

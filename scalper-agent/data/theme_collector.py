@@ -11,6 +11,10 @@ ranking_scanner 교차 분석에 테마 정보를 제공한다.
 사용:
   python -m data.theme_collector          # 테마 마스터 다운로드 + JSON 저장
   python -m data.theme_collector --show   # 현재 테마맵 출력
+
+NOTE: 테마 조회 API는 shared/theme_service.py 를 사용하세요.
+  from shared.theme_service import get_themes, group_by_theme
+이 모듈의 load_theme_map(), get_themes_for_code() 등은 하위호환용으로 유지.
 """
 
 import json
