@@ -509,10 +509,7 @@ class BodyHunterBot:
             logger.error(f"대시보드 생성 실패: {e}")
             await update.message.reply_text(f"\u274c 대시보드 실패: {str(e)[:200]}")
 
-    async def _job_portfolio_dashboard(self, context):
-        """보유종목 대시보드 (10:00/13:00/14:30) — Silent: 제거 (명령어로 대체)"""
-        # 대시보드는 /포트 명령어로 온디맨드 조회
-        pass
+    # _job_portfolio_dashboard 제거됨 — /포트 명령어(_cmd_portfolio_dashboard)로 온디맨드 조회
 
     # ── v5.0 수급 인텔리전스 ──
     async def _job_flow_report(self, context, round_num: int):
@@ -3037,12 +3034,10 @@ class BodyHunterBot:
         jq.run_daily(self.auto_trader.job_opening_range, time=kst_time(10, 5))     # G4 B10 유지
         logger.info("Opening Range 등록: 10:05 KST")
 
-        # ── 보유종목 대시보드 (장중 3회) + 알림 (60초) ──
-        jq.run_daily(self._job_portfolio_dashboard, time=kst_time(10, 0))
-        jq.run_daily(self._job_portfolio_dashboard, time=kst_time(13, 0))
-        jq.run_daily(self._job_portfolio_dashboard, time=kst_time(14, 30))
+        # ── 보유종목 알림 (60초 폴링, /포트 명령어로 온디맨드 조회 가능) ──
+        # 정기 대시보드는 /포트 명령어로 대체됨 (이전: 10:00/13:00/14:30 자동 → pass)
         jq.run_repeating(self._job_portfolio_alert, interval=60, first=90)
-        logger.info("보유종목 대시보드 등록: 10:00/13:00/14:30 KST + 알림 60초")
+        logger.info("보유종목 알림 등록: 60초 폴링 (대시보드는 /포트 명령어로 조회)")
 
         # ── 전쟁모드 장중 추적 (시작알림 + 30분 요약 + 급등/급락 알림) ──
         # jq.run_daily(self._job_war_startup, time=kst_time(9, 0))  # COO_MANAGED: G3

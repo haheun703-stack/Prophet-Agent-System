@@ -281,9 +281,14 @@ for code, v in uni.items():
         "오락문화","의료정밀","비금속","종이목재","운송장비","금속","금융지주","부동산"):
         unmapped.append((code, v["name"], ss, v["cap_억"]))
 
-# Save
-with open("data_store/universe.json", "w", encoding="utf-8") as f:
+# Save (atomic: tmp → replace로 쓰기 중 인터럽트 시 파일 손상 방지)
+from pathlib import Path
+_uni_path = Path("data_store/universe.json")
+_uni_tmp = _uni_path.with_suffix(".json.tmp")
+with open(_uni_tmp, "w", encoding="utf-8") as f:
     json.dump(uni, f, ensure_ascii=False, indent=2)
+import os
+os.replace(_uni_tmp, _uni_path)
 
 from collections import Counter
 sub_counts = Counter(uni[c].get("sub_sector", "미분류") for c in uni)

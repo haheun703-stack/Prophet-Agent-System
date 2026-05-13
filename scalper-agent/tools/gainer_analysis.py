@@ -286,9 +286,14 @@ for g in gainers:
     g['signal_count'] = len([s for s in signals if s not in ('전일양봉','전일음봉','배열혼조','STO상향','MACD양전환')])
     results.append(g)
 
-# Save
-with open('data_store/today_gainers_analyzed.json', 'w', encoding='utf-8') as f:
+# Save (atomic: tmp → replace로 쓰기 중 인터럽트 시 파일 손상 방지)
+from pathlib import Path as _Path
+import os as _os
+_ga_path = _Path('data_store/today_gainers_analyzed.json')
+_ga_tmp = _ga_path.with_suffix('.json.tmp')
+with open(_ga_tmp, 'w', encoding='utf-8') as f:
     json.dump(results, f, ensure_ascii=False, indent=2)
+_os.replace(_ga_tmp, _ga_path)
 
 # ═══ REPORT ═══
 print("=" * 100)

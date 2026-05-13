@@ -437,8 +437,11 @@ class AutoTrader:
                                 to_data = json.load(f)
                             for t in to_data.get("objects", []):
                                 to_map_picks[t.get("code", "")] = t
-                    except Exception:
-                        pass
+                    except Exception as _to_e:
+                        # trade_objects.json 로드 실패 시 기본 SL/TP가 적용됨 → 로깅 필수
+                        logger.warning(
+                            f"[auto_trader] trade_objects.json 로드 실패 → 기본 SL/TP 사용: {_to_e}"
+                        )
 
                     for p in picks_data["picks"]:
                         code, name = p["code"], p["name"]
@@ -468,8 +471,11 @@ class AutoTrader:
                             try:
                                 from data.macro_strategy import get_adjusted_sl
                                 _base_sl = get_adjusted_sl(0.035)
-                            except Exception:
-                                pass
+                            except Exception as _ms_e:
+                                # macro_strategy 실패 시 고정 SL(3.5%) 적용 → 변동성 미반영
+                                logger.warning(
+                                    f"[auto_trader] macro_strategy 실패 → 기본 SL 3.5% 적용: {_ms_e}"
+                                )
                             sl = int(entry * (1 - _base_sl))
                         if entry and not tp:
                             tp = int(entry * 1.05)   # 기본 +5%
