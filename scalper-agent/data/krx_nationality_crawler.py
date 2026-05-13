@@ -32,7 +32,6 @@ import sys
 import time
 import requests
 import pandas as pd
-from io import StringIO
 from pathlib import Path
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
