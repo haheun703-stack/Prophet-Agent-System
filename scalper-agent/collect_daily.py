@@ -23,7 +23,7 @@ import time
 import logging
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 ROOT = Path(__file__).resolve().parent
