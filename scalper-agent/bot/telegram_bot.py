@@ -668,6 +668,44 @@ class BodyHunterBot:
         except Exception as e:
             logger.error(f"[수급인텔] 전송 실패: {e}")
 
+    async def _job_macro_radar_alert(self, context):
+        """08:10 매크로 리스크 레이더 알림 — 시나리오+센티먼트 통합"""
+        now = datetime.now(KST)
+        if not is_trading_day(now.date()):
+            return
+        try:
+            from tools.macro_radar import format_macro_radar_alert
+            text = format_macro_radar_alert()
+            if text:
+                for chunk in _split_message(text):
+                    await context.bot.send_message(
+                        chat_id=self.chat_id, text=chunk
+                    )
+                logger.info("[매크로레이더] 알림 전송 완료")
+            else:
+                logger.info("[매크로레이더] 데이터 없음")
+        except Exception as e:
+            logger.error(f"[매크로레이더] 전송 실패: {e}")
+
+    async def _job_etf_flow_alert(self, context):
+        """08:12 ETF 섹터 자금흐름 알림 — 유입/유출 섹터"""
+        now = datetime.now(KST)
+        if not is_trading_day(now.date()):
+            return
+        try:
+            from tools.etf_flow_booster import format_etf_flow_alert
+            text = format_etf_flow_alert()
+            if text:
+                for chunk in _split_message(text):
+                    await context.bot.send_message(
+                        chat_id=self.chat_id, text=chunk
+                    )
+                logger.info("[ETF흐름] 알림 전송 완료")
+            else:
+                logger.info("[ETF흐름] 데이터 없음")
+        except Exception as e:
+            logger.error(f"[ETF흐름] 전송 실패: {e}")
+
     async def _job_portfolio_alert(self, context):
         """보유종목 긴급 알림 (60초) — 급락(-5%) 시에만 전송"""
         now = datetime.now(KST)
@@ -3068,6 +3106,8 @@ class BodyHunterBot:
         jq.run_daily(self._job_flow_report_4, time=kst_time(14, 30))  # 4차 수급
         jq.run_daily(self._job_bomb_buy_alert, time=kst_time(15, 0))  # bomb 매수 알림
         jq.run_daily(self._job_preclose_limitup_alert, time=kst_time(15, 5))  # 상한가 임박
+        jq.run_daily(self._job_macro_radar_alert, time=kst_time(8, 10))    # 매크로 레이더
+        jq.run_daily(self._job_etf_flow_alert, time=kst_time(8, 12))      # ETF 자금흐름
         jq.run_daily(self._job_stealth_flow_alert, time=kst_time(8, 15))  # 스텔스 수급
         jq.run_daily(self._job_premarket_risk_alert, time=kst_time(8, 20))  # 장전 리스크
         jq.run_daily(self._job_investor_flow_alert, time=kst_time(8, 25))  # 수급 인텔리전스

@@ -1112,6 +1112,33 @@ def _step5_cross_validate(
     except Exception as _sf_e:
         logger.warning(f"[step5] 스텔스수급 로드 실패(무시): {_sf_e}")
 
+    # ── ETF 자금흐름 부스터 맵 (섹터 유입/유출 → 종목 가감점) ──
+    _etf_flow_map = {}  # {code: score}
+    _etf_sector_map = {}  # {sector: SectorFlow}
+    try:
+        from tools.etf_flow_booster import load_etf_flow_booster
+        _etf_flow_map, _etf_sector_map = load_etf_flow_booster()
+        if _etf_flow_map:
+            logger.info(f"[step5] ETF흐름: {len(_etf_flow_map)}종목 {len(_etf_sector_map)}섹터")
+    except Exception as _ef_e:
+        logger.warning(f"[step5] ETF흐름 로드 실패(무시): {_ef_e}")
+
+    # ── 매크로 리스크 레이더 맵 (시나리오+센티먼트 → 섹터 가감점) ──
+    _macro_stock_map = {}  # {code: score}
+    _macro_mode = "NEUTRAL"
+    try:
+        from tools.macro_radar import scan_macro_radar, get_macro_score
+        _macro_state = scan_macro_radar()
+        _macro_mode = _macro_state.mode
+        # 종목별 스코어는 get_macro_score()로 호출
+        logger.info(
+            f"[step5] 매크로: mode={_macro_mode} "
+            f"시나리오={len(_macro_state.active_scenarios)} "
+            f"risk={_macro_state.risk_score:+.0f}"
+        )
+    except Exception as _mr_e:
+        logger.warning(f"[step5] 매크로레이더 로드 실패(무시): {_mr_e}")
+
     # ── 연기금 매수등급 맵 (pension_scan.json → S/A/B/C) ──
     _pension_grade_map = {}  # {code: "S"/"A"/"B"/"C"}
     try:
@@ -1776,6 +1803,25 @@ def _step5_cross_validate(
             sources.append(f"{_stl.tag}(+{stflow_sc:.0f})")
             cross += 1  # 멀티데이 수급 = 교차검증 1소스
 
+        # ── ETF 자금흐름 부스터 (섹터 유입 → 가점, 유출 → 감점) ──
+        etf_flow_sc = 0.0
+        if code in _etf_flow_map:
+            etf_flow_sc = _etf_flow_map[code]
+            if abs(etf_flow_sc) >= 3.0:
+                sources.append(f"ETF({etf_flow_sc:+.0f})")
+                if etf_flow_sc > 0:
+                    cross += 1  # 섹터 자금 유입 = 교차검증 1소스
+
+        # ── 매크로 리스크 레이더 (시나리오 기반 섹터 가감점) ──
+        macro_sc = 0.0
+        macro_tag = ""
+        try:
+            macro_sc, macro_tag = get_macro_score(code)
+        except Exception:
+            pass
+        if abs(macro_sc) >= 2.0:
+            sources.append(f"{macro_tag}({macro_sc:+.0f})" if macro_tag else f"MACRO({macro_sc:+.0f})")
+
         # ── 연기금 매수등급 보너스 (백테스트: S급 D+5 +1.09% / A급 +0.42%) ──
         pension_sc = 0.0
         _pg = _pension_grade_map.get(code, "")
@@ -1833,6 +1879,8 @@ def _step5_cross_validate(
                      + premarket_pen  # 장전 리스크 감점
                      + invflow_sc    # 투자자 수급 인텔리전스
                      + stflow_sc     # 스텔스 수급 (매집+다이버전스+신용바닥)
+                     + etf_flow_sc   # ETF 자금흐름 부스터
+                     + macro_sc      # 매크로 리스크 레이더
                      + pension_sc     # 연기금 매수등급 보너스
                      + ewy_sc)        # EWY 비중 변동 보너스
 
@@ -1850,6 +1898,16 @@ def _step5_cross_validate(
             # 4/26 학습: US_AGG 40건 D+1 avg -0.44% → 가산 축소 (x1.1→x1.05)
             raw_total *= 1.05
             sources.append("US_AGG(x1.05)")
+
+        # ── 매크로 모드 보정 ──────────────────────
+        # RISK_OFF: 전체 점수 10% 감점 (글로벌 리스크 반영)
+        # RISK_ON: 전체 점수 5% 가점
+        if _macro_mode == "RISK_OFF" and raw_total > 0:
+            raw_total *= 0.90
+            sources.append("MACRO_ROFF(x0.9)")
+        elif _macro_mode == "RISK_ON" and raw_total > 0:
+            raw_total *= 1.05
+            sources.append("MACRO_RON(x1.05)")
 
         # ── 브레인 학습 가중치 적용 ──────────────
         brain_adj = _apply_brain_adjustment(
