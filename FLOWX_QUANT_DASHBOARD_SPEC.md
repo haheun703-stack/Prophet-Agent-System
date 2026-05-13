@@ -120,8 +120,9 @@
    기존 quant_sector_flow(23개 KRX 섹터)의 세분화 버전.
    "전기전자"가 아닌 "MLCC", "2차전지", "HBM" 등 실제 세트매매 단위로 분석.
    한 종목이 여러 테마에 속하므로 교차 집계됨.
-5. 소스 JSON: `scalper-agent/data_store/theme_flow.json`
-6. 생성 함수: `sector_institution_flow.py → analyze_theme_flow()`
+5. SQL 파일: `sql/quant_theme_flow_migration.sql`
+6. 소스 JSON: `scalper-agent/data_store/theme_flow.json`
+7. 생성 함수: `sector_institution_flow.py → analyze_theme_flow()`
 
 ---
 
@@ -141,8 +142,9 @@
 4. 데이터 설명: KIS 302개 테마 기준 HOT/COLD 모멘텀.
    기존 quant_sector_momentum(23개 KRX 섹터)의 세분화 버전.
    Naver Finance API로 전체 종목 등락률을 조회한 뒤 테마별 평균 수익률·브레드쓰·가속도 계산.
-5. 소스 JSON: `scalper-agent/data_store/theme_momentum.json`
-6. 생성 함수: `sector_momentum.py → analyze_theme_momentum()`
+5. SQL 파일: `sql/quant_theme_momentum_migration.sql`
+6. 소스 JSON: `scalper-agent/data_store/theme_momentum.json`
+7. 생성 함수: `sector_momentum.py → analyze_theme_momentum()`
 
 ---
 
