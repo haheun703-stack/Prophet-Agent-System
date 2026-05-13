@@ -1663,6 +1663,12 @@ class TradingCOO:
                 self.bot._job_sector_flow(context),
             ))
 
+        # C20b: 테마별 수급 + 모멘텀 (302개 KIS 테마)
+        stage3_jobs.append((
+            "C20b_theme_flow_momentum",
+            self._job_theme_flow_momentum(context),
+        ))
+
         # C21: ETF 투자자별 수급 분석 (TIER2 Phase 2)
         if self.bot:
             stage3_jobs.append((
@@ -1883,8 +1889,32 @@ class TradingCOO:
     # ─────────────────────────────────────────────
     # C22: FLOWX 퀀트 대시보드 통합 업로드
     # ─────────────────────────────────────────────
+    async def _job_theme_flow_momentum(self, context=None) -> dict:
+        """302개 KIS 테마별 수급 + 모멘텀 분석 → JSON 저장.
+
+        C20b: theme_flow.json + theme_momentum.json 생성.
+        C22 quant_dashboard_upload 에서 Supabase로 업로드.
+        """
+        results = {}
+        try:
+            from data.sector_institution_flow import analyze_theme_flow
+            await asyncio.to_thread(analyze_theme_flow)
+            results["theme_flow"] = "OK"
+        except Exception as e:
+            logger.warning(f"[C20b] theme_flow 실패: {e}")
+            results["theme_flow"] = f"ERROR: {e}"
+        try:
+            from data.sector_momentum import analyze_theme_momentum
+            await asyncio.to_thread(analyze_theme_momentum)
+            results["theme_momentum"] = "OK"
+        except Exception as e:
+            logger.warning(f"[C20b] theme_momentum 실패: {e}")
+            results["theme_momentum"] = f"ERROR: {e}"
+        logger.info(f"[C20b] 테마 수급/모멘텀 완료: {results}")
+        return results
+
     async def _job_quant_dashboard_upload(self, context=None) -> dict:
-        """5개 퀀트 대시보드 테이블 → Supabase 업로드"""
+        """7개 퀀트 대시보드 테이블 → Supabase 업로드"""
         try:
             from data.upload_quant_dashboard import run_quant_dashboard_upload
             results = run_quant_dashboard_upload()
