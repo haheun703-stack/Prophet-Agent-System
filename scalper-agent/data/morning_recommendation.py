@@ -1077,6 +1077,31 @@ def _step5_cross_validate(
     except Exception as _fd_e:
         logger.warning(f"[step5] 외인던지기 맵 로드 실패(무시): {_fd_e}")
 
+    # ── 장전 리스크 블랙리스트 맵 (DART 공시 + 뉴스 센티먼트 + 속보) ──
+    _premarket_risk_map = {}
+    try:
+        from tools.premarket_risk_scanner import scan_premarket_risk
+        _premarket_risk_map = scan_premarket_risk()
+        if _premarket_risk_map:
+            logger.info(f"[step5] 장전리스크: {len(_premarket_risk_map)}종목")
+    except Exception as _pm_e:
+        logger.warning(f"[step5] 장전리스크 로드 실패(무시): {_pm_e}")
+
+    # ── 투자자 수급 인텔리전스 맵 (외인/기관 TOP 매수/매도) ──
+    _investor_flow_map = {}  # {code: FlowScore}
+    _investor_flow_mode = "NEUTRAL"
+    try:
+        from tools.investor_flow_intel import load_investor_flow_intel
+        _investor_flow_map, _inv_mkt = load_investor_flow_intel()
+        _investor_flow_mode = _inv_mkt.mode
+        if _investor_flow_map:
+            logger.info(
+                f"[step5] 수급인텔: {len(_investor_flow_map)}종목 "
+                f"mode={_investor_flow_mode} 외인={_inv_mkt.foreign_total:+,.0f}억"
+            )
+    except Exception as _if_e:
+        logger.warning(f"[step5] 수급인텔 로드 실패(무시): {_if_e}")
+
     # ── 연기금 매수등급 맵 (pension_scan.json → S/A/B/C) ──
     _pension_grade_map = {}  # {code: "S"/"A"/"B"/"C"}
     try:
@@ -1573,6 +1598,10 @@ def _step5_cross_validate(
                 # 숏빌딩 + HIGH 잔고 → Hard Filter (추천 제외)
                 logger.info(f"  [SHORT] {name}: 숏빌딩+HIGH → 제외")
                 continue
+            # ── 장전 리스크 Hard Exclude (상폐 등) ──
+            if code in _premarket_risk_map and _premarket_risk_map[code].hard_exclude:
+                logger.info(f"  [장전리스크] {name}: {_premarket_risk_map[code].tag} → 제외")
+                continue
             short_sc, short_detail = get_short_score(code, name)
             if abs(short_sc) >= 1.0:
                 sources.append(f"short:{short_detail}")
@@ -1711,6 +1740,24 @@ def _step5_cross_validate(
             if _fd["tag"] == "THEME_OVERHEAT":
                 cross = 0  # 과열 종목은 교차검증 무효화
 
+        # ── 장전 리스크 감점 (DART공시/뉴스/속보) ──
+        premarket_pen = 0.0
+        if code in _premarket_risk_map:
+            _pm = _premarket_risk_map[code]
+            if not _pm.hard_exclude:
+                premarket_pen = _pm.penalty
+                sources.append(f"{_pm.tag}({premarket_pen:+.0f})")
+
+        # ── 투자자 수급 인텔리전스 (외인/기관 TOP 매수/매도) ──
+        invflow_sc = 0.0
+        if code in _investor_flow_map:
+            _ifl = _investor_flow_map[code]
+            invflow_sc = _ifl.score
+            if abs(invflow_sc) >= 1.0:
+                sources.append(f"{_ifl.tag}({invflow_sc:+.0f})")
+                if invflow_sc > 0:
+                    cross += 1  # 외인/기관 매수 = 교차검증 1소스
+
         # ── 연기금 매수등급 보너스 (백테스트: S급 D+5 +1.09% / A급 +0.42%) ──
         pension_sc = 0.0
         _pg = _pension_grade_map.get(code, "")
@@ -1765,6 +1812,8 @@ def _step5_cross_validate(
                      + surge_sc       # 연속급등 보너스
                      + fi_sc          # 수급 강도 보너스
                      + fdump_pen      # 외인 던지기 감점
+                     + premarket_pen  # 장전 리스크 감점
+                     + invflow_sc    # 투자자 수급 인텔리전스
                      + pension_sc     # 연기금 매수등급 보너스
                      + ewy_sc)        # EWY 비중 변동 보너스
 
