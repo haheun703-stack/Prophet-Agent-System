@@ -43,7 +43,7 @@ def _check_already_running() -> bool:
     PID_FILE.parent.mkdir(exist_ok=True)
     if PID_FILE.exists():
         try:
-            old_pid = int(PID_FILE.read_text().strip())
+            old_pid = int(PID_FILE.read_text(encoding="utf-8").strip())
             # tasklist로 해당 PID가 python 프로세스인지 확인
             result = subprocess.run(
                 ["tasklist", "/FI", f"PID eq {old_pid}", "/FO", "CSV", "/NH"],

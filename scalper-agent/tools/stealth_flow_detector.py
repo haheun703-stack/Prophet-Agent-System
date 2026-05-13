@@ -90,7 +90,7 @@ def _load_csv(ticker: str, days: int = LOOKBACK_DAYS) -> List[dict]:
     if not path.exists():
         return []
     try:
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             rows = list(csv.DictReader(f))
         return rows[-days:] if len(rows) >= days else rows
     except Exception:

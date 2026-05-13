@@ -97,7 +97,7 @@ def _load_cookies():
     """저장된 KRX 쿠키 로드 → requests용 dict"""
     if COOKIE_FILE.exists():
         try:
-            with open(COOKIE_FILE, "r") as f:
+            with open(COOKIE_FILE, "r", encoding="utf-8") as f:
                 cookies = json.load(f)
             if cookies:
                 return cookies

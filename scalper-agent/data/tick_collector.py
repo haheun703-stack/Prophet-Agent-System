@@ -225,7 +225,7 @@ class TickCollector:
             csvs = list(save_dir.glob("*.csv"))
             total_rows = 0
             for csv in csvs:
-                with open(csv, "r") as f:
+                with open(csv, "r", encoding="utf-8") as f:
                     total_rows += sum(1 for _ in f) - 1  # header 제외
             total_mb = sum(f.stat().st_size for f in csvs) / 1024 / 1024
             logger.info(
