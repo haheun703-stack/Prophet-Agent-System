@@ -19,7 +19,7 @@ ETF 자금흐름 부스터 (ETF Flow Sector Booster)
 import json
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Tuple
