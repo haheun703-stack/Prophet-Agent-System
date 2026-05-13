@@ -21,11 +21,10 @@ import json
 import logging
 import sys
 import time
-from collections import defaultdict
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime
 from dataclasses import dataclass, field, asdict
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 # shared 모듈 경로
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))

@@ -23,7 +23,7 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 # shared 모듈 경로
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
