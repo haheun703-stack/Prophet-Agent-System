@@ -2581,6 +2581,13 @@ class BodyHunterBot:
     #  봇 빌드 & 실행
     # ═══════════════════════════════════════
 
+    async def _on_shutdown(self, app: Application):
+        """봇 종료 시 WebSocket 정리 — KIS 좀비 세션 방지 (H4 fix)."""
+        try:
+            await self.auto_trader.stop_websocket_monitor()
+        except Exception as e:
+            logger.warning(f"WebSocket 정리 실패 (무시): {e}")
+
     async def _on_startup(self, app: Application):
         """봇 시작 시 자동매매 자동 시작 + 키보드 전송"""
         logger.info("봇 초기화 완료 - 자동매매 자동 시작")
@@ -2656,6 +2663,8 @@ class BodyHunterBot:
 
         # 시작 시 키보드 전송
         app.post_init = self._on_startup
+        # H4 fix: 종료 시 WebSocket 정리
+        app.post_shutdown = self._on_shutdown
 
         # /start - 인증 없이 (최초 접속용)
         app.add_handler(CommandHandler("start", self.cmd_start))

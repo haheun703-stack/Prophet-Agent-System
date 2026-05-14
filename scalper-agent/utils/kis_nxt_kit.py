@@ -82,7 +82,8 @@ def _get_access_token() -> Optional[str]:
         token = data.get("access_token")
         expires_in = int(data.get("expires_in", 86400))
         if not token:
-            logger.warning(f"[NxtKit] 토큰 발급 응답 이상: {data}")
+            # M8 fix: 응답 body 전체 로그 X (access_token 노출 위험)
+            logger.warning(f"[NxtKit] 토큰 발급 실패: {data.get('error_description') or data.get('msg1') or '?'}")
             return None
 
         _TOKEN_CACHE.parent.mkdir(parents=True, exist_ok=True)
@@ -90,6 +91,11 @@ def _get_access_token() -> Optional[str]:
             "access_token": token,
             "expires_at": time.time() + expires_in - 60,
         }))
+        # H2 fix: 토큰 파일 0o600 (소유자 읽기만)
+        try:
+            os.chmod(_TOKEN_CACHE, 0o600)
+        except Exception:
+            pass
         return token
     except Exception as e:
         logger.warning(f"[NxtKit] 토큰 발급 실패: {e}")
@@ -207,7 +213,8 @@ def get_approval_key(force_refresh: bool = False) -> Optional[str]:
         data = r.json()
         key = data.get("approval_key")
         if not key:
-            logger.warning(f"[NxtKit] approval_key 응답 이상: {data}")
+            # M8 fix: 응답 body 전체 로그 X
+            logger.warning(f"[NxtKit] approval_key 실패: {data.get('error_description') or data.get('msg1') or '?'}")
             return None
 
         _APPROVAL_CACHE.parent.mkdir(parents=True, exist_ok=True)
@@ -215,6 +222,11 @@ def get_approval_key(force_refresh: bool = False) -> Optional[str]:
             "approval_key": key,
             "expires_at": time.time() + 86400 - 60,  # 24h - 1min
         }))
+        # H2 fix: approval_key 파일 0o600 (소유자 읽기만)
+        try:
+            os.chmod(_APPROVAL_CACHE, 0o600)
+        except Exception:
+            pass
         logger.info("[NxtKit] approval_key 발급/갱신 완료")
         return key
     except Exception as e:

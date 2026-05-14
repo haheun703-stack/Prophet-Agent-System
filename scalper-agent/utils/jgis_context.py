@@ -12,7 +12,7 @@
 2. watchlist 확장 — ETF 수혜 섹터 종목 자동 추가
 3. morning_state 확장 — 06:00 모닝 컨텍스트 주입
 
-캐시: 1시간 (운영 중 봇이 같은 데이터 N번 호출 방지)
+캐시: 5분 (장중 빠른 변화 반영 + 같은 데이터 N번 호출 방지)
 """
 import logging
 import os
@@ -37,6 +37,9 @@ def _cache_get(key: str):
     entry = _CACHE.get(key)
     if entry and entry[1] > time.time():
         return entry[0]
+    # L7 fix: expired 항목 자동 정리 (메모리 누수 방지)
+    if entry:
+        _CACHE.pop(key, None)
     return None
 
 
@@ -308,10 +311,25 @@ def check_entry_blocked(code: str, sector: Optional[str] = None,
             warnings.append(f"{sector} ETF {etf_judgment}")
 
     # 6) 그룹주 ETF 매도 → 그룹사 회피 (삼성/현대차)
-    # code 매핑: 005930(삼성전자), 010140(삼성중공업), 207940(삼성바이오), 005380(현대차), 012330(현대모비스) 등
-    SAMSUNG_CODES = {"005930", "009150", "006400", "028260", "032830",
-                     "000810", "018260", "207940", "010140", "207940"}
-    HYUNDAI_CODES = {"005380", "012330", "086280", "001120", "011210"}
+    # M5 fix: 중복 제거 + 각 코드 회사명 주석
+    SAMSUNG_CODES = {
+        "005930",  # 삼성전자
+        "009150",  # 삼성전기
+        "006400",  # 삼성SDI
+        "028260",  # 삼성물산
+        "032830",  # 삼성생명
+        "000810",  # 삼성화재
+        "018260",  # 삼성에스디에스
+        "207940",  # 삼성바이오로직스
+        "010140",  # 삼성중공업
+    }
+    HYUNDAI_CODES = {
+        "005380",  # 현대차
+        "012330",  # 현대모비스
+        "086280",  # 현대글로비스
+        "001120",  # LX인터내셔널 (현대 아닌듯 — 점검 필요)
+        "011210",  # 현대위아
+    }
     group_judgment = None
     group_label = None
     if code in SAMSUNG_CODES:
@@ -320,10 +338,10 @@ def check_entry_blocked(code: str, sector: Optional[str] = None,
     elif code in HYUNDAI_CODES:
         group_judgment = get_etf_sector_judgment("현대차그룹")
         group_label = "현대차그룹"
-    if group_judgment == "쌍끌이매도":
-        reasons.append(f"{group_label} ETF 쌍끌이매도")
-    elif group_judgment and "매도" in str(group_judgment):
-        warnings.append(f"{group_label} ETF {group_judgment}")
+    # M11 fix: 그룹 ETF 매도 = 개별 종목 차단은 너무 광범위 (false positive 위험)
+    # 모두 warning으로 격하 — 분석가 판단 + size_mult x0.7 보수적 진입
+    if group_judgment and "매도" in str(group_judgment):
+        warnings.append(f"{group_label} ETF {group_judgment} (보수적 진입)")
 
     return {
         "blocked": len(reasons) > 0,

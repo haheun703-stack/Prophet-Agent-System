@@ -27,6 +27,7 @@ JobQueue (python-telegram-bot)로 스케줄:
 import asyncio
 import json
 import logging
+import time
 from datetime import datetime, date
 from data.trading_calendar import is_trading_day, next_trading_day
 from pathlib import Path
@@ -275,9 +276,13 @@ class AutoTrader:
                     done = watch["split_done"]
                     total = watch.get("split_count", 3)
                     logger.info(f"분할매수 체결: {name} {done}/{total}차")
-                    # 전부 완료 → 감시 제거
+                    # 전부 완료 → 감시 제거 + WebSocket 구독 자동 해제 (H1 fix)
                     if done >= total:
                         self._entry_watch.pop(code, None)
+                        try:
+                            asyncio.create_task(self._unsubscribe_entry_watch(code))
+                        except Exception:
+                            pass
 
                 # 포지션 최초 1회만 생성 (분할매수 시 덮어쓰기 방지)
                 if code not in self._positions:

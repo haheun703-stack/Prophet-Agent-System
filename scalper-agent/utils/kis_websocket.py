@@ -67,19 +67,35 @@ class KISWebSocketClient:
         self._subs: Dict[Tuple[str, str], TickCallback] = {}  # (code, tr_id) -> callback
         self._running = False
         self._approval_key: Optional[str] = None
+        # M12 fix: send 동시 호출 race condition 방지 (websockets 1 connection 동시 send hang)
+        self._send_lock = asyncio.Lock()
 
     async def connect(self):
-        """WebSocket 연결 + approval_key 발급."""
+        """WebSocket 연결 + approval_key 발급 (M3 fix: 실패 시 force_refresh 재시도)."""
         self._approval_key = get_approval_key()
         if not self._approval_key:
             raise RuntimeError("approval_key 발급 실패")
-        self._ws = await websockets.connect(
-            KIS_WS_URI,
-            ping_interval=30,
-            ping_timeout=10,
-            close_timeout=10,
-        )
-        logger.info(f"[WS] 연결 성공: {KIS_WS_URI}")
+        try:
+            self._ws = await websockets.connect(
+                KIS_WS_URI,
+                ping_interval=30,
+                ping_timeout=10,
+                close_timeout=10,
+            )
+            logger.info(f"[WS] 연결 성공: {KIS_WS_URI}")
+        except Exception as e:
+            # 자정 넘긴 stale key 가능성 → 강제 재발급 후 재시도 1회
+            logger.warning(f"[WS] 연결 실패 ({e}) — approval_key 강제 갱신 후 재시도")
+            self._approval_key = get_approval_key(force_refresh=True)
+            if not self._approval_key:
+                raise
+            self._ws = await websockets.connect(
+                KIS_WS_URI,
+                ping_interval=30,
+                ping_timeout=10,
+                close_timeout=10,
+            )
+            logger.info(f"[WS] 연결 성공 (재시도): {KIS_WS_URI}")
 
     async def _send_request(self, code: str, tr_id: str, action: str = "1"):
         """KIS 구독/해제 요청.
@@ -102,7 +118,9 @@ class KISWebSocketClient:
                 }
             },
         }
-        await self._ws.send(json.dumps(req))
+        # M12 fix: 동시 send 직렬화
+        async with self._send_lock:
+            await self._ws.send(json.dumps(req))
 
     async def subscribe(self, codes: List[str], on_tick: TickCallback,
                         tr_id: str = "H0STCNT0"):
@@ -148,6 +166,9 @@ class KISWebSocketClient:
 
     async def _handle_message(self, data: str):
         """수신 메시지 라우팅."""
+        # H3 fix: 빈 메시지 / ping-pong 가드
+        if not data:
+            return
         # KIS 응답 형식:
         # - 시스템 메시지: JSON ({"header":...,"body":...})
         # - 체결 데이터: "0|TR_ID|건수|payload" 또는 "1|TR_ID|건수|payload(암호화)"
