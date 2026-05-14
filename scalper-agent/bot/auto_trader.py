@@ -945,6 +945,29 @@ class AutoTrader:
             except Exception as e:
                 logger.warning(f"진입필터 오류 {code}: {e}")
 
+            # 정보봇 컨텍스트 entry_filter (auto_trade=true 시만)
+            # 외국인 streak / 섹터 매크로 / 프로그램매매 비대칭 통합 차단 판단
+            if self._ws_enabled:
+                try:
+                    from utils.jgis_context import check_entry_blocked
+                    sector = c.get("sector", "")
+                    market = c.get("market", "")  # 'KOSPI' or 'KOSDAQ'
+                    jgis_check = await asyncio.to_thread(
+                        check_entry_blocked, code, sector, market
+                    )
+                    if jgis_check["blocked"]:
+                        skipped += 1
+                        reasons = " / ".join(jgis_check["reasons"])
+                        await _send(f"⛔ 정보봇 차단: {c['name']} - {reasons}")
+                        continue
+                    if jgis_check["warnings"]:
+                        # 경고만 — 보수적 모드 (size_mult 70%로 축소)
+                        size_mult *= 0.7
+                        warns = " / ".join(jgis_check["warnings"])
+                        await _send(f"⚠️ 정보봇 경고: {c['name']} [매수비중 70%] - {warns}")
+                except Exception as e:
+                    logger.warning(f"[JGIS] entry_filter 오류 {code}: {e}")
+
             actual_amount = int(buy_amount * size_mult)
 
             # 분할매수 설정 (config split_count, 기본 3)
