@@ -1357,6 +1357,16 @@ class TradingCOO:
         else:
             logger.warning("[COO] bot 미연결 — C7 스킵")
 
+        # ── 5.5) C7L limit_up_engine — 다음날 15:05 프리클로즈 알림용 데이터 갱신 ──
+        r = await self.run_job_safe_async(
+            "C7L_limit_up_engine",
+            self._job_limit_up_engine(context),
+            timeout=600,
+        )
+        results.append(r)
+        if not r.success:
+            logger.warning("[COO] C7L 실패 — 다음날 15:05 프리클로즈 알림 영향 가능")
+
         # ── 6) g6_mode 최종 결정 ──
         if c3_ok and c7_ok:
             self._g6_mode = "NORMAL"
@@ -2170,6 +2180,35 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[C5M] 매크로 기준선 수집 실패 (무시): {e}")
             return {"macro_baseline": f"ERROR: {e}"}
+
+    # ─────────────────────────────────────────────
+    # C7L: limit_up_engine 일일 스캔 (매일 G6에서 자동 실행)
+    # ─────────────────────────────────────────────
+    async def _job_limit_up_engine(self, context=None) -> dict:
+        """C7L: 상한가 눌림목 엔진 일일 스캔 — 다음날 15:05 프리클로즈 알림용 데이터 갱신.
+
+        Why: 5/14에 발견 — limit_up_engine 자동 실행 메커니즘 부재. 매일 15:05
+        프리클로즈 알림이 limit_up/ 디렉토리의 surge_universe/watchlist/history
+        파일을 읽어 종목 추천하는데, 그 데이터를 만드는 스크립트가 cron/COO 어디에도
+        등록 안 되어있어서 5/12~5/14 동안 디렉토리 자체가 빈 상태였음.
+
+        G6 데이터 수집 직후 1회 실행하여 다음날 15:05 알림이 정상 동작하도록 보장.
+        """
+        try:
+            from data.limit_up_engine import run_daily
+
+            result = await asyncio.to_thread(run_daily, True)
+            new_signals = result.get("new_signals", 0) if isinstance(result, dict) else 0
+            triggered = result.get("triggered", 0) if isinstance(result, dict) else 0
+            logger.info(
+                f"[C7L] limit_up_engine 완료 — "
+                f"신규 시그널 {new_signals}건, 트리거 {triggered}건"
+            )
+            return {"limit_up_engine": "OK", "new_signals": new_signals,
+                    "triggered": triggered}
+        except Exception as e:
+            logger.warning(f"[C7L] limit_up_engine 실패 (다음날 15:05 알림 영향 가능): {e}")
+            return {"limit_up_engine": f"ERROR: {e}"}
 
     # ─────────────────────────────────────────────
     # C23: TRIX 다이버전스 사전 스캔
