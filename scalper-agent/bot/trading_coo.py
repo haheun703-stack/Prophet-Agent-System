@@ -1367,6 +1367,16 @@ class TradingCOO:
         if not r.success:
             logger.warning("[COO] C7L 실패 — 다음날 15:05 프리클로즈 알림 영향 가능")
 
+        # ── 5.6) C7T tipping_scan — 수급 임계점 페이지 데이터 갱신 ──
+        r = await self.run_job_safe_async(
+            "C7T_tipping_scan",
+            self._job_tipping_scan(context),
+            timeout=300,
+        )
+        results.append(r)
+        if not r.success:
+            logger.warning("[COO] C7T 실패 — FLOWX 수급 임계점 페이지 영향 가능")
+
         # ── 6) g6_mode 최종 결정 ──
         if c3_ok and c7_ok:
             self._g6_mode = "NORMAL"
@@ -2185,14 +2195,15 @@ class TradingCOO:
     # C7L: limit_up_engine 일일 스캔 (매일 G6에서 자동 실행)
     # ─────────────────────────────────────────────
     async def _job_limit_up_engine(self, context=None) -> dict:
-        """C7L: 상한가 눌림목 엔진 일일 스캔 — 다음날 15:05 프리클로즈 알림용 데이터 갱신.
+        """C7L: 상한가 눌림목 엔진 일일 스캔 + Supabase 업로드.
 
-        Why: 5/14에 발견 — limit_up_engine 자동 실행 메커니즘 부재. 매일 15:05
-        프리클로즈 알림이 limit_up/ 디렉토리의 surge_universe/watchlist/history
-        파일을 읽어 종목 추천하는데, 그 데이터를 만드는 스크립트가 cron/COO 어디에도
-        등록 안 되어있어서 5/12~5/14 동안 디렉토리 자체가 빈 상태였음.
+        Why: 5/14에 발견 — limit_up_engine 자동 실행 메커니즘 부재.
+        + 추가 발견 — engine 실행 후 supabase 업로드까지 자동 호출되지 않음.
+        FLOWX 상한가 엔진 페이지가 5/13 데이터 그대로 보이는 원인.
 
-        G6 데이터 수집 직후 1회 실행하여 다음날 15:05 알림이 정상 동작하도록 보장.
+        Flow:
+          1. limit_up_engine.run_daily() → signals.json 생성
+          2. upload_limit_up.upload_all() → Supabase 업로드 (signals + performance)
         """
         try:
             from data.limit_up_engine import run_daily
@@ -2204,11 +2215,48 @@ class TradingCOO:
                 f"[C7L] limit_up_engine 완료 — "
                 f"신규 시그널 {new_signals}건, 트리거 {triggered}건"
             )
+
+            # Supabase 업로드 (FLOWX 상한가 엔진 페이지)
+            try:
+                from data.upload_limit_up import upload_all
+                upload_result = await asyncio.to_thread(upload_all)
+                sig_ok = upload_result.get("signals", False)
+                perf_ok = upload_result.get("performance", False)
+                logger.info(f"[C7L] Supabase 업로드 — 시그널 {'OK' if sig_ok else 'FAIL'} / 성적 {'OK' if perf_ok else 'FAIL'}")
+            except Exception as ue:
+                logger.warning(f"[C7L] Supabase 업로드 실패 (무시): {ue}")
+
             return {"limit_up_engine": "OK", "new_signals": new_signals,
                     "triggered": triggered}
         except Exception as e:
             logger.warning(f"[C7L] limit_up_engine 실패 (다음날 15:05 알림 영향 가능): {e}")
             return {"limit_up_engine": f"ERROR: {e}"}
+
+    async def _job_tipping_scan(self, context=None) -> dict:
+        """C7T: 수급 임계점 스캔 + Supabase 업로드 (FLOWX 수급 임계점 페이지).
+
+        Why: 5/14 발견 — collect_all step5f가 매일 돌긴 하나 tipping_scan 데이터가
+        5/13 그대로 보이는 문제. 17:45 백업 + G6 C7L 흐름에 명시 추가.
+        """
+        try:
+            from data.tipping_point_scanner import scan_tipping_point
+            from data.upload_tipping_scan import upload_tipping_scan
+
+            scan = await asyncio.to_thread(scan_tipping_point)
+            summary = scan.get("summary", {})
+            coiled = summary.get("coiled_count", 0)
+            warming = summary.get("warming_count", 0)
+            launched = summary.get("launched_count", 0)
+            logger.info(f"[C7T] tipping_scan — 코일 {coiled} / 점화 {warming} / 이륙 {launched}")
+
+            ok = await asyncio.to_thread(upload_tipping_scan, scan)
+            logger.info(f"[C7T] Supabase 업로드: {'OK' if ok else 'FAIL'}")
+
+            return {"tipping_scan": "OK" if ok else "UPLOAD_FAIL",
+                    "coiled": coiled, "warming": warming, "launched": launched}
+        except Exception as e:
+            logger.warning(f"[C7T] tipping_scan 실패 (무시): {e}")
+            return {"tipping_scan": f"ERROR: {e}"}
 
     # ─────────────────────────────────────────────
     # C23: TRIX 다이버전스 사전 스캔
@@ -4023,6 +4071,9 @@ class TradingCOO:
             ("C40_inst_accumulation_backup", self._job_inst_accumulation(context)),
             ("C41_pension_scan_backup", self._job_pension_scan(context)),
             ("C42_pension_ownership_backup", self._job_pension_ownership(context)),
+            # ↓ 5/14 추가: 상한가 엔진 + 수급 임계점도 백업 안전망에 포함
+            ("C7L_limit_up_backup", self._job_limit_up_engine(context)),
+            ("C7T_tipping_scan_backup", self._job_tipping_scan(context)),
         ]
 
         results = await self.run_parallel_async(stage4_jobs, timeout_per_job=300)
