@@ -4075,6 +4075,41 @@ class TradingCOO:
             return {"jgis_morning_context": f"ERROR: {e}"}
 
     # ═════════════════════════════════════════════
+    # JGIS ETF watchlist (16:35 매일 — 정보봇 16:28 ETF 스캔 7분 후)
+    # ═════════════════════════════════════════════
+    async def _job_jgis_etf_watchlist(self, context=None) -> dict:
+        """정보봇 etf_investor_summary 조회 → 내일 수혜 후보 jgis_etf_watchlist.json 저장.
+
+        Why: 지시서 [정보봇→단타봇] ETF 수급 100개 7-1.
+        정보봇 16:28 ETF 스캔 완료 후 7분 마진 두고 16:35 호출.
+        100개 ETF 외인/기관 흐름 → 다음날 수혜 종목 5~10건 자동 추출.
+        시장 방향이 '강한 하락'이거나 수혜 후보 있으면 텔레그램 알림.
+        """
+        try:
+            from utils.jgis_context import (
+                refresh_etf_watchlist, format_etf_watchlist_telegram,
+            )
+            data = await asyncio.to_thread(refresh_etf_watchlist)
+            direction = data.get("direction", "?")
+            benef_n = data.get("beneficiaries_count", 0)
+
+            # 알림 조건: 강한 하락 / 또는 수혜 후보 있음
+            if (direction in ("강한 하락", "하락") or benef_n > 0) and \
+                    self.bot and getattr(self.bot, "chat_id", None) and context:
+                msg = format_etf_watchlist_telegram(data)
+                try:
+                    await context.bot.send_message(chat_id=self.bot.chat_id, text=msg)
+                except Exception as te:
+                    logger.debug(f"[JGIS-ETF] 텔레그램 전송 실패: {te}")
+
+            logger.info(f"[JGIS-ETF] watchlist 완료 — direction={direction} / 수혜 {benef_n}종목")
+            return {"jgis_etf_watchlist": "OK", "direction": direction,
+                    "beneficiaries_count": benef_n}
+        except Exception as e:
+            logger.warning(f"[JGIS-ETF] watchlist 실패 (무시): {e}")
+            return {"jgis_etf_watchlist": f"ERROR: {e}"}
+
+    # ═════════════════════════════════════════════
     # G7 Stage 4 백업 (17:45 자동 실행) — 5/14 fix
     # ═════════════════════════════════════════════
     async def run_g7_stage4_backup(self, context=None):
@@ -4166,6 +4201,10 @@ class TradingCOO:
         # ── G7 EVENING_BRAIN (16:30) ──
         jq.run_daily(self.run_g7, time=kst_time(16, 30))
         logger.info("[COO] G7 EVENING_BRAIN 등록: 16:30 KST")
+
+        # ── JGIS ETF watchlist (16:35 — 정보봇 16:28 ETF 스캔 7분 후) ──
+        jq.run_daily(self._job_jgis_etf_watchlist, time=kst_time(16, 35))
+        logger.info("[COO] JGIS ETF watchlist 등록: 16:35 KST")
 
         # ── G7 Stage 4 백업 (17:45) — G7 중단 시 NXT/수급 9개 업로드 복구 ──
         jq.run_daily(self.run_g7_stage4_backup, time=kst_time(17, 45))

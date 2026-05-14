@@ -290,11 +290,122 @@ def check_entry_blocked(code: str, sector: Optional[str] = None,
             elif market == "KOSPI" and asy == "KOSDAQ_FAVOR":
                 warnings.append(f"프로그램 KOSDAQ 우세")
 
+    # 4) ETF 시장 방향성 — '강한 하락' 시 매수 차단 (5/15 신규 100개 ETF)
+    etf_summary = get_etf_summary()
+    if etf_summary:
+        direction = etf_summary.get("direction", "")
+        if direction in ("강한 하락",):
+            reasons.append(f"ETF 시장 방향 '{direction}'")
+        elif direction == "하락":
+            warnings.append(f"ETF 시장 방향 '하락' (보수적)")
+
+    # 5) 섹터 ETF 쌍끌이매도 → 매수 차단
+    if sector:
+        etf_judgment = get_etf_sector_judgment(sector)
+        if etf_judgment == "쌍끌이매도":
+            reasons.append(f"{sector} ETF 쌍끌이매도")
+        elif etf_judgment and "매도" in etf_judgment:
+            warnings.append(f"{sector} ETF {etf_judgment}")
+
+    # 6) 그룹주 ETF 매도 → 그룹사 회피 (삼성/현대차)
+    # code 매핑: 005930(삼성전자), 010140(삼성중공업), 207940(삼성바이오), 005380(현대차), 012330(현대모비스) 등
+    SAMSUNG_CODES = {"005930", "009150", "006400", "028260", "032830",
+                     "000810", "018260", "207940", "010140", "207940"}
+    HYUNDAI_CODES = {"005380", "012330", "086280", "001120", "011210"}
+    group_judgment = None
+    group_label = None
+    if code in SAMSUNG_CODES:
+        group_judgment = get_etf_sector_judgment("삼성그룹")
+        group_label = "삼성그룹"
+    elif code in HYUNDAI_CODES:
+        group_judgment = get_etf_sector_judgment("현대차그룹")
+        group_label = "현대차그룹"
+    if group_judgment == "쌍끌이매도":
+        reasons.append(f"{group_label} ETF 쌍끌이매도")
+    elif group_judgment and "매도" in str(group_judgment):
+        warnings.append(f"{group_label} ETF {group_judgment}")
+
     return {
         "blocked": len(reasons) > 0,
         "reasons": reasons,
         "warnings": warnings,
     }
+
+
+# ─────────────────────────────────────────────
+# 5.5) ETF 시장 요약 (etf_investor_summary — 5/15 신규 100개 확장)
+# ─────────────────────────────────────────────
+def get_etf_summary(date: Optional[str] = None) -> Optional[dict]:
+    """etf_investor_summary 조회 — 시장 방향 + 다음날 수혜 후보.
+
+    Returns:
+        {date, direction, inst_direction_amt, top_sectors, beneficiaries}
+        direction: '강한 상승' / '상승' / '혼조' / '하락' / '강한 하락'
+    """
+    cache_key = f"etf_summary:{date or 'latest'}"
+    cached = _cache_get(cache_key)
+    if cached:
+        return cached
+
+    c = _get_client()
+    if not c:
+        return None
+    try:
+        q = c.table("etf_investor_summary").select("*")
+        if date:
+            q = q.eq("date", date)
+        else:
+            q = q.order("date", desc=True)
+        r = q.limit(1).execute()
+        if not r.data:
+            return None
+        _cache_set(cache_key, r.data[0])
+        return r.data[0]
+    except Exception as e:
+        logger.warning(f"[JGIS] etf_summary 조회 실패: {e}")
+        return None
+
+
+def get_etf_beneficiaries(date: Optional[str] = None) -> List[dict]:
+    """내일 수혜 후보 종목 리스트 (etf_investor_summary.beneficiaries JSONB).
+
+    Returns:
+        [{ticker, name, sector, reason, foreign_amt, inst_amt}, ...]
+    """
+    summary = get_etf_summary(date)
+    if not summary:
+        return []
+    bs = summary.get("beneficiaries", [])
+    if isinstance(bs, str):
+        import json
+        try:
+            bs = json.loads(bs)
+        except Exception:
+            return []
+    return bs or []
+
+
+def get_etf_sector_judgment(sector_class: str, date: Optional[str] = None) -> Optional[str]:
+    """특정 섹터의 ETF 수급 판정 (etf_investor_summary.top_sectors).
+
+    sector_class: '반도체', '2차전지', '바이오', '자동차', '삼성그룹' 등
+    Returns:
+        '쌍끌이매수' / '외인주도매수' / '기관주도매수' / '쌍끌이매도' / ... 또는 None
+    """
+    summary = get_etf_summary(date)
+    if not summary:
+        return None
+    top = summary.get("top_sectors", [])
+    if isinstance(top, str):
+        import json
+        try:
+            top = json.loads(top)
+        except Exception:
+            return None
+    for s in (top or []):
+        if s.get("sector") == sector_class or sector_class in str(s.get("sector", "")):
+            return s.get("judgment")
+    return None
 
 
 # ─────────────────────────────────────────────
@@ -317,6 +428,8 @@ def build_morning_context() -> dict:
     sectors = get_all_sectors()
     etf_top = get_etf_top_inflow(top_n=10)
     program = get_program_asymmetry() or {}
+    etf_summary = get_etf_summary() or {}
+    etf_beneficiaries = get_etf_beneficiaries() or []
 
     # 섹터 정렬: 외인+기관 합산 매수 TOP / 매도 TOP
     for s in sectors:
@@ -358,6 +471,12 @@ def build_morning_context() -> dict:
             "kospi_net": program.get("kospi_net"),
             "kosdaq_net": program.get("kosdaq_net"),
         },
+        "etf_market": {
+            "direction": etf_summary.get("direction"),
+            "inst_direction_amt": etf_summary.get("inst_direction_amt"),
+            "top_sectors": etf_summary.get("top_sectors", []),
+        },
+        "etf_beneficiaries": etf_beneficiaries,
         "generated_at": datetime.now().isoformat(),
     }
 
@@ -385,6 +504,66 @@ def save_morning_context(out_path: Optional[Path] = None) -> dict:
                 f"buy {len(ctx.get('top_buy_sectors', []))} sectors / "
                 f"ETF {len(ctx.get('etf_top_inflow', []))}")
     return ctx
+
+
+def refresh_etf_watchlist(out_path: Optional[Path] = None) -> dict:
+    """ETF 수혜 종목 자동 추출 → jgis_etf_watchlist.json 저장 (5/15 16:35 매일).
+
+    etf_investor_summary.beneficiaries 조회 → 다음날 단타봇 진입 후보로 활용.
+
+    Returns:
+        {date, direction, beneficiaries_count, beneficiaries: [...], saved_path}
+    """
+    import json
+    from datetime import datetime
+
+    summary = get_etf_summary() or {}
+    benef = get_etf_beneficiaries()
+
+    if out_path is None:
+        out_path = Path(__file__).resolve().parent.parent / "data_store" / "jgis_etf_watchlist.json"
+
+    data = {
+        "date": summary.get("date"),
+        "direction": summary.get("direction"),
+        "inst_direction_amt": summary.get("inst_direction_amt"),
+        "beneficiaries_count": len(benef),
+        "beneficiaries": benef,
+        "generated_at": datetime.now().isoformat(),
+    }
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out_path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, out_path)
+    logger.info(f"[JGIS] ETF watchlist 저장: {out_path.name} — "
+                f"direction={data.get('direction')} / 수혜 {len(benef)}종목")
+    data["saved_path"] = str(out_path)
+    return data
+
+
+def format_etf_watchlist_telegram(data: dict) -> str:
+    """ETF watchlist 텔레그램 알림 포맷 (16:35)."""
+    lines = ["💎 정보봇 ETF 수급 분석 (내일 매수 후보)"]
+    lines.append(f"기준일: {data.get('date', '?')}")
+    direction = data.get("direction", "?")
+    d_emoji = {"강한 상승": "🟢🟢", "상승": "🟢", "혼조": "⚪",
+               "하락": "🔴", "강한 하락": "🔴🔴"}.get(direction, "⚪")
+    lines.append(f"{d_emoji} 시장 방향: {direction}")
+    inst_amt = data.get("inst_direction_amt")
+    if inst_amt is not None:
+        lines.append(f"  기관 레버-인버스: {inst_amt:+,}")
+
+    benef = data.get("beneficiaries", [])[:10]
+    if benef:
+        lines.append(f"\n📌 내일 수혜 후보 TOP {len(benef)}:")
+        for b in benef:
+            ticker = b.get("ticker", "?")
+            name = b.get("name", "?")
+            reason = b.get("reason", "")
+            lines.append(f"  • {name}({ticker}) — {reason}")
+
+    return "\n".join(lines)
 
 
 def format_morning_context_telegram(ctx: dict) -> str:
