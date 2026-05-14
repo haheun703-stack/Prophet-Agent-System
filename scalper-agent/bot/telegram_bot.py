@@ -569,7 +569,7 @@ class BodyHunterBot:
         try:
             from tools.preclose_limitup_alert import generate_preclose_limitup_alert
             text = await generate_preclose_limitup_alert(
-                self.trader, threshold=25.0, top_n=10
+                self.trader, threshold=18.0, top_n=10
             )
             if text:
                 for chunk in _split_message(text):

@@ -21,7 +21,9 @@ DATA_STORE = SCALPER_DIR / "data_store"
 LIMIT_UP_DIR = DATA_STORE / "limit_up"
 
 # 상한가 임박 판단 기준
-DEFAULT_THRESHOLD_PCT = 25.0
+# Why: 25% 이상은 거의 다 상한가 도달/근접(+29.9%~+30%) → 매수호가 잠겨 매수 불가.
+# 18%로 낮춰서 매수 가능한 강세 종목(+18~28%) 포함. 15:30 마감 전 진입 목적.
+DEFAULT_THRESHOLD_PCT = 18.0
 
 
 def _build_scan_universe() -> list[dict]:
