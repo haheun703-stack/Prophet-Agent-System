@@ -4045,6 +4045,36 @@ class TradingCOO:
         await asyncio.to_thread(upload_nationality_flows)
 
     # ═════════════════════════════════════════════
+    # 정보봇 모닝 컨텍스트 (#2 + #3 — 외인 streak + ETF + 프로그램매매)
+    # ═════════════════════════════════════════════
+    async def _job_jgis_morning_context(self, context=None) -> dict:
+        """정보봇 4가지 컨텍스트를 data_store/jgis_morning_context.json에 저장.
+
+        Why: 지시서 [정보봇→단타봇] 2026-05-14 4-1/4-3.
+        06:00에 정보봇 데이터를 단타봇 모닝 분석에 주입.
+        외인/기관 streak, 섹터 매수/매도 TOP, ETF 순매수 TOP, 프로그램 비대칭.
+        외인 -5일+ 매도 시 텔레그램 알림.
+        """
+        try:
+            from utils.jgis_context import (
+                save_morning_context, format_morning_context_telegram,
+            )
+            ctx = await asyncio.to_thread(save_morning_context)
+            fs = ctx.get("foreign_streak", 0) or 0
+            etf_n = len(ctx.get("etf_top_inflow", []))
+            if (fs <= -5 or etf_n > 0) and self.bot and getattr(self.bot, "chat_id", None) and context:
+                msg = format_morning_context_telegram(ctx)
+                try:
+                    await context.bot.send_message(chat_id=self.bot.chat_id, text=msg)
+                except Exception as te:
+                    logger.debug(f"[JGIS] 텔레그램 전송 실패: {te}")
+            logger.info(f"[JGIS] morning_context 완료 — streak {fs} / ETF {etf_n}")
+            return {"jgis_morning_context": "OK", "foreign_streak": fs, "etf_count": etf_n}
+        except Exception as e:
+            logger.warning(f"[JGIS] morning_context 실패 (무시): {e}")
+            return {"jgis_morning_context": f"ERROR: {e}"}
+
+    # ═════════════════════════════════════════════
     # G7 Stage 4 백업 (17:45 자동 실행) — 5/14 fix
     # ═════════════════════════════════════════════
     async def run_g7_stage4_backup(self, context=None):
@@ -4100,6 +4130,10 @@ class TradingCOO:
         # ── G1 MORNING_PREP (06:30) ──
         jq.run_daily(self.run_g1, time=kst_time(6, 30))
         logger.info("[COO] G1 MORNING_PREP 등록: 06:30 KST")
+
+        # ── JGIS 모닝 컨텍스트 (06:40 — 정보봇 데이터 단타봇 주입) ──
+        jq.run_daily(self._job_jgis_morning_context, time=kst_time(6, 40))
+        logger.info("[COO] JGIS 모닝 컨텍스트 등록: 06:40 KST")
 
         # ── A15 동시호가 스캐너 (08:30) ──
         jq.run_daily(self._job_auction_scan, time=kst_time(8, 30))

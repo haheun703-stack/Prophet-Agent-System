@@ -298,6 +298,139 @@ def check_entry_blocked(code: str, sector: Optional[str] = None,
 
 
 # ─────────────────────────────────────────────
+# 6) 모닝 컨텍스트 저장 (#2 watchlist + #3 morning_state 통합)
+# ─────────────────────────────────────────────
+def build_morning_context() -> dict:
+    """정보봇 4가지 컨텍스트를 한 번에 수집 → 단타봇 모닝 분석용.
+
+    Returns:
+        {date, foreign_streak, inst_streak, summary,
+         top_sell_sectors: [...], top_buy_sectors: [...],
+         etf_top_inflow: [...],
+         program: {asymmetry, kospi_net, kosdaq_net},
+         generated_at}
+    """
+    import json
+    from datetime import datetime
+
+    streak = get_supply_streak() or {}
+    sectors = get_all_sectors()
+    etf_top = get_etf_top_inflow(top_n=10)
+    program = get_program_asymmetry() or {}
+
+    # 섹터 정렬: 외인+기관 합산 매수 TOP / 매도 TOP
+    for s in sectors:
+        s["combined_net"] = (s.get("foreign_net_amt", 0) or 0) + (s.get("inst_net_amt", 0) or 0)
+    sectors_sorted = sorted(sectors, key=lambda x: x["combined_net"], reverse=True)
+    top_buy = sectors_sorted[:5]
+    top_sell = sectors_sorted[-5:][::-1]  # 매도 우세 TOP 5 (역순)
+
+    return {
+        "date": streak.get("date"),
+        "foreign_streak": streak.get("foreign_streak"),
+        "inst_streak": streak.get("inst_streak"),
+        "foreign_trend": streak.get("foreign_trend"),
+        "institution_trend": streak.get("institution_trend"),
+        "summary": streak.get("summary"),
+        "top_buy_sectors": [
+            {"sector": s["sector"], "combined_net": s["combined_net"],
+             "foreign_net": s.get("foreign_net_amt", 0),
+             "inst_net": s.get("inst_net_amt", 0),
+             "top_foreign_buy": s.get("top_foreign_buy")}
+            for s in top_buy
+        ],
+        "top_sell_sectors": [
+            {"sector": s["sector"], "combined_net": s["combined_net"],
+             "foreign_net": s.get("foreign_net_amt", 0),
+             "inst_net": s.get("inst_net_amt", 0),
+             "top_foreign_sell": s.get("top_foreign_sell")}
+            for s in top_sell
+        ],
+        "etf_top_inflow": [
+            {"ticker": e.get("ticker"), "name": e.get("name"),
+             "sector": e.get("sector"), "category": e.get("category"),
+             "combined_net": e.get("combined_net", 0),
+             "foreign_streak": e.get("foreign_streak", 0)}
+            for e in etf_top
+        ],
+        "program": {
+            "asymmetry": program.get("asymmetry"),
+            "kospi_net": program.get("kospi_net"),
+            "kosdaq_net": program.get("kosdaq_net"),
+        },
+        "generated_at": datetime.now().isoformat(),
+    }
+
+
+def save_morning_context(out_path: Optional[Path] = None) -> dict:
+    """모닝 컨텍스트를 jgis_morning_context.json에 저장.
+
+    Returns:
+        저장된 dict (호출자가 텔레그램 알림용으로 활용 가능)
+    """
+    import json
+    from datetime import datetime
+
+    ctx = build_morning_context()
+    if out_path is None:
+        out_path = Path(__file__).resolve().parent.parent / "data_store" / "jgis_morning_context.json"
+
+    # atomic write
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out_path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(ctx, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(tmp, out_path)
+    logger.info(f"[JGIS] morning_context 저장: {out_path.name} — "
+                f"streak {ctx.get('foreign_streak')} / "
+                f"buy {len(ctx.get('top_buy_sectors', []))} sectors / "
+                f"ETF {len(ctx.get('etf_top_inflow', []))}")
+    return ctx
+
+
+def format_morning_context_telegram(ctx: dict) -> str:
+    """모닝 브리프 텔레그램용 포맷."""
+    lines = ["📊 정보봇 모닝 컨텍스트", f"기준일: {ctx.get('date', '?')}"]
+    fs = ctx.get("foreign_streak")
+    iss = ctx.get("inst_streak")
+    if fs is not None:
+        f_emoji = "🔴" if fs < -3 else ("🟡" if fs < 0 else "🟢")
+        i_emoji = "🔴" if iss < -3 else ("🟡" if iss < 0 else "🟢")
+        lines.append(f"{f_emoji} 외국인 streak: {fs:+d}일 / {i_emoji} 기관: {iss:+d}일")
+    sm = ctx.get("summary")
+    if sm:
+        lines.append(f"  {sm[:80]}")
+
+    # 프로그램 매매
+    prog = ctx.get("program", {})
+    if prog.get("asymmetry"):
+        lines.append(f"\n📈 프로그램매매: {prog['asymmetry']}")
+        lines.append(f"  KOSPI {prog.get('kospi_net', 0):+,} / KOSDAQ {prog.get('kosdaq_net', 0):+,}")
+
+    # 매수 섹터 TOP 3
+    buy = ctx.get("top_buy_sectors", [])[:3]
+    if buy:
+        lines.append("\n🟢 외인+기관 매수 섹터 TOP 3:")
+        for s in buy:
+            lines.append(f"  {s['sector']}: {s['combined_net']:+,}")
+
+    # 매도 섹터 TOP 3
+    sell = ctx.get("top_sell_sectors", [])[:3]
+    if sell:
+        lines.append("\n🔴 매도 섹터 TOP 3 (매수 자제):")
+        for s in sell:
+            lines.append(f"  {s['sector']}: {s['combined_net']:+,}")
+
+    # ETF TOP 5
+    etf = ctx.get("etf_top_inflow", [])[:5]
+    if etf:
+        lines.append("\n💎 ETF 순매수 TOP 5 (수혜 섹터):")
+        for e in etf:
+            lines.append(f"  {e['name']} ({e['sector']}) {e['combined_net']:+,}")
+
+    return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────
 # CLI 검증
 # ─────────────────────────────────────────────
 if __name__ == "__main__":
