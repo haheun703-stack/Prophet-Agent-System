@@ -28,8 +28,9 @@ logger = logging.getLogger("BH.PremarketRisk")
 BLOCK_DEAL_DIR = Path(
     "D:/Global_Stock_Overview_Scripter_정보봇/data/block_deal"
 )
-INTEL_JSON = Path("D:/shared-bot-data/jgis_to_quant/daily_intelligence.json")
-BREAKING_JSON = Path("D:/shared-bot-data/jgis_to_quant/breaking_alerts.json")
+from utils.jgis_path import jgis_intel_path, jgis_breaking_path
+INTEL_JSON = jgis_intel_path()
+BREAKING_JSON = jgis_breaking_path()
 STORE_DIR = Path(__file__).resolve().parent.parent / "data_store"
 CACHE_FILE = STORE_DIR / "premarket_blacklist.json"
 

@@ -25,8 +25,10 @@ from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger("BH.InvestorFlowIntel")
 
-# ═══ 경로 상수 ═══
-INTEL_JSON = Path("D:/shared-bot-data/jgis_to_quant/daily_intelligence.json")
+# ═══ 경로 상수 (OS 자동 감지) ═══
+from utils.jgis_path import jgis_intel_path
+
+INTEL_JSON = jgis_intel_path()
 SUPPLY_DAILY_DIR = Path(
     "D:/Global_Stock_Overview_Scripter_정보봇/data/supply_daily"
 )

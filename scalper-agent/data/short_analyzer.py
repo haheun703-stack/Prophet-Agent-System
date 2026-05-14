@@ -36,8 +36,10 @@ logger = logging.getLogger(__name__)
 STORE_DIR = Path(__file__).resolve().parent.parent / "data_store"
 SHORT_DIR = STORE_DIR / "short"
 
-# 정보봇 데이터 경로
-INTEL_JSON = Path("D:/shared-bot-data/jgis_to_quant/daily_intelligence.json")
+# 정보봇 데이터 경로 (OS 자동 감지)
+from utils.jgis_path import jgis_intel_path
+
+INTEL_JSON = jgis_intel_path()
 SUPPLY_TRACKER_DIR = Path(
     "D:/Global_Stock_Overview_Scripter_정보봇/data/supply_tracker"
 )

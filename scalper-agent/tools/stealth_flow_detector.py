@@ -405,7 +405,8 @@ def _fill_names(signals: Dict[str, StealthSignal]):
     """종목명 매핑 — daily_intelligence 또는 investor_flow에서."""
     try:
         import json
-        intel_path = Path("D:/shared-bot-data/jgis_to_quant/daily_intelligence.json")
+        from utils.jgis_path import jgis_intel_path
+        intel_path = jgis_intel_path()
         if intel_path.exists():
             raw = json.loads(intel_path.read_text(encoding="utf-8"))
             # short_selling_summary.data에서 이름 추출

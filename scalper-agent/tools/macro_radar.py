@@ -26,9 +26,11 @@ from typing import Dict, List, Tuple
 
 logger = logging.getLogger("BH.MacroRadar")
 
-# ═══ 경로 상수 ═══
-INTEL_JSON = Path("D:/shared-bot-data/jgis_to_quant/daily_intelligence.json")
-BREAKING_JSON = Path("D:/shared-bot-data/jgis_to_quant/breaking_alerts.json")
+# ═══ 경로 상수 (OS 자동 감지) ═══
+from utils.jgis_path import jgis_intel_path, jgis_breaking_path
+
+INTEL_JSON = jgis_intel_path()
+BREAKING_JSON = jgis_breaking_path()
 
 # ═══ 시나리오 → 섹터 영향 매핑 ═══
 # count가 높으면 해당 시나리오가 뉴스에서 빈번 → 영향력 높음
