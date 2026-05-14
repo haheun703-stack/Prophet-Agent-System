@@ -3997,6 +3997,42 @@ class TradingCOO:
         await asyncio.to_thread(upload_nationality_flows)
 
     # ═════════════════════════════════════════════
+    # G7 Stage 4 백업 (17:45 자동 실행) — 5/14 fix
+    # ═════════════════════════════════════════════
+    async def run_g7_stage4_backup(self, context=None):
+        """G7 Stage 4 9개 업로드 백업 — 17:45 자동 호출.
+
+        Why: 5/14 발견 — G7이 C13 evening_analysis 중간에 강제 종료되면
+        Stage 4(C32 NXT TOP5 / C33 NXT 성과 / C36 매집레이더 / C37 원샷스텔스 /
+        C38 외인플로우 / C39 대량쌍매수 / C40 기관매집 / C41 연기금스캔 /
+        C42 연기금보유) 9개 업로드가 모두 누락됨. 5/12~5/14 3일 연속 발생.
+
+        17:45 시점 = nightwatch(16:35) 완료 + G7 정상 종료 17:00 후 충분한 마진.
+        G7 정상 완료 시 멱등(같은 데이터 또 upsert) — 무해.
+        G7 중단 시 복구. 이중 안전망.
+        """
+        logger.info("[COO] ═══ G7 Stage 4 백업 시작 (17:45) ═══")
+
+        stage4_jobs = [
+            ("C32_nxt_top5_backup", self._job_nxt_top5_publish(context)),
+            ("C33_nxt_performance_backup", self._job_nxt_performance(context)),
+            ("C36_accumulation_radar_backup", self._job_accumulation_radar(context)),
+            ("C37_oneshot_stealth_backup", self._job_oneshot_stealth(context)),
+            ("C38_foreign_flow_backup", self._job_foreign_flow_upload(context)),
+            ("C39_massive_dual_backup", self._job_massive_dual_buy_alert(context)),
+            ("C40_inst_accumulation_backup", self._job_inst_accumulation(context)),
+            ("C41_pension_scan_backup", self._job_pension_scan(context)),
+            ("C42_pension_ownership_backup", self._job_pension_ownership(context)),
+        ]
+
+        results = await self.run_parallel_async(stage4_jobs, timeout_per_job=300)
+
+        ok = sum(1 for r in results if r.success)
+        fail = len(results) - ok
+        logger.info(f"[COO] ═══ G7 Stage 4 백업 완료 — OK {ok}건 / FAIL {fail}건 ═══")
+        return results
+
+    # ═════════════════════════════════════════════
     # STEP 3-9: setup_schedule() — JobQueue 등록
     # ═════════════════════════════════════════════
     def setup_schedule(self, jq):
@@ -4045,6 +4081,10 @@ class TradingCOO:
         # ── G7 EVENING_BRAIN (16:30) ──
         jq.run_daily(self.run_g7, time=kst_time(16, 30))
         logger.info("[COO] G7 EVENING_BRAIN 등록: 16:30 KST")
+
+        # ── G7 Stage 4 백업 (17:45) — G7 중단 시 NXT/수급 9개 업로드 복구 ──
+        jq.run_daily(self.run_g7_stage4_backup, time=kst_time(17, 45))
+        logger.info("[COO] G7 Stage 4 백업 등록: 17:45 KST (멱등)")
 
         # ── G7 자동복구: G6 done + G7 pending + 현재 16:35 이후 → 60초 후 재실행 ──
         now_kst = datetime.now(KST)
