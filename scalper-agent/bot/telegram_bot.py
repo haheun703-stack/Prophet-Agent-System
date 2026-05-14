@@ -2622,6 +2622,12 @@ class BodyHunterBot:
             now_str = datetime.now().strftime("%H:%M")
             startup_msg = f"🔮 Body Hunter v5 시작 ({now_str}) | 자동매매 OFF"
 
+        # ── Phase 3-B: WebSocket 실시간 시세 자동 시작 (auto_trade=true 시만) ──
+        try:
+            await self.auto_trader.start_websocket_monitor()
+        except Exception as e:
+            logger.warning(f"WebSocket 시작 실패 (REST polling만 사용): {e}")
+
         try:
             await app.bot.send_message(
                 chat_id=chat_id,

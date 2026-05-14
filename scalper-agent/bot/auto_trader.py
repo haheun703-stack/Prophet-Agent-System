@@ -55,6 +55,14 @@ class AutoTrader:
         # {code: {name, buy_amount, sl, tp, score, prev_close, checks, ...}}
         self._entry_watch = {}
 
+        # ── Phase 3-B: WebSocket 실시간 시세 (자동매매 진입 정확도 ↑) ──
+        # auto_trade=true일 때만 활성화. 진입감시 종목 자동 구독 + 캐시 저장.
+        # _check_entry_watch가 캐시 5초 이내면 우선 사용, 만료/None이면 REST fallback.
+        self._ws_client = None       # KISWebSocketClient (지연 초기화)
+        self._ws_task = None         # 백그라운드 run_forever 태스크
+        self._ws_cache = {}          # {code: {price, volume, ts, updated_at}}
+        self._ws_enabled = bool(config.get("trader", {}).get("auto_trade", False))
+
         # 모드: "day" or "swing"
         self.mode = config.get("bot", {}).get("trade_mode", "swing")
 
@@ -985,6 +993,11 @@ class AutoTrader:
                 "auction_warning": c.get("auction_warning", ""),
             }
             registered += 1
+            # Phase 3-B: WebSocket 자동 구독 (auto_trade 활성 시만)
+            try:
+                await self._subscribe_entry_watch(code)
+            except Exception:
+                pass  # 구독 실패해도 REST polling fallback 동작
 
         lines = [f"👁 장 시작 - {registered}종목 실시간 감시 시작"]
         for code, w in self._entry_watch.items():
@@ -1013,6 +1026,95 @@ class AutoTrader:
             await _send("\n".join(manual_lines))
 
     # _morning_momentum 삭제됨 (PF 0.70 비활성화 → 데드코드 정리 2026-03-14)
+
+    # ─────────────────────────────────────────────
+    # Phase 3-B: WebSocket 실시간 시세 (하이브리드 — REST fallback 유지)
+    # ─────────────────────────────────────────────
+    async def start_websocket_monitor(self):
+        """WebSocket 백그라운드 시작 (auto_trade=true 시만).
+
+        Why: 30초 polling은 자동매매 진입 평가 지연 큼. WebSocket으로 체결 이벤트
+        받으면 캐시에 즉시 저장. _check_entry_watch가 캐시 5초 이내면 REST 호출
+        대신 캐시 사용 → 빠른 평가 + KIS API 호출 절감.
+        """
+        if not self._ws_enabled:
+            logger.info("[WS-Auto] auto_trade=false → WebSocket 비활성")
+            return
+        if self._ws_task and not self._ws_task.done():
+            logger.info("[WS-Auto] 이미 실행 중")
+            return
+
+        try:
+            from utils.kis_websocket import KISWebSocketClient
+            self._ws_client = KISWebSocketClient(max_subscriptions=40)
+            # 기존 _entry_watch 종목이 있으면 일괄 구독
+            existing = list(self._entry_watch.keys())
+            if existing:
+                await self._ws_client.subscribe(existing, self._on_websocket_tick)
+            self._ws_task = asyncio.create_task(self._ws_client.run_forever())
+            logger.info(f"[WS-Auto] 시작 — 초기 구독 {len(existing)}종목")
+        except Exception as e:
+            logger.warning(f"[WS-Auto] 시작 실패 (REST 폴백 사용): {e}")
+            self._ws_client = None
+            self._ws_task = None
+
+    async def _on_websocket_tick(self, code, price, volume, ts, fields):
+        """WebSocket 체결 콜백 — 캐시 저장만.
+
+        _check_entry_watch가 캐시 5초 이내면 우선 사용. 실제 6조건 평가는
+        기존 30초 polling 유지 (안정성).
+        """
+        self._ws_cache[code] = {
+            "price": price,
+            "volume": volume,
+            "ts": ts,
+            "updated_at": time.time(),
+        }
+
+    async def _subscribe_entry_watch(self, code):
+        """진입감시 등록 시 WebSocket 자동 구독."""
+        if not (self._ws_client and self._ws_enabled):
+            return
+        try:
+            await self._ws_client.subscribe([code], self._on_websocket_tick)
+        except Exception as e:
+            logger.debug(f"[WS-Auto] {code} 구독 실패 (무시): {e}")
+
+    async def _unsubscribe_entry_watch(self, code):
+        """진입감시 해제 시 WebSocket 자동 해제."""
+        if not (self._ws_client and self._ws_enabled):
+            return
+        try:
+            await self._ws_client.unsubscribe([code])
+        except Exception as e:
+            logger.debug(f"[WS-Auto] {code} 해제 실패 (무시): {e}")
+        self._ws_cache.pop(code, None)
+
+    def _get_ws_price(self, code, max_age_sec=5.0):
+        """WebSocket 캐시 5초 이내 가격 (없거나 만료면 None).
+
+        _check_entry_watch에서 fetch_price 호출 전에 먼저 시도.
+        """
+        c = self._ws_cache.get(code)
+        if not c:
+            return None
+        if time.time() - c["updated_at"] > max_age_sec:
+            return None
+        return c
+
+    async def stop_websocket_monitor(self):
+        """WebSocket 종료 (봇 종료 시)."""
+        if self._ws_task:
+            try:
+                if self._ws_client:
+                    await self._ws_client.stop()
+                self._ws_task.cancel()
+            except Exception:
+                pass
+            self._ws_task = None
+            self._ws_client = None
+            self._ws_cache.clear()
+            logger.info("[WS-Auto] 종료")
 
     async def _check_entry_watch(self):
         """진입감시 대기열 체크 - job_monitor에서 30초마다 호출
@@ -1051,13 +1153,27 @@ class AutoTrader:
                     )
                 continue
 
-            # KIS API로 실시간 조회
-            try:
-                price_info = self.trader.fetch_price(code)
-                if not price_info or not price_info.get("success"):
+            # Phase 3-B: WebSocket 캐시 5초 이내면 우선 사용 (API 호출 절감)
+            ws_cached = self._get_ws_price(code, max_age_sec=5.0)
+            if ws_cached and ws_cached["price"] > 0:
+                cp = ws_cached["price"]
+                price_info = {
+                    "success": True,
+                    "current_price": cp,
+                    "volume": ws_cached["volume"],
+                    "ws_cache": True,
+                }
+            else:
+                # REST fallback (기존 경로)
+                try:
+                    price_info = self.trader.fetch_price(code)
+                    if not price_info or not price_info.get("success"):
+                        continue
+                    cp = price_info["current_price"]
+                except Exception:
                     continue
 
-                cp = price_info["current_price"]
+            try:
 
                 # 시가 기록 (첫 체크)
                 if watch["open_price"] == 0:
@@ -1357,9 +1473,13 @@ class AutoTrader:
             except Exception as e:
                 logger.error(f"진입감시 오류 {code}: {e}")
 
-        # 만료/완료 항목 제거
+        # 만료/완료 항목 제거 + WebSocket 구독 자동 해제
         for code in expired:
             self._entry_watch.pop(code, None)
+            try:
+                await self._unsubscribe_entry_watch(code)
+            except Exception:
+                pass
 
 
     async def _morning_day(self, context, _send):
