@@ -279,6 +279,31 @@ class KISTrader:
             return True
         return False
 
+    def fetch_price_nx(self, code: str, fallback: bool = True) -> dict:
+        """NX 시장(KRX+NXT 통합) 현재가/거래량 조회 — Phase 1 신규.
+
+        Why: fetch_price()는 'J'(KRX 정규장)만 → NXT 거래량 누락.
+        자동매매 진입 평가 시 NXT 비중 큰 종목은 진짜 수급 못 봄.
+
+        Args:
+            code: 6자리 종목코드
+            fallback: NX 실패 시 KRX(fetch_price) 자동 fallback (기본 True)
+
+        Returns:
+            success 시: fetch_price와 동일 키 + 'market': 'NX' 또는 'J' (fallback)
+        """
+        from utils.kis_nxt_kit import fetch_nx_price
+        r = fetch_nx_price(code)
+        if r.get("success"):
+            return r
+        if fallback:
+            r2 = self.fetch_price(code)
+            if r2.get("success"):
+                r2["market"] = "J"
+                r2["nx_fallback_reason"] = r.get("message", "?")
+            return r2
+        return r
+
     def fetch_price(self, code: str) -> dict:
         """현재가 조회 (토큰 만료 시 자동 재발급 + 1회 재시도)
 
