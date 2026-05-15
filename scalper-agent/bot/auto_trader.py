@@ -35,6 +35,22 @@ from typing import Callable, Optional
 
 logger = logging.getLogger("BH.AutoTrader")
 
+# P0-8: 정보봇 위험감지 SDK 통합
+try:
+    from .risk_gate_helper import check_market_risk_blocked, is_msci_blacklisted, get_risk_info_brief
+    _RISK_GATE_AVAILABLE = True
+except ImportError:
+    try:
+        from risk_gate_helper import check_market_risk_blocked, is_msci_blacklisted, get_risk_info_brief
+        _RISK_GATE_AVAILABLE = True
+    except ImportError:
+        _RISK_GATE_AVAILABLE = False
+        def check_market_risk_blocked(): return False, 
+        def is_msci_blacklisted(_): return False
+        def get_risk_info_brief(): return 
+# P0-8-PATCH-APPLIED
+
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 CANDIDATES_PATH = BASE_DIR / "data_store" / "swing_candidates.json"
 RISK_STATE_PATH = BASE_DIR / "data_store" / "risk_state.json"
@@ -227,6 +243,18 @@ class AutoTrader:
         except Exception as e:
             logger.warning(f"MDD 체크 실패: {e}")
 
+        # ─── P0-8: 정보봇 시장 위험감지 (DANGER/CRISIS 자동 차단) ───
+        try:
+            jgis_blocked, jgis_reason = check_market_risk_blocked()
+            if jgis_blocked:
+                self._risk_blocked = True
+                self._risk_state["blocked_reason"] = jgis_reason
+                self._save_risk_state()
+                return False, jgis_reason
+        except Exception as _e:
+            logger.warning("정보봇 위험감지 체크 실패: %s", _e)
+        # ─── P0-8 끝 ───
+
         return True, ""
 
     def get_risk_status(self) -> str:
@@ -269,6 +297,16 @@ class AutoTrader:
         for item in self._pending_auto_buys:
             code, name = item["code"], item["name"]
             amount = item["amount"]
+
+            # ─── P0-8: MSCI 차단 종목 자동 거부 ───
+            try:
+                if is_msci_blacklisted(code):
+                    logger.warning("[자동매수] MSCI 차단 종목 거부: %s %s", code, name)
+                    results.append({"code": code, "name": name, "success": False, "reason": "MSCI 차단 종목"})
+                    continue
+            except Exception as _e:
+                logger.warning("MSCI 차단 체크 실패: %s", _e)
+            # ─── P0-8 끝 ───
 
             result = self.trader.safe_buy(code, amount)
             if result.get("success"):
