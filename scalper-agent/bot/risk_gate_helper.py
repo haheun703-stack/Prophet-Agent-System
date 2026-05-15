@@ -157,3 +157,30 @@ def get_position_multiplier(default: float = 1.0) -> float:
         return client.get_position_multiplier()
     except Exception:
         return default
+
+
+def is_foreign_exhaustion_blocked(code: str) -> bool:
+    """종목코드의 외인소진율을 캐시에서 로드 → 위험구간일 때 임계값 초과 시 차단
+
+    5/15 폭락에서 외인소진율 높은 종목이 패닉셀 (유진테크 36% → -19%, 티씨케이 64% → -12%).
+    정보봇 위험점수가 위험 구간일 때 외인소진율 50%+ 종목을 자동 차단.
+
+    Args:
+        code: 종목코드 (6자리)
+
+    Returns:
+        True = 차단해야 함 (NORMAL 구간이면 항상 False)
+    """
+    client = _get_client()
+    if client is None:
+        return False
+    try:
+        from data.flow_collector import load_foreign_exhaustion
+        df = load_foreign_exhaustion(code)
+        if df is None or len(df) == 0:
+            return False
+        rate = float(df["소진율"].iloc[-1])  # 가장 최신
+        return client.is_blacklisted_for_exhaustion(rate)
+    except Exception as e:
+        logger.warning("[risk_gate_helper] 외인소진율 체크 실패 %s: %s", code, e)
+        return False

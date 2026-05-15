@@ -37,17 +37,25 @@ logger = logging.getLogger("BH.AutoTrader")
 
 # P0-8: 정보봇 위험감지 SDK 통합
 try:
-    from .risk_gate_helper import check_market_risk_blocked, is_msci_blacklisted, get_risk_info_brief
+    from .risk_gate_helper import (
+        check_market_risk_blocked, is_msci_blacklisted, get_risk_info_brief,
+        is_foreign_exhaustion_blocked,
+    )
     _RISK_GATE_AVAILABLE = True
 except ImportError:
     try:
-        from risk_gate_helper import check_market_risk_blocked, is_msci_blacklisted, get_risk_info_brief
+        from risk_gate_helper import (
+            check_market_risk_blocked, is_msci_blacklisted, get_risk_info_brief,
+            is_foreign_exhaustion_blocked,
+        )
         _RISK_GATE_AVAILABLE = True
     except ImportError:
         _RISK_GATE_AVAILABLE = False
-        def check_market_risk_blocked(): return False, 
+        # fallback 함수들 — SDK 미가용 시 통과 (운영 지속)
+        def check_market_risk_blocked(): return False, ""
         def is_msci_blacklisted(_): return False
-        def get_risk_info_brief(): return 
+        def get_risk_info_brief(): return ""
+        def is_foreign_exhaustion_blocked(_rate): return False
 # P0-8-PATCH-APPLIED
 
 
@@ -307,6 +315,17 @@ class AutoTrader:
             except Exception as _e:
                 logger.warning("MSCI 차단 체크 실패: %s", _e)
             # ─── P0-8 끝 ───
+
+            # ─── P0-8 추가: 외인소진율 차단 (위험구간 + 임계값 초과 시) ───
+            # 5/15 폭락에서 외인소진율 높은 종목이 패닉셀 직격탄
+            try:
+                if is_foreign_exhaustion_blocked(code):
+                    logger.warning("[자동매수] 외인소진율 위험 거부: %s %s", code, name)
+                    results.append({"code": code, "name": name, "success": False, "reason": "외인소진율 위험"})
+                    continue
+            except Exception as _e:
+                logger.warning("외인소진율 차단 체크 실패: %s", _e)
+            # ─── P0-8 추가 끝 ───
 
             result = self.trader.safe_buy(code, amount)
             if result.get("success"):
