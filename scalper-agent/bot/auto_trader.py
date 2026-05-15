@@ -62,6 +62,12 @@ except ImportError:
         def get_inverse_alert_message(): return ""
 # P0-8-PATCH-APPLIED
 
+# Recovery Add-On — 하락 시 자동 분할 추매 (차트 영웅식, 2026-05-16)
+try:
+    from .recovery_add_on import evaluate_add_on, record_add_on, format_alert_message
+except ImportError:
+    from recovery_add_on import evaluate_add_on, record_add_on, format_alert_message
+
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 CANDIDATES_PATH = BASE_DIR / "data_store" / "swing_candidates.json"
@@ -336,6 +342,19 @@ class AutoTrader:
 
             result = self.trader.safe_buy(code, amount)
             if result.get("success"):
+                # Recovery Add-On 추매 체결 시 카운터 + 이력 기록
+                rao_decision = item.get("_recovery_add_on")
+                if rao_decision and code in self._positions:
+                    try:
+                        record_add_on(self._positions[code], rao_decision)
+                        self._save_positions()
+                        logger.info(
+                            f"[Recovery Add-On] 체결 기록: {name}({code}) "
+                            f"{rao_decision.count}차, {rao_decision.add_amount:,}원"
+                        )
+                    except Exception as _e:
+                        logger.warning(f"[Recovery Add-On] 기록 실패 {code}: {_e}")
+
                 # 분할매수: entry_watch 상태 업데이트
                 if item.get("_is_split") and code in self._entry_watch:
                     watch = self._entry_watch[code]
@@ -1817,6 +1836,50 @@ class AutoTrader:
                                 else:
                                     logger.error(f"AI 부분매도 실패 {code}: {sell_r}")
                                 break
+
+                # ── 하락 시 자동 추매 (Recovery Add-On, 차트 영웅식) ──
+                # 청산 결정이 아닌 보유 유지 종목 대상으로 추매 트리거 체크
+                if snap.decision not in ("FULL_SELL", "PARTIAL_SELL"):
+                    try:
+                        # 중복 큐 진입 방지
+                        already_queued = any(
+                            it.get("code") == code for it in self._pending_auto_buys
+                        )
+                        if not already_queued:
+                            decision = evaluate_add_on(
+                                pos, snap.price, code, self.trader,
+                                self.config.get("bot", {})
+                            )
+                            if decision.should_add:
+                                # 위험 게이트 통과 시에만 추매 큐 진입
+                                risk_ok, risk_reason = self.check_risk_gate()
+                                if risk_ok:
+                                    self._pending_auto_buys.append({
+                                        "code": code,
+                                        "name": pos.get("name", code),
+                                        "amount": decision.add_amount,
+                                        "sl": pos["stop_loss"],
+                                        "tp": pos["take_profit"],
+                                        "tp1_quick": pos["take_profit"],
+                                        "score": 0,
+                                        "regime": pos.get("regime", "NORMAL"),
+                                        "source": pos.get("source", ""),
+                                        "_recovery_add_on": decision,
+                                    })
+                                    await self._alert(format_alert_message(
+                                        pos.get("name", code), code, snap.price, decision
+                                    ))
+                                    logger.info(
+                                        f"[Recovery Add-On] 큐 진입: {code} "
+                                        f"({decision.count}차, {decision.add_amount:,}원)"
+                                    )
+                                else:
+                                    logger.info(
+                                        f"[Recovery Add-On] {code} 위험 차단: {risk_reason}"
+                                    )
+                    except Exception as _e:
+                        logger.warning(f"[Recovery Add-On] 평가 실패 {code}: {_e}")
+                # ── Recovery Add-On 끝 ──
 
                 # 10분마다 전체 리포트 (매 20회차)
                 # (30초 * 20 = 10분)

@@ -2514,6 +2514,75 @@ class BodyHunterBot:
         self.config.setdefault("nightwatch", {})["alert_only"] = True
         await update.message.reply_text("NXT 알림만 모드로 전환\n(자동 주문 중지, 알림은 유지)")
 
+    async def cmd_recovery_on(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Recovery Add-On ON (하락 시 자동 분할 추매)"""
+        if not self._is_authorized(update):
+            return
+        self.config.setdefault("bot", {}).setdefault("recovery_add_on", {})["enabled"] = True
+        await update.message.reply_text(
+            "✅ Recovery Add-On 활성화\n"
+            "  · 매수가 대비 -10%/-20% 도달 시 자동 분할 추매\n"
+            "  · 자격: manual_sync + 화이트리스트\n"
+            "  · 종목당 최대 2회, 정보봇 DANGER+ 차단\n"
+            "  · confirm_real_order 활성 시 사장님 승인 후 매수\n"
+            "  · 끄기: /추매OFF | 상태: /추매상태"
+        )
+
+    async def cmd_recovery_off(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Recovery Add-On OFF"""
+        if not self._is_authorized(update):
+            return
+        self.config.setdefault("bot", {}).setdefault("recovery_add_on", {})["enabled"] = False
+        await update.message.reply_text("⏸ Recovery Add-On 비활성화 (추매 트리거 중지)")
+
+    async def cmd_recovery_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Recovery Add-On 현재 상태 + 보유 종목별 트리거 도달 여부"""
+        if not self._is_authorized(update):
+            return
+        rao_cfg = self.config.get("bot", {}).get("recovery_add_on", {}) or {}
+        enabled = rao_cfg.get("enabled", False)
+        triggers = rao_cfg.get("trigger_pcts", [-10.0, -20.0])
+        max_count = rao_cfg.get("max_add_on_count", 2)
+
+        lines = [
+            f"📊 Recovery Add-On 상태",
+            f"  · 활성화: {'✅ ON' if enabled else '⏸ OFF'}",
+            f"  · 트리거: {' / '.join(f'{t:.0f}%' for t in triggers)}",
+            f"  · 최대 횟수: {max_count}회",
+            "",
+            "📍 보유 종목별 트리거 현황:",
+        ]
+
+        # 보유 종목 손실률 + 차수 확인
+        try:
+            from bot.recovery_add_on import evaluate_add_on
+            positions = self.auto_trader._positions if self.auto_trader else {}
+            if not positions:
+                lines.append("  (보유 종목 없음)")
+            else:
+                for code, pos in positions.items():
+                    name = pos.get("name", code)
+                    entry = pos.get("entry_price", 0)
+                    count = pos.get("add_on_count", 0)
+                    src = pos.get("source", "")
+                    # 현재가 조회
+                    pi = self.auto_trader.trader.fetch_price(code)
+                    cp = pi.get("current_price", 0) if pi and pi.get("success") else 0
+                    if entry > 0 and cp > 0:
+                        pnl = (cp - entry) / entry * 100
+                        next_trigger = triggers[count] if count < len(triggers) else None
+                        if count >= max_count:
+                            status = "✓ 최대 횟수 도달"
+                        elif next_trigger is not None and pnl <= next_trigger:
+                            status = f"🔴 트리거 도달 ({pnl:+.1f}%)"
+                        else:
+                            status = f"⚪ 대기 (다음 {next_trigger:.0f}%, 현재 {pnl:+.1f}%)"
+                        lines.append(f"  · {name}({code}) [{src[:15]}] {count}차 — {status}")
+        except Exception as e:
+            lines.append(f"  (상태 조회 실패: {e})")
+
+        await update.message.reply_text("\n".join(lines))
+
     async def cmd_nxt_run(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """NIGHTWATCH 즉시 실행 (테스트용)"""
         if not self._is_authorized(update):
@@ -2724,6 +2793,9 @@ class BodyHunterBot:
             r"^NXT켜기$": self.cmd_nxt_on,
             r"^NXT끄기$": self.cmd_nxt_off,
             r"^NXT실행$": self.cmd_nxt_run,
+            r"^추매ON$": self.cmd_recovery_on,
+            r"^추매OFF$": self.cmd_recovery_off,
+            r"^추매상태$": self.cmd_recovery_status,
             r"^선취매$": self.cmd_predawn,
             r"^페이퍼$": self.cmd_paper,
             r"^선매집$": self.cmd_stealth,

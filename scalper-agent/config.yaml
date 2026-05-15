@@ -233,7 +233,25 @@ bot:
   # auto_buy_amount: 삭제 — 장 시작 시 실제 잔고 / 종목수로 동적 계산
   # 공식: (가용현금 × (1 - min_cash_ratio)) / 매수종목수
   confirm_real_order: true      # 실주문 전 확인 메시지 요구
-  add_on_buy_ratio: 0.30        # 추매 시 가용현금 대비 비율 (30%)
+  add_on_buy_ratio: 0.30        # 추매 시 가용현금 대비 비율 (30%) — ACTION_ADD(상승 시 추매)
+
+  # ── 하락 시 자동 분할 추매 (차트 영웅식) ──
+  # 매수가 대비 -10%/-20% 도달 시 자동 추매로 평단 낮추기
+  # 기본 OFF — 텔레그램 /추매ON 으로 활성화
+  recovery_add_on:
+    enabled: false                # OFF 기본 (사장님이 ON 명령)
+    trigger_pcts: [-10.0, -20.0]  # 1차/2차 추매 트리거 (entry 대비 %)
+    add_amount_ratio: 0.50        # 보유 평가금액의 50% 추매
+    max_add_on_count: 2           # 종목당 최대 2회
+    block_risk_levels: ["DANGER", "CRISIS"]  # 정보봇 위험등급에서 차단
+    eligible_sources:             # 자격 source (manual_sync는 자동 자격)
+      - "day_scan"
+      - "swing_buy"
+      - "premove"
+      - "user_pick"
+      - "pipeline"
+    default_add_amount: 1000000   # 잔고/buy_amount 정보 없을 때 폴백
+    min_add_amount: 100000        # 최소 추매 금액
 
 # --- 데이터 수집 + 추천 스케줄 ---
 # ┌────────────┬──────────────────────────────────────────────────────┐
