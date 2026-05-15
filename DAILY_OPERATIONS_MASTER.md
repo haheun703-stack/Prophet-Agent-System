@@ -394,6 +394,77 @@ RULE-10: AI Eye DYING → 자동 EXIT
 2026-03-22: 스케줄 전체 작동 확인
 2026-03-25: NXT if/elif 체인 버그 수정, 선취매 3-Tier 완화
 2026-03-25: 이 파일 생성 (DAILY_OPERATIONS_MASTER.md)
+2026-05-16: 자동화 스케줄 안정화 (vbs cp949 인코딩 버그 fix + VPS sync + nationality health monitor)
+            commits: 96ec6de, c618d90, (this session)
+
+# ============================================================
+# PART 7: 자동화 스케줄 요약 (2026-05-16 기준)
+# ============================================================
+
+## 로컬 Windows 작업 스케줄러 (3건)
+
+| 작업명                       | 시각  | 명령                                                   | 실행 조건       |
+|-----------------------------|-------|--------------------------------------------------------|----------------|
+| BodyHunter_DailyCollect     | 16:10 | wscript collect_all_hidden.vbs → collect_all.py        | 매일 (거래일만 수집) |
+| BodyHunter_VPSSync          | 18:30 | python tools\sync_from_vps.py --full --quiet           | 매일           |
+| BodyHunter_NationalityHealth | 18:35 | python tools\nationality_health_check.py --quiet      | 매일 (텔레 알림)   |
+
+⚠️ vbs는 반드시 ASCII only 유지 (한국 Windows wscript는 cp949 해석 → UTF-8/non-ASCII 시 즉시 사망)
+
+## VPS quantum-master cron (월~금)
+
+| 시각   | Key       | 의미                                       |
+|--------|-----------|--------------------------------------------|
+| 06:10  | A         | 미장 마감 분석                             |
+| 07:00  | B         | 장전 브리핑                                |
+| 07:30  | K_safety  | 안전마진                                   |
+| 08:00  | M_morning | 모닝 브리핑                                |
+| 08:10  | M_US      | 미국장 매크로                              |
+| 08:20  | N         | 시그널 로그                                |
+| 08:50  | E         | 스마트 진입                                |
+| 08:55  | I/LU      | VWAP/EYE, 상한가 풀림 감지                 |
+| 11:30  | H         | 장중 분석                                  |
+| 15:35  | L         | NXT 장마감 (16:25까지)                     |
+| 16:10  | O         | 시그널 트래킹                              |
+| 16:30  | **D**     | **장마감 전체 파이프라인 (nationality 포함)** |
+| 17:00  | J         | 포트폴리오 전망                            |
+| 17:45  | PICKV2    | daily_pick_v2 (Silent Bet)                 |
+| 18:35  | F         | FLOWX upload retry                         |
+| 18:45  | HEALTH    | 자동 복구 (신선도 확인 + 낡은 파일 재실행)  |
+
+## 추가 cron
+- 10:00~14:30 매 30분 (월~금): alert_foreign_surge.py
+- 15:00 (월~금): alert_foreign_surge.py 마지막
+- 10분 간격: swap_monitor.sh
+- 매일 04:00: cron_*.log 30일+ 자동 삭제
+
+## 데이터 흐름
+```
+[VPS]
+  16:30 D 파이프라인 → daily/etf/flow/nationality 수집
+  17:00 J → 포트폴리오 분석
+  17:45 PICKV2 → Silent Bet 픽
+  18:35 F → FLOWX 업로드 재시도
+  18:45 HEALTH → 자동 복구
+
+[로컬]
+  16:10 collect_all.py (자체 수집 시도, VPS와 독립)
+  18:30 sync_from_vps.py (VPS 정본 sync — daily/etf/flow/nationality)
+  18:35 nationality_health_check.py (텔레 알림: WARN/CRITICAL 시)
+```
+
+## 모니터링 기준
+- **nationality 수집량 임계**:
+  - 절대 임계: 100건/일 미만 → CRITICAL ❌ (텔레 발송)
+  - 전일 대비: -50% 이하 → WARN ⚠️
+  - 7일 평균 대비: -40% 이하 → WARN ⚠️ (5/14 KIS 계좌 사고급 감지)
+  - T-1 미수신: ℹ️ 정보 (KRX 지연 가능, 다음날 확인)
+- **누적형 파일 신선도**: mtime 30시간 이내
+
+## 장애 대응
+- 로컬 collect_all.py 실패 → VPS sync(18:30)가 보완
+- VPS D 파이프라인 중간 중단 (5/14 사례) → 18:35 health_check가 텔레 알림
+- KRX 일시 timeout/429 → nationality_profiler.collect_daily_series max_retries=1로 30초 후 자동 재시도
 
 # ============================================================
 # ⚠️ Claude Code에게: 이 파일의 내용을 무시하지 마세요.

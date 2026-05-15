@@ -147,8 +147,15 @@ def _get_trading_days(n_days: int = 5) -> List[str]:
 def collect_daily_series(
     codes: List[str],
     n_days: int = 5,
+    max_retries: int = 1,
 ) -> Dict[str, Dict[str, Dict[str, int]]]:
     """종목별 일별 국적별 거래량 시계열 수집
+
+    Args:
+        codes: 종목코드 리스트
+        n_days: 최근 N 거래일
+        max_retries: 0/n일 (전체 실패) 종목 재시도 횟수 (기본 1회)
+                     KRX 일시 timeout/429 대응. 매 재시도 사이 30초 대기.
 
     Returns: {code: {YYYYMMDD: {국가명: 거래량}}}
     """
@@ -164,37 +171,66 @@ def collect_daily_series(
         logger.error("KRX 세션 없음")
         return {}
 
-    results = {}
-    for code in codes:
-        results[code] = {}
+    def _collect_one_code(code: str, sess) -> tuple:
+        """단일 종목 5일치 수집. (수집 결과 dict, 새 session) 반환."""
+        result = {}
         for day in days:
-            # 캐시 확인
             cache_path = DATA_DIR / f"{code}_{day}.csv"
             if cache_path.exists():
                 try:
                     df = pd.read_csv(cache_path, encoding="utf-8-sig")
-                    results[code][day] = dict(zip(df.iloc[:, 0], df.iloc[:, 1].astype(int)))
+                    result[day] = dict(zip(df.iloc[:, 0], df.iloc[:, 1].astype(int)))
                     continue
                 except Exception:
                     pass
 
-            # KRX API 수집
             for mkt in ["STK", "KSQ"]:
-                df = _fetch_nationality_http(session, code, day, day, mkt)
+                df = _fetch_nationality_http(sess, code, day, day, mkt)
                 if df is None:
-                    session = _get_valid_session()
-                    if session:
-                        df = _fetch_nationality_http(session, code, day, day, mkt)
+                    sess = _get_valid_session()
+                    if sess:
+                        df = _fetch_nationality_http(sess, code, day, day, mkt)
                 if df is not None and not df.empty:
                     data = dict(zip(df.iloc[:, 0], df.iloc[:, 1].astype(int)))
-                    results[code][day] = data
-                    # 캐시 저장
+                    result[day] = data
                     df.to_csv(cache_path, index=False, encoding="utf-8-sig")
                     break
                 time.sleep(REQUEST_INTERVAL)
             time.sleep(REQUEST_INTERVAL)
+        return result, sess
 
-        logger.info(f"{code}: {len(results[code])}/{len(days)}일 수집")
+    results = {}
+    failed_codes = []  # 0/n일 종목 (재시도 대상)
+    for code in codes:
+        result, session = _collect_one_code(code, session)
+        results[code] = result
+        if len(result) == 0:
+            failed_codes.append(code)
+        logger.info(f"{code}: {len(result)}/{len(days)}일 수집")
+
+    # 재시도: 0/n일 종목만 max_retries회 추가 시도 (KRX 일시 장애 대응)
+    if failed_codes and max_retries > 0:
+        for attempt in range(1, max_retries + 1):
+            logger.info(f"[retry {attempt}/{max_retries}] {len(failed_codes)}개 실패 종목 재시도 (30s 대기)")
+            time.sleep(30)
+            # 새 세션 강제 갱신
+            session = _get_valid_session()
+            if not session:
+                logger.warning(f"[retry {attempt}] KRX 세션 갱신 실패 — 중단")
+                break
+            still_failed = []
+            for code in failed_codes:
+                result, session = _collect_one_code(code, session)
+                if len(result) > 0:
+                    results[code] = result
+                    logger.info(f"[retry {attempt}] {code}: {len(result)}/{len(days)}일 복구")
+                else:
+                    still_failed.append(code)
+            recovered = len(failed_codes) - len(still_failed)
+            logger.info(f"[retry {attempt}] {recovered}/{len(failed_codes)}개 복구")
+            failed_codes = still_failed
+            if not failed_codes:
+                break
 
     return results
 
