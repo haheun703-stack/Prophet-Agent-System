@@ -70,6 +70,10 @@ class AutoTrader:
         # AI 실시간 모니터
         self._rt_monitor = None
 
+        # positions.json에서 복원된 종목을 RealtimeMonitor에도 등록 (재시작 후 SL/TP 자동 청산 작동)
+        # source 필드를 함께 전달하여 _decide()에서 manual_sync 가드 분기 가능
+        self._restore_positions_to_rt_monitor()
+
         # Intraday AI Eye (5분 주기 흐름 분석)
         self._eye = None
         self._eye_counter = 0  # 30초 카운터 (10 = 5분)
@@ -315,7 +319,8 @@ class AutoTrader:
                     self._save_positions()
                     try:
                         rtm = self._get_rt_monitor()
-                        rtm.register_position(code, name, cp, sl, tp)
+                        rtm.register_position(code, name, cp, sl, tp,
+                                              source=item.get("source", ""))
                     except Exception as e:
                         logger.warning(f"AI 모니터 등록 실패 {code}: {e}")
 
@@ -1459,7 +1464,8 @@ class AutoTrader:
                                 try:
                                     rtm = self._get_rt_monitor()
                                     final_sl = self._positions[code]["stop_loss"]
-                                    rtm.register_position(code, watch["name"], cp, final_sl, tp)
+                                    rtm.register_position(code, watch["name"], cp, final_sl, tp,
+                                                          source=watch.get("source", ""))
                                 except Exception:
                                     pass
 
@@ -3113,6 +3119,37 @@ class AutoTrader:
                     logger.info(f"[POSITIONS] 복원: {len(self._positions)}종목")
             except (json.JSONDecodeError, IOError):
                 self._positions = {}
+
+    def _restore_positions_to_rt_monitor(self):
+        """positions.json에서 복원된 종목을 RealtimeMonitor에도 등록.
+
+        재시작 후 RealtimeMonitor가 비어있으면 evaluate_all()이 빈 결과를 반환하여
+        SL/TP 자동 청산이 작동하지 않는다(_job_monitor_fallback 예외 경로에서만 SL 체크).
+        이 메서드는 __init__에서 _load_positions() 직후 호출되어 정합성을 보장한다.
+
+        source 필드를 함께 전달하여 _decide()의 manual_sync 가드 분기를 활성화.
+        """
+        if not self._positions:
+            return
+        try:
+            rtm = self._get_rt_monitor()
+            registered = 0
+            for code, pos in self._positions.items():
+                try:
+                    rtm.register_position(
+                        code=code,
+                        name=pos.get("name", code),
+                        entry_price=int(pos.get("entry_price", 0)),
+                        sl=int(pos.get("stop_loss", 0)),
+                        tp=int(pos.get("take_profit", 0)),
+                        source=pos.get("source", ""),
+                    )
+                    registered += 1
+                except Exception as e:
+                    logger.warning(f"AI 모니터 복원 등록 실패 {code}: {e}")
+            logger.info(f"[POSITIONS] AI 모니터 복원 등록: {registered}/{len(self._positions)}종목")
+        except Exception as e:
+            logger.warning(f"AI 모니터 복원 단계 실패: {e}")
 
     def _save_nxt_positions(self):
         """NXT 포지션 JSON 저장"""

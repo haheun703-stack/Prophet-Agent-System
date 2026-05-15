@@ -84,6 +84,11 @@ class PositionState:
     score_history: deque = field(default_factory=lambda: deque(maxlen=10))
     prev_volume: int = 0          # 이전 누적거래량 (체결량 계산)
 
+    # 진입 경로 식별자 — _decide()에서 청산 정책 분기에 사용
+    # 예: "day_scan", "swing_buy", "manual_sync_20260516" 등
+    # "manual_sync"로 시작하면 AI 점수 기반 청산을 면제 (SL/TP만 적용)
+    source: str = ""
+
 
 class RealtimeMonitor:
     """장중 AI 모니터 - KIS API로 4팩터 실시간 분석"""
@@ -130,16 +135,22 @@ class RealtimeMonitor:
     # ── 포지션 관리 ──
 
     def register_position(self, code: str, name: str,
-                          entry_price: int, sl: int, tp: int):
-        """매수 후 포지션 등록"""
+                          entry_price: int, sl: int, tp: int,
+                          source: str = ""):
+        """매수 후 포지션 등록
+
+        source: 진입 경로 식별자. "manual_sync_*"로 시작 시 AI 점수 청산 면제.
+        """
         self._positions[code] = PositionState(
             code=code, name=name,
             entry_price=entry_price,
             original_sl=sl, original_tp=tp,
             current_sl=sl, current_tp=tp,
             high_since_entry=entry_price,
+            source=source,
         )
-        logger.info(f"포지션 등록: {name}({code}) 진입:{entry_price:,} SL:{sl:,} TP:{tp:,}")
+        src_tag = f" [{source}]" if source else ""
+        logger.info(f"포지션 등록: {name}({code}) 진입:{entry_price:,} SL:{sl:,} TP:{tp:,}{src_tag}")
 
     def unregister_position(self, code: str):
         """매도 후 포지션 해제"""
@@ -403,6 +414,11 @@ class RealtimeMonitor:
         # 2) TP 히트
         if price >= pos.current_tp:
             return "FULL_SELL", f"TP 달성 ({pos.current_tp:,}원)"
+
+        # 2.5) 수동 동기화 종목: AI 점수 청산 면제 (사장님 "회복 시나리오 신뢰" 의지 보존)
+        # SL/TP에 의한 자동 청산만 작동. 점수가 아무리 약해도 회복 기다림.
+        if pos.source.startswith("manual_sync"):
+            return "HOLD", f"수동 동기화 보유 — SL/TP만 적용 (AI:{realtime_score:.0f}, PnL:{pnl_pct:.1f}%)"
 
         # 3) 추세 악화 감지 (최근 5회 연속 하락)
         if len(pos.score_history) >= 5:
