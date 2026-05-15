@@ -184,3 +184,65 @@ def is_foreign_exhaustion_blocked(code: str) -> bool:
     except Exception as e:
         logger.warning("[risk_gate_helper] 외인소진율 체크 실패 %s: %s", code, e)
         return False
+
+
+# 정보봇 가이드 7번: CRISIS 구간 인버스 ETF 알림 (자동매수 X, 사장님 수동 결정용)
+INVERSE_ETF_BY_INDEX: dict[str, dict[str, str]] = {
+    "KOSPI":  {"code": "114800", "name": "KODEX 인버스"},
+    "KOSDAQ": {"code": "251340", "name": "KODEX 코스닥150 인버스"},
+}
+
+
+def should_trigger_inverse_alert() -> bool:
+    """현재 시장이 CRISIS 구간이고 외국인 매도 폭증 상태인지 판정.
+
+    조건:
+      - 위험점수 등급 = CRISIS (85+)
+      - 외국인 매도 점수 >= 20 (가이드 임계값)
+
+    Returns:
+        True = 인버스 ETF 권유 알림 송출해야 함
+    """
+    client = _get_client()
+    if client is None:
+        return False
+    try:
+        if client.get_current_level() != "CRISIS":
+            return False
+        status = client.get_full_status()
+        if not status:
+            return False
+        foreign_flow_score = status.get("foreign_flow_score", 0)
+        return foreign_flow_score >= 20
+    except Exception as e:
+        logger.warning("[risk_gate_helper] 인버스 알림 판정 실패: %s", e)
+        return False
+
+
+def get_inverse_alert_message() -> str:
+    """CRISIS 구간 인버스 ETF 권유 텔레그램 메시지.
+
+    Returns:
+        텍스트 (CRISIS 아니면 빈 문자열)
+    """
+    client = _get_client()
+    if client is None:
+        return ""
+    try:
+        status = client.get_full_status()
+        if not status:
+            return ""
+        score = status.get("total_score", 0)
+        signals = client.get_key_signals()
+        top_signal = signals[0] if signals else "외국인 매도 폭증"
+        kospi = INVERSE_ETF_BY_INDEX["KOSPI"]
+        kosdaq = INVERSE_ETF_BY_INDEX["KOSDAQ"]
+        return (
+            f"⚠️ 시장 위기 감지 — 인버스 ETF 매수 검토 권유\n"
+            f"   위험점수: {score}점 (CRISIS)\n"
+            f"   주요 신호: {top_signal}\n"
+            f"   {kospi['name']}({kospi['code']}) / {kosdaq['name']}({kosdaq['code']})\n"
+            f"   ※ 권장 비중: 계좌 10% (사장님 수동 매수)"
+        )
+    except Exception:
+        return ""

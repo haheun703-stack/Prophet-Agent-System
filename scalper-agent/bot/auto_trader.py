@@ -40,6 +40,7 @@ try:
     from .risk_gate_helper import (
         check_market_risk_blocked, is_msci_blacklisted, get_risk_info_brief,
         is_foreign_exhaustion_blocked,
+        should_trigger_inverse_alert, get_inverse_alert_message,
     )
     _RISK_GATE_AVAILABLE = True
 except ImportError:
@@ -47,6 +48,7 @@ except ImportError:
         from risk_gate_helper import (
             check_market_risk_blocked, is_msci_blacklisted, get_risk_info_brief,
             is_foreign_exhaustion_blocked,
+            should_trigger_inverse_alert, get_inverse_alert_message,
         )
         _RISK_GATE_AVAILABLE = True
     except ImportError:
@@ -55,7 +57,9 @@ except ImportError:
         def check_market_risk_blocked(): return False, ""
         def is_msci_blacklisted(_): return False
         def get_risk_info_brief(): return ""
-        def is_foreign_exhaustion_blocked(_rate): return False
+        def is_foreign_exhaustion_blocked(_code): return False
+        def should_trigger_inverse_alert(): return False
+        def get_inverse_alert_message(): return ""
 # P0-8-PATCH-APPLIED
 
 
@@ -101,6 +105,9 @@ class AutoTrader:
         # Intraday AI Eye (5분 주기 흐름 분석)
         self._eye = None
         self._eye_counter = 0  # 30초 카운터 (10 = 5분)
+
+        # 정보봇 CRISIS 인버스 ETF 알림 (1일 1회 송출 제한)
+        self._inverse_alert_date = ""  # ISO 날짜 문자열 (예: "2026-05-16")
 
         # ── 리스크 게이트 (일일손실한도 + MDD) ──
         risk = config.get("risk", {})
@@ -1825,6 +1832,20 @@ class AutoTrader:
                 await self._run_intraday_eye()
             except Exception as e:
                 logger.error(f"Intraday Eye 실패: {e}")
+
+            # ── 정보봇 CRISIS 인버스 ETF 알림 (1일 1회 제한) ──
+            # 자동 매수 X, 사장님 수동 결정용 권유 텔레그램
+            try:
+                from datetime import date as _date
+                today_iso = _date.today().isoformat()
+                if self._inverse_alert_date != today_iso and should_trigger_inverse_alert():
+                    msg = get_inverse_alert_message()
+                    if msg:
+                        await self._alert(msg)
+                        self._inverse_alert_date = today_iso
+                        logger.info("[CRISIS 인버스 알림] 송출 완료")
+            except Exception as e:
+                logger.warning(f"인버스 알림 체크 실패: {e}")
 
     async def _run_intraday_eye(self):
         """5분마다 보유+감시 종목 흐름 분석 → 상태 전이 알림 + DYING 자동청산"""
