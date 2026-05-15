@@ -1,9 +1,13 @@
-' collect_all_hidden.vbs - 자동 수집 + 크래시 자동복구 래퍼
+' collect_all_hidden.vbs - Auto Collect + Crash Recovery Wrapper
 ' ============================================================
-' python.exe 사용 (pythonw.exe는 콘솔 없어서 에러 삼킴)
-' stdout/stderr를 로그로 리다이렉트하여 디버깅 가능
-' 1차: 전체 수집 실행 (force 없이 - 캐시 활용)
-' 2차: 체크포인트 잔존 시 --resume 으로 자동 재개 (최대 1회)
+' NOTE: This file MUST stay ASCII-only. Korean comments cause
+'       wscript/cscript to fail under cp949 (Expected statement
+'       error at line N, col 1). Do NOT add non-ASCII characters.
+' ============================================================
+' Uses python.exe (pythonw.exe has no console -> swallows errors)
+' Redirects stdout/stderr to log for debugging
+' 1st run: full collect (no --force, uses cache)
+' 2nd run: --resume if checkpoint remains
 ' ============================================================
 
 Set WshShell = CreateObject("WScript.Shell")
@@ -19,24 +23,24 @@ scriptPath = myDir & "\collect_all.py"
 checkpointPath = myDir & "\data_store\_collect_checkpoint.json"
 logDir = myDir & "\logs"
 
-' logs 디렉토리 보장
+' Ensure logs directory exists
 If Not fso.FolderExists(logDir) Then fso.CreateFolder(logDir)
 
-' 에러 로그 경로 (scheduler_YYYYMMDD.log)
+' Error log path (scheduler_YYYYMMDD.log)
 Dim dtStr
 dtStr = Year(Now) & Right("0" & Month(Now), 2) & Right("0" & Day(Now), 2)
 errorLog = logDir & "\scheduler_" & dtStr & ".log"
 
-' Chr(34) = 쌍따옴표 — cmd.exe 인용부호 중첩 문제 방지
+' Chr(34) = double-quote (avoid cmd.exe nested-quote issue)
 Dim Q
 Q = Chr(34)
 
-' 1차 실행: 일반 수집 (캐시 활용, force 불필요)
+' 1st run: regular collect (cache enabled, no --force)
 Dim cmd1
 cmd1 = "cmd.exe /c " & pythonExe & " " & Q & scriptPath & Q & " >> " & Q & errorLog & Q & " 2>&1"
 WshShell.Run cmd1, 0, True
 
-' 크래시 복구: 체크포인트가 남아있으면 --resume 으로 재시도
+' Crash recovery: retry with --resume if checkpoint exists
 If fso.FileExists(checkpointPath) Then
     Dim cmd2
     cmd2 = "cmd.exe /c " & pythonExe & " " & Q & scriptPath & Q & " --resume >> " & Q & errorLog & Q & " 2>&1"
