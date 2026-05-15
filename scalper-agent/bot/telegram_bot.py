@@ -2555,7 +2555,6 @@ class BodyHunterBot:
 
         # 보유 종목 손실률 + 차수 확인
         try:
-            from bot.recovery_add_on import evaluate_add_on
             positions = self.auto_trader._positions if self.auto_trader else {}
             if not positions:
                 lines.append("  (보유 종목 없음)")

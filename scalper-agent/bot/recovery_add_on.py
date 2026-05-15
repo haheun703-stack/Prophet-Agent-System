@@ -26,7 +26,7 @@ Recovery Add-On — 하락 시 자동 분할 추매 시스템 (차트 영웅식)
         # 매수 큐에 추가 + record_add_on(pos, decision)
 """
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Tuple
 
