@@ -27,19 +27,17 @@
     - 가이드 3: 트레일링 스탑 동적 조정 (DANGER 시 -0.5%)
     - 가이드 5: 일일 시작 시 EXIT_ONLY 모드
 """
-from __future__ import annotations
-
 import json
 import logging
 from pathlib import Path
-from typing import Optional, Set
+from typing import Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
 POSITIONS_PATH = Path(__file__).resolve().parent.parent / "data_store" / "positions.json"
 
 # 보호 정책 prefix — 이걸로 시작하는 source는 자동 청산 면제
-PROTECTED_SOURCE_PREFIXES: tuple[str, ...] = (
+PROTECTED_SOURCE_PREFIXES: Tuple[str, ...] = (
     "manual_sync",     # 잔고 수동 동기화 (회복 시나리오 신뢰)
 )
 
