@@ -1810,6 +1810,12 @@ class AutoTrader:
 
     async def _eye_guardian_action(self, code: str, name: str, verdict, pos: dict):
         """EYE-07: Eye 판정 → Guardian 재평가 → 자동 매도/SL 조정"""
+        # 수동 동기화 종목: AI Eye + Guardian 자동 청산 면제
+        # (사장님 "회복 시나리오 신뢰" 의지 보존 — SL/TP만 청산 트리거)
+        if pos.get("source", "").startswith("manual_sync"):
+            logger.info(f"[Eye+Guardian SKIP] {name}({code}) — 수동 동기화 보유, SL/TP만 적용")
+            return
+
         # Eye→Guardian 리스크 보정: DYING +30, WEAKENING +10, ALIVE 0, BREAKING -10
         EYE_RISK_MAP = {"DYING": 30, "WEAKENING": 10, "ALIVE": 0,
                         "BREAKING": -10, "BOUNCING": 0, "WARMUP": 0}
