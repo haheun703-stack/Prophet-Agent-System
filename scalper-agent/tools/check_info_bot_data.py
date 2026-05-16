@@ -30,10 +30,17 @@ sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from utils.supabase_sql import query, query_one, ping
+from utils.supabase_sql import query, query_one, ping, check_schema
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
 logger = logging.getLogger("InfoBotScan")
+
+# 정보봇 스키마 의존성 (M-2: 변경 시 silent fail 방지)
+REQUIRED_COLUMNS = [
+    "ticker", "name", "date",
+    "ma5_distance_pct", "vol_ratio",
+    "days_since_break", "is_active",
+]
 
 
 def find_ma5_pullback_candidates(
@@ -101,7 +108,20 @@ def main():
         print(f"  ✗ 연결 실패: {health['error']}")
         print(f"\n  대처: .env의 DATABASE_URL 확인 (가이드 §2)")
         sys.exit(1)
-    print(f"  ✓ {health['version'][:50]}")
+    print(f"  ✓ 연결 OK")
+
+    # 1.5) 스키마 검증 (M-2 — 정보봇 변경 시 silent fail 방지)
+    print("  → 정보봇 daily_limit_up_history 스키마 검증...")
+    schema = check_schema("daily_limit_up_history", REQUIRED_COLUMNS)
+    if not schema["table_exists"]:
+        print(f"  ✗ 테이블 자체가 없음 — 정보봇 마이그레이션 미적용 또는 권한 문제")
+        sys.exit(2)
+    if not schema["ok"]:
+        print(f"  ✗ 스키마 미스매치 — 누락 컬럼: {schema['missing']}")
+        print(f"     발견 컬럼: {schema['found'][:10]}...")
+        print(f"     대처: 정보봇 측 스키마 명세 확인 (AUDIT_BACKLOG §1 M-2)")
+        sys.exit(2)
+    print(f"  ✓ 필수 컬럼 {len(REQUIRED_COLUMNS)}개 모두 존재 ({len(schema['found'])}개 중)")
 
     # 2) 정보봇 데이터 상태
     print("\n  → 정보봇 daily_limit_up_history 메타...")

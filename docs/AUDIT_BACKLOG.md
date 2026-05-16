@@ -14,11 +14,12 @@
 | 항목 | 상태 | 비고 |
 |------|------|------|
 | `psycopg2` 설치 | ✅ 2.9.11 | 기존 환경에 이미 있음 |
-| `.env` DATABASE_URL 등록 | ⏳ 대기 | 사장님 1분 작업 (정보봇 .env에서 복사) |
-| `utils/supabase_sql.py` connector | ✅ 신설 | Pool max=3, scalper_* prefix 안전 가드 |
-| `tools/check_info_bot_data.py` | ✅ 신설 | 5일선 회귀 진입 후보 스캐너 |
-| 연결 헬스체크 | ⏳ DATABASE_URL 등록 후 |  |
-| 정보봇 테이블 1건 조회 검증 | ⏳ |  |
+| `.env` DATABASE_URL 등록 | ✅ 5/17 04:00 | 정보봇 .env에서 복사 완료 |
+| `utils/supabase_sql.py` v1.1 | ✅ EVALUATOR 후 강화 | Pool max=3, scalper_* prefix 가드, statement_timeout 5s, lock, atexit |
+| `tools/check_info_bot_data.py` | ✅ + 스키마 fallback | M-2 정보봇 스키마 변경 silent fail 방지 |
+| 연결 헬스체크 | ✅ PostgreSQL 17.6 | 5/17 03:26 |
+| 정보봇 테이블 조회 검증 | ✅ daily_limit_up_history 7건 | 에이프로젠바이오로직스(003060) -3.05% 회귀 발굴 |
+| 가드 자체 테스트 | ✅ 7/7 통과 | SELECT/INSERT 통과, 정보봇 UPDATE/주석/CTE/multi-statement/DDL 차단 |
 
 ### 정보봇 회신 (단타봇 답변)
 
@@ -55,6 +56,63 @@
 - [ ] 정보봇 `pension_grade` 변경 알림 → 단타봇 자동 재평가 (현재 JSON 폴링 → DB push 검토)
 - [ ] Pool 모니터링 — 연결 수 메트릭 telegram_alert 연동
 - [ ] DATABASE_URL 만료/회전 시 자동 감지 + 알림
+
+### EVALUATOR 5/17 04:00 — FAIL → Critical 2건 수정 완료
+
+**검수 결과**: FAIL (Critical 2 + High 4 + Medium 4 + Low 3 = 13건)
+
+**Critical 2건 — 즉시 수정 완료 (v1.1)**:
+- C-1: `execute()` 가드 우회 가능 (주석/CTE/multi-statement) → **단기 가드 강화** (`_check_sql_safety` + `_check_write_target`, 가드 자체 테스트 7/7 통과)
+- C-2: postgres superuser는 BYPASSRLS → 4시스템 모두 RLS 우회 → **정공법: Supabase DB role 분리 (5/18 사장님 작업)**
+
+**High 4건 수정**:
+- H-1: `with conn:` 안티패턴 docstring 명시
+- H-2: `statement_timeout=5000ms` Pool 옵션 (장중 Pool 정지 방지)
+- H-3: `ping()` SELECT 1만 사용 (DB 버전 노출 제거)
+- H-4: `threading.Lock` + double-check (멀티스레드 안전)
+
+**Medium 4건 수정**:
+- M-1: read-only 컨텍스트 (`get_conn(readonly=True)`) 분리
+- M-2: `check_schema()` 추가 + `check_info_bot_data.py`에 스키마 검증 fallback
+- M-3: 정보봇 스키마 명세 회신 요청 (TODO 별도)
+- M-4: 에러 메시지 URL 노출 15자 축소
+
+**Low 3건 수정**:
+- L-1: `atexit.register(close_pool)` (VPS 비정상 종료 안전)
+- L-3: AUDIT_BACKLOG 라인 참조 → `_POOL_MAX` 변수명
+- L-4: `postgres://` deprecated 자동 치환 + warning
+
+### 🚨 5/18 사장님 작업 (C-2 정공법)
+
+**Supabase Dashboard → SQL Editor에서 role 분리**:
+
+```sql
+-- 1. 단타봇 전용 read-only role (정보봇 60+ 테이블 SELECT만)
+CREATE ROLE scalper_readonly NOINHERIT LOGIN PASSWORD '<RO_PASSWORD>';
+GRANT USAGE ON SCHEMA public TO scalper_readonly;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO scalper_readonly;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO scalper_readonly;
+
+-- 2. 단타봇 전용 writer role (scalper_* 테이블 INSERT/UPDATE/DELETE)
+CREATE ROLE scalper_writer NOINHERIT LOGIN PASSWORD '<RW_PASSWORD>';
+GRANT USAGE ON SCHEMA public TO scalper_writer;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO scalper_writer;
+-- scalper_etf_leader_picks 등 신설 시:
+-- GRANT INSERT, UPDATE, DELETE ON scalper_etf_leader_picks TO scalper_writer;
+```
+
+**.env 업데이트** (4봇 분리):
+```
+DATABASE_URL=postgresql://scalper_writer:<RW_PASSWORD>@db.<ref>.supabase.co:5432/postgres
+DATABASE_URL_RO=postgresql://scalper_readonly:<RO_PASSWORD>@db.<ref>.supabase.co:5432/postgres
+```
+
+`utils/supabase_sql.py`에 RO/RW 분리 Pool 추가 (C-2 정공법 후 C-1 가드 제거 가능).
+
+**정보봇 협업 안건**:
+- 4봇 모두 동일 패턴(`<bot>_readonly` + `<bot>_writer`)으로 분리
+- 마이그레이션은 별도 `migration_admin` role (분기 1회 회전)
+- 분리 완료 후 가이드 v1 → v2 발행 (정보봇 측)
 
 ---
 
