@@ -94,6 +94,9 @@ def collect_all() -> list:
     failed = []
 
     for i, e in enumerate(candidates, 1):
+        if i > 1:
+            time.sleep(0.02)  # 매 iteration 시작에 일관 sleep (모든 path 보장)
+
         if i % 30 == 0:
             logger.info(f"  진행: {i}/{len(candidates)} (성공 {len(results)} / 실패 {len(failed)})")
 
@@ -149,7 +152,6 @@ def collect_all() -> list:
             "peak_month": peak_idx.strftime("%Y-%m"),
             "is_chart_hero_kw": any(kw in name for kw in CHART_HERO_KW),
         })
-        time.sleep(0.02)
 
     logger.info(f"수집 완료: 성공 {len(results)} / 실패 {len(failed)}")
     return results, failed

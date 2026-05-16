@@ -31,6 +31,7 @@ ROOT = Path(__file__).resolve().parents[3]
 load_dotenv(ROOT / ".env")
 sys.path.insert(0, str(ROOT / "scalper-agent" / "backtest" / "etf_leader"))
 
+import pandas as pd
 from pykrx import stock
 from a4_detect_pattern import detect_chart_hero_pattern
 
@@ -60,13 +61,16 @@ DEFAULT_LIQUIDITY_BIL = None # 명시되지 않으면 sensitivity 추천값 사�
 
 
 def load_or_collect_ohlcv(ticker: str) -> "pd.DataFrame":
-    """월봉 OHLCV 로컬 캐시 우선, 없으면 KRX 조회."""
-    import pandas as pd
-    cache_path = OHLCV_CACHE_DIR / f"{ticker}.csv"
+    """월봉 OHLCV 로컬 캐시 우선, 없으면 KRX 조회. 캐시 키에 기간 포함."""
+    cache_path = OHLCV_CACHE_DIR / f"{ticker}_{PATTERN_START}_{PATTERN_END}.csv"
 
     if cache_path.exists():
-        df = pd.read_csv(cache_path, index_col=0, parse_dates=True)
-        return df
+        try:
+            df = pd.read_csv(cache_path, index_col=0, parse_dates=True)
+            return df
+        except Exception as e:
+            logger.warning(f"[{ticker}] 캐시 손상 — 재호출: {e}")
+            cache_path.unlink(missing_ok=True)
 
     try:
         df = stock.get_etf_ohlcv_by_date(PATTERN_START, PATTERN_END, ticker, freq="m")
@@ -89,6 +93,10 @@ def detect_all_patterns(etfs: list) -> list:
 
         ticker = e["ticker"]
         name = e["name"]
+
+        # 캐시 hit/miss 판단을 위해 사전 체크 (sleep 적용 여부 결정)
+        cache_path = OHLCV_CACHE_DIR / f"{ticker}_{PATTERN_START}_{PATTERN_END}.csv"
+        cache_miss = not cache_path.exists()
 
         df = load_or_collect_ohlcv(ticker)
         if df is None or len(df) < 24:
@@ -121,7 +129,9 @@ def detect_all_patterns(etfs: list) -> list:
             **pattern,
         })
 
-        time.sleep(0.02)  # 캐시 미스 시에만 부하
+        # 캐시 미스(실제 KRX 호출) 시에만 sleep — cache hit은 즉시 진행
+        if cache_miss:
+            time.sleep(0.05)
 
     # 점수 내림차순 정렬
     results.sort(key=lambda x: x.get("score", 0), reverse=True)

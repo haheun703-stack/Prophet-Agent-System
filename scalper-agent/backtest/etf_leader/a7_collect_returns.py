@@ -124,6 +124,9 @@ def main():
     failed = []
 
     for i, e in enumerate(etfs, 1):
+        if i > 1:
+            time.sleep(0.05)  # 매 iteration 시작에 일관 sleep (모든 path 보장)
+
         if i % 30 == 0:
             logger.info(f"  진행: {i}/{len(etfs)}")
 
@@ -137,7 +140,6 @@ def main():
 
         ret["name"] = name
         results.append(ret)
-        time.sleep(0.05)
 
     # 수익률 내림차순 정렬
     results.sort(key=lambda x: x.get("return_peak_pct", 0), reverse=True)

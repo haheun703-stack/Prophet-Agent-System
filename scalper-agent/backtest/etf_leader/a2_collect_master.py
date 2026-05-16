@@ -119,11 +119,12 @@ def filter_by_liquidity(etfs: list) -> list:
             e["avg_value_24dec_bil"] = round(avg_value, 2)
             e["data_rows_24dec"] = len(df)
             survivors.append(e)
-            time.sleep(0.05)  # KRX 부하 방지
         except Exception as ex:
             logger.debug(f"  [{ticker}] {e['name'][:15]} 조회 실패: {ex}")
             failed += 1
             continue
+        finally:
+            time.sleep(0.05)  # KRX 부하 방지 — 모든 호출 후 일관 sleep
 
     logger.info(
         f"거래대금 필터: {len(etfs)} → {len(survivors)} "

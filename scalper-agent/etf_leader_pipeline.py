@@ -23,6 +23,11 @@ import logging
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
+try:
+    from zoneinfo import ZoneInfo
+    KST = ZoneInfo("Asia/Seoul")
+except ImportError:
+    KST = None  # Python 3.8 호환
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
@@ -78,9 +83,10 @@ EXCLUDE_KEYWORDS = [
 
 
 def find_last_trading_date(today: datetime = None) -> str:
-    """최근 거래일 찾기 (오늘 장중이거나 휴장이면 직전)."""
+    """최근 한국 거래일 찾기 (KST 기준, VPS UTC 환경 안전)."""
     if today is None:
-        today = datetime.now()
+        # KST 기준 (VPS UTC 환경 대응)
+        today = datetime.now(KST) if KST is not None else datetime.now()
     for delta in range(0, 7):
         dt = today - timedelta(days=delta)
         dt_str = dt.strftime("%Y%m%d")
@@ -160,10 +166,11 @@ def step_b2_liquidity(candidates: list, base_date: str) -> list:
             e["last_nav"] = last_nav
             e["nav_gap_pct"] = round((last_close - last_nav) / last_nav * 100, 3) if last_nav > 0 else 0
             survivors.append(e)
-            time.sleep(0.02)
         except Exception as ex:
             logger.debug(f"  [{ticker}] 실패: {ex}")
             failed += 1
+        finally:
+            time.sleep(0.02)  # KRX 부하 방지 — 모든 path에서 일관 sleep
 
     logger.info(f"  거래대금 필터: {len(candidates)} → {len(survivors)} (실패 {failed})")
     return survivors
@@ -173,15 +180,16 @@ def step_b2_liquidity(candidates: list, base_date: str) -> list:
 # B-3: 5년치 월봉 + 차트영웅 패턴 감지
 # ════════════════════════════════════════════════════════════
 def load_or_fetch_monthly(ticker: str, end_date: str) -> "pd.DataFrame":
-    """월봉 5년치 캐시 우선, 없으면 KRX."""
+    """월봉 5년치 캐시 우선, 없으면 KRX. 손상 캐시는 자동 무효화."""
     cache_path = OHLCV_DIR / f"{ticker}_{end_date}.csv"
 
     if cache_path.exists():
         try:
             df = pd.read_csv(cache_path, index_col=0, parse_dates=True)
             return df
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"  [{ticker}] 캐시 손상 — 무효화 후 재호출: {e}")
+            cache_path.unlink(missing_ok=True)
 
     end_dt = datetime.strptime(end_date, "%Y%m%d")
     start_dt = end_dt - timedelta(days=365 * PATTERN_LOOKBACK_YEARS + 30)
@@ -207,6 +215,11 @@ def step_b3_pattern(etfs: list, base_date: str) -> list:
             logger.info(f"  진행: {i}/{len(etfs)}")
 
         ticker = e["ticker"]
+
+        # 캐시 hit/miss 사전 체크 (sleep 적용 여부)
+        cache_path = OHLCV_DIR / f"{ticker}_{base_date}.csv"
+        cache_miss = not cache_path.exists()
+
         df = load_or_fetch_monthly(ticker, base_date)
 
         if df is None or len(df) < 24:
@@ -216,6 +229,8 @@ def step_b3_pattern(etfs: list, base_date: str) -> list:
                 "pattern_type": "NO_DATA" if df is None else "INSUFFICIENT_DATA",
                 "data_months": len(df) if df is not None else 0,
             })
+            if cache_miss:
+                time.sleep(0.02)
             continue
 
         pattern = detect_chart_hero_pattern(df)
@@ -227,6 +242,8 @@ def step_b3_pattern(etfs: list, base_date: str) -> list:
                 "pattern_type": "NO_BREAKOUT",
                 "data_months": len(df),
             })
+            if cache_miss:
+                time.sleep(0.02)
             continue
 
         results.append({
@@ -235,7 +252,9 @@ def step_b3_pattern(etfs: list, base_date: str) -> list:
             **pattern,
         })
 
-        time.sleep(0.02)
+        # 캐시 미스(실제 KRX 호출)시에만 sleep
+        if cache_miss:
+            time.sleep(0.02)
 
     # 점수 내림차순
     results.sort(key=lambda x: x.get("score", 0), reverse=True)

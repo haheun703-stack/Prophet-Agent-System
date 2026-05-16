@@ -29,56 +29,92 @@ logger = logging.getLogger("A4.Pattern")
 def find_resistance_breakout(
     monthly_df: pd.DataFrame,
     base_date_idx: int,
-    max_lookback_months: int = 36,
-    breakout_window: int = 18,
-    min_box_months: int = 12,
+    max_lookback_months: int = 60,        # 5년으로 확대 (차트영웅 영상 의도)
+    breakout_window: int = 18,             # 최근 18개월 내 돌파 인정
+    min_box_months: int = 12,              # 박스권 최소 1년
+    max_box_volatility: float = 0.75,      # 박스권 평탄성 임계 (75% 이내 변동, 차트영웅 ETF 인정)
 ) -> Optional[Dict]:
-    """다년 저항선 돌파 감지 (가변 lookback).
+    """다년 저항선 돌파 감지 (동적 박스권 + 평탄성 검증).
+
+    동적 알고리즘:
+      1) 최근 breakout_window 개월 각 월(i)을 돌파 후보로 시험
+      2) 각 i에 대해 직전 max_lookback_months 또는 가용 범위만큼을 박스권 후보로 정의
+      3) 박스권 평탄성 검증 (변동률 max_box_volatility 이내)
+      4) 종가가 박스권 최고가를 돌파하면 후보 인정
+      5) 가장 이른 돌파 시점 = 최종 돌파 (가장 오랜 박스권 후 첫 돌파)
 
     Args:
         monthly_df: 월봉 DataFrame
         base_date_idx: 기준일 인덱스
-        max_lookback_months: 최대 저항선 형성 기간 (36=3년)
+        max_lookback_months: 최대 박스권 길이 (60=5년)
         breakout_window: 최근 N개월 내 돌파 인정 (18)
         min_box_months: 박스권 최소 기간 (12 = 1년)
+        max_box_volatility: 박스권 평탄성 임계 (0.45 = ±22.5% 변동 허용)
 
     Returns:
         dict or None
     """
-    # 가변 lookback: 데이터 가용 범위 내에서 자동 결정
-    available_for_box = base_date_idx - breakout_window
-    if available_for_box < min_box_months:
-        return None  # 박스권 1년치도 안 됨
-
-    lookback_months = min(max_lookback_months, available_for_box)
-
-    # 1. 박스권 구간: [base - lookback ~ base - breakout_window]
-    box_start = base_date_idx - lookback_months
-    box_end = base_date_idx - breakout_window
-
-    if box_start < 0 or box_end <= box_start:
+    # 데이터 부족 가드
+    if base_date_idx < min_box_months + 1:
         return None
 
-    box_period = monthly_df.iloc[box_start:box_end]
-    if box_period.empty:
+    # 동적 박스권: 최근 breakout_window 각 월을 돌파 후보로 시험
+    candidates = []
+    breakout_start = max(min_box_months, base_date_idx - breakout_window)
+
+    for i in range(breakout_start, base_date_idx + 1):
+        # i: 돌파 후보 월
+        # 박스권: [max(0, i - max_lookback) : i]
+        box_start = max(0, i - max_lookback_months)
+        box_len = i - box_start
+
+        if box_len < min_box_months:
+            continue
+
+        box_period = monthly_df.iloc[box_start:i]
+        if box_period.empty:
+            continue
+
+        resistance = float(box_period["고가"].max())
+        box_low = float(box_period["저가"].min())
+        box_avg_close = float(box_period["종가"].mean())
+
+        # 박스권 평탄성 검증: (high - low) / avg_close < threshold
+        if box_avg_close <= 0:
+            continue
+        box_volatility = (resistance - box_low) / box_avg_close
+        if box_volatility > max_box_volatility:
+            continue  # 박스권이 아니라 추세 구간
+
+        # 종가 기준 돌파 (월봉 종가가 저항선 위로 마감)
+        close_i = float(monthly_df.iloc[i]["종가"])
+        if close_i <= resistance:
+            continue
+
+        candidates.append({
+            "breakout_idx": i,
+            "box_start": box_start,
+            "box_end": i,
+            "resistance": resistance,
+            "box_low": box_low,
+            "box_avg_value": float(box_period["거래대금"].mean()),
+            "box_months": box_len,
+            "box_volatility": round(box_volatility, 3),
+            "close": close_i,
+        })
+
+    if not candidates:
         return None
 
-    resistance = box_period["고가"].max()
-    avg_value = box_period["거래대금"].mean()
+    # 가장 이른 돌파 = 가장 오랜 박스권 후 첫 돌파 (차트영웅 영상 패턴)
+    # 단, 박스권이 짧은 가짜 돌파를 피하기 위해 box_months 최대인 것 우선
+    first = max(candidates, key=lambda x: (x["box_months"], -x["breakout_idx"]))
 
-    # 2. 최근 breakout_window 개월 내에서 돌파 시점 찾기
-    recent = monthly_df.iloc[box_end:base_date_idx + 1]
-
-    # 종가 기준 돌파 (월봉 종가가 저항선 위로 마감)
-    breakout_mask = recent["종가"] > resistance
-    if not breakout_mask.any():
-        return None
-
-    # 최초 돌파 시점
-    breakout_idx_rel = breakout_mask.idxmax()  # 첫 True의 index
-    breakout_row = recent.loc[breakout_idx_rel]
-
-    breakout_idx = monthly_df.index.get_loc(breakout_idx_rel)
+    breakout_idx = first["breakout_idx"]
+    breakout_row = monthly_df.iloc[breakout_idx]
+    breakout_idx_rel = monthly_df.index[breakout_idx]
+    resistance = first["resistance"]
+    avg_value = first["box_avg_value"]
 
     return {
         "breakout_idx": int(breakout_idx),
@@ -86,9 +122,11 @@ def find_resistance_breakout(
         "breakout_close": float(breakout_row["종가"]),
         "breakout_high": float(breakout_row["고가"]),
         "breakout_volume_value": float(breakout_row["거래대금"]),
-        "pre_breakout_high": float(resistance),
-        "pre_breakout_period_months": int(box_end - box_start),
-        "pre_breakout_avg_value": float(avg_value),
+        "pre_breakout_high": resistance,
+        "pre_breakout_low": first["box_low"],
+        "pre_breakout_period_months": first["box_months"],
+        "pre_breakout_avg_value": avg_value,
+        "pre_breakout_volatility": first["box_volatility"],
         "volume_surge_ratio": round(float(breakout_row["거래대금"] / avg_value), 2) if avg_value > 0 else 0,
         "breakout_strength_pct": round((float(breakout_row["종가"]) - resistance) / resistance * 100, 2),
     }
@@ -254,8 +292,8 @@ def score_pattern(
     score += s5
     detail["s5_trend"] = s5
 
-    # 패턴 타입 분류
-    if dd <= -8 and 6 <= months_after <= 24 and box_months >= 12:
+    # 패턴 타입 분류 (box_months 임계 6으로 완화 — 80점대 NORMAL 모순 해소)
+    if dd <= -8 and 6 <= months_after <= 24 and box_months >= 6:
         pattern_type = "CLEAR_BREAKOUT_PULLBACK"      # 차트영웅 패턴 ★
     elif dd > -8 and months_after <= 12:
         pattern_type = "EARLY_BREAKOUT"                # 막 돌파, 아직 안 눌림
