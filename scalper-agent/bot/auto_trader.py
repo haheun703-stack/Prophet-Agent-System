@@ -1837,8 +1837,9 @@ class AutoTrader:
                                     logger.error(f"AI 부분매도 실패 {code}: {sell_r}")
                                 break
 
-                # ── 하락 시 자동 추매 (Recovery Add-On, 차트 영웅식) ──
+                # ── 하락 시 자동 추매 (Recovery Add-On + 4시그널) ──
                 # 청산 결정이 아닌 보유 유지 종목 대상으로 추매 트리거 체크
+                # snap에서 장중 데이터(realtime_score/strength/bid_qty/ask_qty/vwap) 추출 → multi-signal 평가
                 if snap.decision not in ("FULL_SELL", "PARTIAL_SELL"):
                     try:
                         # 중복 큐 진입 방지
@@ -1846,14 +1847,50 @@ class AutoTrader:
                             it.get("code") == code for it in self._pending_auto_buys
                         )
                         if not already_queued:
+                            # snap → multi-signal 데이터 추출
+                            snap_data = {
+                                "realtime_score": snap.realtime_score,
+                                "strength": snap.strength,
+                                "bid_qty": snap.bid_qty,
+                                "ask_qty": snap.ask_qty,
+                                "price": snap.price,
+                                "vwap": snap.vwap,
+                            }
                             decision = evaluate_add_on(
                                 pos, snap.price, code, self.trader,
-                                self.config.get("bot", {})
+                                self.config.get("bot", {}),
+                                snap_data=snap_data,
                             )
                             if decision.should_add:
-                                # 위험 게이트 통과 시에만 추매 큐 진입
+                                # 위험 게이트 통과 필수
                                 risk_ok, risk_reason = self.check_risk_gate()
-                                if risk_ok:
+                                if not risk_ok:
+                                    logger.info(
+                                        f"[Recovery Add-On] {code} 위험 차단: {risk_reason}"
+                                    )
+                                elif decision.signal_mode == "auto":
+                                    # ── 자동 매수 (시그널 3/4 이상) ──
+                                    pos_name = pos.get("name", code)
+                                    logger.info(
+                                        f"[Recovery Add-On AUTO] {pos_name}({code}) "
+                                        f"{decision.count}차 시그널 {decision.signal_score}/4 → 즉시 매수"
+                                    )
+                                    buy_result = self.trader.safe_buy(code, decision.add_amount)
+                                    if buy_result and buy_result.get("success"):
+                                        record_add_on(pos, decision)
+                                        self._save_positions()
+                                        await self._alert(
+                                            f"✅ 추매 자동매수 체결: {pos_name}({code})\n"
+                                            f"   {decision.reason}\n"
+                                            f"   금액: {decision.add_amount:,}원"
+                                        )
+                                    else:
+                                        logger.error(f"[Recovery Add-On AUTO] {code} 매수 실패: {buy_result}")
+                                        await self._alert(
+                                            f"❌ 추매 자동매수 실패: {pos_name}({code}) — {buy_result}"
+                                        )
+                                else:
+                                    # confirm 모드: 기존 큐 진입 + 사장님 승인 대기
                                     self._pending_auto_buys.append({
                                         "code": code,
                                         "name": pos.get("name", code),
@@ -1870,13 +1907,14 @@ class AutoTrader:
                                         pos.get("name", code), code, snap.price, decision
                                     ))
                                     logger.info(
-                                        f"[Recovery Add-On] 큐 진입: {code} "
-                                        f"({decision.count}차, {decision.add_amount:,}원)"
+                                        f"[Recovery Add-On CONFIRM] 큐 진입: {code} "
+                                        f"({decision.count}차, 시그널 {decision.signal_score}/4)"
                                     )
-                                else:
-                                    logger.info(
-                                        f"[Recovery Add-On] {code} 위험 차단: {risk_reason}"
-                                    )
+                            elif decision.signal_mode == "skip" and decision.signal_score >= 0:
+                                # 시그널 부족으로 skip (로그만, 알림 X)
+                                logger.info(
+                                    f"[Recovery Add-On SKIP] {code} {decision.reason}"
+                                )
                     except Exception as _e:
                         logger.warning(f"[Recovery Add-On] 평가 실패 {code}: {_e}")
                 # ── Recovery Add-On 끝 ──

@@ -50,11 +50,17 @@ class AddOnDecision:
     add_amount: int           # 추매 금액 (원)
     count: int                # 이번 추매가 N차 (1 또는 2)
     reason: str               # 사유 (텔레그램 알림용)
+    # multi-signal (장중 데이터 4시그널 평가)
+    signal_mode: str = "confirm"   # "auto" (자동매수) / "confirm" (사장님 승인 대기) / "skip" (시그널 부족)
+    signal_score: int = 0          # 0~4 (통과한 시그널 수)
+    signal_detail: dict = None     # {ai_score, strength, bid_ask_ratio, vwap_distance, ai_pass, ...}
 
 
 def load_config(bot_config: dict) -> dict:
     """config.yaml의 bot.recovery_add_on 로드 (기본값 포함)"""
     cfg = (bot_config or {}).get("recovery_add_on", {}) or {}
+    ms = cfg.get("multi_signal", {}) or {}
+    ms_thresh = ms.get("thresholds", {}) or {}
     return {
         "enabled": bool(cfg.get("enabled", False)),
         "trigger_pcts": list(cfg.get("trigger_pcts", [-10.0, -20.0])),
@@ -64,7 +70,88 @@ def load_config(bot_config: dict) -> dict:
         "eligible_sources": list(cfg.get("eligible_sources", DEFAULT_ELIGIBLE_SOURCES)),
         "default_add_amount": int(cfg.get("default_add_amount", 1_000_000)),
         "min_add_amount": int(cfg.get("min_add_amount", 100_000)),
+        # multi-signal (장중 데이터 4시그널 평가)
+        "multi_signal": {
+            "enabled": bool(ms.get("enabled", True)),
+            "min_score_for_auto": int(ms.get("min_score_for_auto", 3)),
+            "min_score_for_confirm": int(ms.get("min_score_for_confirm", 2)),
+            "thresholds": {
+                "ai_score": float(ms_thresh.get("ai_score", 40)),
+                "strength": float(ms_thresh.get("strength", 90)),
+                "bid_ask_ratio": float(ms_thresh.get("bid_ask_ratio", 1.0)),
+                "vwap_distance": float(ms_thresh.get("vwap_distance", 1.02)),
+            },
+        },
     }
+
+
+def evaluate_signals(snap_data: dict, cfg: dict) -> Tuple[int, dict]:
+    """4시그널 종합 평가 — 장중 데이터로 추매 적정성 판정.
+
+    시그널 4종:
+        1. AI 점수 (snap.realtime_score >= 40): 4팩터 종합 모멘텀
+        2. 체결강도 (snap.strength >= 90): 매수세 우위
+        3. 호가 잔량 비율 (bid_qty/ask_qty >= 1.0): 매수 잔량 우위
+        4. VWAP 위치 (price/vwap <= 1.02): 평균 매수자 대비 비싸지 않음
+
+    Args:
+        snap_data: {realtime_score, strength, bid_qty, ask_qty, price, vwap}
+        cfg: load_config() 결과
+
+    Returns:
+        (total_score, detail_dict)
+    """
+    ms = cfg["multi_signal"]
+    th = ms["thresholds"]
+    score = 0
+    detail = {"signals": {}}
+
+    # 1. AI 점수
+    ai = float(snap_data.get("realtime_score", 0) or 0)
+    detail["ai_score"] = ai
+    ai_pass = ai >= th["ai_score"]
+    detail["signals"]["ai"] = ai_pass
+    if ai_pass:
+        score += 1
+
+    # 2. 체결강도
+    strength = float(snap_data.get("strength", 0) or 0)
+    detail["strength"] = strength
+    str_pass = strength >= th["strength"]
+    detail["signals"]["strength"] = str_pass
+    if str_pass:
+        score += 1
+
+    # 3. 호가 잔량 비율
+    bid_qty = float(snap_data.get("bid_qty", 0) or 0)
+    ask_qty = float(snap_data.get("ask_qty", 0) or 0)
+    if ask_qty > 0:
+        ratio = bid_qty / ask_qty
+        detail["bid_ask_ratio"] = round(ratio, 2)
+        ba_pass = ratio >= th["bid_ask_ratio"]
+        detail["signals"]["bid_ask"] = ba_pass
+        if ba_pass:
+            score += 1
+    else:
+        detail["bid_ask_ratio"] = None
+        detail["signals"]["bid_ask"] = False
+
+    # 4. VWAP 위치 (현재가가 VWAP의 102% 이하면 평균 매수자 대비 비싸지 않음)
+    price = float(snap_data.get("price", 0) or 0)
+    vwap = float(snap_data.get("vwap", 0) or 0)
+    if vwap > 0 and price > 0:
+        dist = price / vwap
+        detail["vwap_distance"] = round(dist, 3)
+        vw_pass = dist <= th["vwap_distance"]
+        detail["signals"]["vwap"] = vw_pass
+        if vw_pass:
+            score += 1
+    else:
+        detail["vwap_distance"] = None
+        detail["signals"]["vwap"] = False
+
+    detail["total_score"] = score
+    return score, detail
 
 
 def is_eligible_position(pos: dict, cfg: dict) -> Tuple[bool, str]:
@@ -121,9 +208,10 @@ def _calc_add_amount(pos: dict, code: str, trader, cfg: dict) -> int:
 
 
 def evaluate_add_on(
-    pos: dict, current_price: int, code: str, trader, bot_config: dict
+    pos: dict, current_price: int, code: str, trader, bot_config: dict,
+    snap_data: dict = None,
 ) -> AddOnDecision:
-    """추매 판정 (모든 안전장치 통과 시 should_add=True)
+    """추매 판정 (모든 안전장치 + 4시그널 통과 시 should_add=True)
 
     Args:
         pos: positions[code] dict (entry_price, source, add_on_count 등)
@@ -131,6 +219,8 @@ def evaluate_add_on(
         code: 종목코드
         trader: KISTrader 인스턴스 (잔고 조회용)
         bot_config: config.yaml의 bot 섹션
+        snap_data: RealtimeMonitor snap dict {realtime_score, strength, bid_qty, ask_qty, price, vwap}
+                   None이면 multi-signal 평가 생략 (기본 confirm 모드)
 
     Returns:
         AddOnDecision
@@ -178,12 +268,44 @@ def evaluate_add_on(
             f"금액 부족 ({add_amount:,}원 < 최소 {cfg['min_add_amount']:,}원)"
         )
 
+    # ── multi-signal 평가 (장중 데이터 4시그널) ──
+    signal_mode = "confirm"  # 기본: 사장님 승인 대기
+    signal_score = 0
+    signal_detail = None
+
+    if snap_data and cfg["multi_signal"]["enabled"]:
+        signal_score, signal_detail = evaluate_signals(snap_data, cfg)
+        ms = cfg["multi_signal"]
+        if signal_score >= ms["min_score_for_auto"]:
+            signal_mode = "auto"      # 시그널 강함 → 자동 매수
+        elif signal_score >= ms["min_score_for_confirm"]:
+            signal_mode = "confirm"   # 시그널 보통 → confirm 대기
+        else:
+            # 시그널 부족 → 추매 skip (이번 사이클)
+            return AddOnDecision(
+                should_add=False,
+                trigger_pct=target_trigger,
+                add_amount=add_amount,
+                count=add_on_count,
+                reason=f"시그널 부족 ({signal_score}/4)",
+                signal_mode="skip",
+                signal_score=signal_score,
+                signal_detail=signal_detail,
+            )
+
+    base_reason = f"PnL {pnl_pct:+.1f}% (목표 {target_trigger:.1f}%) — {add_on_count + 1}차 추매"
+    if signal_detail:
+        base_reason += f" / 시그널 {signal_score}/4 ({signal_mode})"
+
     return AddOnDecision(
         should_add=True,
         trigger_pct=target_trigger,
         add_amount=add_amount,
         count=add_on_count + 1,
-        reason=f"PnL {pnl_pct:+.1f}% (목표 {target_trigger:.1f}%) — {add_on_count + 1}차 추매",
+        reason=base_reason,
+        signal_mode=signal_mode,
+        signal_score=signal_score,
+        signal_detail=signal_detail,
     )
 
 
@@ -204,11 +326,28 @@ def record_add_on(pos: dict, decision: AddOnDecision) -> None:
 
 
 def format_alert_message(name: str, code: str, current_price: int, decision: AddOnDecision) -> str:
-    """추매 트리거 텔레그램 메시지"""
-    return (
-        f"📉 추매 트리거 발동: {name}({code})\n"
-        f"   현재가: {current_price:,}원\n"
-        f"   {decision.reason}\n"
-        f"   추매 금액: {decision.add_amount:,}원\n"
-        f"   ※ confirm_real_order 활성 시 사장님 확인 필요"
+    """추매 트리거 텔레그램 메시지 (multi-signal 세부 포함)"""
+    mode_icon = {"auto": "🟢 자동매수", "confirm": "🟡 확인대기", "skip": "⚪ 보류"}.get(
+        decision.signal_mode, ""
     )
+    lines = [
+        f"📉 추매 트리거: {name}({code}) — {mode_icon}",
+        f"   현재가: {current_price:,}원",
+        f"   {decision.reason}",
+        f"   추매 금액: {decision.add_amount:,}원",
+    ]
+    # 시그널 세부 표시
+    if decision.signal_detail:
+        sd = decision.signal_detail
+        sig = sd.get("signals", {})
+        check = lambda b: "✅" if b else "❌"
+        lines.append(
+            f"   시그널 {decision.signal_score}/4: "
+            f"AI{check(sig.get('ai'))} 체결강도{check(sig.get('strength'))} "
+            f"호가{check(sig.get('bid_ask'))} VWAP{check(sig.get('vwap'))}"
+        )
+        lines.append(
+            f"   상세: AI={sd.get('ai_score', 0):.0f} / 강도={sd.get('strength', 0):.0f} / "
+            f"호가비={sd.get('bid_ask_ratio')} / VWAP거리={sd.get('vwap_distance')}"
+        )
+    return "\n".join(lines)

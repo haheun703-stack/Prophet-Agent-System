@@ -235,8 +235,8 @@ bot:
   confirm_real_order: true      # 실주문 전 확인 메시지 요구
   add_on_buy_ratio: 0.30        # 추매 시 가용현금 대비 비율 (30%) — ACTION_ADD(상승 시 추매)
 
-  # ── 하락 시 자동 분할 추매 (차트 영웅식) ──
-  # 매수가 대비 -10%/-20% 도달 시 자동 추매로 평단 낮추기
+  # ── 하락 시 자동 분할 추매 (차트 영웅식 + 장중 multi-signal) ──
+  # 매수가 대비 -10%/-20% 도달 시 4시그널(AI/체결강도/호가/VWAP) 통과 시 자동 추매
   # 기본 OFF — 텔레그램 /추매ON 으로 활성화
   recovery_add_on:
     enabled: false                # OFF 기본 (사장님이 ON 명령)
@@ -252,6 +252,18 @@ bot:
       - "pipeline"
     default_add_amount: 1000000   # 잔고/buy_amount 정보 없을 때 폴백
     min_add_amount: 100000        # 최소 추매 금액
+
+    # ── multi-signal (장중 데이터 4시그널 평가) ──
+    # 3/4 이상 자동매수, 2/4 confirm 대기, 1/4 이하 skip
+    multi_signal:
+      enabled: true
+      min_score_for_auto: 3       # 자동매수 최소 점수 (3/4)
+      min_score_for_confirm: 2    # confirm 최소 점수 (이하면 skip)
+      thresholds:
+        ai_score: 40              # RealtimeMonitor 4팩터 종합 (0~100)
+        strength: 90              # 체결강도 (100 기준, 90+ = 매수 우위 근접)
+        bid_ask_ratio: 1.0        # 매수1호가 잔량 / 매도1호가 잔량
+        vwap_distance: 1.02       # 현재가 / VWAP <= 1.02 (평균 매수자 대비 2% 이내)
 
 # --- 데이터 수집 + 추천 스케줄 ---
 # ┌────────────┬──────────────────────────────────────────────────────┐

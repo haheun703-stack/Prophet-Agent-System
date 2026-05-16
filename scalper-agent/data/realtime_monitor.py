@@ -45,6 +45,10 @@ class RealtimeSnapshot:
     strength: float           # 체결강도
     ask1: int                 # 매도호가1
     bid1: int                 # 매수호가1
+    # 추매 multi-signal용 (2026-05-16 추가)
+    vwap: int = 0             # 당일 가중평균주가 (KIS wghn_avrg_stck_prc)
+    bid_qty: int = 0          # 매수호가1 잔량
+    ask_qty: int = 0          # 매도호가1 잔량
 
     # 4팩터 점수 (각 0~25)
     score_momentum: float
@@ -197,11 +201,14 @@ class RealtimeMonitor:
                 change = -abs(change)
             change_rate = float(d1.get("prdy_ctrt", 0))
             volume = int(d1.get("acml_vol", 0))
+            # VWAP (가중평균주가) — 추매 multi-signal 용
+            vwap = int(d1.get("wghn_avrg_stck_prc", 0) or 0)
 
             row["price"] = price
             row["change"] = change
             row["change_rate"] = change_rate
             row["volume"] = volume
+            row["vwap"] = vwap
 
             time.sleep(0.05)
 
@@ -225,6 +232,9 @@ class RealtimeMonitor:
             d3 = r3.json().get("output1", {})
             row["ask1"] = int(d3.get("askp1", 0))
             row["bid1"] = int(d3.get("bidp1", 0))
+            # 호가 잔량 — 추매 multi-signal 용 (askp_rsqn1/bidp_rsqn1)
+            row["ask_qty"] = int(d3.get("askp_rsqn1", 0) or 0)
+            row["bid_qty"] = int(d3.get("bidp_rsqn1", 0) or 0)
 
             # 성공 → 실패 카운터 리셋
             self._consecutive_failures = 0
@@ -496,6 +506,9 @@ class RealtimeMonitor:
             strength=snap.get("strength", 0),
             ask1=snap.get("ask1", 0),
             bid1=snap.get("bid1", 0),
+            vwap=snap.get("vwap", 0),
+            bid_qty=snap.get("bid_qty", 0),
+            ask_qty=snap.get("ask_qty", 0),
             score_momentum=s_mom,
             score_volume=s_vol,
             score_strength=s_str,
