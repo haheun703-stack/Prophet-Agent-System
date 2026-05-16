@@ -259,11 +259,32 @@ bot:
       enabled: true
       min_score_for_auto: 3       # 자동매수 최소 점수 (3/4)
       min_score_for_confirm: 2    # confirm 최소 점수 (이하면 skip)
+      min_score_for_action_add: 3 # ACTION_ADD(상승 시 추격매수) 최소 점수 (3/4)
       thresholds:
         ai_score: 40              # RealtimeMonitor 4팩터 종합 (0~100)
         strength: 90              # 체결강도 (100 기준, 90+ = 매수 우위 근접)
         bid_ask_ratio: 1.0        # 매수1호가 잔량 / 매도1호가 잔량
         vwap_distance: 1.02       # 현재가 / VWAP <= 1.02 (평균 매수자 대비 2% 이내)
+
+  # ── 빠른 익절 모드 (Quick Exit, 차트 영웅식 단타 회전) ──
+  # 모드별 익절 룰: 시장 상황/사장님 명령에 따라 유연하게 전환
+  quick_exit:
+    enabled: false                # OFF 기본 (사장님이 /익절모드 ... 명령으로 ON)
+    auto_switch: true             # 정보봇 위험등급에 따라 자동 전환
+    mode: "aggressive"            # aggressive / balanced / defensive (수동 모드)
+
+    # 모드별 익절 룰
+    # AGGRESSIVE: TP +10% + 트레일링 (큰 수익 추구, 기본 기존 동작)
+    # BALANCED:   +5% 도달 시 50% 부분 익절 + 나머지 트레일링 (분할 익절)
+    # DEFENSIVE:  +5% 도달 시 100% 전량 익절 (빠른 회전, 차트 영웅식)
+    balanced_tp_partial: 5.0      # BALANCED 부분익절 임계 (%)
+    defensive_tp_full: 5.0        # DEFENSIVE 전량익절 임계 (%)
+
+    # 자동 전환 룰 (auto_switch=true 일 때)
+    # 정보봇 위험등급에 따라 모드 자동 결정 — 위기 시 자금 회수 우선
+    auto_defensive_levels: ["CRISIS"]           # CRISIS → defensive (즉시 회수)
+    auto_balanced_levels: ["DANGER", "WARNING"] # DANGER/WARNING → balanced (분할 회수)
+    # 명시 안 된 등급(NORMAL/CAUTION) → aggressive (기본 트레일링)
 
 # --- 데이터 수집 + 추천 스케줄 ---
 # ┌────────────┬──────────────────────────────────────────────────────┐

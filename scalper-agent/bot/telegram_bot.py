@@ -2535,6 +2535,102 @@ class BodyHunterBot:
         self.config.setdefault("bot", {}).setdefault("recovery_add_on", {})["enabled"] = False
         await update.message.reply_text("⏸ Recovery Add-On 비활성화 (추매 트리거 중지)")
 
+    async def cmd_quick_exit_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """빠른 익절 모드 상태 확인"""
+        if not self._is_authorized(update):
+            return
+        qe = (self.config.get("bot", {}) or {}).get("quick_exit", {}) or {}
+        enabled = qe.get("enabled", False)
+        mode = qe.get("mode", "aggressive")
+        auto_switch = qe.get("auto_switch", True)
+        active_mode = mode
+
+        # 현재 자동 전환 상태 확인
+        auto_note = ""
+        if enabled and auto_switch:
+            try:
+                from bot.risk_gate_helper import _get_client
+                client = _get_client()
+                if client:
+                    level = client.get_current_level()
+                    if level in qe.get("auto_defensive_levels", ["CRISIS"]):
+                        active_mode = "defensive"
+                        auto_note = f"  · 자동 전환: 정보봇 {level} → defensive\n"
+                    elif level in qe.get("auto_balanced_levels", ["DANGER", "WARNING"]):
+                        active_mode = "balanced"
+                        auto_note = f"  · 자동 전환: 정보봇 {level} → balanced\n"
+                    else:
+                        auto_note = f"  · 자동 전환: 정보봇 {level} → 수동 모드({mode}) 유지\n"
+            except Exception:
+                pass
+
+        mode_desc = {
+            "aggressive": "AGGRESSIVE — TP+10% 트레일링 (큰 수익 추구)",
+            "balanced":   "BALANCED   — +5% 도달 시 50% 부분 익절 + 나머지 트레일링",
+            "defensive":  "DEFENSIVE  — +5% 도달 시 100% 전량 익절 (빠른 회수)",
+        }
+        await update.message.reply_text(
+            f"📊 빠른 익절 모드\n"
+            f"  · 활성화: {'✅ ON' if enabled else '⏸ OFF'}\n"
+            f"  · 수동 모드: {mode_desc.get(mode, mode)}\n"
+            f"  · 실제 적용 모드: {mode_desc.get(active_mode, active_mode)}\n"
+            f"  · 자동 전환: {'✅ ON (정보봇 위험등급 연동)' if auto_switch else '⏸ OFF'}\n"
+            f"{auto_note}"
+            f"\n명령:\n"
+            f"  /익절ON, /익절OFF\n"
+            f"  /익절aggressive, /익절balanced, /익절defensive\n"
+            f"  /익절자동ON, /익절자동OFF"
+        )
+
+    async def cmd_quick_exit_on(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """빠른 익절 모드 ON"""
+        if not self._is_authorized(update):
+            return
+        self.config.setdefault("bot", {}).setdefault("quick_exit", {})["enabled"] = True
+        await update.message.reply_text("✅ 빠른 익절 모드 ON — /익절상태 로 모드 확인")
+
+    async def cmd_quick_exit_off(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """빠른 익절 모드 OFF (기존 aggressive 트레일링으로 복귀)"""
+        if not self._is_authorized(update):
+            return
+        self.config.setdefault("bot", {}).setdefault("quick_exit", {})["enabled"] = False
+        await update.message.reply_text("⏸ 빠른 익절 모드 OFF (기존 트레일링)")
+
+    async def cmd_quick_exit_aggressive(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """수동 모드 = AGGRESSIVE (큰 수익 추구, 기존 트레일링)"""
+        if not self._is_authorized(update):
+            return
+        self.config.setdefault("bot", {}).setdefault("quick_exit", {})["mode"] = "aggressive"
+        await update.message.reply_text("🚀 모드 설정: AGGRESSIVE (TP +10% 트레일링)")
+
+    async def cmd_quick_exit_balanced(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """수동 모드 = BALANCED (+5% 50% 익절 + 트레일링)"""
+        if not self._is_authorized(update):
+            return
+        self.config.setdefault("bot", {}).setdefault("quick_exit", {})["mode"] = "balanced"
+        await update.message.reply_text("⚖️ 모드 설정: BALANCED (+5% 50% 익절 + 나머지 트레일링)")
+
+    async def cmd_quick_exit_defensive(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """수동 모드 = DEFENSIVE (+5% 전량 익절, 빠른 회수)"""
+        if not self._is_authorized(update):
+            return
+        self.config.setdefault("bot", {}).setdefault("quick_exit", {})["mode"] = "defensive"
+        await update.message.reply_text("🛡 모드 설정: DEFENSIVE (+5% 전량 익절, 빠른 회수)")
+
+    async def cmd_quick_exit_auto_on(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """정보봇 위험등급 자동 전환 ON"""
+        if not self._is_authorized(update):
+            return
+        self.config.setdefault("bot", {}).setdefault("quick_exit", {})["auto_switch"] = True
+        await update.message.reply_text("✅ 자동 전환 ON — CRISIS→defensive / DANGER/WARNING→balanced")
+
+    async def cmd_quick_exit_auto_off(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """정보봇 위험등급 자동 전환 OFF (수동 모드만 사용)"""
+        if not self._is_authorized(update):
+            return
+        self.config.setdefault("bot", {}).setdefault("quick_exit", {})["auto_switch"] = False
+        await update.message.reply_text("⏸ 자동 전환 OFF (수동 모드만 사용)")
+
     async def cmd_recovery_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Recovery Add-On 현재 상태 + 보유 종목별 트리거 도달 여부"""
         if not self._is_authorized(update):
@@ -2795,6 +2891,14 @@ class BodyHunterBot:
             r"^추매ON$": self.cmd_recovery_on,
             r"^추매OFF$": self.cmd_recovery_off,
             r"^추매상태$": self.cmd_recovery_status,
+            r"^익절상태$": self.cmd_quick_exit_status,
+            r"^익절ON$": self.cmd_quick_exit_on,
+            r"^익절OFF$": self.cmd_quick_exit_off,
+            r"^익절aggressive$": self.cmd_quick_exit_aggressive,
+            r"^익절balanced$": self.cmd_quick_exit_balanced,
+            r"^익절defensive$": self.cmd_quick_exit_defensive,
+            r"^익절자동ON$": self.cmd_quick_exit_auto_on,
+            r"^익절자동OFF$": self.cmd_quick_exit_auto_off,
             r"^선취매$": self.cmd_predawn,
             r"^페이퍼$": self.cmd_paper,
             r"^선매집$": self.cmd_stealth,

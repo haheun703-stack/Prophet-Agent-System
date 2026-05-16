@@ -2094,6 +2094,67 @@ class AutoTrader:
         )
         await self._alert(msg)
 
+    def _check_quick_exit(self, pos: dict, current_price: int, pnl_pct: float):
+        """빠른 익절 모드 — 차트 영웅식 유연 회전 (3-tier).
+
+        config.bot.quick_exit:
+          - enabled: 시스템 활성화
+          - mode: aggressive(기본) / balanced(50% 익절) / defensive(전량 익절)
+          - auto_switch: 정보봇 위험등급에 따라 자동 모드 전환
+          - auto_defensive_levels: ["CRISIS"]
+          - auto_balanced_levels: ["DANGER", "WARNING"]
+
+        Returns:
+            (action, reason) or (None, None)
+        """
+        from strategies.dynamic_target import ACTION_PARTIAL_SELL, ACTION_FULL_SELL
+
+        qe_cfg = (self.config.get("bot", {}) or {}).get("quick_exit", {}) or {}
+        if not qe_cfg.get("enabled", False):
+            return None, None
+
+        mode = qe_cfg.get("mode", "aggressive")
+
+        # 정보봇 위험등급 자동 전환
+        if qe_cfg.get("auto_switch", True):
+            try:
+                from bot.risk_gate_helper import _get_client
+                client = _get_client()
+                if client:
+                    level = client.get_current_level()
+                    defensive_levels = qe_cfg.get("auto_defensive_levels", ["CRISIS"])
+                    balanced_levels = qe_cfg.get("auto_balanced_levels", ["DANGER", "WARNING"])
+                    if level in defensive_levels:
+                        mode = "defensive"
+                    elif level in balanced_levels:
+                        mode = "balanced"
+                    # 그 외 (NORMAL/CAUTION) → mode 유지 (기본 aggressive)
+            except Exception:
+                pass  # 자동 전환 실패 시 수동 모드 사용
+
+        # aggressive: 기존 트레일링 그대로 (변환 없음)
+        if mode == "aggressive":
+            return None, None
+
+        # balanced: +5% 도달 시 50% 부분 익절 (1회만)
+        if mode == "balanced":
+            partial_tp = float(qe_cfg.get("balanced_tp_partial", 5.0))
+            if pnl_pct >= partial_tp and not pos.get("quick_exit_partial_done"):
+                pos["quick_exit_partial_done"] = True  # 중복 방지
+                return ACTION_PARTIAL_SELL, (
+                    f"빠른익절(BALANCED) +{pnl_pct:.1f}% 도달 → 50% 익절"
+                )
+
+        # defensive: +5% 도달 시 100% 전량 익절
+        if mode == "defensive":
+            full_tp = float(qe_cfg.get("defensive_tp_full", 5.0))
+            if pnl_pct >= full_tp:
+                return ACTION_FULL_SELL, (
+                    f"빠른익절(DEFENSIVE) +{pnl_pct:.1f}% 도달 → 전량 익절"
+                )
+
+        return None, None
+
     async def _job_monitor_fallback(self):
         """AI 모니터 실패 시 폴백: SL + 인트라데이 트레일링 스탑 체크"""
         for code, pos in list(self._positions.items()):
@@ -2277,6 +2338,16 @@ class AutoTrader:
                     action = ACTION_HOLD
                     reason = "타겟 상태 없음"
 
+                # ── 빠른 익절 모드 (Quick Exit) — 차트 영웅식 유연 회전 ──
+                # 사장님 수동 모드 또는 정보봇 위험등급에 따라 자동 익절
+                try:
+                    qe_action, qe_reason = self._check_quick_exit(pos, cp, pnl)
+                    if qe_action:
+                        action = qe_action
+                        reason = qe_reason
+                except Exception as _qe:
+                    logger.warning(f"[Quick Exit] {code} 평가 실패: {_qe}")
+
                 # ── REVERSAL 섹터 방어: 손실 중이면 즉시 청산, 수익 중이면 SL 강화 ──
                 if code in reversal_codes and action not in (ACTION_FULL_SELL, ACTION_STOP_LOSS):
                     entry = pos["entry_price"]
@@ -2414,6 +2485,36 @@ class AutoTrader:
                         self._save_positions()
                         await self._alert(f"🔴 동적 전량매도: {name}({code}) @ {cp:,} ({reason}, PnL {realized_pnl:+,}원)")
                 elif action == ACTION_ADD:
+                    # ── ACTION_ADD multi-signal 검증 (잘못된 추격매수 방지) ──
+                    # 업사이드 8%+ 조건만으로는 부족 → 장중 시그널(AI/강도/호가/VWAP) 추가 검증
+                    try:
+                        rao_full_cfg = self.config.get("bot", {}).get("recovery_add_on", {}) or {}
+                        ms_cfg = rao_full_cfg.get("multi_signal", {}) or {}
+                        if ms_cfg.get("enabled", True):
+                            rtm_add = self._get_rt_monitor()
+                            snap_add = await asyncio.to_thread(rtm_add.evaluate_position, code)
+                            if snap_add:
+                                from bot.recovery_add_on import evaluate_signals, load_config as _load_rao_cfg
+                                snap_data_add = {
+                                    "realtime_score": snap_add.realtime_score,
+                                    "strength": snap_add.strength,
+                                    "bid_qty": snap_add.bid_qty,
+                                    "ask_qty": snap_add.ask_qty,
+                                    "price": snap_add.price,
+                                    "vwap": snap_add.vwap,
+                                }
+                                cfg_full_add = _load_rao_cfg(self.config.get("bot", {}))
+                                ms_score, _ = evaluate_signals(snap_data_add, cfg_full_add)
+                                min_score = int(ms_cfg.get("min_score_for_action_add", 3))
+                                if ms_score < min_score:
+                                    logger.info(
+                                        f"[ACTION_ADD SKIP] {name}({code}) 시그널 부족 "
+                                        f"({ms_score}/4 < {min_score}) — 추격매수 건너뜀"
+                                    )
+                                    continue  # 다음 종목으로
+                    except Exception as _ms:
+                        logger.warning(f"[ACTION_ADD multi-signal] {code} 평가 실패: {_ms}")
+
                     # ── 추매: 업사이드 8%+ → 추가 매수 실행 ──
                     risk_ok, risk_reason = self.check_risk_gate()
                     if risk_ok:
