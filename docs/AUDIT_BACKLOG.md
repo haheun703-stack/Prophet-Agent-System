@@ -51,6 +51,31 @@
 
 ### 기술 부채 (TODO)
 
+#### 5/20 (검증 종료 후) 단계적 실전 활성화 — 사장님 결정 (2026-05-17)
+
+KIS API 카테고리 감리 결과 (2026-05-17):
+- ✅ NXT 자동매매 **구조적으로 가능** (`TTTC0012U` + `EXCG_ID_DVSN_CD="NXT"`, 코드 `bot/kis_trader.py:1165-1231` 작성 완료, 선취매 path만 활용 중)
+- 사장님 인식 "NXT 수동만"은 정책적 선택 (기술 한계 X)
+- WebSocket 실시간시세 (H0STCNT0/H0STASP0/H0STMOM0) 코드 작성됨 (`auto_trade=false`로 OFF)
+
+5/20 저녁 (검증 결과 분석 후) 일괄 활성화:
+
+- [ ] **NXT 자동매매 활성화** — morning_rec preview(16:45) 기반 17:00 NXT 자동 진입
+  - COO 스케줄 추가: `kst_time(17, 0)` → `_job_nxt_auto_buy`
+  - NXT eligible 필터(5/4 8d88d09) 재활용
+  - 다음날 09:00 KRX 인계 (5/16 manual_sync 가드 검증됨)
+- [ ] **WebSocket 활성화** — `auto_trade=true` 설정 + H0STCNT0/H0STASP0 구독
+  - 장중 ms 단위 추매/청산 의사결정 (현재 30초 폴링)
+- [ ] **max_auto_positions 조정** — 검증 결과 기반
+  - 2일 평균 PnL > +0.5% → max = 5 (본격)
+  - 0 ~ +0.5% → max = 3 (보수)
+  - ≤ 0% → 시그널 가중치 재조정 (적중률 낮은 보너스 축소)
+- [ ] **검증 모드 OFF** — `.env` `VERIFICATION_MODE=false` 자동 (5/20 is_active=False)
+
+5/21~: 진정한 24시간 자동매매 (NXT 17:00~20:00 + KRX 09:00~15:30)
+
+#### 일반 기술 부채
+
 - [ ] 5일선 회귀 후보를 morning_recommendation 점수에 통합 보너스로 추가 (+10점)
 - [x] `scalper_etf_leader_picks` 테이블 신설 후 ETF 주도주 결과 매일 적재 — **5/17 완료 (249ae1a)**, 30행 PASS
 - [x] `scalper_etf_leader_picks` 결과를 morning_recommendation 점수에 보너스 통합 — **5/17 완료 (854f954)**, TOP10 +10/TOP20 +6/TOP30 +3 + 다중ETF(3+) 추가 +3, 최대 +13점, VPS 봇 재시작 적재
@@ -145,3 +170,5 @@ Step C(비중 수집)는 KRX 서비스 다운 + 운용사 SPA 인증 막힘으�
 | 2026-05-17 | §2 ETF Step C 완료 | 네이버 etfAnalysis 통합 + TOP 30 적재 (249ae1a), `scalper_etf_leader_picks` 신설 |
 | 2026-05-17 | §1 기술부채 갱신 | Step C 적재 완료 체크, morning_recommendation 보너스 통합 + cron 자동화 TODO 신규 |
 | 2026-05-17 | §1 (B+C) 완성 | morning_recommendation 보너스 연동 + VPS cron 등록 + 봇 재시작 + M-1 retry 보강 (854f954, bf2399a, df2eed7) — 4개 TODO 완료 체크 |
+| 2026-05-17 | §1 검증 모드 v1 | 1주 실전 검증 (5/18~5/19) — verification_mode.py + scalper_verification_log + auto_trader 2메서드 + COO 15:25/15:35 스케줄 (aa6887b) |
+| 2026-05-17 | §1 KIS API 감리 | NXT 자동매매 구조적 가능 발견 (TTTC0012U+EXCG=NXT, 코드 작성됨, 정책으로 미사용) — 5/20 단계적 활성화 TODO 등록 |
