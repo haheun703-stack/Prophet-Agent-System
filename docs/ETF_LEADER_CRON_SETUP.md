@@ -25,26 +25,29 @@ Step B(KRX → ETF 마스터 + 패턴 감지)는 1~2분 추가 소요.
 
 ## 2. cron 등록 (권장: 매주 토요일 자정 KST)
 
+**⚠️ 중요**: Body Hunter VPS는 시스템 타임존이 **KST**(`# KST 시각` 주석으로 확인).
+cron 표현이 KST 시각 그대로 적용됨 (UTC 변환 불필요).
+
 ETF holdings는 자주 변하지 않음. **매주 1회 갱신이 적절** — 평일 매매 영향 없음, 토요일 자정에 새 데이터 반영.
 
 ```bash
 crontab -e
 ```
 
-다음 라인 추가 (UTC 기준이라 KST 토요일 00:00 = UTC 금요일 15:00):
+다음 라인 추가 (KST 시각 그대로):
 
 ```cron
-# ETF 주도주 자동 갱신 — 매주 토요일 자정 KST (= 금요일 15:00 UTC)
-0 15 * * 5 cd /home/<user>/Prophet_Agent_System && /home/<user>/Prophet_Agent_System/venv/bin/python scalper-agent/tools/refresh_etf_leaders.py --quiet >> logs/etf_leader.log 2>&1
+# ETF 주도주 자동 갱신 — 매주 토요일 자정 KST
+0 0 * * 6 cd /home/ubuntu/bodyhunter && /home/ubuntu/bodyhunter/venv/bin/python scalper-agent/tools/refresh_etf_leaders.py --quiet >> logs/etf_leader.log 2>&1
 ```
 
-**대안 옵션**:
+**대안 옵션** (모두 KST 시스템 타임존 가정):
 
 | 주기 | cron 표현 | 설명 |
 |------|-----------|------|
-| 매주 토요일 자정 KST | `0 15 * * 5` | 권장 — 평일 영향 없음 |
-| 매월 1일 03:30 KST | `30 18 1 * *` | 월 1회만 — 데이터 최신성 약함 |
-| 매일 03:30 KST | `30 18 * * *` | 매일 갱신 — 부하 큼, 네이버 차단 위험 |
+| 매주 토요일 자정 KST | `0 0 * * 6` | 권장 — 평일 영향 없음 |
+| 매월 1일 03:30 KST | `30 3 1 * *` | 월 1회만 — 데이터 최신성 약함 |
+| 매일 03:30 KST | `30 3 * * *` | 매일 갱신 — 부하 큼, 네이버 차단 위험 |
 | 분기 첫 토요일 자정 | (커스텀) | 가장 보수적 — ETF 비중 변동 빈도 고려 |
 
 ## 3. 로그 확인
