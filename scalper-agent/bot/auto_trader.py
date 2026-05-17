@@ -1269,29 +1269,57 @@ class AutoTrader:
         bought = []
         failed = []
         skipped = []
+        budget_skipped = []
 
         active_codes = {p["code"] for p in _vm.get_active_positions()}
+
+        # Critical 1: KIS 잔고 안전 한도 (검증 모드 예산 = 가용 현금의 30%)
+        # 13종목 + 장중 추가 최대 10종목 = 23종목 1주씩, 평균 30,000원/주 = 약 70만원
+        try:
+            bal = await asyncio.to_thread(self.trader.fetch_balance)
+            available_cash = bal.get("cash", 0) if bal.get("success") else 0
+            verification_budget = int(available_cash * 0.30)
+            await _send(
+                f"💰 [검증모드 예산] 가용 현금 {available_cash:,}원 × 30% = {verification_budget:,}원"
+            )
+        except Exception as _bal_e:
+            logger.warning(f"[verification] 잔고 조회 실패 — 예산 한도 X: {_bal_e}")
+            verification_budget = 999_999_999  # 한도 비활성 (조회 실패 시)
+
+        budget_used = 0
 
         for c in candidates:
             code = c["code"]
             name = c["name"]
 
-            # 중복 매수 차단
-            if code in active_codes or code in self._positions:
+            # 중복 매수 차단 (_positions + _entry_watch + _vm 모두 체크)
+            if (code in active_codes or code in self._positions
+                    or code in getattr(self, "_entry_watch", {})):
                 skipped.append(name)
+                continue
+
+            # Critical 1: 예산 한도 체크 — 추정가 (entry 또는 close)로 사전 차단
+            est_price = float(c.get("entry") or c.get("close", 0))
+            if budget_used + est_price > verification_budget:
+                budget_skipped.append(name)
                 continue
 
             try:
                 # 1주 시장가 매수
                 resp = await asyncio.to_thread(self.trader.buy_market, code, 1)
                 if resp.get("success"):
-                    # 체결가 폴백 chain: avg_price → price → entry → close
-                    buy_price = float(
-                        resp.get("avg_price")
-                        or resp.get("price")
-                        or c.get("entry")
-                        or c.get("close", 0)
-                    )
+                    # Critical 2: KIS 응답에는 avg_price/price 없음 → 매수 직후 fetch_price로 체결가 조회
+                    # 폴백 chain: fetch_price → entry → close
+                    buy_price = 0.0
+                    try:
+                        price_resp = await asyncio.to_thread(self.trader.fetch_price, code)
+                        if price_resp and price_resp.get("success"):
+                            buy_price = float(price_resp.get("price", 0))
+                    except Exception:
+                        pass
+                    if not buy_price:
+                        buy_price = float(c.get("entry") or c.get("close", 0))
+                    budget_used += buy_price
                     signal_tags = (
                         c.get("sources") or c.get("key_reasons") or ""
                     )
@@ -1335,7 +1363,7 @@ class AutoTrader:
         # 결과 알림
         lines = [
             f"🧪 [검증모드 매수 결과]",
-            f"  ✅ 성공: {len(bought)}/{len(candidates)}종목",
+            f"  ✅ 성공: {len(bought)}/{len(candidates)}종목 (예산 {budget_used:,}원 사용)",
         ]
         if bought:
             shown = ", ".join(bought[:8])
@@ -1346,6 +1374,8 @@ class AutoTrader:
             lines.append(f"  ❌ 실패 {len(failed)}: " + ", ".join(failed[:5]))
         if skipped:
             lines.append(f"  ⏭ 중복 스킵 {len(skipped)}: " + ", ".join(skipped[:5]))
+        if budget_skipped:
+            lines.append(f"  💸 예산 초과 스킵 {len(budget_skipped)}: " + ", ".join(budget_skipped[:5]))
         lines.append("")
         lines.append("15:25 강제 청산 + 15:35 정산 리포트 자동 발송")
         await _send("\n".join(lines))
@@ -1423,10 +1453,16 @@ class AutoTrader:
             try:
                 resp = await asyncio.to_thread(self.trader.buy_market, code, 1)
                 if resp.get("success"):
-                    buy_price = float(
-                        resp.get("avg_price") or resp.get("price")
-                        or c.get("current_price", 0)
-                    )
+                    # KIS 응답에 체결가 없음 → fetch_price로 조회 (시장가라 ≈ 체결가)
+                    buy_price = 0.0
+                    try:
+                        price_resp = await asyncio.to_thread(self.trader.fetch_price, code)
+                        if price_resp and price_resp.get("success"):
+                            buy_price = float(price_resp.get("price", 0))
+                    except Exception:
+                        pass
+                    if not buy_price:
+                        buy_price = float(c.get("current_price", 0))
                     _vm.record_buy(
                         code=code, name=name, buy_price=buy_price,
                         signal_tags=c["signal_tags"],
@@ -1491,39 +1527,54 @@ class AutoTrader:
         for p in active:
             code = p["code"]
             name = p["name"]
-            try:
-                resp = await asyncio.to_thread(self.trader.sell_market, code, 1)
-                if resp.get("success"):
-                    sell_price = float(
-                        resp.get("avg_price") or resp.get("price")
-                        or p.get("buy_price", 0)
+            # Critical 3: 청산 retry 2회 (총 3회 시도, 1초 간격)
+            resp = None
+            last_err = None
+            for attempt in range(3):
+                try:
+                    resp = await asyncio.to_thread(self.trader.sell_market, code, 1)
+                    if resp and resp.get("success"):
+                        break
+                    last_err = str(resp.get("msg", "?"))[:25] if resp else "응답없음"
+                except Exception as e:
+                    last_err = f"{type(e).__name__}: {str(e)[:25]}"
+                    logger.warning(f"[verification] 청산 실패 [{code}] {name} 시도 {attempt+1}/3: {e}")
+                if attempt < 2:
+                    await asyncio.sleep(1.0)
+
+            if resp and resp.get("success"):
+                # KIS 응답에 체결가 없음 → fetch_price로 조회
+                sell_price = 0.0
+                try:
+                    price_resp = await asyncio.to_thread(self.trader.fetch_price, code)
+                    if price_resp and price_resp.get("success"):
+                        sell_price = float(price_resp.get("price", 0))
+                except Exception:
+                    pass
+                if not sell_price:
+                    sell_price = float(p.get("buy_price", 0))
+                result = _vm.record_sell(code, sell_price, sell_reason="1525_close")
+                # trade_journal 적재
+                try:
+                    from data import trade_journal as _tj
+                    _tj.log_sell(
+                        code=code, name=name, qty=1,
+                        sell_price=sell_price,
+                        buy_price=p.get("buy_price", 0),
+                        event_type="sell_close",
+                        source="verification",
+                        order_no=resp.get("order_no") or resp.get("ODNO"),
+                        note="검증모드 15:25 강제 청산",
                     )
-                    result = _vm.record_sell(code, sell_price, sell_reason="1525_close")
-                    # trade_journal에도 적재
-                    try:
-                        from data import trade_journal as _tj
-                        _tj.log_sell(
-                            code=code, name=name, qty=1,
-                            sell_price=sell_price,
-                            buy_price=p.get("buy_price", 0),
-                            event_type="sell_close",
-                            source="verification",
-                            order_no=resp.get("order_no") or resp.get("ODNO"),
-                            note="검증모드 15:25 강제 청산",
-                        )
-                    except Exception as _tj_e:
-                        logger.warning(f"[trade_journal] verification sell 적재 실패: {_tj_e}")
-                    # _positions에서 제거
-                    self._positions.pop(code, None)
-                    if result:
-                        sold.append(f"{name} {result['pnl_pct']:+.2f}%")
-                    else:
-                        sold.append(f"{name}(?)")
+                except Exception as _tj_e:
+                    logger.warning(f"[trade_journal] verification sell 적재 실패: {_tj_e}")
+                self._positions.pop(code, None)
+                if result:
+                    sold.append(f"{name} {result['pnl_pct']:+.2f}%")
                 else:
-                    failed.append(f"{name}({str(resp.get('msg', '?'))[:25]})")
-            except Exception as e:
-                failed.append(f"{name}({type(e).__name__})")
-                logger.warning(f"[verification] 청산 실패 [{code}] {name}: {e}")
+                    sold.append(f"{name}(?)")
+            else:
+                failed.append(f"{name}({last_err})")
 
         msg_lines = [
             f"🧪 [검증모드 청산 결과]",
@@ -1533,7 +1584,10 @@ class AutoTrader:
             msg_lines.append("  " + ", ".join(sold[:8])
                              + (f" 외 {len(sold)-8}" if len(sold) > 8 else ""))
         if failed:
-            msg_lines.append(f"  ❌ 실패 {len(failed)}: " + ", ".join(failed[:5]))
+            msg_lines.append("")
+            msg_lines.append(f"  🚨 청산 실패 {len(failed)}종목 (3회 재시도 후) — 다음 거래일까지 보유 위험:")
+            msg_lines.append("  " + ", ".join(failed[:5]))
+            msg_lines.append("  ⚠️ 사장님 수동 확인 필요 (텔레그램 봇 또는 KIS HTS)")
         await _send("\n".join(msg_lines))
 
     async def _check_entry_watch(self):

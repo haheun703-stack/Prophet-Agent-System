@@ -62,17 +62,27 @@ def _is_intraday_window() -> bool:
 
 
 def _load_tipping_scores() -> Dict[str, float]:
-    """tipping_scan.json → {code: score} 매핑."""
+    """tipping_scan.json → {code: tipping_score} 매핑.
+
+    실제 구조 (5/17 VPS 실측):
+      {timestamp, total_scanned, coiled[30], warming[15], launched[10], summary}
+      각 항목 키: code, name, tipping_score, phase ...
+
+    coiled(매집 완성, 임계점) + warming(점화) 합산 — launched(이륙)는 이미 폭등 → 제외
+    """
     if not TIPPING_PATH.exists():
         logger.warning(f"[intraday] tipping_scan.json 없음 — 시그널 1개 누락")
         return {}
     try:
         d = json.loads(TIPPING_PATH.read_text(encoding="utf-8"))
-        return {
-            item["code"]: float(item.get("score", 0))
-            for item in d.get("top_picks", []) or d.get("items", [])
-            if item.get("code")
-        }
+        out = {}
+        for section in ("coiled", "warming"):
+            for item in d.get(section, []):
+                code = item.get("code")
+                score = item.get("tipping_score", 0)
+                if code and score:
+                    out[code] = float(score)
+        return out
     except (json.JSONDecodeError, KeyError, OSError) as e:
         logger.warning(f"[intraday] tipping_scan 로드 실패: {e}")
         return {}
@@ -95,35 +105,34 @@ def scan_intraday_signals(trader, excluded_codes: Set[str] = None) -> List[Dict]
         3개 시그널 동시 충족 종목만 (최대 _INTRADAY_MAX_PER_DAY)
     """
     if not _is_intraday_window():
-        logger.info(f"[intraday] 진입 허용 시간 외 ({_now_kst().strftime('%H:%M')}) — 스캔 스킵")
+        logger.debug(f"[intraday] 진입 허용 시간 외 ({_now_kst().strftime('%H:%M')}) — 스캔 스킵")
         return []
 
     excluded_codes = excluded_codes or set()
 
-    # 1) KIS API 체결강도 TOP N
+    # 1) KIS API 체결강도 TOP N (logger.debug — 폭주 차단)
     try:
         strength_list = trader.fetch_ranking_strength(top_n=_STRENGTH_RANK_TOP_N)
         strength_map = {
             r["code"]: r for r in strength_list
             if r.get("code") and r.get("strength", 0) >= _STRENGTH_THRESHOLD
         }
-        logger.info(
-            f"[intraday] 체결강도 TOP {_STRENGTH_RANK_TOP_N} 중 임계 {_STRENGTH_THRESHOLD}+ "
-            f"통과: {len(strength_map)}종목"
+        logger.debug(
+            f"[intraday] 체결강도 통과: {len(strength_map)}종목"
         )
     except Exception as e:
         logger.warning(f"[intraday] 체결강도 조회 실패: {e}")
         return []
 
     if not strength_map:
-        logger.info("[intraday] 체결강도 시그널 통과 종목 없음")
+        logger.debug("[intraday] 체결강도 시그널 통과 0종목")
         return []
 
     # 2) KIS API 거래량 TOP N
     try:
         volume_list = trader.fetch_ranking_volume(top_n=_VOLUME_RANK_TOP_N)
         volume_codes = {r["code"] for r in volume_list if r.get("code")}
-        logger.info(f"[intraday] 거래량 TOP {_VOLUME_RANK_TOP_N}: {len(volume_codes)}종목")
+        logger.debug(f"[intraday] 거래량 TOP: {len(volume_codes)}종목")
     except Exception as e:
         logger.warning(f"[intraday] 거래량 조회 실패: {e}")
         volume_codes = set()
@@ -185,5 +194,9 @@ def scan_intraday_signals(trader, excluded_codes: Set[str] = None) -> List[Dict]
     # 점수 내림차순 + 일일 최대 제한
     candidates.sort(key=lambda x: x["total_score"], reverse=True)
     final = candidates[:_INTRADAY_MAX_PER_DAY]
-    logger.info(f"[intraday] 멀티시그널 3개 동시 충족: {len(final)}종목 (최대 {_INTRADAY_MAX_PER_DAY})")
+    # 후보 있을 때만 INFO 로그 (알림 폭주 차단)
+    if final:
+        logger.info(f"[intraday] 멀티시그널 3개 동시 충족: {len(final)}종목 → {[c['name'] for c in final[:5]]}")
+    else:
+        logger.debug("[intraday] 합류 후보 0종목")
     return final
