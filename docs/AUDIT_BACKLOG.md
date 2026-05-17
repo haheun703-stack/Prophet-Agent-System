@@ -52,9 +52,10 @@
 ### 기술 부채 (TODO)
 
 - [ ] 5일선 회귀 후보를 morning_recommendation 점수에 통합 보너스로 추가 (+10점)
-- [x] `scalper_etf_leader_picks` 테이블 신설 후 ETF 주도주 결과 매일 적재 — **5/17 일요일 완료 (249ae1a)**, 30행 PASS, [[project_etf_leader_pipeline]] 참조
-- [ ] `scalper_etf_leader_picks` 결과를 morning_recommendation/단타 picks 점수에 보너스 통합 (TOP 30 종목 +N점) — **신규, 진정한 활용 완성**
-- [ ] ETF Step A→B→C 자동 실행 cron 등록 (매월 1일 + 분기 첫째날, VPS) — **신규, 매번 수동 트리거 회피**
+- [x] `scalper_etf_leader_picks` 테이블 신설 후 ETF 주도주 결과 매일 적재 — **5/17 완료 (249ae1a)**, 30행 PASS
+- [x] `scalper_etf_leader_picks` 결과를 morning_recommendation 점수에 보너스 통합 — **5/17 완료 (854f954)**, TOP10 +10/TOP20 +6/TOP30 +3 + 다중ETF(3+) 추가 +3, 최대 +13점, VPS 봇 재시작 적재
+- [x] ETF Step A→B→C 자동 실행 cron 등록 (매주 토 자정 KST, VPS) — **5/17 완료**, `0 0 * * 6` crontab 등록 + telegram 알림, 다음 5/23 토 00:00 KST 첫 자동 실행
+- [x] Retry 로직 (네이버 5xx/timeout 일시 장애 대응) — **5/17 완료 (df2eed7)**, M-1 보강, 3회 지수 백오프 (1s/2s/4s)
 - [ ] 정보봇 `pension_grade` 변경 알림 → 단타봇 자동 재평가 (현재 JSON 폴링 → DB push 검토)
 - [ ] Pool 모니터링 — 연결 수 메트릭 telegram_alert 연동
 - [ ] DATABASE_URL 만료/회전 시 자동 감지 + 알림
@@ -143,3 +144,4 @@ Step C(비중 수집)는 KRX 서비스 다운 + 운용사 SPA 인증 막힘으�
 | 2026-05-17 | §2 ETF 주도주 | Step A/B 완료, Step C 5/18 재개 예정 |
 | 2026-05-17 | §2 ETF Step C 완료 | 네이버 etfAnalysis 통합 + TOP 30 적재 (249ae1a), `scalper_etf_leader_picks` 신설 |
 | 2026-05-17 | §1 기술부채 갱신 | Step C 적재 완료 체크, morning_recommendation 보너스 통합 + cron 자동화 TODO 신규 |
+| 2026-05-17 | §1 (B+C) 완성 | morning_recommendation 보너스 연동 + VPS cron 등록 + 봇 재시작 + M-1 retry 보강 (854f954, bf2399a, df2eed7) — 4개 TODO 완료 체크 |
