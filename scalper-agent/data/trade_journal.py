@@ -199,6 +199,8 @@ def create_table_via_raw_conn():
 
 if __name__ == "__main__":
     import sys, io, argparse
+    # CLI 단독 실행 시 sys.path 보강 (utils.supabase_sql 해석)
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
 
