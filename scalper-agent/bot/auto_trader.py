@@ -850,9 +850,10 @@ class AutoTrader:
 
         # ── 검증 모드 분기 (5/18~5/19 1주 실전 검증, 사장님 제안) ──
         # ON 시 max_pos 무시 + 전체 1주씩 시장가 매수 + 15:25 강제 청산
+        # 5/18 사장님 결정: 자동매매 ON/OFF 무관하게 작동 (자금 신중성 + 검증만)
         try:
             from data import verification_mode as _vm
-            if _vm.is_active() and self.is_running:
+            if _vm.is_active():
                 await _send(
                     f"🧪 [검증모드 ACTIVE] {_vm.get_config_summary()['start_date']} ~ "
                     f"{_vm.get_config_summary()['end_date']}\n"
