@@ -4077,6 +4077,46 @@ class TradingCOO:
     # ═════════════════════════════════════════════
     # JGIS ETF watchlist (16:35 매일 — 정보봇 16:28 ETF 스캔 7분 후)
     # ═════════════════════════════════════════════
+    async def _job_verification_close(self, context=None) -> None:
+        """15:25 검증모드 강제 청산 (사장님 제안 2026-05-17, 1주 실전 검증).
+
+        검증 모드 OFF / 날짜 범위 외 / 보유 종목 없음 → 노옵 (graceful skip).
+        """
+        try:
+            from data import verification_mode as _vm
+            if not _vm.is_active():
+                logger.info("[COO] 검증모드 청산 스킵 (verification_mode OFF/날짜 외)")
+                return
+            if not self.auto_trader:
+                logger.warning("[COO] 검증모드 청산: auto_trader 없음")
+                return
+            logger.info("[COO] 검증모드 15:25 강제 청산 시작...")
+            await self.auto_trader.close_verification_positions()
+        except Exception as e:
+            logger.exception(f"[COO] 검증모드 청산 실패: {e}")
+
+    async def _job_verification_settlement(self, context=None) -> None:
+        """15:35 검증모드 정산 리포트 — 시그널별 적중률 텔레그램 발송."""
+        try:
+            from data import verification_mode as _vm
+            if not _vm.is_active():
+                return
+            s = _vm.daily_settlement()
+            if s.get("count", 0) == 0:
+                logger.info("[COO] 검증모드 정산: 오늘 매수 없음 (스킵)")
+                return
+            msg = _vm.format_settlement_message(s)
+            # 텔레그램 전송
+            if self.bot and getattr(self.bot, "chat_id", None) and context:
+                try:
+                    await context.bot.send_message(chat_id=self.bot.chat_id, text=msg)
+                except Exception as te:
+                    logger.warning(f"[COO] 검증모드 정산 텔레그램 실패: {te}")
+            else:
+                logger.info(f"[COO] 검증모드 정산:\n{msg}")
+        except Exception as e:
+            logger.exception(f"[COO] 검증모드 정산 실패: {e}")
+
     async def _job_jgis_etf_watchlist(self, context=None) -> dict:
         """정보봇 etf_investor_summary 조회 → 내일 수혜 후보 jgis_etf_watchlist.json 저장.
 
@@ -4193,6 +4233,13 @@ class TradingCOO:
         # ── G5 MARKET_CLOSE (15:10) ──
         jq.run_daily(self.run_g5, time=kst_time(15, 10))
         logger.info("[COO] G5 MARKET_CLOSE 등록: 15:10 KST")
+
+        # ── 검증모드 청산 + 정산 (15:25 + 15:35, 사장님 제안 2026-05-17) ──
+        # 검증 모드 OFF 또는 날짜 외 시 verification_mode.is_active()가 False → 노옵
+        jq.run_daily(self._job_verification_close, time=kst_time(15, 25))
+        logger.info("[COO] 검증모드 청산 등록: 15:25 KST (날짜/토글 자동 분기)")
+        jq.run_daily(self._job_verification_settlement, time=kst_time(15, 35))
+        logger.info("[COO] 검증모드 정산 등록: 15:35 KST")
 
         # ── G6 DATA_PIPELINE (15:40) ──
         jq.run_daily(self.run_g6, time=kst_time(15, 40))

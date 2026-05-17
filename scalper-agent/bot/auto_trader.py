@@ -848,6 +848,21 @@ class AutoTrader:
             await _send("매수 후보 없음 - 오늘 관망")
             return
 
+        # ── 검증 모드 분기 (5/18~5/19 1주 실전 검증, 사장님 제안) ──
+        # ON 시 max_pos 무시 + 전체 1주씩 시장가 매수 + 15:25 강제 청산
+        try:
+            from data import verification_mode as _vm
+            if _vm.is_active() and self.is_running:
+                await _send(
+                    f"🧪 [검증모드 ACTIVE] {_vm.get_config_summary()['start_date']} ~ "
+                    f"{_vm.get_config_summary()['end_date']}\n"
+                    f"전체 {len(candidates)}종목 1주씩 시장가 매수 진행..."
+                )
+                await self._decide_verification(candidates)
+                return
+        except Exception as _vm_e:
+            logger.warning(f"[verification] 분기 실패 (무시, 일반 모드 진행): {_vm_e}")
+
         if not self.is_running:
             lines = ["📋 매수 후보 (자동매매 OFF - 리포트만)"]
             for c in candidates:
@@ -1231,6 +1246,154 @@ class AutoTrader:
             self._ws_client = None
             self._ws_cache.clear()
             logger.info("[WS-Auto] 종료")
+
+    async def _decide_verification(self, candidates: list):
+        """검증 모드 진입 (사장님 제안 2026-05-17, 1주 실전 수익률 검증).
+
+        모든 후보를 1주씩 시장가 즉시 매수. SL/TP/6조건/max_pos 모두 우회.
+        15:25 강제 청산은 trading_coo의 verification_close 스케줄에서.
+
+        Args:
+            candidates: morning_recommendation 추천 리스트
+                       [{code, name, total_score, entry, sources, ...}]
+        """
+        from data import verification_mode as _vm
+
+        async def _send(text):
+            if self._send_alert:
+                try:
+                    await self._send_alert(text)
+                except Exception:
+                    pass
+
+        bought = []
+        failed = []
+        skipped = []
+
+        active_codes = {p["code"] for p in _vm.get_active_positions()}
+
+        for c in candidates:
+            code = c["code"]
+            name = c["name"]
+
+            # 중복 매수 차단
+            if code in active_codes or code in self._positions:
+                skipped.append(name)
+                continue
+
+            try:
+                # 1주 시장가 매수
+                resp = await asyncio.to_thread(self.trader.buy_market, code, 1)
+                if resp.get("success"):
+                    # 체결가 폴백 chain: avg_price → price → entry → close
+                    buy_price = float(
+                        resp.get("avg_price")
+                        or resp.get("price")
+                        or c.get("entry")
+                        or c.get("close", 0)
+                    )
+                    signal_tags = (
+                        c.get("sources") or c.get("key_reasons") or ""
+                    )
+                    if isinstance(signal_tags, list):
+                        signal_tags = " ".join(str(t) for t in signal_tags)
+                    _vm.record_buy(
+                        code=code,
+                        name=name,
+                        buy_price=buy_price,
+                        signal_tags=str(signal_tags),
+                        final_score=float(
+                            c.get("total_score") or c.get("final_score", 0)
+                        ),
+                    )
+                    # _positions 등록 (Eye/Guardian 등 다른 모니터가 충돌 안 하도록 source 명시)
+                    self._positions[code] = {
+                        "name": name,
+                        "qty": 1,
+                        "buy_price": buy_price,
+                        "source": "verification",
+                    }
+                    bought.append(f"{name}({buy_price:,.0f})")
+                else:
+                    failed.append(f"{name}({str(resp.get('msg', '?'))[:25]})")
+            except Exception as e:
+                failed.append(f"{name}({type(e).__name__})")
+                logger.warning(f"[verification] 매수 실패 [{code}] {name}: {e}")
+
+        # 결과 알림
+        lines = [
+            f"🧪 [검증모드 매수 결과]",
+            f"  ✅ 성공: {len(bought)}/{len(candidates)}종목",
+        ]
+        if bought:
+            shown = ", ".join(bought[:8])
+            if len(bought) > 8:
+                shown += f" 외 {len(bought) - 8}"
+            lines.append(f"  매수: {shown}")
+        if failed:
+            lines.append(f"  ❌ 실패 {len(failed)}: " + ", ".join(failed[:5]))
+        if skipped:
+            lines.append(f"  ⏭ 중복 스킵 {len(skipped)}: " + ", ".join(skipped[:5]))
+        lines.append("")
+        lines.append("15:25 강제 청산 + 15:35 정산 리포트 자동 발송")
+        await _send("\n".join(lines))
+
+    async def close_verification_positions(self):
+        """15:25 강제 청산 (trading_coo에서 호출). verification 보유 전체 시장가 매도."""
+        from data import verification_mode as _vm
+
+        async def _send(text):
+            if self._send_alert:
+                try:
+                    await self._send_alert(text)
+                except Exception:
+                    pass
+
+        if not _vm.is_active():
+            return
+
+        active = _vm.get_active_positions()
+        if not active:
+            await _send("🧪 [검증모드 청산] 보유 종목 없음 (스킵)")
+            return
+
+        await _send(f"🧪 [검증모드 15:25 청산 시작] {len(active)}종목 시장가 매도...")
+        sold = []
+        failed = []
+
+        for p in active:
+            code = p["code"]
+            name = p["name"]
+            try:
+                resp = await asyncio.to_thread(self.trader.sell_market, code, 1)
+                if resp.get("success"):
+                    sell_price = float(
+                        resp.get("avg_price") or resp.get("price")
+                        or p.get("buy_price", 0)
+                    )
+                    result = _vm.record_sell(code, sell_price, sell_reason="1525_close")
+                    # _positions에서 제거
+                    self._positions.pop(code, None)
+                    if result:
+                        sold.append(f"{name} {result['pnl_pct']:+.2f}%")
+                    else:
+                        sold.append(f"{name}(?)")
+                else:
+                    failed.append(f"{name}({str(resp.get('msg', '?'))[:25]})")
+            except Exception as e:
+                failed.append(f"{name}({type(e).__name__})")
+                logger.warning(f"[verification] 청산 실패 [{code}] {name}: {e}")
+
+        msg_lines = [
+            f"🧪 [검증모드 청산 결과]",
+            f"  ✅ 청산: {len(sold)}/{len(active)}종목",
+        ]
+        if sold:
+            msg_lines.append("  " + ", ".join(sold[:8])
+                             + (f" 외 {len(sold)-8}" if len(sold) > 8 else ""))
+        if failed:
+            msg_lines.append(f"  ❌ 실패 {len(failed)}: " + ", ".join(failed[:5]))
+        await _send("\n".join(msg_lines))
 
     async def _check_entry_watch(self):
         """진입감시 대기열 체크 - job_monitor에서 30초마다 호출
