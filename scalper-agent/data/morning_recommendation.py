@@ -1184,6 +1184,18 @@ def _step5_cross_validate(
     except Exception as _ew_e:
         logger.warning(f"[step5] EWY맵 로드 실패(무시): {_ew_e}")
 
+    # ── ETF 주도주 보너스 맵 (Supabase scalper_etf_leader_picks → TOP 30) ──
+    # 차트영웅 영상 로직 기반 ETF Step A→B→C 결과 활용 (5/17 도입)
+    _etf_leader_map = {}  # {code: {rank, bonus, tag, cross_inc, ...}}
+    try:
+        from utils.etf_leader_bonus import load_etf_leader_map as _load_etf_leader
+        _etf_leader_map = _load_etf_leader()
+        if _etf_leader_map:
+            _top10_cnt = sum(1 for v in _etf_leader_map.values() if v["rank"] <= 10)
+            logger.info(f"[step5] ETF주도주 맵: {len(_etf_leader_map)}종목 (TOP10={_top10_cnt})")
+    except Exception as _el_e:
+        logger.warning(f"[step5] ETF주도주 맵 로드 실패(무시): {_el_e}")
+
     # 모든 종목 코드 수집
     all_codes = set()
     all_codes.update(relay.get("stocks", {}).keys())
@@ -1857,6 +1869,16 @@ def _step5_cross_validate(
                 ewy_sc = -8.0  # LARGE DOWN (-5→-8)
                 sources.append(f"ewy({wc:.2f}%:-8)")
 
+        # ── ETF 주도주 보너스 (Step C TOP 30 합류) ─────
+        # TOP 10: +10 + cross / TOP 20: +6 / TOP 30: +3 / 추가 다중 ETF(3+): +3
+        etf_leader_sc = 0.0
+        if code in _etf_leader_map:
+            _el = _etf_leader_map[code]
+            etf_leader_sc = _el["bonus"]
+            sources.append(_el["tag"])
+            if _el.get("cross_inc"):
+                cross += 1  # TOP 10만 교차검증 카운트 (강한 시그널)
+
         # ── 합산 ──────────────────────────────
         raw_total = (relay_sc + premove_sc + tech_sc + bargain_sc + cross_bonus
                      + nat_sc + news_pen + obv_pen + rel_pen
@@ -1882,7 +1904,8 @@ def _step5_cross_validate(
                      + etf_flow_sc   # ETF 자금흐름 부스터
                      + macro_sc      # 매크로 리스크 레이더
                      + pension_sc     # 연기금 매수등급 보너스
-                     + ewy_sc)        # EWY 비중 변동 보너스
+                     + ewy_sc         # EWY 비중 변동 보너스
+                     + etf_leader_sc) # ETF 주도주 (Step C TOP 30) 보너스
 
         # ── US 모드 조정 ──────────────────────
         # DEFENSIVE: 전체 점수 20% 감점 (보수적 진입)

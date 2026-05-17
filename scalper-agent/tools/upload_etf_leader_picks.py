@@ -19,8 +19,6 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
-
 ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(ROOT / "scalper-agent"))
 
@@ -192,6 +190,8 @@ def upload(date_str: str, create_table: bool = False):
 
 
 if __name__ == "__main__":
+    # 단독 실행 시에만 stdout UTF-8 강제 (모듈 import 시 다른 wrapper와 충돌 방지)
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
     if len(sys.argv) < 2:
         print("Usage: python tools/upload_etf_leader_picks.py YYYYMMDD [--create-table]")
         sys.exit(1)

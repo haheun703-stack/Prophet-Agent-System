@@ -20,8 +20,6 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
-
 try:
     from zoneinfo import ZoneInfo
     KST = ZoneInfo("Asia/Seoul")
@@ -220,5 +218,7 @@ def main(base_date: str = "20260515"):
 
 
 if __name__ == "__main__":
+    # 단독 실행 시에만 stdout UTF-8 강제 (모듈 import 시 다른 wrapper와 충돌 방지)
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
     date = sys.argv[1] if len(sys.argv) > 1 else "20260515"
     main(date)

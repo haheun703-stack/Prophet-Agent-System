@@ -29,8 +29,6 @@ try:
 except ImportError:
     KST = None  # Python 3.8 호환
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
-
 from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parent.parent  # D:\Prophet_Agent_System_예언자
 load_dotenv(ROOT / ".env")
@@ -385,4 +383,6 @@ def print_report(r: dict):
 
 
 if __name__ == "__main__":
+    # 단독 실행 시에만 stdout UTF-8 강제 (모듈 import 시 다른 wrapper와 충돌 방지)
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
     main()
