@@ -52,7 +52,8 @@ _VALID_EVENT_TYPES = {
 
 _VALID_SOURCES = {
     "morning_rec",      # 09:00 morning_recommendation 자동
-    "verification",     # 검증 모드 (1주씩)
+    "verification",     # 검증 모드 morning_rec (1주씩)
+    "intraday_scan",    # 검증 모드 v2 — 장중 멀티시그널 진입 (5/17 사장님 결정)
     "nxt_auto",         # NXT 자동매매 (5/21+)
     "predawn",          # 선취매 (afterhours)
     "manual",           # 사장님 수동

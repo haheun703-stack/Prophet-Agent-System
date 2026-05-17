@@ -4095,6 +4095,22 @@ class TradingCOO:
         except Exception as e:
             logger.exception(f"[COO] 검증모드 청산 실패: {e}")
 
+    async def _job_intraday_verification_scan(self, context=None) -> None:
+        """5분 반복 — 장중 멀티시그널 신규 진입 (검증 모드 v2).
+
+        검증 모드 OFF / 진입 허용 시간 외(09:05~14:00) / 후보 없음 → 노옵.
+        호출 자체는 5분마다 실행되지만 내부 가드로 graceful skip.
+        """
+        try:
+            from data import verification_mode as _vm
+            if not _vm.is_active():
+                return
+            if not self.auto_trader:
+                return
+            await self.auto_trader.intraday_verification_scan_and_buy()
+        except Exception as e:
+            logger.warning(f"[COO] 장중 스캔 실패 (무시): {e}")
+
     async def _job_verification_settlement(self, context=None) -> None:
         """15:35 검증모드 정산 리포트 — 시그널별 적중률 텔레그램 발송."""
         try:
@@ -4240,6 +4256,12 @@ class TradingCOO:
         logger.info("[COO] 검증모드 청산 등록: 15:25 KST (날짜/토글 자동 분기)")
         jq.run_daily(self._job_verification_settlement, time=kst_time(15, 35))
         logger.info("[COO] 검증모드 정산 등록: 15:35 KST")
+
+        # ── 검증모드 v2: 장중 멀티시그널 진입 (5분 반복, 09:05~14:00) ──
+        # 사장님 결정 2026-05-17: 추천 외 종목도 체결강도+거래량+tipping 3개 동시 충족 시 자동 진입
+        # 검증 모드 OFF / 시간 외 / 후보 없음 → graceful skip
+        jq.run_repeating(self._job_intraday_verification_scan, interval=300, first=540)
+        logger.info("[COO] 검증모드 장중 스캔 등록: 5분 반복 (09:05~14:00 활성)")
 
         # ── G6 DATA_PIPELINE (15:40) ──
         jq.run_daily(self.run_g6, time=kst_time(15, 40))

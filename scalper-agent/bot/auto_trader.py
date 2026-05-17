@@ -1350,6 +1350,121 @@ class AutoTrader:
         lines.append("15:25 강제 청산 + 15:35 정산 리포트 자동 발송")
         await _send("\n".join(lines))
 
+    async def intraday_verification_scan_and_buy(self):
+        """장중 멀티시그널 신규 진입 (사장님 결정 2026-05-17, 검증 모드 v2).
+
+        09:05~14:00 5분마다 호출. 체결강도+거래량+tipping 3개 동시 충족 종목을
+        1주씩 즉시 시장가 매수. 일일 최대 10종목 추가.
+
+        검증 모드 OFF / 시간 외 / 후보 없음 → 노옵.
+        """
+        from data import verification_mode as _vm
+
+        async def _send(text):
+            if self._send_alert:
+                try:
+                    await self._send_alert(text)
+                except Exception:
+                    pass
+
+        if not _vm.is_active():
+            return
+
+        # 일일 추가 매수 한도 체크 (verification_log에서 source='intraday' 카운트)
+        try:
+            from utils.supabase_sql import query_one
+            row = query_one(
+                """
+                SELECT COUNT(*) AS n FROM scalper_trade_journal
+                WHERE event_date = CURRENT_DATE
+                  AND source = 'intraday_scan'
+                  AND event_type = 'buy'
+                """
+            )
+            today_intraday_count = row["n"] if row else 0
+        except Exception:
+            today_intraday_count = 0
+
+        if today_intraday_count >= 10:
+            logger.info(f"[intraday] 일일 최대 10종목 도달 ({today_intraday_count}) — 스킵")
+            return
+
+        # 제외 종목: 보유 종목 + verification 보유 + 기존 morning_rec 후보
+        excluded = set(self._positions.keys())
+        try:
+            for p in _vm.get_active_positions():
+                excluded.add(p["code"])
+        except Exception:
+            pass
+
+        try:
+            from data.intraday_scanner import scan_intraday_signals
+            candidates = await asyncio.to_thread(scan_intraday_signals, self.trader, excluded)
+        except Exception as e:
+            logger.warning(f"[intraday] 스캔 실패 (무시): {e}")
+            return
+
+        if not candidates:
+            return  # quiet (5분마다 도는 거라 노이즈 방지)
+
+        # 잔여 슬롯 (일일 10종목 한도 차감)
+        slots = max(0, 10 - today_intraday_count)
+        candidates = candidates[:slots]
+
+        await _send(
+            f"🚀 [장중 멀티시그널 진입] {len(candidates)}종목 발견 — 1주씩 매수 진행"
+        )
+
+        bought = []
+        failed = []
+        for c in candidates:
+            code = c["code"]
+            name = c["name"]
+            try:
+                resp = await asyncio.to_thread(self.trader.buy_market, code, 1)
+                if resp.get("success"):
+                    buy_price = float(
+                        resp.get("avg_price") or resp.get("price")
+                        or c.get("current_price", 0)
+                    )
+                    _vm.record_buy(
+                        code=code, name=name, buy_price=buy_price,
+                        signal_tags=c["signal_tags"],
+                        final_score=c.get("total_score", 0),
+                    )
+                    # trade_journal — source='intraday_scan'으로 구분
+                    try:
+                        from data import trade_journal as _tj
+                        _tj.log_buy(
+                            code=code, name=name, qty=1, price=buy_price,
+                            source="intraday_scan",
+                            signal_tags=c["signal_tags"],
+                            final_score=c.get("total_score", 0),
+                            order_no=resp.get("order_no") or resp.get("ODNO"),
+                            note=f"intraday strength={c['strength']:.0f} tipping={c['tipping_score']:.0f}",
+                        )
+                    except Exception as _tj_e:
+                        logger.warning(f"[trade_journal] intraday 적재 실패: {_tj_e}")
+                    self._positions[code] = {
+                        "name": name, "qty": 1, "buy_price": buy_price,
+                        "source": "verification_intraday",
+                    }
+                    bought.append(f"{name}(강도{c['strength']:.0f})")
+                else:
+                    failed.append(f"{name}({str(resp.get('msg', '?'))[:20]})")
+            except Exception as e:
+                failed.append(f"{name}({type(e).__name__})")
+                logger.warning(f"[intraday] 매수 실패 [{code}] {name}: {e}")
+
+        msg = [
+            f"🚀 [장중 진입 결과] ✅ {len(bought)}/{len(candidates)}종목",
+        ]
+        if bought:
+            msg.append("  " + ", ".join(bought[:5]) + (f" 외 {len(bought)-5}" if len(bought) > 5 else ""))
+        if failed:
+            msg.append(f"  ❌ 실패 {len(failed)}: " + ", ".join(failed[:3]))
+        await _send("\n".join(msg))
+
     async def close_verification_positions(self):
         """15:25 강제 청산 (trading_coo에서 호출). verification 보유 전체 시장가 매도."""
         from data import verification_mode as _vm
