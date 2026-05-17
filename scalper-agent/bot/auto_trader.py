@@ -1306,6 +1306,18 @@ class AutoTrader:
                             c.get("total_score") or c.get("final_score", 0)
                         ),
                     )
+                    # trade_journal에도 적재 (FLOWX 대시보드 데이터 소스)
+                    try:
+                        from data import trade_journal as _tj
+                        _tj.log_buy(
+                            code=code, name=name, qty=1, price=buy_price,
+                            source="verification",
+                            signal_tags=str(signal_tags),
+                            final_score=float(c.get("total_score") or c.get("final_score", 0)),
+                            order_no=resp.get("order_no") or resp.get("ODNO"),
+                        )
+                    except Exception as _tj_e:
+                        logger.warning(f"[trade_journal] verification buy 적재 실패: {_tj_e}")
                     # _positions 등록 (Eye/Guardian 등 다른 모니터가 충돌 안 하도록 source 명시)
                     self._positions[code] = {
                         "name": name,
@@ -1372,6 +1384,20 @@ class AutoTrader:
                         or p.get("buy_price", 0)
                     )
                     result = _vm.record_sell(code, sell_price, sell_reason="1525_close")
+                    # trade_journal에도 적재
+                    try:
+                        from data import trade_journal as _tj
+                        _tj.log_sell(
+                            code=code, name=name, qty=1,
+                            sell_price=sell_price,
+                            buy_price=p.get("buy_price", 0),
+                            event_type="sell_close",
+                            source="verification",
+                            order_no=resp.get("order_no") or resp.get("ODNO"),
+                            note="검증모드 15:25 강제 청산",
+                        )
+                    except Exception as _tj_e:
+                        logger.warning(f"[trade_journal] verification sell 적재 실패: {_tj_e}")
                     # _positions에서 제거
                     self._positions.pop(code, None)
                     if result:
