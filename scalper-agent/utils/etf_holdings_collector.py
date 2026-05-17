@@ -26,6 +26,11 @@ _BASE_URL = "https://m.stock.naver.com/api/stock/{ticker}/etfAnalysis"
 _TIMEOUT = 15
 _DEFAULT_SLEEP_SEC = 0.3  # 네이버 부하 방지 — 일괄 수집 시 적용
 
+# M-1: Retry 정책 (네이버 5xx/timeout 일시 장애 대응) — 5/17 보강
+_MAX_RETRIES = 2          # 총 시도 = 1 + retries = 3회
+_RETRY_BACKOFF_SEC = 1.0  # 지수 백오프 기준 (1초, 2초, 4초)
+_RETRY_STATUS = (500, 502, 503, 504, 408, 429)  # 일시 장애 코드만
+
 _HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -51,8 +56,55 @@ def _parse_count(count_str: str) -> int:
     return int(count_str.replace(",", "").strip() or 0)
 
 
+def _fetch_with_retry(url: str, session) -> Optional[Dict]:
+    """M-1: 네이버 API 호출 + 일시 장애 시 지수 백오프 재시도.
+
+    재시도 트리거:
+      - HTTP 5xx (500/502/503/504), 408 timeout, 429 rate limit
+      - Connection 에러, Timeout 에러
+    비재시도 (즉시 None):
+      - HTTP 4xx (404 등) — 데이터 없음/잘못된 ticker
+      - JSON 파싱 실패 — 응답 형식 이상
+
+    Returns:
+        파싱된 JSON dict 또는 None
+    """
+    for attempt in range(_MAX_RETRIES + 1):  # 0, 1, 2 = 총 3회
+        try:
+            r = session.get(url, headers=_HEADERS, timeout=_TIMEOUT)
+            if r.status_code == 200:
+                return r.json()
+            if r.status_code in _RETRY_STATUS and attempt < _MAX_RETRIES:
+                backoff = _RETRY_BACKOFF_SEC * (2 ** attempt)
+                logger.info(
+                    f"  HTTP {r.status_code} — {backoff:.1f}s 대기 후 재시도 "
+                    f"({attempt + 1}/{_MAX_RETRIES})"
+                )
+                time.sleep(backoff)
+                continue
+            # 비재시도 코드 (4xx 등)
+            logger.warning(f"  HTTP {r.status_code} (비재시도)")
+            return None
+        except (requests.Timeout, requests.ConnectionError) as e:
+            if attempt < _MAX_RETRIES:
+                backoff = _RETRY_BACKOFF_SEC * (2 ** attempt)
+                logger.info(
+                    f"  {type(e).__name__} — {backoff:.1f}s 대기 후 재시도 "
+                    f"({attempt + 1}/{_MAX_RETRIES})"
+                )
+                time.sleep(backoff)
+                continue
+            logger.warning(f"  {type(e).__name__} 최대 재시도 초과: {e}")
+            return None
+        except (requests.RequestException, json.JSONDecodeError) as e:
+            # 기타 에러는 재시도하지 않음 (파싱 에러 등은 재시도해도 동일)
+            logger.warning(f"  {type(e).__name__}: {e}")
+            return None
+    return None
+
+
 def fetch_etf_holdings(ticker: str, session: Optional[requests.Session] = None) -> Optional[Dict]:
-    """단일 ETF 비중 + 메타 수집.
+    """단일 ETF 비중 + 메타 수집 (M-1 retry 적용).
 
     Returns:
         {
@@ -73,14 +125,8 @@ def fetch_etf_holdings(ticker: str, session: Optional[requests.Session] = None) 
     """
     s = session or requests
     url = _BASE_URL.format(ticker=ticker)
-    try:
-        r = s.get(url, headers=_HEADERS, timeout=_TIMEOUT)
-        if r.status_code != 200:
-            logger.warning(f"[{ticker}] HTTP {r.status_code}")
-            return None
-        d = r.json()
-    except (requests.RequestException, json.JSONDecodeError) as e:
-        logger.warning(f"[{ticker}] 요청 실패: {type(e).__name__}: {e}")
+    d = _fetch_with_retry(url, s)
+    if d is None:
         return None
 
     holdings_raw = d.get("etfTop10MajorConstituentAssets") or []
