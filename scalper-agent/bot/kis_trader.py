@@ -237,7 +237,14 @@ class KISTrader:
                     })
 
                 s = summary[0] if summary else {}
-                cash = _safe_int(s.get("psbl_ord_amt", 0) or s.get("dnca_tot_amt", 0))
+                # KIS API 주문가능현금 우선순위 (5/18 사장님 지적):
+                #   psbl_ord_amt (mojito 매핑) → prvs_rcdl_excc_amt (가수도정산 D+2, HTS 주문가능원화) → dnca_tot_amt (예수금 D+0)
+                #   기존: dnca_tot_amt만 fallback → 107만 / 실제 HTS 5,684만 → 5,500만 누락 사고
+                cash = _safe_int(
+                    s.get("psbl_ord_amt", 0)
+                    or s.get("prvs_rcdl_excc_amt", 0)
+                    or s.get("dnca_tot_amt", 0)
+                )
                 total_eval = _safe_int(s.get("tot_evlu_amt", 0))
 
                 with self._lock:
