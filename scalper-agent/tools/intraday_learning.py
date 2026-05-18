@@ -242,6 +242,30 @@ def run_once() -> None:
         send_telegram_alert(msg)
         logger.info(f"텔레그램 알림 발송: {len(anomalies)}건")
 
+    # ── 14:00 / 15:30 자비스 v3.0 hook (P1, 5/18 형 요청) ──
+    # cron이 매 30분 자동 실행하므로 14:00 / 15:30에 추가 hook 자동 호출
+    hour, minute = now.hour, now.minute
+    if hour == 14 and minute == 0:
+        try:
+            from utils.scalper_journal_hooks import hook_midday_report
+            mid_id = hook_midday_report()
+            if mid_id:
+                logger.info(f"✅ 14:00 hook_midday_report 적재 id={mid_id}")
+                print(f"\n📡 14:00 형 BAT-D 사전 데이터 적재 완료 (id={mid_id})")
+        except Exception as e:
+            logger.warning(f"hook_midday_report 실패: {e}")
+    elif hour == 15 and minute == 30:
+        try:
+            from utils.scalper_journal_hooks import hook_daily_journal
+            # 일일 trade_journal 통계 조회 (TODO: 실제 source별 적중률 SELECT)
+            # 임시: 기본값으로 적재 (5/19 첫 가동 후 source별 분석 확장)
+            j_id = hook_daily_journal(total_trades=0, wins=0, losses=0)
+            if j_id:
+                logger.info(f"✅ 15:30 hook_daily_journal 적재 id={j_id}")
+                print(f"\n📡 15:30 형 BAT-D 사전 정산 적재 완료 (id={j_id})")
+        except Exception as e:
+            logger.warning(f"hook_daily_journal 실패: {e}")
+
     # ── 시장 전체 동적 발굴 (5/18 사장님 지시) ──
     try:
         discoveries = scan_market_discoveries()
