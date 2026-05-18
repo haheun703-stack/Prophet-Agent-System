@@ -87,23 +87,23 @@ def fetch_advisory_by_id(adv_id: int) -> Optional[Dict]:
 
 
 def _row_to_dict(row, include_target: bool = False) -> Dict:
-    """psycopg2 row → dict 변환."""
+    """RealDictCursor row(dict) → 표준화 dict 변환."""
     base = {
-        "id": row[0],
-        "advisory_date": str(row[1]),
-        "advisory_time": str(row[2]),
-        "msg_type": row[3],
-        "market_regime": row[4],
-        "market_strength_avg": float(row[5]) if row[5] is not None else None,
-        "inverse_etf_strength": float(row[6]) if row[6] is not None else None,
-        "title": row[7],
-        "body": row[8],
-        "related_tickers": row[9] or [],
-        "alert_codes": row[10] or [],
-        "reasoning": row[11],
+        "id": row["id"],
+        "advisory_date": str(row["advisory_date"]),
+        "advisory_time": str(row["advisory_time"]),
+        "msg_type": row["msg_type"],
+        "market_regime": row["market_regime"],
+        "market_strength_avg": float(row["market_strength_avg"]) if row.get("market_strength_avg") is not None else None,
+        "inverse_etf_strength": float(row["inverse_etf_strength"]) if row.get("inverse_etf_strength") is not None else None,
+        "title": row["title"],
+        "body": row["body"],
+        "related_tickers": row.get("related_tickers") or [],
+        "alert_codes": row.get("alert_codes") or [],
+        "reasoning": row.get("reasoning"),
     }
-    if include_target and len(row) > 12:
-        base["target_bot"] = row[12]
+    if include_target:
+        base["target_bot"] = row.get("target_bot")
     return base
 
 

@@ -199,7 +199,7 @@ if __name__ == "__main__":
     if fid:
         rows = query("SELECT id, msg_type, code, payload FROM scalper_bot_feedback WHERE id = %s", (fid,))
         for r in rows:
-            print(f"  id={r[0]} type={r[1]} code={r[2]} payload={r[3]}")
+            print(f"  id={r['id']} type={r['msg_type']} code={r['code']} payload={r['payload']}")
         # 정리 (테스트 데이터 삭제)
         with get_conn() as conn:
             with conn.cursor() as cur:
