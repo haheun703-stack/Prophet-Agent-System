@@ -1,0 +1,158 @@
+# -*- coding: utf-8 -*-
+"""퀀트봇 형 advisory 구독 클라이언트 (5/18 형과 양방향 채널 합의)
+
+형 → 동생: quant_bot_advisory 테이블 SELECT
+- 1일 4회 정규: 09:30 / 11:00 / 13:30 / 15:00
+- 1일 1+회 LEADING: 형 판단 시 (5/18 10:04 첫 advisory)
+
+동생 측 사용 패턴:
+  from utils.quant_advisory_subscriber import fetch_latest_advisory, fetch_today_advisories
+
+  # 검증 모드 v3 매수 직전에 호출 (08:55)
+  adv = fetch_latest_advisory()
+  if adv and adv['market_regime'] in ('CAUTION', 'BEARISH'):
+      ... # 진입 자제 또는 STRONG 등급만 매수
+
+운영:
+  python utils/quant_advisory_subscriber.py        # 오늘 모든 advisory 조회
+  python utils/quant_advisory_subscriber.py --id 1 # 특정 id 조회 (검증용)
+"""
+import argparse
+import sys
+from pathlib import Path
+from typing import Dict, List, Optional
+
+# 프로젝트 루트
+_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_ROOT))
+
+from dotenv import load_dotenv
+load_dotenv(_ROOT.parent / ".env")
+
+from utils.supabase_sql import query  # noqa: E402
+
+
+def fetch_latest_advisory(target_bot: str = "scalper") -> Optional[Dict]:
+    """오늘 가장 최근 advisory 조회 (단타봇 매수 직전 호출 권장)."""
+    rows = query(
+        """
+        SELECT id, advisory_date, advisory_time, msg_type, market_regime,
+               market_strength_avg, inverse_etf_strength,
+               title, body, related_tickers, alert_codes, reasoning
+        FROM quant_bot_advisory
+        WHERE advisory_date = CURRENT_DATE
+          AND target_bot = %s
+        ORDER BY advisory_time DESC
+        LIMIT 1
+        """,
+        (target_bot,),
+    )
+    if not rows:
+        return None
+    return _row_to_dict(rows[0])
+
+
+def fetch_today_advisories(target_bot: str = "scalper") -> List[Dict]:
+    """오늘 모든 advisory 조회 (저녁 종합 분석용)."""
+    rows = query(
+        """
+        SELECT id, advisory_date, advisory_time, msg_type, market_regime,
+               market_strength_avg, inverse_etf_strength,
+               title, body, related_tickers, alert_codes, reasoning
+        FROM quant_bot_advisory
+        WHERE advisory_date = CURRENT_DATE
+          AND target_bot = %s
+        ORDER BY advisory_time ASC
+        """,
+        (target_bot,),
+    )
+    return [_row_to_dict(r) for r in rows]
+
+
+def fetch_advisory_by_id(adv_id: int) -> Optional[Dict]:
+    """특정 id 조회 (검증/디버그용)."""
+    rows = query(
+        """
+        SELECT id, advisory_date, advisory_time, msg_type, market_regime,
+               market_strength_avg, inverse_etf_strength,
+               title, body, related_tickers, alert_codes, reasoning, target_bot
+        FROM quant_bot_advisory
+        WHERE id = %s
+        """,
+        (adv_id,),
+    )
+    if not rows:
+        return None
+    return _row_to_dict(rows[0], include_target=True)
+
+
+def _row_to_dict(row, include_target: bool = False) -> Dict:
+    """psycopg2 row → dict 변환."""
+    base = {
+        "id": row[0],
+        "advisory_date": str(row[1]),
+        "advisory_time": str(row[2]),
+        "msg_type": row[3],
+        "market_regime": row[4],
+        "market_strength_avg": float(row[5]) if row[5] is not None else None,
+        "inverse_etf_strength": float(row[6]) if row[6] is not None else None,
+        "title": row[7],
+        "body": row[8],
+        "related_tickers": row[9] or [],
+        "alert_codes": row[10] or [],
+        "reasoning": row[11],
+    }
+    if include_target and len(row) > 12:
+        base["target_bot"] = row[12]
+    return base
+
+
+def print_advisory(adv: Dict) -> None:
+    """advisory 사람이 읽기 좋게 출력."""
+    print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print(f"🤖 퀀트봇 형 Advisory #{adv['id']}")
+    print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    print(f"📅 {adv['advisory_date']}  ⏰ {adv['advisory_time']}")
+    print(f"📋 Type: {adv['msg_type']}  Regime: {adv['market_regime']}")
+    if adv['market_strength_avg'] is not None:
+        print(f"📊 시장 강도: {adv['market_strength_avg']:.2f}  인버스 강도: {adv['inverse_etf_strength']:.2f}")
+    print()
+    print(f"📌 {adv['title']}")
+    print()
+    if adv['body']:
+        print(f"{adv['body']}")
+        print()
+    if adv['related_tickers']:
+        print(f"🎯 종목: {', '.join(adv['related_tickers'])}")
+    if adv['alert_codes']:
+        print(f"🚨 Alert: {', '.join(adv['alert_codes'])}")
+    if adv['reasoning']:
+        print(f"💡 Reasoning: {adv['reasoning']}")
+    print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="퀀트봇 형 advisory 구독 클라이언트")
+    parser.add_argument("--id", type=int, help="특정 id 조회")
+    parser.add_argument("--all", action="store_true", help="오늘 모든 advisory")
+    args = parser.parse_args()
+
+    if args.id:
+        adv = fetch_advisory_by_id(args.id)
+        if adv:
+            print_advisory(adv)
+        else:
+            print(f"advisory id={args.id} 없음")
+    elif args.all:
+        advs = fetch_today_advisories()
+        print(f"=== 오늘 advisory {len(advs)}건 ===\n")
+        for adv in advs:
+            print_advisory(adv)
+            print()
+    else:
+        # 기본: 최신 1건
+        adv = fetch_latest_advisory()
+        if adv:
+            print_advisory(adv)
+        else:
+            print("오늘 advisory 없음")
