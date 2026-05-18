@@ -1347,6 +1347,17 @@ class AutoTrader:
                         )
                     except Exception as _tj_e:
                         logger.warning(f"[trade_journal] verification buy 적재 실패: {_tj_e}")
+                    # ★ scalper_bot_feedback 양방향 채널 적재 (5/18 사장님 지적 즉시 통합) ★
+                    try:
+                        from utils.scalper_journal_hooks import hook_buy_execution
+                        hook_buy_execution(
+                            ticker=code, name=name, price=int(buy_price), qty=1,
+                            grade=str(c.get("grade", "STRONG")),
+                            source="verification",
+                            extra_reason=f"signal_tags={signal_tags} score={c.get('total_score', 0):.0f}",
+                        )
+                    except Exception as _h_e:
+                        logger.debug(f"[scalper_hooks] buy 적재 실패 (무시): {_h_e}")
                     # _positions 등록 (Eye/Guardian 등 다른 모니터가 충돌 안 하도록 source 명시)
                     self._positions[code] = {
                         "name": name,
@@ -1482,6 +1493,17 @@ class AutoTrader:
                         )
                     except Exception as _tj_e:
                         logger.warning(f"[trade_journal] intraday 적재 실패: {_tj_e}")
+                    # ★ scalper_bot_feedback 양방향 채널 적재 (5/18 사장님 지적 즉시 통합) ★
+                    try:
+                        from utils.scalper_journal_hooks import hook_buy_execution
+                        hook_buy_execution(
+                            ticker=code, name=name, price=int(buy_price), qty=1,
+                            grade="MEDIUM",  # 장중 멀티시그널은 MEDIUM 등급
+                            source="intraday_scan",
+                            extra_reason=f"strength={c.get('strength',0):.0f} tipping={c.get('tipping_score',0):.0f}",
+                        )
+                    except Exception as _h_e:
+                        logger.debug(f"[scalper_hooks] intraday buy 적재 실패 (무시): {_h_e}")
                     self._positions[code] = {
                         "name": name, "qty": 1, "buy_price": buy_price,
                         "source": "verification_intraday",
@@ -1569,6 +1591,17 @@ class AutoTrader:
                     )
                 except Exception as _tj_e:
                     logger.warning(f"[trade_journal] verification sell 적재 실패: {_tj_e}")
+                # ★ scalper_bot_feedback 양방향 채널 청산 적재 (5/18 사장님 지적 즉시 통합) ★
+                try:
+                    from utils.scalper_journal_hooks import hook_sell_execution
+                    hook_sell_execution(
+                        ticker=code, name=name,
+                        entry_price=int(p.get("buy_price", 0)),
+                        close_price=int(sell_price), qty=1,
+                        sell_reason="검증모드 15:25 강제 청산",
+                    )
+                except Exception as _h_e:
+                    logger.debug(f"[scalper_hooks] sell 적재 실패 (무시): {_h_e}")
                 self._positions.pop(code, None)
                 if result:
                     sold.append(f"{name} {result['pnl_pct']:+.2f}%")
