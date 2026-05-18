@@ -3016,6 +3016,16 @@ class AutoTrader:
                         self._save_positions()
                         await self._alert(f"🔴 동적 전량매도: {name}({code}) @ {cp:,} ({reason}, PnL {realized_pnl:+,}원)")
                 elif action == ACTION_ADD:
+                    # manual_sync 종목 자동 추격매수 면제 (사장님 5/19 08:30 "전력주 가만히 둬" 결정)
+                    # — 전력주 5종목(대한전선/SKC/제룡전기/산일전기/일진전기) 자연 반등 대기 보호
+                    # — EYE+Guardian SKIP과 동일 정책: SL/TP만 청산 트리거
+                    if pos.get("source", "").startswith("manual_sync"):
+                        logger.info(
+                            f"[ACTION_ADD SKIP] {name}({code}) — manual_sync 보유, "
+                            f"자동 추격매수 면제 (사장님 가만히 둬)"
+                        )
+                        continue
+
                     # 5/19 D-Day 신규 — ACTION_ADD 일일 한도 (사장님 "추매 2종목" 컨셉)
                     _max_add = int(self.config.get("bot", {}).get("action_add_max_per_day", 999))
                     _today_str = date.today().isoformat()
