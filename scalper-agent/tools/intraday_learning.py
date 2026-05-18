@@ -160,12 +160,24 @@ def detect_anomalies(current: Dict, previous: Optional[Dict]) -> List[str]:
     return alerts
 
 
-# ── 텔레그램 알림 (단타봇 토큰 사용) ────────────────────
+# ── 텔레그램 알림 (단타봇 토큰 직접 HTTP 호출) ──────────
 def send_telegram_alert(message: str) -> None:
-    """텔레그램 알림 (단타봇 send_telegram_message 재사용)."""
+    """텔레그램 알림 (.env 토큰으로 직접 HTTP POST)."""
+    import requests
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+    if not token or not chat_id:
+        logger.warning("TELEGRAM_BOT_TOKEN/CHAT_ID 미설정")
+        return
     try:
-        from bot.telegram_bot import send_telegram_message
-        send_telegram_message(message, parse_mode="HTML")
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        resp = requests.post(
+            url,
+            json={"chat_id": chat_id, "text": message, "parse_mode": "HTML"},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            logger.warning(f"텔레그램 응답 {resp.status_code}: {resp.text[:200]}")
     except Exception as e:
         logger.warning(f"텔레그램 알림 실패: {e}")
 
