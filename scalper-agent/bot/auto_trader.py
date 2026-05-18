@@ -1023,32 +1023,29 @@ class AutoTrader:
                     f"  · 인버스 강도: {inverse:.1f} (120+ 약세 베팅 우세)"
                 )
 
-                # 게이트 ①-a: regime 기반 BEARISH/PANIC 차단
+                # 게이트 ①: regime 기반 BEARISH/PANIC 차단 (가장 신뢰)
+                # market_strength_avg는 큰형 강력포착 TOP 9의 체결강도 평균
+                # (100=균형, 80~90=매도 우세=약세, 110+=매수 우세=강세)
+                # → strength 단독 차단 X, regime 신호와 합쳐서만 사용
                 if regime in ('BEARISH', 'PANIC'):
                     await _send(
                         f"🛑 큰형 {regime} → 단타봇 신규 swing 매수 전면 차단\n"
-                        f"  · 기존 5종목 SL/TP/추매는 정상 작동\n"
+                        f"  · 기존 5종목 SL/TP는 정상 작동\n"
                         f"  · 1주 모드 + advisory 게이트 = 이중 안전망"
                     )
                     logger.warning(f"[quant_advisory] regime={regime} → swing 매수 차단")
                     return
 
-                # 게이트 ①-b: 시장강도 95+ → BEARISH로 격상 차단
-                if strength >= 95:
-                    await _send(
-                        f"🛑 시장 강도 {strength:.1f} ≥ 95 (강력 약세) → swing 신규 매수 차단\n"
-                        f"  · regime={regime}이지만 큰형 강도 신호가 결정적\n"
-                        f"  · 1주 모드 + advisory 게이트 이중 안전망"
-                    )
-                    logger.warning(f"[quant_advisory] market_strength_avg={strength} ≥ 95 → swing 차단")
-                    return
-
-                # 게이트 ②: CAUTION 또는 강도 90~94.9 → 예산 30% 축소
+                # 게이트 ②: CAUTION/CAUTION_TO_NEUTRAL → 예산 30% 축소
+                # 강도 80 이하 = 매도 매우 우세 → 30% 축소
+                # 인버스 강도 120+ = 시장 약세 베팅 우세 → 30% 축소
                 cap_reasons = []
-                if regime == 'CAUTION' or regime == 'CAUTION_TO_NEUTRAL':
+                if regime in ('CAUTION', 'CAUTION_TO_NEUTRAL'):
                     cap_reasons.append(f"regime={regime}")
-                if 90 <= strength < 95:
-                    cap_reasons.append(f"강도 {strength:.1f}")
+                if 0 < strength <= 80:
+                    cap_reasons.append(f"강도 {strength:.1f}(매도 우세)")
+                if inverse >= 120:
+                    cap_reasons.append(f"인버스 {inverse:.1f}(약세 베팅)")
                 if cap_reasons:
                     _old_cash = available_cash
                     available_cash = int(available_cash * 0.7)
@@ -1060,10 +1057,6 @@ class AutoTrader:
                         f"[quant_advisory] cap_30%: reasons={cap_reasons} | "
                         f"cash {_old_cash:,} → {available_cash:,}"
                     )
-
-                # 게이트 ③: 인버스 강도 매크로 경고
-                if inverse >= 120:
-                    await _send(f"⚠️ 인버스 ETF 강도 {inverse:.1f} (시장 약세 베팅 우세) → 매우 신중")
             else:
                 await _send("🤖 큰형 advisory: 데이터 없음 (5/19 오전 큰형 작업 중) — 1주 모드 단독 가동")
                 logger.info("[quant_advisory] no data — proceed with 1-share mode")
@@ -1538,6 +1531,28 @@ class AutoTrader:
         if today_intraday_count >= 10:
             logger.info(f"[intraday] 일일 최대 10종목 도달 ({today_intraday_count}) — 스킵")
             return
+
+        # ── 큰형(퀀트봇) advisory 게이트 (intraday 검증 모드 v2 wire-up) ──
+        # 5분 반복 호출 — BEARISH/PANIC 시 장중 신규 매수 차단
+        # (regime 신호만 사용. strength/inverse는 보강 정보로만 로깅)
+        try:
+            from utils.quant_advisory_subscriber import fetch_latest_advisory
+            _adv = (fetch_latest_advisory(msg_type='LEADING')
+                    or fetch_latest_advisory(msg_type='SNAPSHOT')
+                    or fetch_latest_advisory(msg_type='ADVICE')
+                    or fetch_latest_advisory())
+            if _adv:
+                _regime = (_adv.get('market_regime') or '').upper()
+                if _regime in ('BEARISH', 'PANIC'):
+                    await _send(
+                        f"🛑 큰형 {_regime} → 장중 검증 모드 신규 매수 차단 "
+                        f"({_adv.get('advisory_date')} {_adv.get('advisory_time')})"
+                    )
+                    logger.warning(f"[quant_advisory/intraday] regime={_regime} → 차단")
+                    return
+                logger.info(f"[quant_advisory/intraday] regime={_regime} 통과")
+        except Exception as e:
+            logger.warning(f"[quant_advisory/intraday] 게이트 실패 (continue): {e}")
 
         # 제외 종목: 보유 종목 + verification 보유 + 기존 morning_rec 후보
         excluded = set(self._positions.keys())
