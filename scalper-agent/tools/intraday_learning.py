@@ -70,6 +70,14 @@ ALERT_PRICE_CHANGE = 1.5   # 30분 사이 1.5% 이상 변화 시 알림
 ALERT_VOLUME_SURGE = 2.0   # 거래량 2배 폭증
 ALERT_HOLDING_LOSS = -10.0 # 보유 종목 -10% 이상 손실
 
+# 시장 전체 동적 발굴 임계값 (5/18 사장님 "돈 될만한건 뭐든지" 지시)
+MARKET_GAINER_THRESHOLD = 5.0    # +5% 이상 급등주
+LIMIT_UP_IMMINENT_THRESHOLD = 25.0  # +25% 이상 상한가 임박
+V_PATTERN_OPEN_THRESHOLD = -2.0  # 시초가 대비 -2% 하락 후
+V_PATTERN_CURRENT_THRESHOLD = 1.0  # 현재 +1% 이상 (V자 전환)
+MIN_MARKET_CAP_BILLION = 100  # 시총 100억 이상
+SCAN_TOP_N = 300  # universe 상위 300종목 스캔
+
 
 # ── 데이터 디렉터리 ────────────────────────────────────
 def _data_dir() -> Path:
@@ -233,6 +241,160 @@ def run_once() -> None:
         msg = f"🧠 [학습 모니터 {now.strftime('%H:%M')}] 이상 패턴 {len(anomalies)}건\n\n" + "\n".join(anomalies)
         send_telegram_alert(msg)
         logger.info(f"텔레그램 알림 발송: {len(anomalies)}건")
+
+    # ── 시장 전체 동적 발굴 (5/18 사장님 지시) ──
+    try:
+        discoveries = scan_market_discoveries()
+        print_market_discoveries(discoveries)
+
+        # 새 상한가 임박 종목 발견 시 텔레그램 알림
+        if discoveries.get("limit_up_imminent"):
+            lines = []
+            for s in discoveries["limit_up_imminent"][:5]:
+                lines.append(f"⚡ {s['name']} ({s['code']}) {s['change_rate']:+.2f}%")
+            msg = f"🔥 [시장 발굴 {now.strftime('%H:%M')}] 상한가 임박 {len(discoveries['limit_up_imminent'])}종목\n\n" + "\n".join(lines)
+            send_telegram_alert(msg)
+
+        # V자 전환 종목 텔레그램 알림
+        if discoveries.get("v_pattern"):
+            lines = []
+            for s in discoveries["v_pattern"][:5]:
+                lines.append(f"🎢 {s['name']} ({s['code']}) {s['change_rate']:+.2f}% (swing {s.get('v_pattern_swing', 0):+.2f}%p)")
+            msg = f"✨ [시장 발굴 {now.strftime('%H:%M')}] V자 전환 {len(discoveries['v_pattern'])}종목\n\n" + "\n".join(lines)
+            send_telegram_alert(msg)
+    except Exception as _scan_e:
+        logger.warning(f"시장 발굴 실패 (무시): {_scan_e}")
+
+
+# ── 시장 전체 동적 종목 발굴 (5/18 사장님 지시) ───────
+def scan_market_discoveries() -> Dict:
+    """시총 100억+ 상위 300종목 라이브 스캔 — 급등주 + V자 전환 + 상한가 임박.
+
+    매 30분 자동 실행 (run_once 끝에 호출).
+    결과는 data_store/learning_YYYYMMDD/market_discoveries_HHMM.json 저장.
+
+    Returns:
+        {
+            "scanned": N,
+            "gainers": [...],         # +5%~+25% 급등주
+            "limit_up_imminent": [...], # +25%+ 상한가 임박
+            "v_pattern": [...],        # 시초 음봉 → 양봉 전환
+            "elapsed_sec": ...
+        }
+    """
+    import time
+    from bot.kis_trader import KISTrader
+
+    # universe 로드 (시총 100억+, 시총 순)
+    universe_path = _ROOT / "data_store" / "universe.json"
+    if not universe_path.exists():
+        return {"scanned": 0, "error": "universe.json not found"}
+
+    with universe_path.open(encoding="utf-8") as f:
+        universe = json.load(f)
+
+    # 시총 100억+ 정렬 (우선주 제외 — code 끝이 '5'면 우선주)
+    candidates = [
+        (c, info) for c, info in universe.items()
+        if info.get("cap_억", 0) >= MIN_MARKET_CAP_BILLION and not c.endswith("5")
+    ]
+    candidates.sort(key=lambda x: -x[1].get("cap_억", 0))
+    top_candidates = candidates[:SCAN_TOP_N]
+
+    # 직전 스냅샷 로드 (V자 패턴 비교용)
+    dir_ = _data_dir()
+    snapshots = sorted(dir_.glob("snapshot_*.json"))
+    first_snapshot = None
+    if snapshots:
+        try:
+            with snapshots[0].open(encoding="utf-8") as f:
+                first_snapshot = json.load(f)
+        except Exception:
+            pass
+
+    trader = KISTrader()
+    gainers = []
+    limit_up_imminent = []
+    v_pattern = []
+
+    start = time.time()
+    for code, info in top_candidates:
+        try:
+            p = trader.fetch_price(code)
+            if not (p and p.get("success")):
+                continue
+            ch = p.get("change_rate", 0)
+            cur = p.get("current_price", 0)
+            vol = p.get("volume", 0)
+            name = info.get("name", code)
+            cap = info.get("cap_억", 0)
+
+            record = {
+                "code": code, "name": name, "change_rate": ch,
+                "current_price": cur, "volume": vol, "cap_billion": cap,
+            }
+
+            # 1. 상한가 임박
+            if ch >= LIMIT_UP_IMMINENT_THRESHOLD:
+                limit_up_imminent.append(record)
+            # 2. 급등주
+            elif ch >= MARKET_GAINER_THRESHOLD:
+                gainers.append(record)
+
+            # 3. V자 전환 (시초 -2% 이하 → 현재 +1% 이상)
+            if first_snapshot:
+                first_data = first_snapshot.get("stocks", {}).get(code, {})
+                first_ch = first_data.get("change_rate")
+                if first_ch is not None and first_ch <= V_PATTERN_OPEN_THRESHOLD and ch >= V_PATTERN_CURRENT_THRESHOLD:
+                    record["v_pattern_swing"] = round(ch - first_ch, 2)
+                    v_pattern.append(record)
+        except Exception:
+            pass
+
+    elapsed = round(time.time() - start, 1)
+
+    # 정렬 (등락률 큰 순)
+    gainers.sort(key=lambda x: -x["change_rate"])
+    limit_up_imminent.sort(key=lambda x: -x["change_rate"])
+    v_pattern.sort(key=lambda x: -x.get("v_pattern_swing", 0))
+
+    result = {
+        "scanned": len(top_candidates),
+        "gainers": gainers,
+        "limit_up_imminent": limit_up_imminent,
+        "v_pattern": v_pattern,
+        "elapsed_sec": elapsed,
+        "timestamp": datetime.now(KST).isoformat() if KST else datetime.now().isoformat(),
+    }
+
+    # 저장
+    now = datetime.now(KST) if KST else datetime.now()
+    fname = dir_ / f"market_discoveries_{now.strftime('%H%M')}.json"
+    with fname.open("w", encoding="utf-8") as f:
+        json.dump(result, f, ensure_ascii=False, indent=2)
+    logger.info(f"✅ 시장 발굴 저장: {fname.name} (gainers {len(gainers)} / 상한가 {len(limit_up_imminent)} / V {len(v_pattern)} / {elapsed}초)")
+
+    return result
+
+
+def print_market_discoveries(result: Dict) -> None:
+    """시장 발굴 결과 콘솔 출력."""
+    print(f"\n🔍 === 시장 전체 동적 발굴 ({result['scanned']}종목 스캔, {result['elapsed_sec']}초) ===")
+
+    if result.get("limit_up_imminent"):
+        print(f"\n🔥 상한가 임박 (+{LIMIT_UP_IMMINENT_THRESHOLD}%+) {len(result['limit_up_imminent'])}종목:")
+        for s in result["limit_up_imminent"][:5]:
+            print(f"  ⚡ {s['name']:<15} ({s['code']}) {s['change_rate']:+.2f}% / 시총 {s['cap_billion']:,}억")
+
+    if result.get("gainers"):
+        print(f"\n🚀 급등주 (+{MARKET_GAINER_THRESHOLD}%+) {len(result['gainers'])}종목 TOP 10:")
+        for s in result["gainers"][:10]:
+            print(f"  🟢 {s['name']:<15} ({s['code']}) {s['change_rate']:+.2f}% / 시총 {s['cap_billion']:,}억")
+
+    if result.get("v_pattern"):
+        print(f"\n🎢 V자 전환 ({len(result['v_pattern'])}종목):")
+        for s in result["v_pattern"][:5]:
+            print(f"  ✨ {s['name']:<15} ({s['code']}) {s['change_rate']:+.2f}% (swing {s.get('v_pattern_swing', 0):+.2f}%p)")
 
 
 def run_analyze() -> None:
