@@ -60,20 +60,38 @@ def _load_json(filename: str) -> Optional[Dict]:
 # 카테고리 ① 상한가 엔진
 # ─────────────────────────────────────────────────────
 def load_limit_up_triggers() -> List[Dict]:
-    """상한가 엔진 트리거 (즉시 진입가 + 목표가 계산된 종목)."""
-    data = _load_json("limit_up/signals.json")
-    if not data:
-        return []
-    triggers = data if isinstance(data, list) else data.get("triggers", [])
+    """상한가 엔진 트리거 (즉시 진입가 + 목표가 계산된 종목).
+
+    signals.json 구조: {generated_at, count, signals: [...]}
+    또는 watchlist.json items 중 status='triggered' 종목.
+    """
+    triggers = []
+    # signals.json 우선
+    sig_data = _load_json("limit_up/signals.json")
+    if sig_data:
+        triggers.extend(sig_data if isinstance(sig_data, list) else sig_data.get("signals", []))
+    # watchlist.json에서 status=triggered 종목도 추가
+    wl_data = _load_json("limit_up/watchlist.json")
+    if wl_data and isinstance(wl_data, dict):
+        for item in wl_data.get("items", []):
+            if item.get("status") == "triggered":
+                # 중복 방지
+                if not any(t.get("code") == item.get("code") for t in triggers):
+                    triggers.append(item)
     return triggers
 
 
 def load_limit_up_watchlist() -> List[Dict]:
-    """상한가 엔진 감시풀 (눌림목 진입 대기 종목)."""
+    """상한가 엔진 감시풀 (눌림목 진입 대기 종목, status='monitoring').
+
+    watchlist.json 구조: {updated_at, count, monitoring, triggered, items: [...]}
+    """
     data = _load_json("limit_up/watchlist.json")
     if not data:
         return []
-    return data if isinstance(data, list) else data.get("watchlist", [])
+    items = data if isinstance(data, list) else data.get("items", [])
+    # monitoring 상태만 (triggered는 load_limit_up_triggers로)
+    return [item for item in items if item.get("status") == "monitoring"]
 
 
 # ─────────────────────────────────────────────────────

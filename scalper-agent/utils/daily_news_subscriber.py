@@ -54,11 +54,14 @@ def fetch_today_news(
 
     Args:
         importance_min: 임계값 (기본 5 = 강도 5 강력)
-        sentiment: 'POSI' | 'NEUT' | 'NEGA' | None (전체)
+        sentiment: 'POSITIVE' | 'NEUTRAL' | 'NEGATIVE' | None (전체)
+                   (실제 daily_news 컬럼: 전체 단어 사용)
         region: 'KR' | 'US' | 'GL' | None (전체)
     """
+    # 실제 daily_news 컬럼: id, date, title, summary, content, source, source_url,
+    #                       category, tags, sentiment, importance, related_tickers, region, created_at
     sql_parts = [
-        "SELECT id, date, title, body, sentiment, region, importance, tags, related_tickers",
+        "SELECT id, date, title, summary, content, sentiment, region, importance, tags, related_tickers",
         "FROM daily_news",
         "WHERE date = %s",
         "AND importance >= %s",
@@ -78,18 +81,18 @@ def fetch_today_news(
     try:
         return query(sql, tuple(params))
     except Exception as e:
-        logger.warning(f"daily_news 조회 실패 (테이블 없을 수도): {e}")
+        logger.warning(f"daily_news 조회 실패: {e}")
         return []
 
 
 def fetch_negative_news(importance_min: int = 5) -> List[Dict]:
-    """매수 차단용 — NEGA 강도 5+ 뉴스."""
-    return fetch_today_news(importance_min=importance_min, sentiment="NEGA")
+    """매수 차단용 — NEGATIVE 강도 5+ 뉴스 (실제 컬럼값 NEGATIVE)."""
+    return fetch_today_news(importance_min=importance_min, sentiment="NEGATIVE")
 
 
 def fetch_positive_news(importance_min: int = 5) -> List[Dict]:
-    """매수 우대용 — POSI 강도 5+ 뉴스."""
-    return fetch_today_news(importance_min=importance_min, sentiment="POSI")
+    """매수 우대용 — POSITIVE 강도 5+ 뉴스 (실제 컬럼값 POSITIVE)."""
+    return fetch_today_news(importance_min=importance_min, sentiment="POSITIVE")
 
 
 def _parse_tickers(raw) -> List[str]:
