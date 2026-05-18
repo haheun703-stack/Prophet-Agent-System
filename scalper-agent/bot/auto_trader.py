@@ -983,6 +983,97 @@ class AutoTrader:
                 f"  · 단타봇 한도: {scalper_budget:,}원\n"
                 f"  · 퀀트봇 별도: {_quant_reserved:,}원"
             )
+        # ── 큰형(퀀트봇) advisory 게이트 (5/19 wire-up 사장님 08:09 결정) ──
+        # 매수 진입 직전 quant_bot_advisory 다중 type 조회 → regime + 시장강도 + 인버스 종합
+        # 우선순위: LEADING (긴급 수동) > SNAPSHOT/ADVICE (최신 스냅) > MORNING_BRIEFING (장전)
+        # 차단 기준:
+        #   - regime BEARISH/PANIC → swing 신규 매수 차단
+        #   - market_strength_avg >= 95 (시장 약세 매우 강력) → BEARISH로 격상 차단
+        #   - regime CAUTION 또는 market_strength_avg >= 90 → 예산 30% 축소
+        #   - inverse_etf_strength >= 120 → 경고
+        try:
+            from utils.quant_advisory_subscriber import fetch_latest_advisory
+            # 1) LEADING 우선 — 큰형 수동 긴급 신호
+            adv = fetch_latest_advisory(msg_type='LEADING')
+            # 2) 없으면 SNAPSHOT (장중 자동 10분 간격)
+            if not adv:
+                adv = fetch_latest_advisory(msg_type='SNAPSHOT')
+            # 3) 없으면 ADVICE
+            if not adv:
+                adv = fetch_latest_advisory(msg_type='ADVICE')
+            # 4) 없으면 MORNING_BRIEFING
+            if not adv:
+                adv = fetch_latest_advisory(msg_type='MORNING_BRIEFING')
+            # 5) 그래도 없으면 타입 무관 최신
+            if not adv:
+                adv = fetch_latest_advisory()
+
+            if adv:
+                regime = (adv.get('market_regime') or '').upper()
+                inverse = float(adv.get('inverse_etf_strength') or 0)
+                strength = float(adv.get('market_strength_avg') or 0)
+                adv_date = adv.get('advisory_date', '?')
+                adv_time = adv.get('advisory_time', '?')
+                adv_type = adv.get('msg_type', '?')
+                await _send(
+                    f"🤖 큰형 advisory 게이트\n"
+                    f"  · {adv_date} {adv_time} [{adv_type}]\n"
+                    f"  · regime: {regime or 'N/A'}\n"
+                    f"  · 시장 강도: {strength:.1f} (90+ 약세 / 95+ 강력약세)\n"
+                    f"  · 인버스 강도: {inverse:.1f} (120+ 약세 베팅 우세)"
+                )
+
+                # 게이트 ①-a: regime 기반 BEARISH/PANIC 차단
+                if regime in ('BEARISH', 'PANIC'):
+                    await _send(
+                        f"🛑 큰형 {regime} → 단타봇 신규 swing 매수 전면 차단\n"
+                        f"  · 기존 5종목 SL/TP/추매는 정상 작동\n"
+                        f"  · 1주 모드 + advisory 게이트 = 이중 안전망"
+                    )
+                    logger.warning(f"[quant_advisory] regime={regime} → swing 매수 차단")
+                    return
+
+                # 게이트 ①-b: 시장강도 95+ → BEARISH로 격상 차단
+                if strength >= 95:
+                    await _send(
+                        f"🛑 시장 강도 {strength:.1f} ≥ 95 (강력 약세) → swing 신규 매수 차단\n"
+                        f"  · regime={regime}이지만 큰형 강도 신호가 결정적\n"
+                        f"  · 1주 모드 + advisory 게이트 이중 안전망"
+                    )
+                    logger.warning(f"[quant_advisory] market_strength_avg={strength} ≥ 95 → swing 차단")
+                    return
+
+                # 게이트 ②: CAUTION 또는 강도 90~94.9 → 예산 30% 축소
+                cap_reasons = []
+                if regime == 'CAUTION' or regime == 'CAUTION_TO_NEUTRAL':
+                    cap_reasons.append(f"regime={regime}")
+                if 90 <= strength < 95:
+                    cap_reasons.append(f"강도 {strength:.1f}")
+                if cap_reasons:
+                    _old_cash = available_cash
+                    available_cash = int(available_cash * 0.7)
+                    await _send(
+                        f"⛔ 큰형 신호 [{' + '.join(cap_reasons)}] → 예산 30% 축소: "
+                        f"{_old_cash:,}원 → {available_cash:,}원"
+                    )
+                    logger.info(
+                        f"[quant_advisory] cap_30%: reasons={cap_reasons} | "
+                        f"cash {_old_cash:,} → {available_cash:,}"
+                    )
+
+                # 게이트 ③: 인버스 강도 매크로 경고
+                if inverse >= 120:
+                    await _send(f"⚠️ 인버스 ETF 강도 {inverse:.1f} (시장 약세 베팅 우세) → 매우 신중")
+            else:
+                await _send("🤖 큰형 advisory: 데이터 없음 (5/19 오전 큰형 작업 중) — 1주 모드 단독 가동")
+                logger.info("[quant_advisory] no data — proceed with 1-share mode")
+        except Exception as e:
+            logger.warning(f"[quant_advisory] 게이트 실패 (continue): {e}")
+            try:
+                await _send(f"⚠️ 큰형 advisory 게이트 실패 (continue): {e}")
+            except Exception:
+                pass
+
         num_targets = min(len(candidates), slots)
         cash_reserve_ratio = self.config.get("risk", {}).get("min_cash_ratio", 0.10)
         capital_use = regime_rules.get("capital_use", 1.0)
