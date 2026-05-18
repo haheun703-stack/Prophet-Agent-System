@@ -235,7 +235,7 @@ bot:
                                 # auto_trader가 available_cash = min(cash, scalper_budget) 적용
   # auto_buy_amount: 삭제 — 장 시작 시 실제 잔고 / 종목수로 동적 계산
   # 공식: (가용현금 × (1 - min_cash_ratio)) / 매수종목수
-  confirm_real_order: true      # 실주문 전 확인 메시지 요구
+  confirm_real_order: false     # 5/19 true→false (사장님 5/18 야간 완전 자율 매매 위임). 안전망: SL -3% + 일일한도 150만 + max_positions 9 + 큰형/막내 LEADING WARN
   add_on_buy_ratio: 0.15        # 5/19 0.30→0.15 (보수적 — 4종목 모두 추매 시 자금 폭주 방지)
   action_add_max_per_day: 2     # 5/19 신규 — ACTION_ADD 일일 한도 (사장님 "추매 2종목" 컨셉)
 
