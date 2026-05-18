@@ -1297,9 +1297,41 @@ class KISTrader:
             logger.error(f"시간외 매도 예외 {code}: {e}")
             return {"success": False, "message": f"시간외 매도 예외: {e}"}
 
+    def _is_one_share_mode(self) -> bool:
+        """5/19~5/20 D-Day 1주 모드 (사장님 5/19 보수 검증)
+
+        config.yaml `bot.one_share_mode_until` (YYYY-MM-DD)까지 활성.
+        - 적용: safe_buy / nxt_safe_buy / afterhours_buy 호출부
+        - 비적용: 청산/SL/TP/추매 외 매도 경로 일체
+        - 만료(다음날 00:00) 시 자동 False → 풀 회전 복원
+        """
+        try:
+            until_str = self.config.get("bot", {}).get("one_share_mode_until", "")
+            if not until_str:
+                return False
+            from datetime import date
+            until = date.fromisoformat(until_str)
+            return date.today() <= until
+        except Exception as e:
+            logger.warning(f"_is_one_share_mode 파싱 실패 (비활성 처리): {e}")
+            return False
+
     def nxt_safe_buy(self, code: str, amount: int) -> dict:
         """NXT 금액 기반 시간외 매수 (잔고 확인 포함)"""
         name = CODE_TO_NAME.get(code, code)
+
+        pi = self.fetch_price(code)
+        if not pi.get("success"):
+            return {"success": False, "message": f"현재가 조회 실패"}
+
+        price = pi["current_price"]
+
+        # 5/19~5/20 D-Day 1주 모드 — amount 사전 축소 (현금 부족 차단 방지)
+        one_share = self._is_one_share_mode()
+        if one_share and price > 0:
+            _orig = amount
+            amount = price + 5000  # 1주 + 수수료/슬리피지 버퍼
+            logger.info(f"[1주모드/NXT] {name}({code}) amount {_orig:,}원 → {amount:,}원 (1주 가격)")
 
         bal = self.fetch_balance()
         if not bal.get("success"):
@@ -1309,12 +1341,10 @@ class KISTrader:
         if cash < amount:
             return {"success": False, "message": f"현금 부족: {cash:,}원 < {amount:,}원"}
 
-        pi = self.fetch_price(code)
-        if not pi.get("success"):
-            return {"success": False, "message": f"현재가 조회 실패"}
-
-        price = pi["current_price"]
         qty = amount // price
+        if one_share:
+            qty = 1
+            logger.info(f"[1주모드/NXT] {name}({code}) qty 강제=1")
         if qty <= 0:
             return {"success": False, "message": f"매수 가능 수량 없음 (@{price:,}원)"}
 
@@ -1355,6 +1385,21 @@ class KISTrader:
         total_eval = bal["total_eval"] or cash
         positions = bal["positions"]
 
+        # 5/19~5/20 D-Day 1주 모드 — 가격 사전 조회 + amount 축소
+        # (사장님 5/19 07:50 결정: 자비스 v3.0 첫 라이브 보수 검증, 5/21 자동 만료)
+        one_share = self._is_one_share_mode()
+        _pi_cached = None
+        name = CODE_TO_NAME.get(code, code)
+        if one_share:
+            _pi_cached = self.fetch_price(code)
+            _cp = _pi_cached.get("current_price", 0) if _pi_cached.get("success") else 0
+            if _cp > 0:
+                _orig_amount = amount
+                amount = _cp + 5000  # 1주 + 수수료/슬리피지 버퍼
+                logger.info(
+                    f"[1주모드] {name}({code}) amount {_orig_amount:,}원 → {amount:,}원 (1주 @{_cp:,}원)"
+                )
+
         # 3. 포지션 수 체크
         max_positions = self.risk.get("max_positions", 5)
         max_ratio = self.risk.get("max_position_ratio", 0.30)
@@ -1376,7 +1421,7 @@ class KISTrader:
         max_amount = int(total_eval * max_ratio)
         buy_amount = min(amount, max_amount)
 
-        price_info = self.fetch_price(code)
+        price_info = _pi_cached if _pi_cached else self.fetch_price(code)
         if not price_info.get("success"):
             return {"success": False, "message": f"현재가 조회 실패: {price_info.get('message')}"}
 
@@ -1385,23 +1430,25 @@ class KISTrader:
             return {"success": False, "message": "현재가가 0원입니다"}
 
         qty = buy_amount // current_price
+        if one_share:
+            qty = 1
+            logger.info(f"[1주모드] {name}({code}) qty 강제=1")
         if qty <= 0:
             return {"success": False, "message": f"매수 가능 수량 없음 (현재가: {current_price:,}원, 금액: {buy_amount:,}원)"}
 
-        # 6. 거래량 대비 비중 체크
-        vol_warn = self._check_volume_ratio(code, qty)
-        if vol_warn:
-            # 비중 초과 시 거래량의 10%로 수량 조정
-            vol = price_info.get("volume", 0)
-            max_pct = self.risk.get("max_volume_pct", 0.10)
-            if vol > 0:
-                max_qty = int(vol * max_pct)
-                if max_qty <= 0:
-                    return {"success": False, "message": f"⚠️ {vol_warn}\n거래량 부족으로 매수 불가"}
-                qty = max_qty
-                logger.warning(f"거래량 비중 조정: {qty}주로 축소 ({vol_warn})")
-
-        name = CODE_TO_NAME.get(code, code)
+        # 6. 거래량 대비 비중 체크 (1주 모드는 skip — 1주는 거래량 영향 미미)
+        if not one_share:
+            vol_warn = self._check_volume_ratio(code, qty)
+            if vol_warn:
+                # 비중 초과 시 거래량의 10%로 수량 조정
+                vol = price_info.get("volume", 0)
+                max_pct = self.risk.get("max_volume_pct", 0.10)
+                if vol > 0:
+                    max_qty = int(vol * max_pct)
+                    if max_qty <= 0:
+                        return {"success": False, "message": f"⚠️ {vol_warn}\n거래량 부족으로 매수 불가"}
+                    qty = max_qty
+                    logger.warning(f"거래량 비중 조정: {qty}주로 축소 ({vol_warn})")
         est_cost = qty * current_price
 
         logger.info(f"안전 매수: {name}({code}) {qty}주 @ {current_price:,}원 ~{est_cost:,}원")

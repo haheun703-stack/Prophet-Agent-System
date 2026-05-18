@@ -4013,6 +4013,13 @@ class AutoTrader:
                     continue
 
                 qty = per_stock // close_price
+                # 5/19~5/20 D-Day 1주 모드 — qty 강제=1 (사장님 5/19 보수 검증)
+                try:
+                    if self.trader._is_one_share_mode():
+                        qty = 1
+                        logger.info(f"[1주모드/선취매] {name}({code}) qty 강제=1")
+                except Exception:
+                    pass
                 if qty <= 0:
                     await _send(f"선취매: {name} 수량 부족 (예산 {per_stock:,}원 / @{close_price:,}원)")
                     continue
