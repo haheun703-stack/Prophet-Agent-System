@@ -45,10 +45,6 @@ class RealtimeSnapshot:
     strength: float           # 체결강도
     ask1: int                 # 매도호가1
     bid1: int                 # 매수호가1
-    # 추매 multi-signal용 (2026-05-16 추가)
-    vwap: int = 0             # 당일 가중평균주가 (KIS wghn_avrg_stck_prc)
-    bid_qty: int = 0          # 매수호가1 잔량
-    ask_qty: int = 0          # 매도호가1 잔량
 
     # 4팩터 점수 (각 0~25)
     score_momentum: float
@@ -67,6 +63,11 @@ class RealtimeSnapshot:
     # 결정
     decision: str             # HOLD / PARTIAL_SELL / FULL_SELL / TRAILING_STOP
     decision_reason: str
+
+    # 추매 multi-signal용 (2026-05-16 추가) — 5/18 dataclass field 순서 fix: default 있는 필드는 끝에 (Python 규칙)
+    vwap: int = 0             # 당일 가중평균주가 (KIS wghn_avrg_stck_prc)
+    bid_qty: int = 0          # 매수호가1 잔량
+    ask_qty: int = 0          # 매도호가1 잔량
 
 
 @dataclass
