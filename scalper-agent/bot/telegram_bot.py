@@ -57,11 +57,12 @@ def _split_message(text: str, limit: int = TG_MAX) -> list:
     return chunks
 
 
-# 한글 키보드 레이아웃
+# 한글 키보드 레이아웃 (5/18 사장님 요청 — 시작/정지/스캔 버튼 추가 / 퀀트봇 형 리모콘 매칭)
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         ["추천", "내일", "포트"],
         ["뇌", "상태", "도움"],
+        ["시작", "정지", "스캔"],  # ★ 5/18 추가 — 자동매매 ON/OFF + 빠른 스캔
     ],
     resize_keyboard=True,
 )
