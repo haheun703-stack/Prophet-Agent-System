@@ -171,7 +171,7 @@ risk:
   max_loss_per_trade_pct: 0.03    # 5/19 0.02→0.03 (5대 원칙 ③ 안전망 SL -3%)
   daily_loss_limit: 1500000       # 5/19 50만→150만 (단타봇 자금 2,500만의 6%)
   mdd_limit_pct: 4.5              # MDD 한도 (%) — 초과 시 매매 정지
-  max_positions: 7                # 5/19 5→7 (기존 5종목 동결 + 자비스 신규 2 = 7)
+  max_positions: 9                # 5/19 5→9 (기존 5종목 동결 + 자비스 morning 4 = 9, 사장님 "4~5+추매2" 컨셉)
   max_position_ratio: 0.30
   stop_loss_pct: 0.03             # 5/19 0.02→0.03 (5대 원칙 ③ 안전망 SL -3%)
   take_profit_pct: 0.05
@@ -229,14 +229,15 @@ bot:
   minute_collect_time: "15:40"  # 분봉(5분/15분) 수집 시각
   daily_collect_time: "16:00"   # 일봉 + 수급 데이터 수집 시각
   universe_rebuild_time: "08:30"  # 유니버스 리빌드 (시총 변동 반영)
-  max_auto_positions: 2         # 자동매매 최대 동시 보유 (5대 원칙 ① 집중 회피)
+  max_auto_positions: 4         # 5/19 2→4 (사장님 "4~5종목 선정" + 자비스 STRICT 4개, 5대 원칙 ① 섹터 2분산)
   max_hold_days: 10             # 스윙 최대 보유일
   scalper_budget: 25000000      # 5/19 신규 — 단타봇 할당 자금 (사장님 위임, 퀀트봇 2,500만 별도)
                                 # auto_trader가 available_cash = min(cash, scalper_budget) 적용
   # auto_buy_amount: 삭제 — 장 시작 시 실제 잔고 / 종목수로 동적 계산
   # 공식: (가용현금 × (1 - min_cash_ratio)) / 매수종목수
   confirm_real_order: true      # 실주문 전 확인 메시지 요구
-  add_on_buy_ratio: 0.30        # 추매 시 가용현금 대비 비율 (30%) — ACTION_ADD(상승 시 추매)
+  add_on_buy_ratio: 0.15        # 5/19 0.30→0.15 (보수적 — 4종목 모두 추매 시 자금 폭주 방지)
+  action_add_max_per_day: 2     # 5/19 신규 — ACTION_ADD 일일 한도 (사장님 "추매 2종목" 컨셉)
 
   # ── 하락 시 자동 분할 추매 (차트 영웅식 + 장중 multi-signal) ──
   # 매수가 대비 -10%/-20% 도달 시 4시그널(AI/체결강도/호가/VWAP) 통과 시 자동 추매

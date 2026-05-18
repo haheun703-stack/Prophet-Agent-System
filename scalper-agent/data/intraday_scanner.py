@@ -41,7 +41,7 @@ _STRENGTH_THRESHOLD = 150.0   # 체결강도 (volume-power tday_rltv)
 _VOLUME_RANK_TOP_N = 30       # 거래량 TOP N
 _STRENGTH_RANK_TOP_N = 30     # 체결강도 TOP N
 _TIPPING_SCORE_MIN = 60       # tipping_scan score 임계
-_INTRADAY_MAX_PER_DAY = 10    # 일일 최대 추가 진입 수
+_INTRADAY_MAX_PER_DAY = 0     # 5/19 D-Day: 10→0 (사장님 "morning 4 + 추매 2" 컨셉 집중, 새 종목 발굴 OFF). 5/20+ 본격 가동 시 복원.
 _CUTOFF_TIME = time(14, 0)    # 14:00 이후 신규 진입 OFF (KST)
 
 # ETF prefix (단타 검증 대상 외)

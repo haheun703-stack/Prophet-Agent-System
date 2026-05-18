@@ -96,7 +96,8 @@ class AutoTrader:
         self._ws_client = None       # KISWebSocketClient (지연 초기화)
         self._ws_task = None         # 백그라운드 run_forever 태스크
         self._ws_cache = {}          # {code: {price, volume, ts, updated_at}}
-        self._ws_enabled = bool(config.get("trader", {}).get("auto_trade", False))
+        # 5/19 fix — config.yaml 키 경로는 "bot.auto_trade" ("trader" 오타 수정, 사장님 5/18 19:50 지적)
+        self._ws_enabled = bool(config.get("bot", {}).get("auto_trade", False))
 
         # 모드: "day" or "swing"
         self.mode = config.get("bot", {}).get("trade_mode", "swing")
@@ -2909,6 +2910,19 @@ class AutoTrader:
                         self._save_positions()
                         await self._alert(f"🔴 동적 전량매도: {name}({code}) @ {cp:,} ({reason}, PnL {realized_pnl:+,}원)")
                 elif action == ACTION_ADD:
+                    # 5/19 D-Day 신규 — ACTION_ADD 일일 한도 (사장님 "추매 2종목" 컨셉)
+                    _max_add = int(self.config.get("bot", {}).get("action_add_max_per_day", 999))
+                    _today_str = date.today().isoformat()
+                    if not hasattr(self, "_action_add_history"):
+                        self._action_add_history = {}
+                    _today_add_count = self._action_add_history.get(_today_str, 0)
+                    if _today_add_count >= _max_add:
+                        logger.info(
+                            f"[ACTION_ADD SKIP] {name}({code}) — "
+                            f"일일 추매 한도 도달 ({_today_add_count}/{_max_add})"
+                        )
+                        continue
+
                     # ── ACTION_ADD multi-signal 검증 (잘못된 추격매수 방지) ──
                     # 업사이드 8%+ 조건만으로는 부족 → 장중 시그널(AI/강도/호가/VWAP) 추가 검증
                     try:
@@ -2959,20 +2973,26 @@ class AutoTrader:
                                     "regime": pos.get("regime", "NORMAL"),
                                     "source": pos.get("source", "add_on"),
                                 })
+                                # 5/19 — 일일 추매 카운트 증가 (pending 예약 시점)
+                                self._action_add_history[_today_str] = _today_add_count + 1
                                 await self._alert(
                                     f"🔵 추매 확인 대기: {name}({code})\n"
                                     f"   {reason}\n"
                                     f"   현재 {cp:,}원 ({pnl:+.1f}%)\n"
-                                    f"   추매 금액: {add_amount:,}원\n\n"
+                                    f"   추매 금액: {add_amount:,}원\n"
+                                    f"   (오늘 추매 {_today_add_count + 1}/{_max_add})\n\n"
                                     f"   실행: '자동확인' | 취소: '자동취소'"
                                 )
                             else:
                                 result = self.trader.safe_buy(code, add_amount)
                                 if result.get("success"):
+                                    # 5/19 — 일일 추매 카운트 증가 (직접 매수 성공)
+                                    self._action_add_history[_today_str] = _today_add_count + 1
                                     await self._alert(
                                         f"🔵 추매 완료: {name}({code}) @ {cp:,}원\n"
                                         f"   {reason}\n"
-                                        f"   추매 금액: {add_amount:,}원"
+                                        f"   추매 금액: {add_amount:,}원\n"
+                                        f"   (오늘 추매 {_today_add_count + 1}/{_max_add})"
                                     )
                         else:
                             await self._alert(
