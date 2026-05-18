@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
-"""퀀트봇 형 advisory 구독 클라이언트 (5/18 형과 양방향 채널 합의)
+"""퀀트봇 형 advisory 구독 클라이언트 (5/18 형 v2 가이드 반영)
 
-형 → 동생: quant_bot_advisory 테이블 SELECT
-- 1일 4회 정규: 09:30 / 11:00 / 13:30 / 15:00
-- 1일 1+회 LEADING: 형 판단 시 (5/18 10:04 첫 advisory)
+형 → 동생: quant_bot_advisory 테이블 SELECT — msg_type 4종:
+- MORNING_BRIEFING (매일 07:00) — 게이트 ① 매크로 최우선
+- ADVICE (11:00 / 13:30 / 15:00) — 게이트 ① 시간대 보정
+- SNAPSHOT (09:30~15:50 10분 간격) — 게이트 ④ 인버스 매크로
+- LEADING (형 수동 긴급) — 게이트 ③/⑤ 즉시 차단
 
 동생 측 사용 패턴:
   from utils.quant_advisory_subscriber import fetch_latest_advisory, fetch_today_advisories
@@ -32,41 +34,63 @@ load_dotenv(_ROOT.parent / ".env")
 from utils.supabase_sql import query  # noqa: E402
 
 
-def fetch_latest_advisory(target_bot: str = "scalper") -> Optional[Dict]:
-    """오늘 가장 최근 advisory 조회 (단타봇 매수 직전 호출 권장)."""
-    rows = query(
-        """
-        SELECT id, advisory_date, advisory_time, msg_type, market_regime,
-               market_strength_avg, inverse_etf_strength,
-               title, body, related_tickers, alert_codes, reasoning
-        FROM quant_bot_advisory
-        WHERE advisory_date = CURRENT_DATE
-          AND target_bot = %s
-        ORDER BY advisory_time DESC
-        LIMIT 1
-        """,
-        (target_bot,),
-    )
+def fetch_latest_advisory(
+    target_bot: str = "scalper",
+    msg_type: Optional[str] = None,
+) -> Optional[Dict]:
+    """오늘 가장 최근 advisory 조회 (단타봇 매수 직전 호출 권장).
+
+    Args:
+        target_bot: 'scalper' (단타봇용)
+        msg_type: 'MORNING_BRIEFING' | 'ADVICE' | 'SNAPSHOT' | 'LEADING' | None (전체)
+
+    Examples:
+        # 게이트 ① 매크로 (09:00 진입 전)
+        mb = fetch_latest_advisory(msg_type='MORNING_BRIEFING')
+
+        # 게이트 ④ 인버스 매크로 (장중 갱신)
+        snap = fetch_latest_advisory(msg_type='SNAPSHOT')
+
+        # 형 긴급 LEADING 체크
+        urgent = fetch_latest_advisory(msg_type='LEADING')
+    """
+    sql = """
+        SELECT * FROM quant_bot_advisory
+        WHERE advisory_date = CURRENT_DATE AND target_bot = %s
+    """
+    params: tuple = (target_bot,)
+    if msg_type:
+        sql += " AND msg_type = %s"
+        params = (target_bot, msg_type)
+    sql += " ORDER BY advisory_time DESC LIMIT 1"
+
+    rows = query(sql, params)
     if not rows:
         return None
-    return _row_to_dict(rows[0])
+    return _row_to_dict(rows[0], include_all=True)
 
 
-def fetch_today_advisories(target_bot: str = "scalper") -> List[Dict]:
+def fetch_today_advisories(
+    target_bot: str = "scalper",
+    msg_type: Optional[str] = None,
+) -> List[Dict]:
     """오늘 모든 advisory 조회 (저녁 종합 분석용)."""
-    rows = query(
-        """
-        SELECT id, advisory_date, advisory_time, msg_type, market_regime,
-               market_strength_avg, inverse_etf_strength,
-               title, body, related_tickers, alert_codes, reasoning
-        FROM quant_bot_advisory
-        WHERE advisory_date = CURRENT_DATE
-          AND target_bot = %s
-        ORDER BY advisory_time ASC
-        """,
-        (target_bot,),
-    )
-    return [_row_to_dict(r) for r in rows]
+    sql = """
+        SELECT * FROM quant_bot_advisory
+        WHERE advisory_date = CURRENT_DATE AND target_bot = %s
+    """
+    params: tuple = (target_bot,)
+    if msg_type:
+        sql += " AND msg_type = %s"
+        params = (target_bot, msg_type)
+    sql += " ORDER BY advisory_time ASC"
+
+    rows = query(sql, params)
+    return [_row_to_dict(r, include_all=True) for r in rows]
+
+
+# 형 v2 가이드 코드 호환 별칭 (today_all)
+today_all = fetch_today_advisories
 
 
 def fetch_advisory_by_id(adv_id: int) -> Optional[Dict]:
@@ -86,24 +110,32 @@ def fetch_advisory_by_id(adv_id: int) -> Optional[Dict]:
     return _row_to_dict(rows[0], include_target=True)
 
 
-def _row_to_dict(row, include_target: bool = False) -> Dict:
-    """RealDictCursor row(dict) → 표준화 dict 변환."""
+def _row_to_dict(row, include_target: bool = False, include_all: bool = False) -> Dict:
+    """RealDictCursor row(dict) → 표준화 dict 변환.
+
+    include_all=True: 형 v2 가이드의 모든 필드 노출 (risk_level / severity / 등)
+    """
     base = {
         "id": row["id"],
         "advisory_date": str(row["advisory_date"]),
         "advisory_time": str(row["advisory_time"]),
         "msg_type": row["msg_type"],
-        "market_regime": row["market_regime"],
+        "market_regime": row.get("market_regime"),
         "market_strength_avg": float(row["market_strength_avg"]) if row.get("market_strength_avg") is not None else None,
         "inverse_etf_strength": float(row["inverse_etf_strength"]) if row.get("inverse_etf_strength") is not None else None,
-        "title": row["title"],
-        "body": row["body"],
+        "title": row.get("title"),
+        "body": row.get("body"),
         "related_tickers": row.get("related_tickers") or [],
         "alert_codes": row.get("alert_codes") or [],
         "reasoning": row.get("reasoning"),
     }
-    if include_target:
+    if include_target or include_all:
         base["target_bot"] = row.get("target_bot")
+    if include_all:
+        # 형 v2 가이드의 추가 필드들 (전체 dict로 반환)
+        for k, v in row.items():
+            if k not in base:
+                base[k] = v
     return base
 
 
