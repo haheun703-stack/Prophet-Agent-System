@@ -317,11 +317,12 @@ def find_missed_gainers(today: str, threshold: float = 3.0) -> list:
     # 등락률 내림차순
     missed.sort(key=lambda x: x["change_rate"], reverse=True)
     logger.info(f"유니버스 {checked}종목 중 +{threshold}% 급등: {len(missed)}개 (추천 누락)")
-    return missed[:30]  # TOP 30까지
+    # 5/18 사장님 명시: "TOP 50 매일 AUTO 학습" — 30→50 확대 (종목 발굴 풀 ↑)
+    return missed[:50]  # TOP 50까지
 
 
 def save_missed_gainers_file(today: str, missed: list, threshold: float = 3.0) -> Path:
-    """놓친 급등주 TOP 30을 날짜별 파일로 축적 저장.
+    """놓친 급등주 TOP 50을 날짜별 파일로 축적 저장 (5/18 사장님 30→50 확대).
 
     텔레그램 리포트에서 제거한 사후 진단용 자료를 날짜별로 쌓아서
     나중에 패턴 분석/섹터 회귀 등에 활용.
@@ -337,7 +338,7 @@ def save_missed_gainers_file(today: str, missed: list, threshold: float = 3.0) -
         "date": today,
         "threshold_pct": threshold,
         "count": len(missed),
-        "items": missed,  # TOP 30 (change_rate 내림차순)
+        "items": missed,  # TOP 50 (change_rate 내림차순, 5/18 30→50 확대)
     }
 
     tmp = out_path.with_suffix(".tmp")
