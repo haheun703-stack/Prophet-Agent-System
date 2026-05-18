@@ -41,7 +41,7 @@ _STRENGTH_THRESHOLD = 150.0   # 체결강도 (volume-power tday_rltv)
 _VOLUME_RANK_TOP_N = 30       # 거래량 TOP N
 _STRENGTH_RANK_TOP_N = 30     # 체결강도 TOP N
 _TIPPING_SCORE_MIN = 60       # tipping_scan score 임계
-_INTRADAY_MAX_PER_DAY = 0     # 5/19 D-Day: 10→0 (사장님 "morning 4 + 추매 2" 컨셉 집중, 새 종목 발굴 OFF). 5/20+ 본격 가동 시 복원.
+_INTRADAY_MAX_PER_DAY = 10    # 5/19 D-Day 재활성 — 사장님 5/18 야간 패러다임 전환: "유니버스 전체 보고 장중 갈아타기 계속". morning 4종목 약화 시 청산 + 새 강세 종목 매수 (한미반도체 → 대우건설 식). max_auto_positions 4 동시 한도 내 회전.
 _CUTOFF_TIME = time(14, 0)    # 14:00 이후 신규 진입 OFF (KST)
 
 # ETF prefix (단타 검증 대상 외)
