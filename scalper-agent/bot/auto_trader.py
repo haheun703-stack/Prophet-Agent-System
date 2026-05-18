@@ -966,6 +966,22 @@ class AutoTrader:
         # ── 매수 금액: 실제 잔고 기반 동적 계산 ──
         # CORTEX 체제 기반 자본사용 배수 적용
         available_cash = bal.get("cash", 0) if bal.get("success") else 0
+        # 5/19 D-Day — 단타봇 할당 자금 한도 적용 (사장님 위임, 퀀트봇 자금 별도)
+        scalper_budget = bot_conf.get("scalper_budget", 0)
+        if scalper_budget > 0 and available_cash > scalper_budget:
+            _original_cash = available_cash
+            available_cash = scalper_budget
+            _quant_reserved = _original_cash - scalper_budget
+            logger.info(
+                f"[자금정책] 단타봇 한도 적용: {_original_cash:,}원 → {available_cash:,}원 "
+                f"(퀀트봇 자금 {_quant_reserved:,}원 별도 분리)"
+            )
+            await _send(
+                f"💰 단타봇 자금 정책\n"
+                f"  · 전체 현금: {_original_cash:,}원\n"
+                f"  · 단타봇 한도: {scalper_budget:,}원\n"
+                f"  · 퀀트봇 별도: {_quant_reserved:,}원"
+            )
         num_targets = min(len(candidates), slots)
         cash_reserve_ratio = self.config.get("risk", {}).get("min_cash_ratio", 0.10)
         capital_use = regime_rules.get("capital_use", 1.0)
@@ -2065,6 +2081,22 @@ class AutoTrader:
         if slots <= 0:
             await _send(f"보유 종목 {current_positions}개 - 추가 매수 불가")
             return
+
+        # 5/19 D-Day — day mode 단타봇 자금 한도 안전망 (swing이 메인, day는 보조)
+        _scalper_budget = bot_conf.get("scalper_budget", 0)
+        if _scalper_budget > 0 and bal.get("success"):
+            _cash = bal.get("cash", 0)
+            if _cash > _scalper_budget and buy_amount > 0:
+                _max_slots_by_budget = _scalper_budget // buy_amount
+                if _max_slots_by_budget < slots:
+                    logger.info(
+                        f"[자금정책-day] slots {slots} → {_max_slots_by_budget} "
+                        f"(단타봇 한도 {_scalper_budget:,}원 / buy_amount {buy_amount:,}원)"
+                    )
+                    slots = max(0, _max_slots_by_budget)
+                    if slots <= 0:
+                        await _send(f"⛔ day mode: 단타봇 자금 한도로 매수 불가 (예산 {_scalper_budget:,}원)")
+                        return
 
         bought = 0
         risk_conf = self.config.get("risk", {})

@@ -165,14 +165,15 @@ strategies:
     #   SLUGGISH  = 0~39  (움직임 부족, 사냥 부적합)
 
 # --- Risk Management ---
+# 5/19 D-Day: 5/18 -450만 사건 5대 원칙 + 사장님 단타봇 2,500만 한도 위임
 risk:
-  min_cash_ratio: 0.10
-  max_loss_per_trade_pct: 0.02
-  daily_loss_limit: 500000
+  min_cash_ratio: 0.30            # 5/19 0.10→0.30 (5대 원칙 ④ 현금 30%+ 유지)
+  max_loss_per_trade_pct: 0.03    # 5/19 0.02→0.03 (5대 원칙 ③ 안전망 SL -3%)
+  daily_loss_limit: 1500000       # 5/19 50만→150만 (단타봇 자금 2,500만의 6%)
   mdd_limit_pct: 4.5              # MDD 한도 (%) — 초과 시 매매 정지
-  max_positions: 5
+  max_positions: 7                # 5/19 5→7 (기존 5종목 동결 + 자비스 신규 2 = 7)
   max_position_ratio: 0.30
-  stop_loss_pct: 0.02
+  stop_loss_pct: 0.03             # 5/19 0.02→0.03 (5대 원칙 ③ 안전망 SL -3%)
   take_profit_pct: 0.05
   trailing_stop: false              # ← 레거시 (미사용). v5.1 트레일링은 dynamic_target.py에서 자동 작동
   trailing_stop_pct: 0.015          # ← 레거시 (미사용). v5.1: 고점 -3% 기반 트레일링
@@ -219,7 +220,7 @@ output:
 
 # --- Telegram Bot (Body Hunter v4 봇 — 동적 목표가) ---
 bot:
-  auto_trade: false             # 자동매매 OFF (2026-03-10) — 유저 지시 있을 때까지 OFF 유지
+  auto_trade: true              # 5/19 D-Day OFF→ON (자비스 v3.0 첫 가동, 사장님 위임)
   trade_mode: "swing"           # "swing" = 동적 목표가 스윙 | "day" = 당일 청산
   scan_interval_sec: 30         # 포지션 감시 주기 (초)
   morning_scan_time: "08:55"    # 장전 5분 → 추천종목 로드 + 진입감시 등록 (09:00 전 완료)
@@ -228,8 +229,10 @@ bot:
   minute_collect_time: "15:40"  # 분봉(5분/15분) 수집 시각
   daily_collect_time: "16:00"   # 일봉 + 수급 데이터 수집 시각
   universe_rebuild_time: "08:30"  # 유니버스 리빌드 (시총 변동 반영)
-  max_auto_positions: 2         # 자동매매 최대 동시 보유 (3/3: 빅텍+풍산 집중)
+  max_auto_positions: 2         # 자동매매 최대 동시 보유 (5대 원칙 ① 집중 회피)
   max_hold_days: 10             # 스윙 최대 보유일
+  scalper_budget: 25000000      # 5/19 신규 — 단타봇 할당 자금 (사장님 위임, 퀀트봇 2,500만 별도)
+                                # auto_trader가 available_cash = min(cash, scalper_budget) 적용
   # auto_buy_amount: 삭제 — 장 시작 시 실제 잔고 / 종목수로 동적 계산
   # 공식: (가용현금 × (1 - min_cash_ratio)) / 매수종목수
   confirm_real_order: true      # 실주문 전 확인 메시지 요구
@@ -269,9 +272,9 @@ bot:
   # ── 빠른 익절 모드 (Quick Exit, 차트 영웅식 단타 회전) ──
   # 모드별 익절 룰: 시장 상황/사장님 명령에 따라 유연하게 전환
   quick_exit:
-    enabled: false                # OFF 기본 (사장님이 /익절모드 ... 명령으로 ON)
+    enabled: true                 # 5/19 OFF→ON (자비스 정신 ④ +5% 부분익절 + 트레일링)
     auto_switch: true             # 정보봇 위험등급에 따라 자동 전환
-    mode: "aggressive"            # aggressive / balanced / defensive (수동 모드)
+    mode: "balanced"              # 5/19 aggressive→balanced (+5% 도달 시 50% 부분익절 + 트레일링)
 
     # 모드별 익절 룰
     # AGGRESSIVE: TP +10% + 트레일링 (큰 수익 추구, 기본 기존 동작)
