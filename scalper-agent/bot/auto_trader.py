@@ -1675,6 +1675,58 @@ class AutoTrader:
             msg.append(f"  ❌ 실패 {len(failed)}: " + ", ".join(failed[:3]))
         await _send("\n".join(msg))
 
+    def _jarvis_3gate_check(self, code: str) -> dict:
+        """5/20 사장님 결정: 진입 직전 자비스 3게이트 체크.
+
+        [평생 원칙] ② "매수 전 5단계 게이트 필수" 부분 구현 (간소 3게이트).
+        * 5/20은 첫 자율 가동 → 간소 3게이트로 시작, 5/21+ 경험 보고 5게이트 확장.
+        * 호가 API 미구현 → 유동성(거래량)으로 대체.
+
+        Gates:
+            ① 유동성: volume >= 5000주 (최소 거래)
+            ② 체결강도: strength >= 100 (균형 이상, 100=균형)
+            ③ 가격안정성: (current - open) / open >= -3% (시초가 갭다운 한정)
+
+        Returns:
+            {ok: bool, reason: str, price_info: dict}
+            ok=True → 통과 (매수 진행), ok=False → 차단 (다음 종목)
+        """
+        try:
+            price_resp = self.trader.fetch_price(code)
+            if not price_resp or not price_resp.get("success"):
+                return {"ok": False, "reason": "fetch_price 실패", "price_info": {}}
+
+            current = price_resp.get("current_price", 0)
+            opn = price_resp.get("open", 0)
+            volume = price_resp.get("volume", 0)
+            strength = price_resp.get("strength", 0)
+
+            if current <= 0:
+                return {"ok": False, "reason": "현재가 0", "price_info": price_resp}
+
+            # ① 유동성
+            if volume < 5000:
+                return {"ok": False, "reason": f"유동성 부족 vol={volume:,}", "price_info": price_resp}
+
+            # ② 체결강도 (균형 이상)
+            if strength < 100:
+                return {"ok": False, "reason": f"체결강도 약세 {strength:.1f}", "price_info": price_resp}
+
+            # ③ 가격안정성 (시초가 갭다운 -3% 한정)
+            if opn > 0:
+                gap_pct = (current - opn) / opn * 100
+                if gap_pct < -3.0:
+                    return {"ok": False, "reason": f"갭다운 {gap_pct:+.1f}%", "price_info": price_resp}
+
+            return {
+                "ok": True,
+                "reason": f"vol={volume:,} 강도={strength:.0f} 현재가={current:,}",
+                "price_info": price_resp,
+            }
+        except Exception as e:
+            logger.warning(f"[3gate] {code} 체크 예외: {e}")
+            return {"ok": False, "reason": f"예외: {type(e).__name__}", "price_info": {}}
+
     async def asset_pool_scan_and_buy(self, top_k: int = 5, qty_per_stock: int = 1):
         """자비스 자산 풀 → 매수 (5/19 결함 2 수정, 5/20 D-Day 배포).
 
@@ -1796,22 +1848,36 @@ class AutoTrader:
             return
 
         await _send(
-            f"💎 [자산풀 매수] {len(filtered)}종목 발견 — {qty_per_stock}주씩 매수 진행"
+            f"💎 [자산풀 후보] {len(filtered)}종목 — 자비스 3게이트 체크 진행"
         )
 
-        bought, failed = [], []
+        bought, failed, gate_blocked = [], [], []
         for c in filtered:
             code = c["code"]
             name = c["name"] or code
             sources_tag = ",".join(c["sources"])
             try:
-                resp = await asyncio.to_thread(self.trader.buy_market, code, qty_per_stock)
+                # ── 자비스 3게이트 (사장님 5/20 결정: 매수 전 자비스가 종목 봄) ──
+                gate = await asyncio.to_thread(self._jarvis_3gate_check, code)
+                if not gate.get("ok"):
+                    gate_blocked.append(f"{name}({gate['reason']})")
+                    logger.info(f"[asset_pool] 3게이트 차단 {code}: {gate['reason']}")
+                    continue
+
+                # 게이트 통과 시 현재가 확보 (signal_tags용)
+                price_info = gate.get("price_info", {})
+                pre_buy_price = float(price_info.get("current_price", 0))
+
+                # ── smart_buy (지정가 -0.5% → -0.2% → 시장가 폴백) ──
+                # 사장님 원칙: "왠만하면 지정가, 정 안되면 시장가"
+                resp = await asyncio.to_thread(self.trader.smart_buy, code, qty_per_stock)
                 if resp.get("success"):
-                    buy_price = 0.0
+                    # 체결 후 실제 가격 재조회 (smart_buy는 saved_pct 반환하지만 체결가 미반환)
+                    buy_price = pre_buy_price
                     try:
                         price_resp = await asyncio.to_thread(self.trader.fetch_price, code)
                         if price_resp and price_resp.get("success"):
-                            buy_price = float(price_resp.get("price", 0))
+                            buy_price = float(price_resp.get("current_price", pre_buy_price))
                     except Exception:
                         pass
 
@@ -1857,11 +1923,16 @@ class AutoTrader:
                 failed.append(f"{name}({type(e).__name__})")
                 logger.warning(f"[asset_pool] 매수 실패 [{code}] {name}: {e}")
 
-        msg = [f"💎 [자산풀 매수 결과] ✅ {len(bought)}/{len(filtered)}종목"]
+        msg = [
+            f"💎 [자산풀 매수 결과] ✅ {len(bought)}/{len(filtered)}종목",
+            f"  · 후보 {len(filtered)} → 게이트차단 {len(gate_blocked)} / 실패 {len(failed)} / 체결 {len(bought)}",
+        ]
         if bought:
-            msg.append("  " + ", ".join(bought))
+            msg.append("  ✅ " + ", ".join(bought))
+        if gate_blocked:
+            msg.append(f"  🚪 3게이트 차단: " + ", ".join(gate_blocked[:5]))
         if failed:
-            msg.append(f"  ❌ 실패 {len(failed)}: " + ", ".join(failed[:3]))
+            msg.append(f"  ❌ 매수 실패: " + ", ".join(failed[:3]))
         await _send("\n".join(msg))
 
     async def close_verification_positions(self):
