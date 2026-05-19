@@ -37,12 +37,19 @@ from utils.supabase_sql import query  # noqa: E402
 def fetch_latest_advisory(
     target_bot: str = "scalper",
     msg_type: Optional[str] = None,
+    fallback_to_yesterday: bool = True,
 ) -> Optional[Dict]:
     """오늘 가장 최근 advisory 조회 (단타봇 매수 직전 호출 권장).
+
+    [5/19 사장님 10:08 수정] KST 기준 date 비교 + 어제 fallback.
+    - 기존: CURRENT_DATE (UTC) → KST 00:00~09:00 사이 어제 데이터로 잡힘
+    - 신규: (NOW() AT TIME ZONE 'Asia/Seoul')::date = KST 오늘
+    - fallback_to_yesterday=True: 오늘 데이터 없으면 어제 advisory 자동 반환
 
     Args:
         target_bot: 'scalper' (단타봇용)
         msg_type: 'MORNING_BRIEFING' | 'ADVICE' | 'SNAPSHOT' | 'LEADING' | None (전체)
+        fallback_to_yesterday: 오늘 데이터 없으면 어제 fallback (기본 True)
 
     Examples:
         # 게이트 ① 매크로 (09:00 진입 전)
@@ -54,9 +61,11 @@ def fetch_latest_advisory(
         # 형 긴급 LEADING 체크
         urgent = fetch_latest_advisory(msg_type='LEADING')
     """
+    # 1차: 오늘(KST) 데이터
     sql = """
         SELECT * FROM quant_bot_advisory
-        WHERE advisory_date = CURRENT_DATE AND target_bot = %s
+        WHERE advisory_date = (NOW() AT TIME ZONE 'Asia/Seoul')::date
+          AND target_bot = %s
     """
     params: tuple = (target_bot,)
     if msg_type:
@@ -65,6 +74,23 @@ def fetch_latest_advisory(
     sql += " ORDER BY advisory_time DESC LIMIT 1"
 
     rows = query(sql, params)
+    if rows:
+        return _row_to_dict(rows[0], include_all=True)
+
+    # 2차: 어제 fallback
+    if not fallback_to_yesterday:
+        return None
+    sql2 = """
+        SELECT * FROM quant_bot_advisory
+        WHERE advisory_date = ((NOW() AT TIME ZONE 'Asia/Seoul')::date - 1)
+          AND target_bot = %s
+    """
+    params2: tuple = (target_bot,)
+    if msg_type:
+        sql2 += " AND msg_type = %s"
+        params2 = (target_bot, msg_type)
+    sql2 += " ORDER BY advisory_time DESC LIMIT 1"
+    rows = query(sql2, params2)
     if not rows:
         return None
     return _row_to_dict(rows[0], include_all=True)
