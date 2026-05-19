@@ -31,7 +31,7 @@ ENV_REQUIRED = {
     "TELEGRAM_CHAT_ID": None,
     "KIS_APP_KEY": None,
     "KIS_APP_SECRET": None,
-    "KIS_ACCOUNT_NO": None,
+    "KIS_ACC_NO": None,
     "DATABASE_URL": None,
 }
 
