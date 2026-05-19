@@ -657,7 +657,7 @@ def step9_volume_scan():
 
     출력: scan_results/volume_spikes_YYYYMMDD.json + extra_universe.json
     """
-    logger.info("[9/9] 거래량 이상거래 스캔...")
+    logger.info("[9/10] 거래량 이상거래 스캔...")
     t0 = time.time()
     try:
         from data.volume_scanner import scan_universe, save_results
@@ -668,12 +668,82 @@ def step9_volume_scan():
             return {"volume_scan": 0}
         save_results(results)
         logger.info(
-            f"[9/9] Volume scan 완료: {len(results)}건 ({int(time.time()-t0)}초)"
+            f"[9/10] Volume scan 완료: {len(results)}건 ({int(time.time()-t0)}초)"
         )
         return {"volume_scan": len(results)}
     except Exception as e:
         logger.error(f"[9] Volume scan 실패: {e}")
         return {"volume_scan": f"ERROR: {e}"}
+
+
+def step10_gainer_analysis():
+    """10단계: 금일 5%+ 상승종목 시그널 역추적 분석 (today_gainers_analyzed.json)
+
+    5/19 점검 결과: tools/gainer_analysis.py가 2/19 이후 미가동.
+    정보봇 P0 today_gainers.json 공급 정상 + P1 ±30% suspicious 필터링 완료 후,
+    단타봇 측 책임인 분석 단계를 collect_all에 등록해 매 거래일 자동 실행.
+
+    구현 메모:
+      - gainer_analysis.py가 top-level 스크립트 (함수 0개) + os.chdir 부작용
+        → subprocess.run으로 격리 실행 (import 부작용 차단)
+      - today_gainers.json 부재 시 그레이스풀 스킵 (정보봇 sync 지연 대응)
+    """
+    logger.info("[10/10] Gainer 시그널 역추적 분석...")
+    t0 = time.time()
+    try:
+        import subprocess
+
+        # 정보봇 P0 산출물 존재 확인 (sync 지연 시 스킵)
+        gainers_path = DATA_DIR / "today_gainers.json"
+        if not gainers_path.exists():
+            logger.warning("[10] today_gainers.json 부재 — 정보봇 sync 대기 후 스킵")
+            return {"gainer_analysis": "SKIP_NO_INPUT"}
+
+        # 입력 파일 신선도 체크 (24h 초과 시 stale 경고)
+        age_h = (time.time() - gainers_path.stat().st_mtime) / 3600
+        if age_h > 36:
+            logger.warning(
+                f"[10] today_gainers.json stale: {age_h:.1f}h 전 — 분석 스킵"
+            )
+            return {"gainer_analysis": f"SKIP_STALE_{age_h:.0f}h"}
+
+        # subprocess 호출 (별도 프로세스로 격리 — os.chdir 부작용 차단)
+        result = subprocess.run(
+            [sys.executable, "tools/gainer_analysis.py"],
+            cwd=str(SCRIPT_DIR),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=300,
+        )
+
+        if result.returncode != 0:
+            logger.error(
+                f"[10] gainer_analysis exit={result.returncode} | "
+                f"stderr: {result.stderr[:300]}"
+            )
+            return {"gainer_analysis": f"ERROR_RC{result.returncode}"}
+
+        # 산출물 검증
+        analyzed_path = DATA_DIR / "today_gainers_analyzed.json"
+        if analyzed_path.exists():
+            with open(analyzed_path, "r", encoding="utf-8") as f:
+                analyzed = json.load(f)
+            cnt = len(analyzed) if isinstance(analyzed, list) else 0
+            logger.info(
+                f"[10/10] Gainer 분석 완료: {cnt}종목 ({int(time.time()-t0)}초)"
+            )
+            return {"gainer_analysis": "OK", "analyzed_count": cnt}
+        else:
+            logger.warning("[10] today_gainers_analyzed.json 산출물 미생성")
+            return {"gainer_analysis": "NO_OUTPUT"}
+    except subprocess.TimeoutExpired:
+        logger.error("[10] gainer_analysis timeout (5분 초과)")
+        return {"gainer_analysis": "TIMEOUT"}
+    except Exception as e:
+        logger.error(f"[10] Gainer 분석 실패: {e}")
+        return {"gainer_analysis": f"ERROR: {e}"}
 
 
 def step6_sync_stock_data_daily():
@@ -836,6 +906,7 @@ STEP_ORDER = [
     "step6",              # sync
     "step8_us_overnight", # 미국장 야간 (5/19 점검 추가)
     "step9_volume_scan",  # 거래량 이상거래 (5/19 점검 추가)
+    "step10_gainer_analysis",  # 5%+ 상승 시그널 역추적 (5/19 점검 추가)
     "step7",              # 건강성 검증
 ]
 
@@ -996,6 +1067,41 @@ def step7_health_check(results: dict) -> dict:
             health["ok"].append(f"Volume scan: {cnt}건")
     except Exception as e:
         health["warnings"].append(f"Volume scan 검증 실패: {e}")
+
+    # 7) Gainer analyzed (5/19 점검 추가)
+    #    today_gainers.json은 정보봇 산출물 → 부재해도 단타봇 책임 아님 (WARN)
+    #    today_gainers_analyzed.json은 단타봇 책임 → 부재면 CRITICAL
+    try:
+        gainers_path = DATA_DIR / "today_gainers.json"
+        analyzed_path = DATA_DIR / "today_gainers_analyzed.json"
+
+        if not gainers_path.exists():
+            health["warnings"].append(
+                "today_gainers.json 부재 (정보봇 sync 대기 — 단타봇 책임 아님)"
+            )
+        else:
+            gainers_age_h = (time.time() - gainers_path.stat().st_mtime) / 3600
+            if gainers_age_h > 36:
+                health["warnings"].append(
+                    f"today_gainers.json stale: {gainers_age_h:.1f}h (정보봇 sync 확인 필요)"
+                )
+
+            if not analyzed_path.exists():
+                health["issues"].append(
+                    "today_gainers_analyzed.json 부재 (step10 실패)"
+                )
+            else:
+                analyzed_age_h = (time.time() - analyzed_path.stat().st_mtime) / 3600
+                if analyzed_age_h > 36:
+                    health["issues"].append(
+                        f"today_gainers_analyzed.json stale: {analyzed_age_h:.1f}h"
+                    )
+                else:
+                    ga_res = results.get("gainer_analysis", {})
+                    cnt = ga_res.get("analyzed_count", 0) if isinstance(ga_res, dict) else 0
+                    health["ok"].append(f"Gainer 분석: {cnt}종목")
+    except Exception as e:
+        health["warnings"].append(f"Gainer analyzed 검증 실패: {e}")
 
     elapsed = int(time.time() - t0)
     health["elapsed"] = elapsed
@@ -1307,6 +1413,19 @@ def main():
         )
     else:
         logger.info("[SKIP] Step 9 Volume scan (이미 완료)")
+
+    # ── Step 10: Gainer 시그널 역추적 분석 (5/19 점검 추가) ──
+    if not _should_skip("step10_gainer_analysis", resume_from):
+        t10 = time.time()
+        results["gainer_analysis"] = step10_gainer_analysis()
+        timings["step10_gainer_analysis"] = int(time.time() - t10)
+        _save_checkpoint(
+            "step10_gainer_analysis",
+            results["gainer_analysis"],
+            timings["step10_gainer_analysis"],
+        )
+    else:
+        logger.info("[SKIP] Step 10 Gainer analysis (이미 완료)")
 
     # ── Step 7: 데이터 건강성 검증 (NEW) ──
     t7 = time.time()

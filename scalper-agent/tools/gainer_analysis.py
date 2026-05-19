@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """금일 5%이상 상승 종목 - 전일 시그널 역추적 분석"""
 import sys, io, json, os
+from datetime import date
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 os.chdir(os.path.join(os.path.dirname(__file__), ".."))
@@ -9,8 +11,18 @@ import pandas as pd
 import numpy as np
 from collections import Counter
 
+# 5/19 점검: 매직 넘버 동적화 — 작성 당시 '2026-02-19' 하드코딩되어
+# 다른 날 실행 시 마지막 행(오늘 데이터)이 분석에 섞이는 버그성 동작.
+TODAY_STR = date.today().strftime('%Y-%m-%d')
+
 with open('data_store/today_gainers.json', 'r', encoding='utf-8') as f:
     gainers = json.load(f)
+
+# 5/19 점검: 정보봇 P0/P1 새 형식(list)과 옛 형식(dict) 양쪽 지원
+# 옛 형식: {"date": "...", "gainers": [{...}]}
+# 새 형식: [{...}, {...}] 또는 동일 dict — 양쪽 통과시킴
+if isinstance(gainers, dict):
+    gainers = gainers.get('gainers') or gainers.get('items') or []
 
 with open('data_store/universe.json', 'r', encoding='utf-8') as f:
     uni = json.load(f)
@@ -19,7 +31,19 @@ results = []
 no_data = 0
 
 for g in gainers:
-    code = g['code']
+    code = g.get('code')
+    if not code:
+        continue
+    # 5/19 점검: 입력 필드 보강 — 정보봇 P0/P1 새 형식과 옛 형식 정규화
+    #   sector: 입력에 없으면 universe.json에서 lookup (없으면 '기타')
+    #   name:   입력에 없으면 universe에서 lookup
+    #   change: 정보봇 새 형식 return_pct or 옛 chg_pct 둘 다 흡수
+    u = uni.get(code, {}) if isinstance(uni, dict) else {}
+    g.setdefault('sector', u.get('sector') or '기타')
+    g.setdefault('name', u.get('name', code))
+    if 'change' not in g:
+        g['change'] = g.get('return_pct', g.get('chg_pct', 0))
+
     daily_path = f'data_store/daily/{code}.csv'
     if not os.path.exists(daily_path):
         no_data += 1
@@ -37,7 +61,7 @@ for g in gainers:
     df = df.sort_values('날짜').reset_index(drop=True)
 
     # 오늘 데이터 제외 (전일까지만)
-    if df['날짜'].iloc[-1] == '2026-02-19':
+    if df['날짜'].iloc[-1] == TODAY_STR:
         df = df.iloc[:-1]
 
     if len(df) < 20:
@@ -297,7 +321,7 @@ _os.replace(_ga_tmp, _ga_path)
 
 # ═══ REPORT ═══
 print("=" * 100)
-print("  금일(2026-02-19) 5%이상 상승종목 - 전일 시그널 역추적 분석")
+print(f"  금일({TODAY_STR}) 5%이상 상승종목 - 전일 시그널 역추적 분석")
 print("=" * 100)
 print(f"  분석: {len(results)}종목 (데이터없음: {no_data})")
 
