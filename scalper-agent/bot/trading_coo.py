@@ -4158,6 +4158,45 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[COO] 섹터동조 알림 실패 (무시): {e}")
 
+    async def _job_bottom_signal_scan(self, context=None) -> None:
+        """09:30 / 11:00 / 13:00 / 15:00 — 보유 전력 4종목 바닥 신호 스캔.
+
+        사장님 5/19 결정: "바닥 보이면 분할매수 검토".
+        5가지 신호 (RSI<30 / 거래량×2+양봉 / 볼린저하단 / 매크로반등 / 섹터동조) 중
+        3개+ 동시 충족 시 텔레그램 알림 (자동 매수 X, 사장님 수동 결정).
+        """
+        try:
+            from data.bottom_signal_detector import scan_holdings, format_alert
+            scan = await asyncio.to_thread(scan_holdings, "power_sector")
+            alert = format_alert(scan)
+            if not alert:
+                logger.debug("[COO] [바닥신호] 신호 미달 — 스킵")
+                return
+            if self._send_alert:
+                await self._send_alert(alert)
+            logger.info(f"[COO] [바닥신호] 알림 전송: {scan.get('alert_count', 0)}종목")
+        except Exception as e:
+            logger.warning(f"[COO] 바닥신호 스캔 실패 (무시): {e}")
+
+    async def _job_limit_up_continuation(self, context=None) -> None:
+        """09:30 / 10:30 / 11:30 / 13:30 — 상한가 연속 추적 알림.
+
+        어제 +15%+ 종목이 오늘 +10%+ 도달 시 즉시 알림 (알파 2 패턴).
+        사장님 5/19 What-If 분석 검증: 아이로보틱스 5/18 +29.87% → 5/19 +36.80%.
+        """
+        try:
+            from data.limit_up_continuation_tracker import scan_continuation_live, format_alert
+            result = await asyncio.to_thread(scan_continuation_live)
+            msg = format_alert(result)
+            if not msg:
+                logger.debug("[COO] [상한가연속] 트리거 없음 — 스킵")
+                return
+            if self._send_alert:
+                await self._send_alert(msg)
+            logger.info(f"[COO] [상한가연속] 알림 전송: {result.get('triggered_count', 0)}종목")
+        except Exception as e:
+            logger.warning(f"[COO] 상한가연속 추적 실패 (무시): {e}")
+
     # ═══════════════════════════════════════════════════════════
     # Verifier 팀 자동 호출 (사장님 5/19 09:40 결정 — "AI 에이전트 팀 만들어라")
     # 각 verifier가 이상 발견 시 자체 텔레그램 알림 발송 (verifiers/_common.py)
@@ -4365,6 +4404,24 @@ class TradingCOO:
         jq.run_daily(self._job_sector_concurrent_alert, time=kst_time(11, 0))
         jq.run_daily(self._job_sector_concurrent_alert, time=kst_time(13, 0))
         logger.info("[COO] 섹터 동조 알림 등록: 09:30 / 11:00 / 13:00 KST")
+
+        # ── 바닥 신호 감지기 (사장님 5/19 "바닥 보이면 분할매수" 명령) ──
+        # 보유 전력 4종목 5가지 신호 (RSI/거래량/볼린저/매크로/섹터) 3+ 충족 시 알림
+        # 자동 매수 X — 사장님 수동 결정만 (시나리오 A)
+        jq.run_daily(self._job_bottom_signal_scan, time=kst_time(9, 30))
+        jq.run_daily(self._job_bottom_signal_scan, time=kst_time(11, 0))
+        jq.run_daily(self._job_bottom_signal_scan, time=kst_time(13, 0))
+        jq.run_daily(self._job_bottom_signal_scan, time=kst_time(15, 0))
+        logger.info("[COO] 바닥 신호 알림 등록: 09:30 / 11:00 / 13:00 / 15:00 KST")
+
+        # ── 상한가 연속 추적 (알파 2 패턴, 5/19 What-If 검증) ──
+        # 어제 +15%+ 종목이 오늘 +10%+ 도달 시 즉시 알림
+        # 아이로보틱스 사례: 5/18 +29.87% → 5/19 +36.80% (저점→고점)
+        jq.run_daily(self._job_limit_up_continuation, time=kst_time(9, 30))
+        jq.run_daily(self._job_limit_up_continuation, time=kst_time(10, 30))
+        jq.run_daily(self._job_limit_up_continuation, time=kst_time(11, 30))
+        jq.run_daily(self._job_limit_up_continuation, time=kst_time(13, 30))
+        logger.info("[COO] 상한가 연속 추적 등록: 09:30 / 10:30 / 11:30 / 13:30 KST")
 
         # ── G6 DATA_PIPELINE (15:40) ──
         jq.run_daily(self.run_g6, time=kst_time(15, 40))
