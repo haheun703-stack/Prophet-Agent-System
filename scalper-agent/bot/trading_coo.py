@@ -4111,6 +4111,53 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[COO] 장중 스캔 실패 (무시): {e}")
 
+    async def _job_asset_pool_scan(self, context=None) -> None:
+        """09:05 1회 — 자비스 자산풀 매수 (사장님 5/19 결정 B안+1주).
+
+        4종 자산풀 통합 → 고신뢰(2개+ 소스) 종목 TOP 5 × 1주씩 매수.
+        advisory 게이트 BEARISH/PANIC 시 자동 차단.
+        verification 모드 OFF / 후보 없음 / 게이트 차단 → 노옵.
+        """
+        try:
+            from data import verification_mode as _vm
+            if not _vm.is_active():
+                logger.info("[COO] [asset_pool] verification 모드 OFF — 스킵")
+                return
+            if not self.auto_trader:
+                return
+            # 사장님 5/19 결정: B 진보 + 1주 모드
+            await self.auto_trader.asset_pool_scan_and_buy(
+                top_k=5, qty_per_stock=1
+            )
+        except Exception as e:
+            logger.warning(f"[COO] 자산풀 매수 실패 (무시): {e}")
+
+    async def _job_sector_concurrent_alert(self, context=None) -> None:
+        """09:30 / 11:00 / 13:00 — 알고리즘 A 섹터 동조 카운터 텔레그램 알림.
+
+        같은 섹터 4개+ 종목 동시 +10%+ 시 정책 이벤트 신호 → 즉시 알림.
+        """
+        try:
+            from data.sector_concurrent_surge import detect_live
+            result = detect_live(top_n=50, min_group=4)
+            alerts = result.get("alert_groups", [])
+            if not alerts:
+                logger.debug("[COO] [섹터동조] 임계 미달 — 알림 스킵")
+                return
+
+            lines = [f"🚨 섹터 동조 감지! {len(alerts)}건"]
+            for g in alerts:
+                lines.append(f"\n★ {g['sector']} — {g['count']}개 동시 +10%+")
+                for m in g["members"][:8]:
+                    lines.append(f"  {m['name']} ({m['code']}) +{m['change']:.1f}% 시총{m['cap']:,}억")
+            msg = "\n".join(lines)
+
+            if self._send_alert:
+                await self._send_alert(msg)
+            logger.info(f"[COO] [섹터동조] 알림 전송: {len(alerts)}그룹")
+        except Exception as e:
+            logger.warning(f"[COO] 섹터동조 알림 실패 (무시): {e}")
+
     # ═══════════════════════════════════════════════════════════
     # Verifier 팀 자동 호출 (사장님 5/19 09:40 결정 — "AI 에이전트 팀 만들어라")
     # 각 verifier가 이상 발견 시 자체 텔레그램 알림 발송 (verifiers/_common.py)
@@ -4304,6 +4351,20 @@ class TradingCOO:
         # 검증 모드 OFF / 시간 외 / 후보 없음 → graceful skip
         jq.run_repeating(self._job_intraday_verification_scan, interval=300, first=540)
         logger.info("[COO] 검증모드 장중 스캔 등록: 5분 반복 (09:05~14:00 활성)")
+
+        # ── 자비스 자산풀 매수 (사장님 5/19 결정: B 진보 + 1주 모드) ──
+        # 09:05 1회 — 4종 자산풀 통합 → 고신뢰 TOP 5 × 1주씩 매수
+        # advisory BEARISH/PANIC 자동 차단 / verification 모드 OFF 시 노옵
+        jq.run_daily(self._job_asset_pool_scan, time=kst_time(9, 5))
+        logger.info("[COO] 자산풀 매수 등록: 09:05 KST (B 진보 + 1주 모드)")
+
+        # ── 알고리즘 A: 섹터 동조 카운터 텔레그램 알림 (5/19 5/18 백테스트 적중) ──
+        # 09:30 / 11:00 / 13:00 — 같은 섹터 4개+ 동시 +10%+ 시 즉시 알림
+        # 정책/뉴스 이벤트 사전 포착 (5/18 증권 14개 동시 급등 같은 패턴)
+        jq.run_daily(self._job_sector_concurrent_alert, time=kst_time(9, 30))
+        jq.run_daily(self._job_sector_concurrent_alert, time=kst_time(11, 0))
+        jq.run_daily(self._job_sector_concurrent_alert, time=kst_time(13, 0))
+        logger.info("[COO] 섹터 동조 알림 등록: 09:30 / 11:00 / 13:00 KST")
 
         # ── G6 DATA_PIPELINE (15:40) ──
         jq.run_daily(self.run_g6, time=kst_time(15, 40))
