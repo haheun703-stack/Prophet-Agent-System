@@ -2824,7 +2824,27 @@ class TradingCOO:
             return {"watchbox": f"ERROR: {e}"}
 
     async def _job_us_overnight_filter(self, context=None) -> dict:
-        """A11: 미국장 야간 필터 — US 데이터 수집 → 갭 예측 → 진입 모드 결정."""
+        """A11: 미국장 야간 필터 — US 데이터 수집 → 갭 예측 → 진입 모드 결정.
+
+        5/19 점검: 5/18 휴장 + 5/19 G1 실패 시 묵음 통과로 us_market_overnight.json
+        stale 됨. 실패 시 텔레그램 알림 강제 + collect_all step8이 16:10 백업 갱신.
+        """
+        async def _alert(text: str):
+            """A11 실패 알림 — 묵음 통과 방지 (5/19 점검)"""
+            if context and self.bot and getattr(self.bot, "chat_id", None):
+                try:
+                    await context.bot.send_message(
+                        chat_id=self.bot.chat_id, text=text)
+                    return
+                except Exception:
+                    pass
+            alert_fn = getattr(self.auto_trader, "_send_alert", None) if self.auto_trader else None
+            if alert_fn:
+                try:
+                    await asyncio.to_thread(alert_fn, text)
+                except Exception:
+                    pass
+
         try:
             from data.us_market_collector import collect_us_overnight
             from data.us_overnight_filter import run as run_us_filter
@@ -2835,12 +2855,14 @@ class TradingCOO:
             us_data = await asyncio.to_thread(collect_us_overnight)
             if not us_data:
                 logger.warning("[A11] US 데이터 수집 실패")
+                await _alert("[A11] 미국장 야간 데이터 수집 실패 — yfinance 응답 없음. 16:10 collect_all step8에서 백업 시도됨.")
                 return {"us_filter": "NO_DATA"}
 
             # 2) 필터 실행 (수집된 데이터 기반)
             report = await asyncio.to_thread(run_us_filter)
             if not report:
                 logger.warning("[A11] US 필터 실행 실패")
+                await _alert("[A11] 미국장 필터 실행 실패 — 진입 모드 결정 불가. 수동 확인 필요.")
                 return {"us_filter": "FILTER_FAIL"}
 
             mode = report.get("mode", "NORMAL")
@@ -2874,6 +2896,10 @@ class TradingCOO:
             return {"us_filter": "OK", "us_mode": mode}
         except Exception as e:
             logger.warning(f"[A11] US 야간 필터 실패 (무시): {e}")
+            try:
+                await _alert(f"[A11] 미국장 야간 필터 예외 — {type(e).__name__}: {str(e)[:200]}")
+            except Exception:
+                pass
             return {"us_filter": f"ERROR: {e}"}
 
     async def _job_auction_scan(self, context=None) -> dict:

@@ -617,6 +617,65 @@ def step5_spacex_report():
         return 0
 
 
+def step8_us_overnight():
+    """8단계: 미국장 야간 데이터 수집 (us_market_overnight.json)
+
+    5/19 점검 결과: A11 _job_us_overnight_filter가 G1에서 실패 시
+    logger.warning만 찍고 묵음 통과 → us_market_overnight.json이 5/17 이후 stale.
+    여기 collect_all 본 사이클에 등록하여 매 거래일 안정적으로 갱신한다.
+
+    출력: us_market_overnight.json + us_overnight_result.json
+    """
+    logger.info("[8/9] 미국장 야간 수집...")
+    t0 = time.time()
+    try:
+        from data.us_market_collector import collect_us_overnight
+        from data.us_overnight_filter import run as run_us_filter
+
+        us_data = collect_us_overnight()
+        if not us_data:
+            logger.warning("[8] US 데이터 수집 빈 결과")
+            return {"us_overnight": "NO_DATA"}
+
+        report = run_us_filter()
+        mode = (report or {}).get("mode", "UNKNOWN")
+        gap = (report or {}).get("gap_est_pct", 0.0)
+        logger.info(
+            f"[8/9] US 야간 수집 완료: mode={mode}, gap={gap:+.2f}% ({int(time.time()-t0)}초)"
+        )
+        return {"us_overnight": "OK", "us_mode": mode, "gap_pct": gap}
+    except Exception as e:
+        logger.error(f"[8] US 야간 수집 실패: {e}")
+        return {"us_overnight": f"ERROR: {e}"}
+
+
+def step9_volume_scan():
+    """9단계: 거래량 이상거래 스캔 (data_store/scan_results/)
+
+    5/19 점검 결과: volume_scanner가 3/4 이후 미가동 — scan_results 폴더
+    일별 갱신 멈춤. collect_all 본 사이클에 등록해 매 거래일 자동 생성.
+
+    출력: scan_results/volume_spikes_YYYYMMDD.json + extra_universe.json
+    """
+    logger.info("[9/9] 거래량 이상거래 스캔...")
+    t0 = time.time()
+    try:
+        from data.volume_scanner import scan_universe, save_results
+
+        results = scan_universe(top_n=30)
+        if not results:
+            logger.warning("[9] Volume scan: 결과 0건 (감지 패턴 없음)")
+            return {"volume_scan": 0}
+        save_results(results)
+        logger.info(
+            f"[9/9] Volume scan 완료: {len(results)}건 ({int(time.time()-t0)}초)"
+        )
+        return {"volume_scan": len(results)}
+    except Exception as e:
+        logger.error(f"[9] Volume scan 실패: {e}")
+        return {"volume_scan": f"ERROR: {e}"}
+
+
 def step6_sync_stock_data_daily():
     """6단계: data_store/daily → stock_data_daily 동기화
 
@@ -765,17 +824,19 @@ CHECKPOINT_PATH = DATA_DIR / "_collect_checkpoint.json"
 
 # Step 실행 순서 (체크포인트 기준)
 STEP_ORDER = [
-    "step1_2",      # 일봉 + 수급 + ETF (동시)
-    "step3",        # 국적별
-    "step4",        # Parquet
-    "step5_spacex", # SpaceX
-    "step5b",       # 상한가 스캐너
-    "step5c",       # 상한가 엔진
-    "step5d",       # 페이퍼 트레이딩
-    "step5e",       # FLOWX 업로드
-    "step5f",       # 수급 임계점
-    "step6",        # sync
-    "step7",        # 건강성 검증
+    "step1_2",            # 일봉 + 수급 + ETF (동시)
+    "step3",              # 국적별
+    "step4",              # Parquet
+    "step5_spacex",       # SpaceX
+    "step5b",             # 상한가 스캐너
+    "step5c",             # 상한가 엔진
+    "step5d",             # 페이퍼 트레이딩
+    "step5e",             # FLOWX 업로드
+    "step5f",             # 수급 임계점
+    "step6",              # sync
+    "step8_us_overnight", # 미국장 야간 (5/19 점검 추가)
+    "step9_volume_scan",  # 거래량 이상거래 (5/19 점검 추가)
+    "step7",              # 건강성 검증
 ]
 
 
@@ -902,6 +963,39 @@ def step7_health_check(results: dict) -> dict:
     pq_count = results.get("parquet", 0)
     if isinstance(pq_count, int) and pq_count < 20:
         health["warnings"].append(f"Parquet 빌드 부족: {pq_count}건")
+
+    # 5) US 야간 데이터 신선도 (5/19 점검 추가)
+    try:
+        us_path = DATA_DIR / "us_market_overnight.json"
+        if not us_path.exists():
+            health["issues"].append("us_market_overnight.json 부재")
+        else:
+            age_h = (time.time() - us_path.stat().st_mtime) / 3600
+            if age_h > 36:
+                health["issues"].append(
+                    f"us_market_overnight stale: {age_h:.1f}h"
+                )
+            else:
+                us_res = results.get("us_overnight", {})
+                mode = us_res.get("us_mode") if isinstance(us_res, dict) else "?"
+                health["ok"].append(f"US 야간: {age_h:.1f}h 전 (mode={mode})")
+    except Exception as e:
+        health["warnings"].append(f"US 야간 검증 실패: {e}")
+
+    # 6) Volume scan 결과 (5/19 점검 추가)
+    try:
+        today_compact = date.today().strftime("%Y%m%d")
+        scan_path = DATA_DIR / "scan_results" / f"volume_spikes_{today_compact}.json"
+        if not scan_path.exists():
+            health["warnings"].append(
+                f"volume_spikes_{today_compact}.json 부재"
+            )
+        else:
+            vs_res = results.get("volume_scan", {})
+            cnt = vs_res.get("volume_scan", 0) if isinstance(vs_res, dict) else 0
+            health["ok"].append(f"Volume scan: {cnt}건")
+    except Exception as e:
+        health["warnings"].append(f"Volume scan 검증 실패: {e}")
 
     elapsed = int(time.time() - t0)
     health["elapsed"] = elapsed
@@ -1187,6 +1281,32 @@ def main():
         _save_checkpoint("step6", results["sync"], timings["step6"])
     else:
         logger.info("[SKIP] Step 6 sync (이미 완료)")
+
+    # ── Step 8: 미국장 야간 (5/19 점검 추가) ──
+    if not _should_skip("step8_us_overnight", resume_from):
+        t8 = time.time()
+        results["us_overnight"] = step8_us_overnight()
+        timings["step8_us_overnight"] = int(time.time() - t8)
+        _save_checkpoint(
+            "step8_us_overnight",
+            results["us_overnight"],
+            timings["step8_us_overnight"],
+        )
+    else:
+        logger.info("[SKIP] Step 8 US 야간 (이미 완료)")
+
+    # ── Step 9: 거래량 이상거래 스캔 (5/19 점검 추가) ──
+    if not _should_skip("step9_volume_scan", resume_from):
+        t9 = time.time()
+        results["volume_scan"] = step9_volume_scan()
+        timings["step9_volume_scan"] = int(time.time() - t9)
+        _save_checkpoint(
+            "step9_volume_scan",
+            results["volume_scan"],
+            timings["step9_volume_scan"],
+        )
+    else:
+        logger.info("[SKIP] Step 9 Volume scan (이미 완료)")
 
     # ── Step 7: 데이터 건강성 검증 (NEW) ──
     t7 = time.time()
