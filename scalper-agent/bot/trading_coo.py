@@ -4308,6 +4308,28 @@ class TradingCOO:
         except Exception as e:
             logger.exception(f"[COO] 검증모드 정산 실패: {e}")
 
+    async def _job_jarvis_learning(self, context=None) -> None:
+        """15:40 자비스 일일 회고 (사장님 5/19 23:00 명령: 섹터 추격 타이밍 학습).
+
+        오늘 자비스 진입 종목 vs 시장 강세 섹터 비교 → 일치도 + 인사이트 누적.
+        학습 데이터는 data_store/jarvis_learning/journal_*.json + sector_timing_insights.json.
+        5/21+ 자비스가 이 데이터 보고 진화.
+        """
+        try:
+            from data import jarvis_learning as _jl
+            analysis = await asyncio.to_thread(_jl.run_daily)
+            msg = _jl.build_telegram_summary(analysis)
+
+            if self.bot and getattr(self.bot, "chat_id", None) and context:
+                try:
+                    await context.bot.send_message(chat_id=self.bot.chat_id, text=msg)
+                except Exception as te:
+                    logger.warning(f"[COO] 자비스 회고 텔레그램 실패: {te}")
+            else:
+                logger.info(f"[COO] 자비스 회고:\n{msg}")
+        except Exception as e:
+            logger.warning(f"[COO] 자비스 회고 실패 (무시): {e}")
+
     async def _job_jgis_etf_watchlist(self, context=None) -> dict:
         """정보봇 etf_investor_summary 조회 → 내일 수혜 후보 jgis_etf_watchlist.json 저장.
 
@@ -4431,6 +4453,12 @@ class TradingCOO:
         logger.info("[COO] 검증모드 청산 등록: 15:25 KST (날짜/토글 자동 분기)")
         jq.run_daily(self._job_verification_settlement, time=kst_time(15, 35))
         logger.info("[COO] 검증모드 정산 등록: 15:35 KST")
+
+        # ── 자비스 일일 회고 (사장님 5/19 23:00 명령: 섹터 추격 타이밍 학습) ──
+        # 매일 15:40 — 오늘 자비스 진입 종목 vs 시장 강세 섹터 비교 → 인사이트 누적
+        # 5/21+ 자비스가 이 데이터 보고 자율 진화
+        jq.run_daily(self._job_jarvis_learning, time=kst_time(15, 40))
+        logger.info("[COO] 자비스 일일 회고 등록: 15:40 KST (섹터 학습)")
 
         # ── 검증모드 v2: 장중 멀티시그널 진입 (5분 반복, 09:05~14:00) ──
         # 사장님 결정 2026-05-17: 추천 외 종목도 체결강도+거래량+tipping 3개 동시 충족 시 자동 진입
