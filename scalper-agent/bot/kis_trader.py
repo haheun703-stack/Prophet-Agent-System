@@ -1572,11 +1572,26 @@ class KISTrader:
             })
         return results
 
-    def fetch_ranking_strength(self, market: str = "J", top_n: int = 30) -> list:
+    def fetch_ranking_strength(self, market: str = "J", top_n: int = 30,
+                                min_volume: int = 100000,
+                                exclude_etf: bool = True) -> list:
         """체결강도 상위 (FHPST01680000) — 매수세 강한 종목.
+
+        Args:
+            market: J=주식
+            top_n: 반환 종목 수
+            min_volume: 최소 누적거래량 (기본 10만주) — 5/19 발견 결함 수정.
+                        빈값으로 두면 ETN/채권 등 거래량 200주짜리가 체결강도 1000.0
+                        동률로 상위 점유 → 의미없는 결과. min_volume=0 으로
+                        하면 무필터(이전 동작).
+            exclude_etf: ETF/ETN/펀드/채권 prefix 클라이언트 측 제외 (기본 True).
+                         단타 대상 외 — KODEX/TIGER/RISE/ACE/PLUS/SOL/KOSEF/ARIRANG/
+                         HANARO/KIWOOM/KoAct/BNK/Q/0(채권코드).
 
         Returns: [{"code","name","price","change_rate","strength","volume"}, ...]
         """
+        # KIS API는 결과량을 미리 알 수 없으므로 충분히 크게 받고 클라 필터 후 잘라냄
+        fetch_n = top_n * 5 if exclude_etf else top_n
         params = {
             "fid_cond_mrkt_div_code": market,
             "fid_cond_scr_div_code": "20168",
@@ -1584,7 +1599,7 @@ class KISTrader:
             "fid_div_cls_code": "0",
             "fid_input_price_1": "",
             "fid_input_price_2": "",
-            "fid_vol_cnt": "",
+            "fid_vol_cnt": str(min_volume) if min_volume else "",
             "fid_trgt_cls_code": "0",
             "fid_trgt_exls_cls_code": "0",
         }
@@ -1592,11 +1607,33 @@ class KISTrader:
             "/uapi/domestic-stock/v1/ranking/volume-power",
             "FHPST01680000", params,
         )
+
+        # ETF/ETN/펀드/채권 prefix 차단 (5/19 발견 결함)
+        ETF_PREFIXES = (
+            "KODEX", "TIGER", "RISE", "PLUS", "ACE", "SOL", "KOSEF",
+            "ARIRANG", "HANARO", "KIWOOM", "KoAct", "BNK", "TIMEFOLIO",
+            "TIME", "FOCUS", "WOORI", "KB", "TREX",
+        )
+        # 채권/ETN 코드 패턴: Q로 시작(ETN) 또는 0으로 시작 + 알파벳 포함 (펀드)
+        def _is_excluded(code: str, name: str) -> bool:
+            if not exclude_etf:
+                return False
+            if any(name.startswith(p) for p in ETF_PREFIXES):
+                return True
+            # 6자리 종목코드가 아니면 (ETN/펀드/채권) 제외
+            if not (len(code) == 6 and code.isdigit()):
+                return True
+            return False
+
         results = []
-        for r in raw[:top_n]:
+        for r in raw:
+            code = r.get("stck_shrn_iscd", "")
+            name = r.get("hts_kor_isnm", "")
+            if _is_excluded(code, name):
+                continue
             results.append({
-                "code": r.get("stck_shrn_iscd", ""),
-                "name": r.get("hts_kor_isnm", ""),
+                "code": code,
+                "name": name,
                 "price": _safe_int(r.get("stck_prpr")),
                 "change_rate": _safe_float(r.get("prdy_ctrt")),
                 "strength": _safe_float(r.get("tday_rltv")),
@@ -1604,6 +1641,8 @@ class KISTrader:
                 "sell_vol": _safe_int(r.get("seln_cnqn_smtn")),
                 "buy_vol": _safe_int(r.get("shnu_cnqn_smtn")),
             })
+            if len(results) >= top_n:
+                break
         return results
 
     def fetch_uplowprice(self, price_cls: str = "0", div_cls: str = "0",

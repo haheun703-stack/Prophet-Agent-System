@@ -1661,6 +1661,186 @@ class AutoTrader:
             msg.append(f"  ❌ 실패 {len(failed)}: " + ", ".join(failed[:3]))
         await _send("\n".join(msg))
 
+    async def asset_pool_scan_and_buy(self, top_k: int = 5, qty_per_stock: int = 1):
+        """자비스 자산 풀 → 매수 (5/19 결함 2 수정, 5/20 D-Day 배포).
+
+        사장님 5/19 지적: "asset_pool_loader가 자동 매수 경로에 wire-up 안 됨"
+        → 4종 자산 통합 풀에서 고신뢰(2개+ 소스 일치) 종목 TOP K 1주씩 매수.
+
+        호출 시점: 09:00 morning_rec 실행 직후 1회 (장 시작 후 5분 이내).
+        사장님 1주 모드 기본 (qty_per_stock=1).
+
+        안전망 (intraday와 동일 표준):
+          - verification_mode 체크
+          - 큰형 advisory 게이트 (BEARISH/PANIC 차단)
+          - 보유/morning_rec 중복 차단
+          - ETF 차단 (asset_pool_loader 단계에서 prefix 필터)
+          - 일일 최대 5종목 추가 (top_k 한도)
+
+        Args:
+            top_k: 최대 매수 종목 수 (기본 5)
+            qty_per_stock: 종목당 수량 (기본 1주, 사장님 1주 모드)
+        """
+        from data import verification_mode as _vm
+
+        async def _send(text):
+            if self._send_alert:
+                try:
+                    await self._send_alert(text)
+                except Exception:
+                    pass
+
+        if not _vm.is_active():
+            return
+
+        # ── 큰형(퀀트봇) advisory 게이트 ──
+        try:
+            from utils.quant_advisory_subscriber import fetch_latest_advisory
+            _adv = None
+            for _mt in ('LEADING', 'SNAPSHOT', 'ADVICE', 'MORNING_BRIEFING'):
+                _adv = fetch_latest_advisory(msg_type=_mt, fallback_to_yesterday=False)
+                if _adv:
+                    break
+            if not _adv:
+                for _mt in ('LEADING', 'SNAPSHOT', 'ADVICE', 'MORNING_BRIEFING'):
+                    _adv = fetch_latest_advisory(msg_type=_mt, fallback_to_yesterday=True)
+                    if _adv:
+                        break
+            if _adv:
+                _regime = (_adv.get('market_regime') or '').upper()
+                if _regime in ('BEARISH', 'PANIC'):
+                    await _send(
+                        f"🛑 큰형 {_regime} → 자산풀 매수 차단 "
+                        f"({_adv.get('advisory_date')} {_adv.get('advisory_time')})"
+                    )
+                    logger.warning(f"[asset_pool] regime={_regime} → 차단")
+                    return
+                logger.info(f"[asset_pool] regime={_regime} 통과")
+        except Exception as e:
+            logger.warning(f"[asset_pool] advisory 게이트 실패 (continue): {e}")
+
+        # ── 자산 풀 통합 + 고신뢰 종목 추출 ──
+        try:
+            from utils.asset_pool_loader import (
+                get_high_confidence_candidates,
+                get_candidate_source_map,
+                load_limit_up_triggers,
+            )
+            high_conf_codes = await asyncio.to_thread(get_high_confidence_candidates)
+            source_map = await asyncio.to_thread(get_candidate_source_map)
+            triggers = await asyncio.to_thread(load_limit_up_triggers)
+            trigger_codes = {t.get("code", "") for t in triggers if isinstance(t, dict)}
+        except Exception as e:
+            logger.warning(f"[asset_pool] 자산 풀 로드 실패: {e}")
+            return
+
+        # 상한가 엔진 trigger는 무조건 우선순위 (즉시 진입가 계산됨)
+        # → trigger > high_conf 순으로 정렬
+        all_codes = list(trigger_codes) + [c for c in high_conf_codes if c not in trigger_codes]
+        if not all_codes:
+            logger.info("[asset_pool] 후보 0종목 — 스킵")
+            return
+
+        # 제외: 보유 종목 + verification 보유 + ETF prefix
+        excluded = set(self._positions.keys())
+        try:
+            for p in _vm.get_active_positions():
+                excluded.add(p["code"])
+        except Exception:
+            pass
+
+        ETF_PREFIXES = (
+            "KODEX", "TIGER", "RISE", "PLUS", "ACE", "SOL",
+            "KOSEF", "ARIRANG", "HANARO", "KoAct",
+        )
+
+        # 종목명 조회를 위해 trigger/source_map에서 name 추출 보강
+        name_map = {t.get("code"): t.get("name", "") for t in triggers if isinstance(t, dict)}
+
+        filtered = []
+        for code in all_codes:
+            if code in excluded:
+                continue
+            name = name_map.get(code, "")
+            if any(name.startswith(p) for p in ETF_PREFIXES):
+                continue
+            filtered.append({"code": code, "name": name, "sources": source_map.get(code, [])})
+            if len(filtered) >= top_k:
+                break
+
+        if not filtered:
+            logger.info("[asset_pool] 필터 후 0종목 — 스킵")
+            return
+
+        await _send(
+            f"💎 [자산풀 매수] {len(filtered)}종목 발견 — {qty_per_stock}주씩 매수 진행"
+        )
+
+        bought, failed = [], []
+        for c in filtered:
+            code = c["code"]
+            name = c["name"] or code
+            sources_tag = ",".join(c["sources"])
+            try:
+                resp = await asyncio.to_thread(self.trader.buy_market, code, qty_per_stock)
+                if resp.get("success"):
+                    buy_price = 0.0
+                    try:
+                        price_resp = await asyncio.to_thread(self.trader.fetch_price, code)
+                        if price_resp and price_resp.get("success"):
+                            buy_price = float(price_resp.get("price", 0))
+                    except Exception:
+                        pass
+
+                    _vm.record_buy(
+                        code=code, name=name, buy_price=buy_price,
+                        signal_tags=f"asset_pool({sources_tag})",
+                        final_score=len(c["sources"]) * 20,  # 소스 수 * 20점
+                    )
+
+                    try:
+                        from data import trade_journal as _tj
+                        _tj.log_buy(
+                            code=code, name=name, qty=qty_per_stock, price=buy_price,
+                            source="asset_pool",
+                            signal_tags=f"asset_pool({sources_tag})",
+                            final_score=len(c["sources"]) * 20,
+                            order_no=resp.get("order_no") or resp.get("ODNO"),
+                            note=f"sources={sources_tag}",
+                        )
+                    except Exception as _tj_e:
+                        logger.warning(f"[trade_journal] asset_pool 적재 실패: {_tj_e}")
+
+                    try:
+                        from utils.scalper_journal_hooks import hook_buy_execution
+                        hook_buy_execution(
+                            ticker=code, name=name, price=int(buy_price),
+                            qty=qty_per_stock,
+                            grade="HIGH" if len(c["sources"]) >= 3 else "MEDIUM",
+                            source="asset_pool",
+                            extra_reason=f"sources={sources_tag}",
+                        )
+                    except Exception as _h_e:
+                        logger.debug(f"[scalper_hooks] asset_pool buy 적재 실패: {_h_e}")
+
+                    self._positions[code] = {
+                        "name": name, "qty": qty_per_stock, "buy_price": buy_price,
+                        "source": "asset_pool",
+                    }
+                    bought.append(f"{name}({len(c['sources'])}소스)")
+                else:
+                    failed.append(f"{name}({str(resp.get('msg', '?'))[:20]})")
+            except Exception as e:
+                failed.append(f"{name}({type(e).__name__})")
+                logger.warning(f"[asset_pool] 매수 실패 [{code}] {name}: {e}")
+
+        msg = [f"💎 [자산풀 매수 결과] ✅ {len(bought)}/{len(filtered)}종목"]
+        if bought:
+            msg.append("  " + ", ".join(bought))
+        if failed:
+            msg.append(f"  ❌ 실패 {len(failed)}: " + ", ".join(failed[:3]))
+        await _send("\n".join(msg))
+
     async def close_verification_positions(self):
         """15:25 강제 청산 (trading_coo에서 호출). verification 보유 전체 시장가 매도."""
         from data import verification_mode as _vm
