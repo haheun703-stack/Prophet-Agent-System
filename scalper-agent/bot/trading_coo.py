@@ -4111,6 +4111,48 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[COO] 장중 스캔 실패 (무시): {e}")
 
+    # ═══════════════════════════════════════════════════════════
+    # Verifier 팀 자동 호출 (사장님 5/19 09:40 결정 — "AI 에이전트 팀 만들어라")
+    # 각 verifier가 이상 발견 시 자체 텔레그램 알림 발송 (verifiers/_common.py)
+    # ═══════════════════════════════════════════════════════════
+    async def _job_verifier_env_check(self, context=None) -> None:
+        """08:00 KST — EnvChecker 일일 점검 (.env + config.yaml 토글)."""
+        try:
+            from verifiers import env_checker
+            result = env_checker.run()
+            logger.info(f"[COO] [Verifier] EnvChecker: {result.get('summary')}")
+        except Exception as e:
+            logger.warning(f"[COO] [Verifier] EnvChecker 실패: {e}")
+
+    async def _job_verifier_data_integrity(self, context=None) -> None:
+        """매시간 — DataIntegrity 정보봇/큰형/JGIS/Brain 데이터 도착 감시."""
+        try:
+            from verifiers import data_integrity
+            result = data_integrity.run()
+            logger.info(f"[COO] [Verifier] DataIntegrity: {result.get('summary')}")
+        except Exception as e:
+            logger.warning(f"[COO] [Verifier] DataIntegrity 실패: {e}")
+
+    async def _job_verifier_flow_monitor(self, context=None) -> None:
+        """5분 반복 (장중) — FlowMonitor 매매 흐름 감시."""
+        try:
+            from verifiers import flow_monitor
+            result = flow_monitor.run()
+            # 정상 시 로그 spam 방지 — 이상 시만 INFO
+            if not result.get("ok"):
+                logger.info(f"[COO] [Verifier] FlowMonitor: {result.get('summary')}")
+        except Exception as e:
+            logger.warning(f"[COO] [Verifier] FlowMonitor 실패: {e}")
+
+    async def _job_verifier_reporter(self, context=None) -> None:
+        """16:00 KST — Reporter 통합 일일 보고 + 텔레그램 자동 발송."""
+        try:
+            from verifiers import reporter
+            reporter.send_summary_telegram(send_even_if_ok=True)
+            logger.info("[COO] [Verifier] Reporter 일일 보고 발송 완료")
+        except Exception as e:
+            logger.warning(f"[COO] [Verifier] Reporter 실패: {e}")
+
     async def _job_verification_settlement(self, context=None) -> None:
         """15:35 검증모드 정산 리포트 — 시그널별 적중률 텔레그램 발송."""
         try:
@@ -4278,6 +4320,17 @@ class TradingCOO:
         # ── G7 Stage 4 백업 (17:45) — G7 중단 시 NXT/수급 9개 업로드 복구 ──
         jq.run_daily(self.run_g7_stage4_backup, time=kst_time(17, 45))
         logger.info("[COO] G7 Stage 4 백업 등록: 17:45 KST (멱등)")
+
+        # ── Verifier 팀 자동 검수 (사장님 5/19 09:40 결정 — "AI 에이전트 팀 만들어라") ──
+        # EnvChecker 08:00 (장전) / DataIntegrity 1시간 / FlowMonitor 5분 / Reporter 16:00
+        jq.run_daily(self._job_verifier_env_check, time=kst_time(8, 0))
+        logger.info("[COO] [Verifier] EnvChecker 등록: 08:00 KST")
+        jq.run_repeating(self._job_verifier_data_integrity, interval=3600, first=120)
+        logger.info("[COO] [Verifier] DataIntegrity 등록: 1시간 반복 (첫 2분 후)")
+        jq.run_repeating(self._job_verifier_flow_monitor, interval=300, first=180)
+        logger.info("[COO] [Verifier] FlowMonitor 등록: 5분 반복 (첫 3분 후)")
+        jq.run_daily(self._job_verifier_reporter, time=kst_time(16, 0))
+        logger.info("[COO] [Verifier] Reporter 등록: 16:00 KST (일일 통합 보고)")
 
         # ── G7 자동복구: G6 done + G7 pending + 현재 16:35 이후 → 60초 후 재실행 ──
         now_kst = datetime.now(KST)

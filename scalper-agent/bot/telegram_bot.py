@@ -1985,6 +1985,40 @@ class BodyHunterBot:
             logger.error(f"릴레이 통합 실패: {e}", exc_info=True)
             await update.message.reply_text(f"❌ 릴레이 통합 실패: {e}")
 
+    async def cmd_verify(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Verifier 팀 4명 즉시 실행 + 결과 텔레그램 (사장님 5/19 09:40 명령).
+
+        EnvChecker / DataIntegrity / FlowMonitor / CodeAuditor 각각 실행.
+        이상 발견 시 각 verifier가 자체 텔레그램 알림 발송 + Reporter 통합 보고.
+        """
+        if not self._is_authorized(update):
+            return
+        await update.message.reply_text("🔍 Verifier 팀 4명 즉시 실행 중... (10~30초)")
+        try:
+            from verifiers.reporter import run_all
+            r = await asyncio.to_thread(run_all)
+            lines = [
+                "📋 Verifier 팀 검수 결과",
+                f"  · 시각: {datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S')}",
+                f"  · 종합: {r.get('summary', 'N/A')}",
+                "",
+            ]
+            details = r.get("details", {})
+            for key, label in [
+                ("env", "EnvChecker"),
+                ("data", "DataIntegrity"),
+                ("flow", "FlowMonitor"),
+                ("code", "CodeAuditor"),
+            ]:
+                lines.append(f"• {label}: {details.get(key, 'N/A')}")
+            if not r.get("ok"):
+                lines.append("")
+                lines.append("(각 verifier 상세 텔레그램 별도 발송)")
+            await update.message.reply_text("\n".join(lines))
+        except Exception as e:
+            logger.error(f"검수 명령 실패: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ 검수 실패: {e}")
+
     async def cmd_recommendation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """내일 추천 종목 (최신 저장된 리포트 또는 즉시 실행)"""
         if not self._is_authorized(update):
@@ -2877,6 +2911,7 @@ class BodyHunterBot:
             r"^ETF릴레이$": self.cmd_etf_relay,
             r"^릴레이종합$": self.cmd_relay_hub,
             r"^추천$": self.cmd_recommendation,
+            r"^검수$": self.cmd_verify,
             r"^내일추천$": self.cmd_recommendation,
             r"^국적수급$": self.cmd_nationality,
             r"^배분현황$": self.cmd_brain,
