@@ -1280,12 +1280,19 @@ class AutoTrader:
         try:
             from utils.kis_websocket import KISWebSocketClient
             self._ws_client = KISWebSocketClient(max_subscriptions=40)
-            # 기존 _entry_watch 종목이 있으면 일괄 구독
-            existing = list(self._entry_watch.keys())
+            # [5/19 사장님 10:45 fix] _entry_watch + 보유 포지션 일괄 구독
+            # 기존 버그: _entry_watch만 구독 → 재시작 후 5종목 시세 안 옴 → "데이터 피드 중단 5회"
+            # 5/14 14:36 / 5/19 10:10 / 10:43 재시작에서 동일 문제 반복.
+            watch_codes = set(self._entry_watch.keys()) if self._entry_watch else set()
+            pos_codes = set(self._positions.keys()) if self._positions else set()
+            existing = list(watch_codes | pos_codes)
             if existing:
                 await self._ws_client.subscribe(existing, self._on_websocket_tick)
             self._ws_task = asyncio.create_task(self._ws_client.run_forever())
-            logger.info(f"[WS-Auto] 시작 — 초기 구독 {len(existing)}종목")
+            logger.info(
+                f"[WS-Auto] 시작 — 초기 구독 {len(existing)}종목 "
+                f"(감시={len(watch_codes)} 보유={len(pos_codes)})"
+            )
         except Exception as e:
             logger.warning(f"[WS-Auto] 시작 실패 (REST 폴백 사용): {e}")
             self._ws_client = None
