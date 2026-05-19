@@ -708,6 +708,11 @@ def step10_gainer_analysis():
             return {"gainer_analysis": f"SKIP_STALE_{age_h:.0f}h"}
 
         # subprocess 호출 (별도 프로세스로 격리 — os.chdir 부작용 차단)
+        # 5/19 자아성찰: Windows에서 stderr가 cp949로 떨어지는 문제 방지
+        # → PYTHONIOENCODING=utf-8 환경변수로 자식 프로세스 stdout/stderr 인코딩 강제
+        child_env = dict(os.environ)
+        child_env["PYTHONIOENCODING"] = "utf-8"
+
         result = subprocess.run(
             [sys.executable, "tools/gainer_analysis.py"],
             cwd=str(SCRIPT_DIR),
@@ -716,6 +721,7 @@ def step10_gainer_analysis():
             encoding="utf-8",
             errors="replace",
             timeout=300,
+            env=child_env,
         )
 
         if result.returncode != 0:

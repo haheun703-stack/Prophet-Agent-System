@@ -1911,23 +1911,26 @@ class AutoTrader:
                     except Exception as _h_e:
                         logger.debug(f"[scalper_hooks] asset_pool buy 적재 실패: {_h_e}")
 
-                    # 5/20 사장님 결정: 자비스 1단계 행동 정책
+                    # 5/20 사장님 결정 + 5/19 23:30 자아성찰 fix:
                     #   · mode="day": 자동 SL/TP 시스템 가동 (line 3084)
                     #   · take_profit: 매수가 +5% (자비스 정신 v2 "5~8% 익절")
-                    #   · stop_loss=0: 고정 SL 끄고 트레일링만 가동
+                    #   · stop_loss: 매수가 × 0.97 (-3% 안전망)
+                    #     → [평생 원칙] ③ "매수 후 5분 대응 SL -3%" 살려냄
+                    #     → 트레일링 활성 전 (+3% 미달) 매수 직후 폭락 데드존 차단
+                    #     → 트레일링 활성 시 max(stop_loss, trailing_sl)로 자동 교체
                     #   · regime="NORMAL": +3% 도달 시 트레일링 활성, 고점 대비 -3% 스탑
                     #   · entry_price/high_watermark: 트레일링 시스템 진입 키
                     self._positions[code] = {
                         "name": name, "qty": qty_per_stock,
                         "buy_price": buy_price,
-                        "entry_price": buy_price,        # 트레일링 시스템 진입 키
-                        "high_watermark": buy_price,     # 고점 추적 시작
-                        "trailing_activated": False,     # +3% 도달 시 활성
-                        "trailing_sl": 0,                # 고점 대비 -3% 자동 계산
-                        "stop_loss": 0,                  # 고정 SL 없음 (트레일링만)
-                        "take_profit": int(buy_price * 1.05),  # +5% 자동 익절
-                        "regime": "NORMAL",              # 일반 트레일링 (+3% 활성)
-                        "mode": "day",                   # 본 시스템 자동 SL/TP 가동
+                        "entry_price": buy_price,                  # 트레일링 시스템 진입 키
+                        "high_watermark": buy_price,               # 고점 추적 시작
+                        "trailing_activated": False,               # +3% 도달 시 활성
+                        "trailing_sl": 0,                          # 고점 대비 -3% 자동 계산
+                        "stop_loss": int(buy_price * 0.97),        # ★ 안전망 SL -3% (5/19 자아성찰 fix)
+                        "take_profit": int(buy_price * 1.05),      # +5% 자동 익절
+                        "regime": "NORMAL",                        # 일반 트레일링 (+3% 활성)
+                        "mode": "day",                             # 본 시스템 자동 SL/TP 가동
                         "source": "asset_pool",
                         "entry_date": datetime.now().strftime("%Y-%m-%d"),
                     }
