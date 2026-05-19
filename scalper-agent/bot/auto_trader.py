@@ -2943,6 +2943,34 @@ class AutoTrader:
                         continue
                     pnl = (cp - entry) * actual_qty
                     self._record_trade_pnl(code, pnl, "stop_loss")
+
+                    # ── 5/19 사장님 일진전기 사고 후 추가: trade_journal + scalper_hook 적재 ──
+                    # 기존 코드는 _record_trade_pnl만 호출 → DB에 매도 흔적 안 남음 (둘째형이
+                    # "기록 0건"으로 잘못 답한 원인). 손절/트레일링도 매수와 동일 표준 적재.
+                    sell_event_type = "sell_sl" if not pos.get("trailing_activated") else "sell_close"
+                    try:
+                        from data import trade_journal as _tj
+                        _tj.log_sell(
+                            code=code, name=name, qty=actual_qty,
+                            sell_price=cp, buy_price=entry,
+                            event_type=sell_event_type,
+                            source=pos.get("source", "auto_trader"),
+                            order_no=(result or {}).get("order_no") or (result or {}).get("ODNO"),
+                            note=("trailing_stop" if pos.get("trailing_activated") else "stop_loss"),
+                        )
+                    except Exception as _tj_e:
+                        logger.warning(f"[trade_journal] SL 매도 적재 실패: {_tj_e}")
+                    try:
+                        from utils.scalper_journal_hooks import hook_sell_execution
+                        hook_sell_execution(
+                            ticker=code, name=name, price=int(cp), qty=actual_qty,
+                            buy_price=int(entry),
+                            reason=("trailing_stop" if pos.get("trailing_activated") else "stop_loss"),
+                            source=pos.get("source", "auto_trader"),
+                        )
+                    except Exception as _h_e:
+                        logger.debug(f"[scalper_hooks] SL 매도 적재 실패: {_h_e}")
+
                     self._positions.pop(code, None)
                     self._save_positions()
 
@@ -2960,12 +2988,46 @@ class AutoTrader:
                         )
 
                 elif self.mode == "day" and cp >= pos["take_profit"]:
+                    # TP 분기 진입 시 actual_qty 보장 (if 분기에서 미정의일 수 있음)
+                    tp_pre_bal = self.trader.fetch_balance()
+                    tp_actual_qty = pos.get("qty", 1)
+                    if tp_pre_bal and tp_pre_bal.get("success"):
+                        for p_item in tp_pre_bal.get("positions", []):
+                            if p_item["code"] == code:
+                                tp_actual_qty = p_item.get("qty", 1)
+                                break
+
                     result = self.trader.liquidate_one(code)
                     if not result or not result.get("success"):
                         logger.error(f"TP 매도 실패 {code}: {result} — 포지션 유지")
                         continue
-                    gain = (cp - entry) * actual_qty
+                    gain = (cp - entry) * tp_actual_qty
                     self._record_trade_pnl(code, gain, "take_profit")
+
+                    # ── 5/19 사장님 일진전기 사고 후 추가: trade_journal + scalper_hook 적재 ──
+                    try:
+                        from data import trade_journal as _tj
+                        _tj.log_sell(
+                            code=code, name=name, qty=tp_actual_qty,
+                            sell_price=cp, buy_price=entry,
+                            event_type="sell_tp",
+                            source=pos.get("source", "auto_trader"),
+                            order_no=(result or {}).get("order_no") or (result or {}).get("ODNO"),
+                            note="take_profit",
+                        )
+                    except Exception as _tj_e:
+                        logger.warning(f"[trade_journal] TP 매도 적재 실패: {_tj_e}")
+                    try:
+                        from utils.scalper_journal_hooks import hook_sell_execution
+                        hook_sell_execution(
+                            ticker=code, name=name, price=int(cp), qty=tp_actual_qty,
+                            buy_price=int(entry),
+                            reason="take_profit",
+                            source=pos.get("source", "auto_trader"),
+                        )
+                    except Exception as _h_e:
+                        logger.debug(f"[scalper_hooks] TP 매도 적재 실패: {_h_e}")
+
                     self._positions.pop(code, None)
                     self._save_positions()
                     await self._alert(
@@ -3175,6 +3237,28 @@ class AutoTrader:
                     if result and result.get("success"):
                         realized_pnl = (cp - pos["entry_price"]) * actual_qty
                         self._record_trade_pnl(code, realized_pnl, "dynamic_sl")
+                        # ── 5/19 사고 후 추가: trade_journal 적재 ──
+                        try:
+                            from data import trade_journal as _tj
+                            _tj.log_sell(
+                                code=code, name=name, qty=actual_qty,
+                                sell_price=cp, buy_price=pos["entry_price"],
+                                event_type="sell_sl",
+                                source=pos.get("source", "auto_trader"),
+                                order_no=(result or {}).get("order_no") or (result or {}).get("ODNO"),
+                                note=f"dynamic_sl: {reason}",
+                            )
+                        except Exception as _tj_e:
+                            logger.warning(f"[trade_journal] dynamic_sl 적재 실패: {_tj_e}")
+                        try:
+                            from utils.scalper_journal_hooks import hook_sell_execution
+                            hook_sell_execution(
+                                ticker=code, name=name, price=int(cp), qty=actual_qty,
+                                buy_price=int(pos["entry_price"]), reason="dynamic_sl",
+                                source=pos.get("source", "auto_trader"),
+                            )
+                        except Exception:
+                            pass
                         self._positions.pop(code, None)
                         self._save_positions()
                         await self._alert(f"⛔ 동적 손절: {name}({code}) @ {cp:,} (PnL {realized_pnl:+,}원)")
@@ -3217,6 +3301,29 @@ class AutoTrader:
                             continue
                         realized_pnl = (cp - pos["entry_price"]) * actual_qty_fs
                         self._record_trade_pnl(code, realized_pnl, "dynamic_sell")
+                        # ── 5/19 사고 후 추가: trade_journal 적재 ──
+                        try:
+                            from data import trade_journal as _tj
+                            _tj.log_sell(
+                                code=code, name=name, qty=actual_qty_fs,
+                                sell_price=cp, buy_price=pos["entry_price"],
+                                event_type="sell_close",
+                                source=pos.get("source", "auto_trader"),
+                                order_no=(result or {}).get("order_no") or (result or {}).get("ODNO"),
+                                note=f"dynamic_sell: {reason}",
+                            )
+                        except Exception as _tj_e:
+                            logger.warning(f"[trade_journal] dynamic_sell 적재 실패: {_tj_e}")
+                        try:
+                            from utils.scalper_journal_hooks import hook_sell_execution
+                            hook_sell_execution(
+                                ticker=code, name=name, price=int(cp),
+                                qty=actual_qty_fs, buy_price=int(pos["entry_price"]),
+                                reason="dynamic_sell",
+                                source=pos.get("source", "auto_trader"),
+                            )
+                        except Exception:
+                            pass
                         self._positions.pop(code, None)
                         self._save_positions()
                         await self._alert(f"🔴 동적 전량매도: {name}({code}) @ {cp:,} ({reason}, PnL {realized_pnl:+,}원)")
