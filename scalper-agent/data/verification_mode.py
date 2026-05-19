@@ -41,9 +41,11 @@ logger = logging.getLogger(__name__)
 _DATA_DIR = Path(__file__).resolve().parent.parent / "data_store" / "verification"
 _DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-# ── 기본 설정 (사장님 결정: 2026-05-18 월 ~ 2026-05-19 화 2일) ──
+# ── 기본 설정 (사장님 5/20 D-Day 결정: B 진보 + 1주 모드, 종료일 연장) ──
+# 5/19 검증 결과 + 사장님 자비스 정신 v2 원칙(자율 판단)에 따라
+# 5/20 D-Day부터 본격 1주 모드 가동. 끝 날짜는 사장님이 .env로 조절.
 _DEFAULT_START = date(2026, 5, 18)
-_DEFAULT_END = date(2026, 5, 19)
+_DEFAULT_END = date(2026, 5, 30)  # 2주간 1주 모드 (사장님 .env로 추가 연장 가능)
 
 
 def _today() -> date:
@@ -61,8 +63,12 @@ def _parse_env_date(env_key: str, default: date) -> date:
 
 
 def is_active() -> bool:
-    """검증 모드 활성 여부 — .env 토글 + 날짜 범위 둘 다 충족."""
-    if os.getenv("VERIFICATION_MODE", "false").strip().lower() != "true":
+    """검증 모드 활성 여부 — .env 토글 + 날짜 범위 둘 다 충족.
+
+    사장님 5/20 결정: default를 "true"로 변경 — .env에 키 누락 시에도
+    1주 모드 자동 활성화 보장. 명시적 OFF는 .env에 VERIFICATION_MODE=false 작성.
+    """
+    if os.getenv("VERIFICATION_MODE", "true").strip().lower() != "true":
         return False
     today = _today()
     start = _parse_env_date("VERIFICATION_START", _DEFAULT_START)

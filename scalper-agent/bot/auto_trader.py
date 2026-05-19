@@ -1023,18 +1023,25 @@ class AutoTrader:
                     f"  · 인버스 강도: {inverse:.1f} (120+ 약세 베팅 우세)"
                 )
 
-                # 게이트 ①: regime 기반 BEARISH/PANIC 차단 (가장 신뢰)
+                # 게이트 ①: regime 기반 PANIC만 차단 (사장님 5/20 결정)
+                # [자비스 정신 v2 원칙] BEARISH는 어필/경고만, 자비스 자율 판단으로 진입.
+                # PANIC만 시장 자체 붕괴 신호 → 완전 차단.
                 # market_strength_avg는 큰형 강력포착 TOP 9의 체결강도 평균
                 # (100=균형, 80~90=매도 우세=약세, 110+=매수 우세=강세)
-                # → strength 단독 차단 X, regime 신호와 합쳐서만 사용
-                if regime in ('BEARISH', 'PANIC'):
+                if regime == 'PANIC':
                     await _send(
-                        f"🛑 큰형 {regime} → 단타봇 신규 swing 매수 전면 차단\n"
+                        f"🛑 큰형 PANIC → 단타봇 신규 swing 매수 전면 차단\n"
                         f"  · 기존 5종목 SL/TP는 정상 작동\n"
-                        f"  · 1주 모드 + advisory 게이트 = 이중 안전망"
+                        f"  · PANIC은 시장 자체 붕괴 신호"
                     )
-                    logger.warning(f"[quant_advisory] regime={regime} → swing 매수 차단")
+                    logger.warning(f"[quant_advisory] regime=PANIC → swing 매수 차단")
                     return
+                if regime == 'BEARISH':
+                    await _send(
+                        f"⚠️ 큰형 BEARISH 경고 — 자비스 자율 판단 진행\n"
+                        f"  · 매수는 계속, 자비스가 강한 종목만 선별"
+                    )
+                    logger.info(f"[quant_advisory] regime=BEARISH (경고만, 통과)")
 
                 # 게이트 ②: CAUTION/CAUTION_TO_NEUTRAL → 예산 30% 축소
                 # 강도 80 이하 = 매도 매우 우세 → 30% 축소
@@ -1557,14 +1564,21 @@ class AutoTrader:
                         break
             if _adv:
                 _regime = (_adv.get('market_regime') or '').upper()
-                if _regime in ('BEARISH', 'PANIC'):
+                # 사장님 5/20 결정: BEARISH는 경고만, PANIC만 차단 ([자비스 정신 v2])
+                if _regime == 'PANIC':
                     await _send(
-                        f"🛑 큰형 {_regime} → 장중 검증 모드 신규 매수 차단 "
+                        f"🛑 큰형 PANIC → 장중 검증 모드 신규 매수 차단 "
                         f"({_adv.get('advisory_date')} {_adv.get('advisory_time')})"
                     )
-                    logger.warning(f"[quant_advisory/intraday] regime={_regime} → 차단")
+                    logger.warning(f"[quant_advisory/intraday] regime=PANIC → 차단")
                     return
-                logger.info(f"[quant_advisory/intraday] regime={_regime} 통과")
+                if _regime == 'BEARISH':
+                    await _send(
+                        f"⚠️ 큰형 BEARISH 경고 → 장중 자비스 자율 판단 진행"
+                    )
+                    logger.info(f"[quant_advisory/intraday] regime=BEARISH (경고만, 통과)")
+                else:
+                    logger.info(f"[quant_advisory/intraday] regime={_regime} 통과")
         except Exception as e:
             logger.warning(f"[quant_advisory/intraday] 게이트 실패 (continue): {e}")
 
@@ -1708,14 +1722,23 @@ class AutoTrader:
                         break
             if _adv:
                 _regime = (_adv.get('market_regime') or '').upper()
-                if _regime in ('BEARISH', 'PANIC'):
+                # 사장님 5/20 결정: BEARISH는 경고만, PANIC만 차단 ([자비스 정신 v2])
+                if _regime == 'PANIC':
                     await _send(
-                        f"🛑 큰형 {_regime} → 자산풀 매수 차단 "
+                        f"🛑 큰형 PANIC → 자산풀 매수 차단 "
                         f"({_adv.get('advisory_date')} {_adv.get('advisory_time')})"
                     )
-                    logger.warning(f"[asset_pool] regime={_regime} → 차단")
+                    logger.warning(f"[asset_pool] regime=PANIC → 차단")
                     return
-                logger.info(f"[asset_pool] regime={_regime} 통과")
+                if _regime == 'BEARISH':
+                    await _send(
+                        f"⚠️ 큰형 BEARISH 경고 → 자비스 자율 판단 진행 "
+                        f"({_adv.get('advisory_date')} {_adv.get('advisory_time')})\n"
+                        f"  · 자산풀 매수 계속, 강한 종목만 선별"
+                    )
+                    logger.info(f"[asset_pool] regime=BEARISH (경고만, 통과)")
+                else:
+                    logger.info(f"[asset_pool] regime={_regime} 통과")
         except Exception as e:
             logger.warning(f"[asset_pool] advisory 게이트 실패 (continue): {e}")
 
