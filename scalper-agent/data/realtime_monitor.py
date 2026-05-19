@@ -429,6 +429,16 @@ class RealtimeMonitor:
         price = snap.get("price", 0)
         pnl_pct = (price - pos.entry_price) / pos.entry_price * 100 if pos.entry_price > 0 else 0
 
+        # ── 5/19 사장님 명령: SL 비활성화 플래그 + manual_sync 종목 보호 ──
+        # 일진전기 -25.10% 사고(-626,400원) 후 사장님 결정:
+        # "다른 종목들 -25%가 되어도 팔지마라. 2분기 실적 7월까지 들고 간다"
+        # → manual_sync 종목은 SL/TP 자동 청산 모두 차단. HOLD 유지.
+        if getattr(pos, "sl_disabled", False) or pos.source.startswith("manual_sync"):
+            return "HOLD", (
+                f"SL 면제 (사장님 5/19 보호 명령) — "
+                f"AI:{realtime_score:.0f}, PnL:{pnl_pct:.1f}%"
+            )
+
         # 1) 긴급: SL 히트
         if price <= pos.current_sl:
             return "FULL_SELL", f"SL 히트 ({pos.current_sl:,}원)"
@@ -436,11 +446,6 @@ class RealtimeMonitor:
         # 2) TP 히트
         if price >= pos.current_tp:
             return "FULL_SELL", f"TP 달성 ({pos.current_tp:,}원)"
-
-        # 2.5) 수동 동기화 종목: AI 점수 청산 면제 (사장님 "회복 시나리오 신뢰" 의지 보존)
-        # SL/TP에 의한 자동 청산만 작동. 점수가 아무리 약해도 회복 기다림.
-        if pos.source.startswith("manual_sync"):
-            return "HOLD", f"수동 동기화 보유 — SL/TP만 적용 (AI:{realtime_score:.0f}, PnL:{pnl_pct:.1f}%)"
 
         # 3) 추세 악화 감지 (최근 5회 연속 하락)
         if len(pos.score_history) >= 5:

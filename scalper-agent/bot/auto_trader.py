@@ -2916,6 +2916,17 @@ class AutoTrader:
                 # ── 유효 SL = max(기존 SL, 트레일링 SL) ──
                 effective_sl = max(pos["stop_loss"], pos.get("trailing_sl", 0))
 
+                # ── 5/19 사장님 명령: SL 비활성화 플래그 + manual_sync 종목 보호 ──
+                # 일진전기 -25.10% 사고 (-626,400원) 후 사장님 결정:
+                # "다른 종목들 -25%가 되어도 팔지마라. 2분기 실적 7월까지 들고 간다"
+                if pos.get("sl_disabled") or pos.get("source", "").startswith("manual_sync"):
+                    if cp <= effective_sl and effective_sl > 0:
+                        logger.info(
+                            f"[SL 면제] {name}({code}) — sl_disabled OR manual_sync. "
+                            f"현재가 {cp:,} ≤ SL {effective_sl:,} 이지만 매도 차단."
+                        )
+                    continue  # SL 매도 절대 차단
+
                 if cp <= effective_sl:
                     # 매도 전 실제 보유수량 조회
                     pre_bal = self.trader.fetch_balance()

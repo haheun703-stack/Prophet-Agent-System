@@ -1,0 +1,62 @@
+{
+  "001440": {
+    "entry_price": 66500,
+    "stop_loss": 0,
+    "take_profit": 73150,
+    "high_watermark": 66500,
+    "trailing_activated": false,
+    "trailing_sl": 0,
+    "entry_date": "2026-05-13",
+    "name": "대한전선",
+    "target_state": null,
+    "regime": "NORMAL",
+    "source": "manual_sync_20260516",
+    "sl_disabled": true,
+    "sl_disabled_reason": "사장님 5/19 12:15 — 2분기 실적 7월까지 보유 명령. -25% 도달해도 매도 금지"
+  },
+  "011790": {
+    "entry_price": 160894,
+    "stop_loss": 0,
+    "take_profit": 176983,
+    "high_watermark": 160894,
+    "trailing_activated": false,
+    "trailing_sl": 0,
+    "entry_date": "2026-05-13",
+    "name": "SKC",
+    "target_state": null,
+    "regime": "NORMAL",
+    "source": "manual_sync_20260516",
+    "sl_disabled": true,
+    "sl_disabled_reason": "사장님 5/19 12:15 — 2분기 실적 7월까지 보유 명령. -25% 도달해도 매도 금지"
+  },
+  "033100": {
+    "entry_price": 79300,
+    "stop_loss": 0,
+    "take_profit": 87230,
+    "high_watermark": 79300,
+    "trailing_activated": false,
+    "trailing_sl": 0,
+    "entry_date": "2026-05-13",
+    "name": "제룡전기",
+    "target_state": null,
+    "regime": "NORMAL",
+    "source": "manual_sync_20260516",
+    "sl_disabled": true,
+    "sl_disabled_reason": "사장님 5/19 12:15 — 2분기 실적 7월까지 보유 명령. -25% 도달해도 매도 금지"
+  },
+  "062040": {
+    "entry_price": 309500,
+    "stop_loss": 0,
+    "take_profit": 340450,
+    "high_watermark": 309500,
+    "trailing_activated": false,
+    "trailing_sl": 0,
+    "entry_date": "2026-05-13",
+    "name": "산일전기",
+    "target_state": null,
+    "regime": "NORMAL",
+    "source": "manual_sync_20260516",
+    "sl_disabled": true,
+    "sl_disabled_reason": "사장님 5/19 12:15 — 2분기 실적 7월까지 보유 명령. -25% 도달해도 매도 금지"
+  }
+}
