@@ -993,20 +993,20 @@ class AutoTrader:
         #   - inverse_etf_strength >= 120 → 경고
         try:
             from utils.quant_advisory_subscriber import fetch_latest_advisory
-            # 1) LEADING 우선 — 큰형 수동 긴급 신호
-            adv = fetch_latest_advisory(msg_type='LEADING')
-            # 2) 없으면 SNAPSHOT (장중 자동 10분 간격)
+            # [5/19 10:10 수정] 오늘 데이터 절대 우선 → 모두 None이면 어제 fallback
+            # 기존: LEADING이 어제만 있어도 SNAPSHOT(오늘)보다 우선 잡힘 → 잘못된 신호
+            adv = None
+            # Pass 1: 오늘 (KST) 데이터 — type 우선순위 LEADING > SNAPSHOT > ADVICE > MORNING
+            for _mt in ('LEADING', 'SNAPSHOT', 'ADVICE', 'MORNING_BRIEFING'):
+                adv = fetch_latest_advisory(msg_type=_mt, fallback_to_yesterday=False)
+                if adv:
+                    break
+            # Pass 2: 그래도 없으면 어제 fallback (type 우선순위)
             if not adv:
-                adv = fetch_latest_advisory(msg_type='SNAPSHOT')
-            # 3) 없으면 ADVICE
-            if not adv:
-                adv = fetch_latest_advisory(msg_type='ADVICE')
-            # 4) 없으면 MORNING_BRIEFING
-            if not adv:
-                adv = fetch_latest_advisory(msg_type='MORNING_BRIEFING')
-            # 5) 그래도 없으면 타입 무관 최신
-            if not adv:
-                adv = fetch_latest_advisory()
+                for _mt in ('LEADING', 'SNAPSHOT', 'ADVICE', 'MORNING_BRIEFING'):
+                    adv = fetch_latest_advisory(msg_type=_mt, fallback_to_yesterday=True)
+                    if adv:
+                        break
 
             if adv:
                 regime = (adv.get('market_regime') or '').upper()
@@ -1537,10 +1537,17 @@ class AutoTrader:
         # (regime 신호만 사용. strength/inverse는 보강 정보로만 로깅)
         try:
             from utils.quant_advisory_subscriber import fetch_latest_advisory
-            _adv = (fetch_latest_advisory(msg_type='LEADING')
-                    or fetch_latest_advisory(msg_type='SNAPSHOT')
-                    or fetch_latest_advisory(msg_type='ADVICE')
-                    or fetch_latest_advisory())
+            # [5/19 10:10 수정] 오늘 데이터 절대 우선 → 모두 None이면 어제 fallback
+            _adv = None
+            for _mt in ('LEADING', 'SNAPSHOT', 'ADVICE', 'MORNING_BRIEFING'):
+                _adv = fetch_latest_advisory(msg_type=_mt, fallback_to_yesterday=False)
+                if _adv:
+                    break
+            if not _adv:
+                for _mt in ('LEADING', 'SNAPSHOT', 'ADVICE', 'MORNING_BRIEFING'):
+                    _adv = fetch_latest_advisory(msg_type=_mt, fallback_to_yesterday=True)
+                    if _adv:
+                        break
             if _adv:
                 _regime = (_adv.get('market_regime') or '').upper()
                 if _regime in ('BEARISH', 'PANIC'):
