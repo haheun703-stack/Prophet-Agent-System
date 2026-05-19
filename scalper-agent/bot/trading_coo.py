@@ -4178,6 +4178,27 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[COO] 바닥신호 스캔 실패 (무시): {e}")
 
+    async def _job_bot_view_broadcast(self, context=None) -> None:
+        """매 15분 — 봇 시야 텔레그램 송출 (사장님 5/19 요청).
+
+        등락률 TOP 5 후보의 5단계 게이트 검증 결과를 텔레그램으로 시각화.
+        사장님이 봇 의사결정 과정을 실시간으로 따라갈 수 있게.
+        09:15 ~ 14:00 (15분 간격, 매수 시간대만).
+        """
+        try:
+            now = datetime.now(KST) if KST else datetime.now()
+            if not (dtime(9, 5) <= now.time() <= dtime(14, 0)):
+                return
+            if not self.trader:
+                return
+            from data.bot_view_broadcast import broadcast_now
+            msg = await asyncio.to_thread(broadcast_now, self.trader)
+            if msg and self._send_alert:
+                await self._send_alert(msg)
+            logger.info("[COO] [봇시야] 송출 완료")
+        except Exception as e:
+            logger.warning(f"[COO] 봇시야 송출 실패 (무시): {e}")
+
     async def _job_limit_up_continuation(self, context=None) -> None:
         """09:30 / 10:30 / 11:30 / 13:30 — 상한가 연속 추적 알림.
 
@@ -4422,6 +4443,14 @@ class TradingCOO:
         jq.run_daily(self._job_limit_up_continuation, time=kst_time(11, 30))
         jq.run_daily(self._job_limit_up_continuation, time=kst_time(13, 30))
         logger.info("[COO] 상한가 연속 추적 등록: 09:30 / 10:30 / 11:30 / 13:30 KST")
+
+        # ── 봇 시야 텔레그램 송출 (사장님 5/19 요청 — 봇 의사결정 시각화) ──
+        # 09:15 ~ 13:45 매 15분 — 등락률 TOP 5 후보의 5단계 게이트 검증
+        # 사장님이 봇 의사결정을 실시간으로 따라갈 수 있게
+        for hh, mm in [(9,15), (9,45), (10,15), (10,45), (11,15), (11,45),
+                       (12,15), (12,45), (13,15), (13,45)]:
+            jq.run_daily(self._job_bot_view_broadcast, time=kst_time(hh, mm))
+        logger.info("[COO] 봇 시야 송출 등록: 09:15 ~ 13:45 매 30분 (10회)")
 
         # ── G6 DATA_PIPELINE (15:40) ──
         jq.run_daily(self.run_g6, time=kst_time(15, 40))

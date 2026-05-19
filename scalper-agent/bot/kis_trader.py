@@ -1645,6 +1645,92 @@ class KISTrader:
                 break
         return results
 
+    def fetch_minute_chart(self, code: str, count: int = 30) -> list:
+        """분봉 차트 (FHKST03010200) — 5/19 사장님 요청: 5분봉 보조 지표용.
+
+        Args:
+            code: 종목코드
+            count: 분봉 개수 (KIS API 최대 30개, 1분 단위)
+
+        Returns:
+            [{"time","open","high","low","close","volume"}, ...] — 시간순(오래된 것 먼저)
+
+        Note:
+            KIS는 1분봉만 직접 지원. 5분봉은 5개 묶어서 집계.
+        """
+        params = {
+            "FID_ETC_CLS_CODE": "",
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_INPUT_ISCD": code,
+            "FID_INPUT_HOUR_1": "",  # 빈값=현재시각부터 과거
+            "FID_PW_DATA_INCU_YN": "N",
+        }
+        try:
+            import requests
+            broker = self._get_broker()
+            token = broker.access_token
+            if not token.startswith("Bearer "):
+                token = f"Bearer {token}"
+            headers = {
+                "content-type": "application/json; charset=utf-8",
+                "authorization": token,
+                "appkey": broker.api_key,
+                "appsecret": broker.api_secret,
+                "tr_id": "FHKST03010200",
+                "custtype": "P",
+            }
+            url = f"{broker.base_url}/uapi/domestic-stock/v1/quotations/inquire-time-itemchartprice"
+            resp = requests.get(url, headers=headers, params=params, timeout=10)
+            data = resp.json()
+            if data.get("rt_cd") != "0":
+                logger.warning(f"[분봉] {code} 실패: {data.get('msg1', '')}")
+                return []
+            output2 = data.get("output2", [])
+            bars = []
+            for r in output2[:count]:
+                bars.append({
+                    "time": r.get("stck_cntg_hour", ""),
+                    "open": _safe_int(r.get("stck_oprc")),
+                    "high": _safe_int(r.get("stck_hgpr")),
+                    "low": _safe_int(r.get("stck_lwpr")),
+                    "close": _safe_int(r.get("stck_prpr")),
+                    "volume": _safe_int(r.get("cntg_vol")),
+                })
+            bars.reverse()  # 오래된 것 먼저 (시간순)
+            return bars
+        except Exception as e:
+            logger.warning(f"[분봉] {code} 예외: {e}")
+            return []
+
+    def fetch_5min_candles(self, code: str, count_5min: int = 6) -> list:
+        """5분봉 집계 (1분봉 N×5개 → 5분봉 N개).
+
+        Args:
+            code: 종목코드
+            count_5min: 원하는 5분봉 개수 (최대 6, 즉 30분 분량)
+
+        Returns:
+            [{"time","open","high","low","close","volume"}, ...] 5분봉
+        """
+        bars_1m = self.fetch_minute_chart(code, count=count_5min * 5)
+        if not bars_1m:
+            return []
+        # 5개씩 묶어서 5분봉 집계
+        candles = []
+        for i in range(0, len(bars_1m) - 4, 5):
+            chunk = bars_1m[i:i + 5]
+            if len(chunk) < 5:
+                break
+            candles.append({
+                "time": chunk[-1]["time"],
+                "open": chunk[0]["open"],
+                "high": max(c["high"] for c in chunk),
+                "low": min(c["low"] for c in chunk if c["low"] > 0),
+                "close": chunk[-1]["close"],
+                "volume": sum(c["volume"] for c in chunk),
+            })
+        return candles
+
     def fetch_uplowprice(self, price_cls: str = "0", div_cls: str = "0",
                           market_iscd: str = "0000") -> list:
         """상하한가 포착 (FHKST130000C0).

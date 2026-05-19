@@ -191,6 +191,41 @@ def scan_intraday_signals(trader, excluded_codes: Set[str] = None) -> List[Dict]
     except Exception as e:
         logger.debug(f"[intraday] OVERHEAT 검사 실패 (무시): {e}")
 
+    # ── 5분봉 캔들 게이트 (사장님 5/19 요청: 5분봉 진행) ──
+    # 3시그널 합류 통과 종목에만 5분봉 호출 (API rate limit 보호)
+    # 최근 5분봉이 양봉 + 직전 5분봉 대비 거래량 가속 ≥ 1.2x → 통과
+    candle_filtered = []
+    for c in candidates:
+        try:
+            candles = trader.fetch_5min_candles(c["code"], count_5min=3)
+            if len(candles) < 2:
+                # 5분봉 데이터 부족 — 통과 (안전망)
+                c["candle_gate"] = "데이터부족(통과)"
+                candle_filtered.append(c)
+                continue
+            last = candles[-1]
+            prev = candles[-2]
+            is_bullish = last["close"] >= last["open"]
+            vol_accel = (last["volume"] / prev["volume"]) if prev["volume"] > 0 else 1.0
+            if is_bullish and vol_accel >= 1.2:
+                c["candle_gate"] = f"양봉+가속{vol_accel:.1f}x"
+                c["signal_tags"] += f" candle(양봉+{vol_accel:.1f}x)"
+                candle_filtered.append(c)
+            else:
+                logger.debug(
+                    f"[intraday] 5분봉 게이트 탈락: {c['name']} "
+                    f"{'양봉' if is_bullish else '음봉'} 가속{vol_accel:.1f}x"
+                )
+        except Exception as e:
+            # 5분봉 호출 실패 — 통과 (안전망, 기존 3시그널만 신뢰)
+            c["candle_gate"] = f"호출실패(통과): {e}"
+            candle_filtered.append(c)
+    if len(candle_filtered) < len(candidates):
+        logger.info(
+            f"[intraday] 5분봉 캔들 게이트: {len(candidates)}→{len(candle_filtered)}종목"
+        )
+    candidates = candle_filtered
+
     # 점수 내림차순 + 일일 최대 제한
     candidates.sort(key=lambda x: x["total_score"], reverse=True)
     final = candidates[:_INTRADAY_MAX_PER_DAY]
