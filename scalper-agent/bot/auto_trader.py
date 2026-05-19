@@ -1881,11 +1881,10 @@ class AutoTrader:
                     except Exception:
                         pass
 
-                    _vm.record_buy(
-                        code=code, name=name, buy_price=buy_price,
-                        signal_tags=f"asset_pool({sources_tag})",
-                        final_score=len(c["sources"]) * 20,  # 소스 수 * 20점
-                    )
+                    # 5/20 사장님 결정: asset_pool 종목은 verification HOLD 정책 미적용
+                    # → _vm.record_buy 호출 안 함 (15:25 강제 청산 제외)
+                    # → trade_journal에는 정상 기록 (5/21 회고 데이터)
+                    # → 본 시스템 mode="day" 트레일링 + TP가 알아서 매도/HOLD 결정
 
                     try:
                         from data import trade_journal as _tj
@@ -1895,7 +1894,7 @@ class AutoTrader:
                             signal_tags=f"asset_pool({sources_tag})",
                             final_score=len(c["sources"]) * 20,
                             order_no=resp.get("order_no") or resp.get("ODNO"),
-                            note=f"sources={sources_tag}",
+                            note=f"sources={sources_tag} jarvis_v1",
                         )
                     except Exception as _tj_e:
                         logger.warning(f"[trade_journal] asset_pool 적재 실패: {_tj_e}")
@@ -1912,10 +1911,27 @@ class AutoTrader:
                     except Exception as _h_e:
                         logger.debug(f"[scalper_hooks] asset_pool buy 적재 실패: {_h_e}")
 
+                    # 5/20 사장님 결정: 자비스 1단계 행동 정책
+                    #   · mode="day": 자동 SL/TP 시스템 가동 (line 3084)
+                    #   · take_profit: 매수가 +5% (자비스 정신 v2 "5~8% 익절")
+                    #   · stop_loss=0: 고정 SL 끄고 트레일링만 가동
+                    #   · regime="NORMAL": +3% 도달 시 트레일링 활성, 고점 대비 -3% 스탑
+                    #   · entry_price/high_watermark: 트레일링 시스템 진입 키
                     self._positions[code] = {
-                        "name": name, "qty": qty_per_stock, "buy_price": buy_price,
+                        "name": name, "qty": qty_per_stock,
+                        "buy_price": buy_price,
+                        "entry_price": buy_price,        # 트레일링 시스템 진입 키
+                        "high_watermark": buy_price,     # 고점 추적 시작
+                        "trailing_activated": False,     # +3% 도달 시 활성
+                        "trailing_sl": 0,                # 고점 대비 -3% 자동 계산
+                        "stop_loss": 0,                  # 고정 SL 없음 (트레일링만)
+                        "take_profit": int(buy_price * 1.05),  # +5% 자동 익절
+                        "regime": "NORMAL",              # 일반 트레일링 (+3% 활성)
+                        "mode": "day",                   # 본 시스템 자동 SL/TP 가동
                         "source": "asset_pool",
+                        "entry_date": datetime.now().strftime("%Y-%m-%d"),
                     }
+                    self._save_positions()
                     bought.append(f"{name}({len(c['sources'])}소스)")
                 else:
                     failed.append(f"{name}({str(resp.get('msg', '?'))[:20]})")
@@ -3127,6 +3143,60 @@ class AutoTrader:
                     await self._alert(
                         f"익절\n{name}({code}) @ {cp:,}원\n"
                         f"진입:{entry:,} -> 현재:{cp:,} (+{gain:,})"
+                    )
+
+                # ── 자비스 추세 약화 매도 (5/20 사장님 결정) ──
+                #   asset_pool 종목 전용: +1.5% 이상 수익 + 체결강도 < 90 → 매도
+                #   "오를 것 같다 / 떨어질 것 같다" 판단의 첫 구현체
+                #   고점 대비 -3% 트레일링 활성 전(+3% 미달) 단계에서도 약화 감지
+                elif (
+                    self.mode == "day"
+                    and pos.get("source") == "asset_pool"
+                    and pnl_pct >= 1.5
+                    and price_info.get("strength", 100) < 90
+                ):
+                    strength_val = price_info.get("strength", 100)
+                    logger.info(
+                        f"[자비스 약화] {name}({code}) 매도 — "
+                        f"수익 +{pnl_pct:.1f}% / 체결강도 {strength_val:.0f}"
+                    )
+                    jw_pre_bal = self.trader.fetch_balance()
+                    jw_actual_qty = pos.get("qty", 1)
+                    if jw_pre_bal and jw_pre_bal.get("success"):
+                        for p_item in jw_pre_bal.get("positions", []):
+                            if p_item["code"] == code:
+                                jw_actual_qty = p_item.get("qty", 1)
+                                break
+
+                    result = self.trader.liquidate_one(code)
+                    if not result or not result.get("success"):
+                        logger.error(f"[자비스 약화] 매도 실패 {code}: {result} — 포지션 유지")
+                        continue
+
+                    gain = (cp - entry) * jw_actual_qty
+                    self._record_trade_pnl(code, gain, "jarvis_weak")
+
+                    try:
+                        from data import trade_journal as _tj
+                        _tj.log_sell(
+                            code=code, name=name, qty=jw_actual_qty,
+                            sell_price=cp, buy_price=entry,
+                            event_type="sell_jarvis_weak",
+                            source=pos.get("source", "auto_trader"),
+                            order_no=(result or {}).get("order_no") or (result or {}).get("ODNO"),
+                            note=f"strength={strength_val:.0f} pnl={pnl_pct:+.1f}%",
+                        )
+                    except Exception as _tj_e:
+                        logger.warning(f"[trade_journal] 자비스 약화 매도 적재 실패: {_tj_e}")
+
+                    self._positions.pop(code, None)
+                    self._save_positions()
+                    await self._alert(
+                        f"🦾 자비스 약화 감지 매도\n"
+                        f"{name}({code}) @ {cp:,}원\n"
+                        f"진입:{entry:,} → 현재:{cp:,} ({gain:+,})\n"
+                        f"  · 수익 +{pnl_pct:.1f}% / 체결강도 {strength_val:.0f} (< 90)\n"
+                        f"  · 자비스 판단: 추세 약화"
                     )
 
             except Exception as e:
