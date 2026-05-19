@@ -195,15 +195,26 @@ class RealtimeMonitor:
             )
             d1 = r1.json().get("output", {})
 
-            price = int(d1.get("stck_prpr", 0))
-            change = int(d1.get("prdy_vrss", 0))
+            # [5/19 사장님 10:45 fix] KIS API가 소수점 문자열 반환 케이스 대응
+            # 예: stck_prpr "55710.28" → int("55710.28") ValueError → int(float())로 안전 변환
+            # 5/14 14:36 / 5/19 10:10/10:43/10:45 재시작 모두 동일 패턴
+            def _safe_int(v, default=0):
+                try:
+                    if v in (None, ""):
+                        return default
+                    return int(float(v))
+                except (ValueError, TypeError):
+                    return default
+
+            price = _safe_int(d1.get("stck_prpr"))
+            change = _safe_int(d1.get("prdy_vrss"))
             sign = d1.get("prdy_vrss_sign", "0")
             if sign in ("5", "4"):
                 change = -abs(change)
             change_rate = float(d1.get("prdy_ctrt", 0))
-            volume = int(d1.get("acml_vol", 0))
+            volume = _safe_int(d1.get("acml_vol"))
             # VWAP (가중평균주가) — 추매 multi-signal 용
-            vwap = int(d1.get("wghn_avrg_stck_prc", 0) or 0)
+            vwap = _safe_int(d1.get("wghn_avrg_stck_prc"))
 
             row["price"] = price
             row["change"] = change
@@ -231,11 +242,11 @@ class RealtimeMonitor:
                 headers=h3, params=params, timeout=5,
             )
             d3 = r3.json().get("output1", {})
-            row["ask1"] = int(d3.get("askp1", 0))
-            row["bid1"] = int(d3.get("bidp1", 0))
+            row["ask1"] = _safe_int(d3.get("askp1"))
+            row["bid1"] = _safe_int(d3.get("bidp1"))
             # 호가 잔량 — 추매 multi-signal 용 (askp_rsqn1/bidp_rsqn1)
-            row["ask_qty"] = int(d3.get("askp_rsqn1", 0) or 0)
-            row["bid_qty"] = int(d3.get("bidp_rsqn1", 0) or 0)
+            row["ask_qty"] = _safe_int(d3.get("askp_rsqn1"))
+            row["bid_qty"] = _safe_int(d3.get("bidp_rsqn1"))
 
             # 성공 → 실패 카운터 리셋
             self._consecutive_failures = 0
