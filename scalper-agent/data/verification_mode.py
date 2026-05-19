@@ -67,12 +67,23 @@ def is_active() -> bool:
 
     사장님 5/20 결정: default를 "true"로 변경 — .env에 키 누락 시에도
     1주 모드 자동 활성화 보장. 명시적 OFF는 .env에 VERIFICATION_MODE=false 작성.
+
+    [5/20 D-Day 안전망] .env의 VERIFICATION_END가 오늘보다 과거인 경우
+    (예: 어제 끝난 5/19로 박혀있음) → 코드 default를 사용해 자동 연장.
+    사장님이 VPS .env를 매번 수정하지 않아도 1주 모드 안 끊김.
     """
     if os.getenv("VERIFICATION_MODE", "true").strip().lower() != "true":
         return False
     today = _today()
     start = _parse_env_date("VERIFICATION_START", _DEFAULT_START)
     end = _parse_env_date("VERIFICATION_END", _DEFAULT_END)
+    # 안전망: 과거 END가 박혀있으면 default로 자동 갱신
+    if end < today:
+        logger.warning(
+            f"[verification] .env VERIFICATION_END={end} 가 과거 — "
+            f"코드 default({_DEFAULT_END})로 자동 연장 (사장님 5/20 안전망)"
+        )
+        end = _DEFAULT_END
     return start <= today <= end
 
 
