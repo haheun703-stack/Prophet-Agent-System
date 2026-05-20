@@ -3249,7 +3249,11 @@ class AutoTrader:
                             f"진입:{entry:,} -> 현재:{cp:,} ({pnl:+,})"
                         )
 
-                elif self.mode == "day" and cp >= pos["take_profit"]:
+                elif self.mode == "day" and cp >= pos["take_profit"] and not pos.get("trailing_activated", False):
+                    # ★ 5/21 사장님 결정: 트레일링 활성 시 고정 TP +5% 매도 비활성화 ★
+                    # 사유: 5/20 전력주 +10% 놓침 패턴 재발 방지
+                    # +3% 도달 → 트레일링 활성 → TP 무력화, 고점 -3% 추적
+                    # 안전망: +3% 미달 시 (트레일링 비활성) TP +5% 도달하면 익절 (이론상 미발생)
                     # TP 분기 진입 시 actual_qty 보장 (if 분기에서 미정의일 수 있음)
                     tp_pre_bal = self.trader.fetch_balance()
                     tp_actual_qty = pos.get("qty", 1)
