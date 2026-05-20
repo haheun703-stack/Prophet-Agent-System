@@ -102,6 +102,38 @@ class AutoTrader:
         # 모드: "day" or "swing"
         self.mode = config.get("bot", {}).get("trade_mode", "swing")
 
+    def _is_sell_protected(self, code: str, reason: str = "") -> bool:
+        """[5/20 사고 후 추가] 사장님 보호 명령 단일 진입점.
+
+        모든 매도 함수(job_eod_close / job_daily_reeval / job_monitor /
+        intraday_loop 등)는 매도 실행 직전 반드시 이 함수를 호출해야 함.
+
+        True 반환 = 매도 차단. False = 매도 허용.
+
+        배경: 5/20 -293만 사고. sl_disabled=True 명령(사장님 5/19)을 8개 매도 함수
+        중 2개만 체크. job_daily_reeval(L3208)이 사각지대 — 보호 4종 모두 매도.
+        """
+        pos = self._positions.get(code) or {}
+        if pos.get("sl_disabled") or str(pos.get("source", "")).startswith("manual_sync"):
+            logger.warning(
+                f"[SELL BLOCKED] {pos.get('name', code)}({code}) — "
+                f"reason={reason} / sl_disabled={pos.get('sl_disabled')} "
+                f"source={pos.get('source')}"
+            )
+            # RED ALERT 텔레그램 (사일런트 차단 방지)
+            if self._send_alert:
+                try:
+                    import asyncio as _asyncio
+                    _asyncio.create_task(self._send_alert(
+                        f"🛡️ [매도 차단] {pos.get('name', code)}({code})\n"
+                        f"  사유: {reason}\n"
+                        f"  사장님 보호 명령 (sl_disabled) 적용"
+                    ))
+                except Exception:
+                    pass
+            return True
+        return False
+
         # AI 실시간 모니터
         self._rt_monitor = None
 
@@ -2645,6 +2677,9 @@ class AutoTrader:
                             if p["code"] == code:
                                 actual_qty = p.get("qty", 1)
                                 break
+                    # ★ 5/20 사고 fix: 사장님 보호 명령 체크 ★
+                    if self._is_sell_protected(code, "ai_monitor_FULL_SELL"):
+                        continue
                     # 매도 실행
                     result = self.trader.liquidate_one(code)
                     if not result or not result.get("success"):
@@ -2880,6 +2915,9 @@ class AutoTrader:
                             if p_item["code"] == code:
                                 actual_qty = p_item.get("qty", 1)
                                 break
+                    # ★ 5/20 사고 fix: 사장님 보호 명령 체크 (Eye+Guardian EXIT 별도 분기) ★
+                    if self._is_sell_protected(code, "eye_guardian_EXIT"):
+                        continue
                     result = self.trader.liquidate_one(code)
                     if result and result.get("success"):
                         pi_exit = self.trader.fetch_price(code)
@@ -3110,6 +3148,9 @@ class AutoTrader:
                                 tp_actual_qty = p_item.get("qty", 1)
                                 break
 
+                    # ★ 5/20 사고 fix: 사장님 보호 명령 체크 (TP 익절도 차단) ★
+                    if self._is_sell_protected(code, "take_profit"):
+                        continue
                     result = self.trader.liquidate_one(code)
                     if not result or not result.get("success"):
                         logger.error(f"TP 매도 실패 {code}: {result} — 포지션 유지")
@@ -3171,6 +3212,9 @@ class AutoTrader:
                                 jw_actual_qty = p_item.get("qty", 1)
                                 break
 
+                    # ★ 5/20 사고 fix: 사장님 보호 명령 체크 (자비스 약화도 차단) ★
+                    if self._is_sell_protected(code, "jarvis_weak"):
+                        continue
                     result = self.trader.liquidate_one(code)
                     if not result or not result.get("success"):
                         logger.error(f"[자비스 약화] 매도 실패 {code}: {result} — 포지션 유지")
@@ -3392,6 +3436,9 @@ class AutoTrader:
                 )
 
                 if action == ACTION_STOP_LOSS:
+                    # ★ 5/20 사고 fix: 사장님 보호 명령 체크 ★
+                    if self._is_sell_protected(code, "daily_reeval_STOP_LOSS"):
+                        continue
                     # 매도 전 수량 확인 (PnL 계산용)
                     pre_bal = self.trader.fetch_balance()
                     actual_qty = pos.get("qty", 1)
@@ -3433,6 +3480,9 @@ class AutoTrader:
                         logger.error(f"동적 손절 매도 실패 {code}: {result}")
                         await self._alert(f"❌ 손절 매도 실패: {name}({code}) — 수동 확인 필요")
                 elif action == ACTION_FULL_SELL:
+                    # ★ 5/20 사고 fix: 사장님 보호 명령 체크 ★
+                    if self._is_sell_protected(code, "daily_reeval_FULL_SELL"):
+                        continue
                     # 체제별 반분할 익절: TP 히트 + partial_tp 체제 + 미분할 상태
                     from data.market_health import get_regime_rules as _get_rules
                     _rules = _get_rules()
@@ -3641,6 +3691,9 @@ class AutoTrader:
                 for code, pos in list(self._positions.items()):
                     if code in preclose_codes:
                         continue
+                    # ★ 5/20 사고 fix: 사장님 보호 명령 체크 ★
+                    if self._is_sell_protected(code, "eod_close_individual"):
+                        continue
                     try:
                         # 매도 전 수량/현재가 확인
                         pi = self.trader.fetch_price(code)
@@ -3668,19 +3721,60 @@ class AutoTrader:
                     logger.info(f"[EOD] 청산 총 PnL: {eod_total_pnl:+,}원")
                 result = {"success": True, "message": "preclose 제외 청산 완료"}
             else:
-                logger.info("장마감 전량 청산")
-                await self._alert("🏁 장마감 전량 청산 시작...")
-                result = self.trader.liquidate_all()
-                if result.get("success"):
-                    self._positions.clear()
+                # ★ 5/20 사고 fix: liquidate_all 우회 — 사장님 보호 종목 제외 ★
+                protected_codes = [c for c in self._positions
+                                   if self._is_sell_protected(c, "eod_close_liquidate_all")]
+                if protected_codes:
+                    logger.warning(
+                        f"[EOD] 보호 종목 {len(protected_codes)}개 제외 후 개별 청산: "
+                        f"{protected_codes}"
+                    )
+                    await self._alert(
+                        f"🏁 장마감 청산 시작...\n"
+                        f"  🛡️ 보호 종목 {len(protected_codes)}개 제외 (사장님 명령)"
+                    )
+                    eod_total_pnl_p = 0
+                    for code, pos in list(self._positions.items()):
+                        if code in protected_codes:
+                            continue
+                        try:
+                            pi = self.trader.fetch_price(code)
+                            cp_eod = pi.get("current_price", 0) if pi and pi.get("success") else 0
+                            bal_eod = self.trader.fetch_balance()
+                            qty_eod = pos.get("qty", 1)
+                            if bal_eod and bal_eod.get("success"):
+                                for p_item in bal_eod.get("positions", []):
+                                    if p_item["code"] == code:
+                                        qty_eod = p_item.get("qty", 1)
+                                        break
+                            result_one = self.trader.liquidate_one(code)
+                            if result_one and result_one.get("success"):
+                                if cp_eod > 0:
+                                    pnl_eod = (cp_eod - pos.get("entry_price", cp_eod)) * qty_eod
+                                    self._record_trade_pnl(code, pnl_eod, "eod_close")
+                                    eod_total_pnl_p += pnl_eod
+                                self._positions.pop(code, None)
+                        except Exception as e:
+                            logger.warning(f"EOD 보호제외 청산 예외 {code}: {e}")
+                    self._save_positions()
+                    if eod_total_pnl_p != 0:
+                        logger.info(f"[EOD] 보호제외 청산 총 PnL: {eod_total_pnl_p:+,}원")
+                    result = {"success": True,
+                              "message": f"보호 {len(protected_codes)}종목 제외 청산 완료"}
                 else:
-                    # 부분 실패 — 성공한 종목만 제거
-                    failed = set(result.get("failed_codes", []))
-                    for code in list(self._positions.keys()):
-                        if code not in failed:
-                            self._positions.pop(code, None)
-                    logger.warning(f"전량 청산 부분실패: {failed}")
-                self._save_positions()
+                    logger.info("장마감 전량 청산")
+                    await self._alert("🏁 장마감 전량 청산 시작...")
+                    result = self.trader.liquidate_all()
+                    if result.get("success"):
+                        self._positions.clear()
+                    else:
+                        # 부분 실패 — 성공한 종목만 제거
+                        failed = set(result.get("failed_codes", []))
+                        for code in list(self._positions.keys()):
+                            if code not in failed:
+                                self._positions.pop(code, None)
+                        logger.warning(f"전량 청산 부분실패: {failed}")
+                    self._save_positions()
             await self._alert(f"{'✅' if result.get('success') else '❌'} {result.get('message')}")
         else:
             # 스윙 모드: 요약만
