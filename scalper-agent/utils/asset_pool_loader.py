@@ -305,7 +305,7 @@ def load_signals_triggers() -> List[Dict]:
 def load_missed_gainers() -> List[str]:
     """놓친 급등 종목 학습 (learning/missed_gainers/)."""
     import os
-    learn_dir = BASE_DIR / "learning" / "missed_gainers"
+    learn_dir = DATA_DIR / "learning" / "missed_gainers"
     if not learn_dir.exists():
         return []
     codes = set()
