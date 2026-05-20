@@ -103,14 +103,21 @@ def load_nxt_top5_picks() -> Dict:
 
 
 def load_nxt_eligible() -> List[str]:
-    """NXT 매매 가능 종목 코드 리스트."""
+    """NXT 매매 가능 종목 코드 리스트.
+
+    [5/20 fix] nxt_eligible_builder는 'codes' 키로 저장 (신규).
+    레거시 데이터는 'stocks' 키 사용 가능 — 양쪽 호환.
+    """
     data = _load_json("nxt_eligible.json")
     if not data:
         return []
     if isinstance(data, dict):
-        stocks = data.get("stocks", [])
-        if isinstance(stocks, list):
-            return [s if isinstance(s, str) else s.get("code", "") for s in stocks if s]
+        # ★ codes 키 우선 (nxt_eligible_builder), fallback stocks (레거시) ★
+        items = data.get("codes") or data.get("stocks") or []
+        if isinstance(items, list):
+            return [s if isinstance(s, str) else s.get("code", "") for s in items if s]
+    elif isinstance(data, list):
+        return [s if isinstance(s, str) else s.get("code", "") for s in data if s]
     return []
 
 
