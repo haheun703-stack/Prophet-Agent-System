@@ -2915,9 +2915,10 @@ class AutoTrader:
                             if p_item["code"] == code:
                                 actual_qty = p_item.get("qty", 1)
                                 break
-                    # ★ 5/20 사고 fix: 사장님 보호 명령 체크 (Eye+Guardian EXIT 별도 분기) ★
+                    # ★ 5/20 사고 fix: 사장님 보호 명령 체크 (Eye+Guardian EXIT) ★
+                    # _eye_guardian_action은 단일 종목 함수 → return으로 차단 (continue 안 됨)
                     if self._is_sell_protected(code, "eye_guardian_EXIT"):
-                        continue
+                        return
                     result = self.trader.liquidate_one(code)
                     if result and result.get("success"):
                         pi_exit = self.trader.fetch_price(code)
