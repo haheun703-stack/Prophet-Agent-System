@@ -669,6 +669,15 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[COO] A12 단타 확정 실패 (무시): {e}")
 
+        # ── ★ A12B: nxt_eligible.json 일일 갱신 (5/20 사장님 지적) ★ ──
+        # 1개월+ 미갱신 사고 → 신규 모듈로 매일 자동 생성
+        try:
+            from data.nxt_eligible_builder import run_daily_update as _nxt_run
+            nxt_r = await asyncio.to_thread(_nxt_run)
+            logger.info(f"[COO] A12B nxt_eligible: {nxt_r.get('count', 0)}종목 갱신")
+        except Exception as e:
+            logger.warning(f"[COO] A12B nxt_eligible 실패 (무시): {e}")
+
         # ── ★ A13: brain_state.json 생성 (5/20 막내 지적 fix) ★ ──
         # 큰형 quant_bot_advisory → 단타봇 자산배분 매핑
         # 5/19 사고 회피: brain_state 없으면 매크로 신호 무시 위험
