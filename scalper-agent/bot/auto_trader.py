@@ -1867,14 +1867,17 @@ class AutoTrader:
         except Exception as e:
             logger.warning(f"[asset_pool] advisory 게이트 실패 (continue): {e}")
 
-        # ── 자산 풀 통합 + 고신뢰 종목 추출 ──
+        # ── ★ 5/20 사장님 비전: 점수 기반 정렬 + 이상한 종목 차단 ★ ──
+        # 5/20 사고: 검증모드 grade D+F 매수 (링크제니시스/롯데이노베이트)
+        # → asset_pool도 점수 기반 정렬 + 최소 점수 임계값 + AVOID 차단 적용
         try:
             from utils.asset_pool_loader import (
-                get_high_confidence_candidates,
+                get_top_candidates,
                 get_candidate_source_map,
                 load_limit_up_triggers,
             )
-            high_conf_codes = await asyncio.to_thread(get_high_confidence_candidates)
+            # ★ 점수순 TOP K*3 가져와서 필터 후 K개 매수 ★
+            ranked = await asyncio.to_thread(get_top_candidates, top_k * 3)
             source_map = await asyncio.to_thread(get_candidate_source_map)
             triggers = await asyncio.to_thread(load_limit_up_triggers)
             trigger_codes = {t.get("code", "") for t in triggers if isinstance(t, dict)}
@@ -1882,11 +1885,43 @@ class AutoTrader:
             logger.warning(f"[asset_pool] 자산 풀 로드 실패: {e}")
             return
 
-        # 상한가 엔진 trigger는 무조건 우선순위 (즉시 진입가 계산됨)
-        # → trigger > high_conf 순으로 정렬
-        all_codes = list(trigger_codes) + [c for c in high_conf_codes if c not in trigger_codes]
+        # ★ 5/20 fix: 최소 점수 임계값 30 (이상한 종목 자동 제외) ★
+        # 진원생명과학(90점)/티웨이(65점) 같은 고점수만 통과
+        _MIN_SCORE = 30
+        ranked = [r for r in ranked if r.get("score", 0) >= _MIN_SCORE]
+        if not ranked:
+            logger.info(f"[asset_pool] 점수 {_MIN_SCORE}+ 후보 0종목 — 스킵 (이상한 종목 차단)")
+            return
+
+        # ★ 5/20 fix: recommendation.json AVOID 시그널 차단 ★
+        try:
+            import json as _json
+            rec_path = Path(__file__).resolve().parent.parent / "data_store" / "recommendation.json"
+            avoid_codes = set()
+            if rec_path.exists():
+                rec = _json.loads(rec_path.read_text(encoding="utf-8"))
+                stocks = rec.get("stocks", []) if isinstance(rec, dict) else rec
+                for s in stocks:
+                    if isinstance(s, dict):
+                        sig = str(s.get("signal_type", "")).upper()
+                        grade = str(s.get("grade", "")).upper()
+                        if sig == "AVOID" or grade in ("D", "F"):
+                            code = s.get("code")
+                            if code:
+                                avoid_codes.add(code)
+            if avoid_codes:
+                _before = len(ranked)
+                ranked = [r for r in ranked if r["code"] not in avoid_codes]
+                _blocked = _before - len(ranked)
+                if _blocked > 0:
+                    logger.info(f"[asset_pool] AVOID/grade D,F {_blocked}종 차단 (이상한 종목)")
+        except Exception as _ae:
+            logger.warning(f"[asset_pool] AVOID 필터 실패 (계속): {_ae}")
+
+        # 점수순 정렬된 코드 리스트
+        all_codes = [r["code"] for r in ranked]
         if not all_codes:
-            logger.info("[asset_pool] 후보 0종목 — 스킵")
+            logger.info("[asset_pool] AVOID 차단 후 0종목 — 스킵")
             return
 
         # 제외: 보유 종목 + verification 보유 + ETF prefix
