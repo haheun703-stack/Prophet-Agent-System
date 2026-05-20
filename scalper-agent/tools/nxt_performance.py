@@ -315,13 +315,31 @@ def build_nxt_performance_report() -> dict | None:
     """
     yesterday_picks = load_yesterday_nxt_picks()
     if not yesterday_picks:
-        logger.warning("어제 NXT 픽 없음 — 성적표 생성 불가")
-        return None
+        logger.warning("어제 NXT 픽 없음 — 관망일 빈 픽 마커 적재 (5/20 웹봇 지시 2 fix)")
+        # ★ 5/20 fix: 관망일 빈 픽 마커 — Supabase 적재용 best-effort ★
+        # 5/16~5/20 5일 누적 stale 사고 회피
+        return {
+            "pick_date": (date.today() - timedelta(days=1)).isoformat(),
+            "result_date": date.today().isoformat(),
+            "items": [],
+            "avg_return": 0.0,
+            "cumulative": {"return": 0.0, "win_rate": 0.0, "count": 0},
+            "is_observation_day": True,  # ★ 관망일 마커
+            "telegram_msg": "📊 NXT 성적표: 어제 픽 없음 (관망일)",
+        }
 
     picks = yesterday_picks.get("picks", [])
     if not picks:
-        logger.warning("어제 NXT 픽 비어있음")
-        return None
+        logger.warning("어제 NXT 픽 비어있음 — 관망일 마커 적재")
+        return {
+            "pick_date": yesterday_picks.get("date", (date.today() - timedelta(days=1)).isoformat()),
+            "result_date": date.today().isoformat(),
+            "items": [],
+            "avg_return": 0.0,
+            "cumulative": {"return": 0.0, "win_rate": 0.0, "count": 0},
+            "is_observation_day": True,
+            "telegram_msg": "📊 NXT 성적표: 어제 픽 비어있음 (관망일)",
+        }
 
     picks = picks[:5]
     codes = [p.get("code", "") for p in picks if p.get("code")]
