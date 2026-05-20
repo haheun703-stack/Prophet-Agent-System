@@ -236,13 +236,148 @@ def get_candidate_source_map() -> Dict[str, List[str]]:
     _add(load_foreign_accumulation(), "foreign_accumulation")
     _add(load_accumulation_radar(), "accumulation_radar")
 
+    # ★ 5/20 사고 fix #8: 시장 강세 + 테마 통합 추가 ★
+    # 5/20 자비스 차단 5종 중 진원생명과학(+18.23%) 미발굴 사고 후
+    _add(load_kis_market_top(), "kis_market_top")
+    _add(load_short_cover(), "short_cover")
+    for stock in load_theme_universe_stocks():
+        source_map.setdefault(stock["code"], []).append(f"theme:{stock.get('subtheme','?')}")
+
     return source_map
 
 
+# ─────────────────────────────────────────────────────
+# ★ 5/20 fix #8: 신규 후보 소스 3종 (시장 상한가 + 숏커버 + 테마)
+# ─────────────────────────────────────────────────────
+def load_kis_market_top(min_change_pct: float = 5.0, min_volume: int = 1_000_000) -> List[Dict]:
+    """KIS 등락률 TOP 30 실시간 (4황금 시그널 추격 매수 후보).
+
+    [5/20 학습] +10~20% + 거래량 1,000만주+ 시그널 = 검증된 추격 매수 (이노/빛과전자)
+    여기선 +5% + 100만주+ 로 약간 완화 (asset_pool 후보 풀 확장 목적).
+
+    실시간 호출 비용이 있어 캐시 사용 (5분).
+    """
+    import os, json, time as _t
+    from pathlib import Path as _P
+    cache_path = _P(__file__).resolve().parent.parent / "data_store" / "kis_market_top_cache.json"
+    # 캐시 5분
+    if cache_path.exists():
+        try:
+            age = _t.time() - cache_path.stat().st_mtime
+            if age < 300:
+                return json.loads(cache_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    # KIS API 호출
+    try:
+        import requests
+        from dotenv import load_dotenv
+        load_dotenv()
+        import mojito
+        broker = mojito.KoreaInvestment(
+            api_key=os.getenv("KIS_APP_KEY"), api_secret=os.getenv("KIS_APP_SECRET"),
+            acc_no=os.getenv("KIS_ACC_NO"), mock=False,
+        )
+        token = broker.access_token
+        url = "https://openapi.koreainvestment.com:9443/uapi/domestic-stock/v1/ranking/fluctuation"
+        hdrs = {"authorization": "Bearer " + token, "appkey": os.getenv("KIS_APP_KEY"),
+                "appsecret": os.getenv("KIS_APP_SECRET"), "tr_id": "FHPST01700000"}
+        params = {"fid_cond_mrkt_div_code": "J", "fid_cond_scr_div_code": "20170",
+                  "fid_input_iscd": "0000", "fid_rank_sort_cls_code": "0", "fid_input_cnt_1": "0",
+                  "fid_prc_cls_code": "1", "fid_input_price_1": "", "fid_input_price_2": "",
+                  "fid_vol_cnt": "", "fid_trgt_cls_code": "0", "fid_trgt_exls_cls_code": "0",
+                  "fid_div_cls_code": "0", "fid_rsfl_rate1": "", "fid_rsfl_rate2": ""}
+        r = requests.get(url, headers=hdrs, params=params, timeout=10)
+        out = r.json().get("output", [])[:30]
+        result = []
+        for x in out:
+            chg = float(x.get("prdy_ctrt", 0))
+            vol = int(x.get("acml_vol", 0))
+            # 4황금 시그널 필터: +5% + 100만주+ (느슨한 추격 후보)
+            if chg >= min_change_pct and vol >= min_volume:
+                result.append({
+                    "code": x.get("stck_shrn_iscd", ""),
+                    "name": x.get("hts_kor_isnm", ""),
+                    "change_pct": chg, "volume": vol,
+                    "price": int(x.get("stck_prpr", 0)),
+                })
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        return result
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"[asset_pool] kis_market_top 실패: {e}")
+        return []
+
+
+def load_short_cover(min_ratio: float = 5.0) -> List[Dict]:
+    """숏커버 반등 후보 (상환/신규 비율 높은 종목).
+
+    [5/20 학습] 사장님이 5/20 11:00 "숏커버 반등 후보" 텔레그램 알람으로 수동 제공.
+    이걸 asset_pool에 통합 → 자비스가 자동 픽업.
+    """
+    data = _load_json("short_cover_candidates.json")
+    if not data:
+        return []
+    items = data.get("stocks", []) if isinstance(data, dict) else data
+    return [x for x in items if isinstance(x, dict) and x.get("ratio", 0) >= min_ratio]
+
+
+def load_theme_universe_stocks() -> List[Dict]:
+    """막내(정보봇) 테마 유니버스 → 종목 평면 리스트.
+
+    [5/20 학습] 사장님 "단타 = 소재" 원칙. 막내가 매일 06:00 theme_universe 생성.
+    여기선 단순 평면 리스트로 변환 (서브테마 정보는 subtheme 필드로 보존).
+    """
+    import os
+    path_candidates = [
+        "/home/ubuntu/jgis/data_store/theme_universe.json",
+        str(BASE_DIR / "theme_universe.json") if 'BASE_DIR' in globals() else None,
+    ]
+    for p in path_candidates:
+        if p and os.path.exists(p):
+            try:
+                import json
+                data = json.loads(open(p, encoding="utf-8").read())
+                result = []
+                for theme in data.get("themes", []):
+                    for sub in theme.get("subthemes", []):
+                        for stock in sub.get("stocks", []):
+                            result.append({
+                                "code": stock.get("code", ""),
+                                "name": stock.get("name", ""),
+                                "theme": theme.get("theme_id", ""),
+                                "subtheme": sub.get("id", ""),
+                                "weight": sub.get("weight", 0),
+                            })
+                return result
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(f"[asset_pool] theme_universe 로드 실패 {p}: {e}")
+    return []
+
+
 def get_high_confidence_candidates() -> List[str]:
-    """다중 자산 소스에서 동시 발견된 고신뢰 종목 (2개+ 소스)."""
+    """다중 자산 소스에서 동시 발견된 고신뢰 종목 (2개+ 소스).
+
+    [5/20 fix] kis_market_top / short_cover / theme:* 소스 단독으로도 고신뢰 처리.
+    이유: 시장 강세 종목/숏커버/막내 테마는 별도 분석 거친 결과 → 단독 신뢰 OK.
+    """
     source_map = get_candidate_source_map()
-    return [code for code, sources in source_map.items() if len(sources) >= 2]
+    _STRONG_SOLO_SOURCES = ("kis_market_top", "short_cover")
+    result = []
+    for code, sources in source_map.items():
+        if len(sources) >= 2:
+            result.append(code)
+            continue
+        # 단독 강력 소스 OR theme 단독
+        if any(s in _STRONG_SOLO_SOURCES for s in sources):
+            result.append(code)
+            continue
+        if any(s.startswith("theme:") for s in sources):
+            result.append(code)
+            continue
+    return result
 
 
 if __name__ == "__main__":

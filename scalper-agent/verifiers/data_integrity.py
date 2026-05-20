@@ -17,12 +17,19 @@ import json
 import sys
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
 
 _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT))
 
 from verifiers._common import send_telegram, save_state, make_result, fmt_alert
+
+# [5/20 fix #3+#4] timezone 명시 KST + 가동 시각 윈도우 (정보봇 막내 지적)
+try:
+    from zoneinfo import ZoneInfo
+    KST = ZoneInfo("Asia/Seoul")
+except ImportError:
+    KST = None
 
 DATA_STORE = _ROOT / "data_store"
 
@@ -36,25 +43,37 @@ FILE_CHECKS = [
 ]
 
 # Supabase 테이블 (오늘 데이터 존재 확인)
-SUPABASE_CHECKS = [
-    ("quant_bot_advisory", "advisory_date", "큰형 advisory"),
-    ("morning_briefings", "date", "정보봇 모닝 브리핑"),
-    ("intelligence_daytrading_picks", "date", "정보봇 단타 추천"),
-    ("intelligence_supply_demand", "date", "정보봇 수급"),
+# [5/20 fix #4] expected_time 추가 — 가동 시각 + 1h 이후만 0건 알림
+SUPABASE_CHECKS: List[Tuple[str, str, str, Optional[time]]] = [
+    ("quant_bot_advisory", "advisory_date", "큰형 advisory", None),  # 수시
+    ("morning_briefings", "date", "정보봇 모닝 브리핑", time(6, 30)),
+    ("intelligence_daytrading_picks", "date", "정보봇 단타 추천", time(7, 0)),
+    ("intelligence_supply_demand", "date", "정보봇 수급", time(16, 20)),  # 16:20 가동
 ]
+
+
+def _now_kst() -> datetime:
+    """[5/20 fix #3] KST 명시 — timezone aware datetime."""
+    return datetime.now(KST) if KST else datetime.now()
 
 
 def _check_files() -> Tuple[List[str], List[str]]:
     issues = []
     infos = []
-    now = datetime.now()
+    now = _now_kst()
     for fname, max_age_hours, desc in FILE_CHECKS:
         path = DATA_STORE / fname
         if not path.exists():
             issues.append(f"❌ {desc}: {fname} 파일 없음")
             continue
-        mtime = datetime.fromtimestamp(path.stat().st_mtime)
+        # [5/20 fix #3] mtime도 KST aware로 변환 (75.3h/1227h 오류 해결)
+        mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=KST) if KST else \
+                datetime.fromtimestamp(path.stat().st_mtime)
         age = (now - mtime).total_seconds() / 3600
+        # 음수 age (미래) 방어
+        if age < -0.1:
+            issues.append(f"⚠️ {desc}: {fname} mtime이 미래 ({age:.1f}h) — VPS 시계 점검")
+            continue
         if age > max_age_hours:
             issues.append(f"⚠️ {desc}: {fname} stale ({age:.1f}h > {max_age_hours}h)")
         else:
@@ -63,6 +82,7 @@ def _check_files() -> Tuple[List[str], List[str]]:
 
 
 def _check_supabase() -> Tuple[List[str], List[str]]:
+    """[5/20 fix #4] 가동 시각 윈도우 적용 — 16:20 잡은 17:20 이후만 0건 알림"""
     issues = []
     infos = []
     try:
@@ -72,7 +92,18 @@ def _check_supabase() -> Tuple[List[str], List[str]]:
         return issues, infos
 
     today = date.today()
-    for table, date_col, desc in SUPABASE_CHECKS:
+    now_t = _now_kst().time()
+    for table, date_col, desc, expected_time in SUPABASE_CHECKS:
+        # [5/20 fix #4] 가동 시각 + 1h grace period 적용
+        if expected_time:
+            grace_dt = datetime.combine(today, expected_time) + timedelta(hours=1)
+            grace_time = grace_dt.time()
+            if now_t < grace_time:
+                infos.append(
+                    f"{desc}: 가동 시각 전 (현재 {now_t.strftime('%H:%M')}, "
+                    f"가동 {expected_time.strftime('%H:%M')} + 1h grace)"
+                )
+                continue
         try:
             sql = f"SELECT COUNT(*) AS n FROM {table} WHERE {date_col} = CURRENT_DATE"
             row = query_one(sql)

@@ -1418,8 +1418,43 @@ class AutoTrader:
         failed = []
         skipped = []
         budget_skipped = []
+        grade_filtered = []  # ★ 5/20 fix #10 ★
 
         active_codes = {p["code"] for p in _vm.get_active_positions()}
+
+        # ★ 5/20 fix #10: signal_type AVOID + grade D/F 필터 ★
+        # 5/20 사고: morning_recommendation이 grade D + F 2종만 추천했는데
+        # 검증모드가 필터 없이 1주씩 매수 → 손실. signal_type=AVOID 종목 차단.
+        _ALLOWED_GRADES = {"A", "B", "C", "STRONG", "AAA", "AA"}
+        _BLOCKED_SIGNAL_TYPES = {"AVOID"}
+        _MIN_SCORE = 30.0  # total_score 임계
+
+        _filtered_candidates = []
+        for c in candidates:
+            grade = str(c.get("grade", "")).upper()
+            sig = str(c.get("signal_type", "")).upper()
+            score = float(c.get("total_score") or c.get("final_score", 0))
+            if sig in _BLOCKED_SIGNAL_TYPES:
+                grade_filtered.append(f"{c.get('name', c.get('code'))}(AVOID)")
+                continue
+            if grade and grade not in _ALLOWED_GRADES:
+                grade_filtered.append(f"{c.get('name', c.get('code'))}(grade={grade})")
+                continue
+            if score < _MIN_SCORE:
+                grade_filtered.append(f"{c.get('name', c.get('code'))}(score={score:.0f}<{_MIN_SCORE})")
+                continue
+            _filtered_candidates.append(c)
+        candidates = _filtered_candidates
+        if grade_filtered:
+            await _send(
+                f"🚫 [검증모드 사전 필터] {len(grade_filtered)}종 차단 "
+                f"(AVOID/grade D,F/score<{_MIN_SCORE})\n"
+                f"  · {', '.join(grade_filtered[:5])}"
+                + (f" 외 {len(grade_filtered)-5}" if len(grade_filtered) > 5 else "")
+            )
+        if not candidates:
+            await _send("🟡 [검증모드] 필터 후 매수 후보 0종 — 노옵")
+            return
 
         # Critical 1: KIS 잔고 안전 한도 (검증 모드 예산 = 가용 현금의 30%)
         # 13종목 + 장중 추가 최대 10종목 = 23종목 1주씩, 평균 30,000원/주 = 약 70만원
@@ -1741,7 +1776,13 @@ class AutoTrader:
                 return {"ok": False, "reason": f"유동성 부족 vol={volume:,}", "price_info": price_resp}
 
             # ② 체결강도 (균형 이상)
-            if strength < 100:
+            # ★ 5/20 사고 fix: 0.0 = 데이터 부재 (시초가 5분, 안정화 전) → 약세로 판정 X ★
+            # 5/20 09:05 자비스 5종 일괄 차단 사고: 모든 종목 strength=0.0 → 약세 판정
+            # 실제는 KIS API가 시초가 직후 strength 미반영 = 데이터 부재
+            if strength == 0.0:
+                # 데이터 부재 = 통과 처리 (이후 사이클 재평가)
+                logger.info(f"[3gate] {code} 체결강도 0.0 = 데이터 부재 → 통과")
+            elif strength < 100:
                 return {"ok": False, "reason": f"체결강도 약세 {strength:.1f}", "price_info": price_resp}
 
             # ③ 가격안정성 (시초가 갭다운 -3% 한정)

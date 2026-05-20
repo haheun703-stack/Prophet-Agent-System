@@ -669,6 +669,20 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[COO] A12 단타 확정 실패 (무시): {e}")
 
+        # ── ★ A13: brain_state.json 생성 (5/20 막내 지적 fix) ★ ──
+        # 큰형 quant_bot_advisory → 단타봇 자산배분 매핑
+        # 5/19 사고 회피: brain_state 없으면 매크로 신호 무시 위험
+        try:
+            from data.brain_state_builder import build_brain_state
+            bs = await asyncio.to_thread(build_brain_state)
+            logger.info(
+                f"[COO] A13 brain_state 생성: regime={bs.get('regime')} "
+                f"allocation={bs.get('allocation_pct')}% "
+                f"(advisory {bs.get('advisory_count', 0)}건)"
+            )
+        except Exception as e:
+            logger.warning(f"[COO] A13 brain_state 생성 실패 (무시): {e}")
+
         # 그룹 상태 업데이트 + 로그 저장
         self.update_group("G1", results)
 
@@ -4467,10 +4481,11 @@ class TradingCOO:
         logger.info("[COO] 검증모드 장중 스캔 등록: 5분 반복 (09:05~14:00 활성)")
 
         # ── 자비스 자산풀 매수 (사장님 5/19 결정: B 진보 + 1주 모드) ──
-        # 09:05 1회 — 4종 자산풀 통합 → 고신뢰 TOP 5 × 1주씩 매수
-        # advisory BEARISH/PANIC 자동 차단 / verification 모드 OFF 시 노옵
-        jq.run_daily(self._job_asset_pool_scan, time=kst_time(9, 5))
-        logger.info("[COO] 자산풀 매수 등록: 09:05 KST (B 진보 + 1주 모드)")
+        # ★ 5/20 사고 fix: 09:05 → 09:15 이동 ★
+        # 5/20 09:05 자비스 5종 일괄 차단 — 시초가 5분 = 체결강도/거래량 안정화 전
+        # 09:15로 이동 (10분 안정화 후) → 데이터 신뢰성 향상
+        jq.run_daily(self._job_asset_pool_scan, time=kst_time(9, 15))
+        logger.info("[COO] 자산풀 매수 등록: 09:15 KST (5/20 사고 후 이동, B 진보 + 1주 모드)")
 
         # ── 알고리즘 A: 섹터 동조 카운터 텔레그램 알림 (5/19 5/18 백테스트 적중) ──
         # 09:30 / 11:00 / 13:00 — 같은 섹터 4개+ 동시 +10%+ 시 즉시 알림

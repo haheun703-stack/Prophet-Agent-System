@@ -254,6 +254,10 @@ class KISTrader:
                     "cash": cash,
                     "total_eval": total_eval,
                     "positions": positions,
+                    # ★ 5/20 사고 fix: 'holdings' 키 추가 (portfolio_monitor 등 호환) ★
+                    # 기존 'positions' 키만 반환 → 일부 모듈이 'holdings' 호출하면 빈 리스트 받음
+                    # 'holdings'는 'positions'의 alias (동일 데이터)
+                    "holdings": positions,
                 }
                 self._last_balance = result     # 장후 tr_cont 에러 시 캐시 활용
                 self._last_balance_at = time.time()
