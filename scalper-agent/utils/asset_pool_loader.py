@@ -243,7 +243,103 @@ def get_candidate_source_map() -> Dict[str, List[str]]:
     for stock in load_theme_universe_stocks():
         source_map.setdefault(stock["code"], []).append(f"theme:{stock.get('subtheme','?')}")
 
+    # ★ 5/20 사장님 비전 — 자체 자산 추가 통합 (사장님 지적: "있는데 활용 안 함") ★
+    _add(load_sector_concurrent_surge(), "sector_concurrent_surge")
+    _add(load_consecutive_surge(), "consecutive_surge")
+    _add(load_signals_triggers(), "limit_up_signals")  # signals.json = triggers 역할
+    _add(load_missed_gainers(), "missed_gainers_learning")
+    _add(load_premium_levels_stocks(), "premium_levels")
+
+    # ★ 5/20 사장님 비전 — 학습 데이터 기반 강세 종목 (가장 중요) ★
+    # surge_pattern_learner가 매일 누적한 +10%+ 종목 중 7일 내 2회+ 반복 출현 종목
+    try:
+        from data.surge_pattern_learner import get_learned_strong_codes
+        for code in get_learned_strong_codes(days=7, min_appearance=2):
+            source_map.setdefault(code, []).append("learned_strong")
+    except Exception:
+        pass
+
     return source_map
+
+
+# ─────────────────────────────────────────────────────
+# ★ 5/20 사장님 비전 — 자체 자산 추가 로더 ★
+# ─────────────────────────────────────────────────────
+def load_sector_concurrent_surge() -> List[Dict]:
+    """섹터 동조 급등 (sector_concurrent_surge.json)."""
+    data = _load_json("sector_concurrent_surge.json")
+    if not data:
+        return []
+    result = []
+    if isinstance(data, dict):
+        for sector, items in data.items():
+            if isinstance(items, list):
+                for it in items:
+                    if isinstance(it, dict) and it.get("code"):
+                        result.append({**it, "sector": sector})
+                    elif isinstance(it, str):
+                        result.append({"code": it, "sector": sector})
+    elif isinstance(data, list):
+        result = [x for x in data if isinstance(x, dict) and x.get("code")]
+    return result
+
+
+def load_consecutive_surge() -> List[Dict]:
+    """상한가 연속 (consecutive_surge.json)."""
+    data = _load_json("consecutive_surge.json")
+    if not data:
+        return []
+    items = data.get("stocks", []) if isinstance(data, dict) else data
+    return [x for x in items if isinstance(x, dict) and x.get("code")]
+
+
+def load_signals_triggers() -> List[Dict]:
+    """상한가 엔진 signals.json (triggers 역할)."""
+    data = _load_json("limit_up/signals.json")
+    if not data:
+        return []
+    items = data.get("stocks", []) if isinstance(data, dict) else data
+    return [x for x in items if isinstance(x, dict) and x.get("code")]
+
+
+def load_missed_gainers() -> List[str]:
+    """놓친 급등 종목 학습 (learning/missed_gainers/)."""
+    import os
+    learn_dir = BASE_DIR / "learning" / "missed_gainers"
+    if not learn_dir.exists():
+        return []
+    codes = set()
+    # 최근 7일 파일만
+    try:
+        files = sorted(learn_dir.glob("*.json"))[-7:]
+        for f in files:
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+                items = data.get("stocks", []) if isinstance(data, dict) else data
+                for x in items:
+                    if isinstance(x, dict) and x.get("code"):
+                        codes.add(x["code"])
+                    elif isinstance(x, str):
+                        codes.add(x)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return list(codes)
+
+
+def load_premium_levels_stocks() -> List[Dict]:
+    """매매포인트 premium_levels 종목 리스트."""
+    data = _load_json("premium_levels.json")
+    if not data:
+        return []
+    if isinstance(data, dict):
+        # {"001440": {...}, ...} 형식 가능
+        return [{"code": k, **v} if isinstance(v, dict) else {"code": k}
+                for k, v in data.items()]
+    elif isinstance(data, list):
+        return [x for x in data if isinstance(x, dict) and x.get("code")]
+    return []
 
 
 # ─────────────────────────────────────────────────────
@@ -360,11 +456,15 @@ def load_theme_universe_stocks() -> List[Dict]:
 def get_high_confidence_candidates() -> List[str]:
     """다중 자산 소스에서 동시 발견된 고신뢰 종목 (2개+ 소스).
 
-    [5/20 fix] kis_market_top / short_cover / theme:* 소스 단독으로도 고신뢰 처리.
-    이유: 시장 강세 종목/숏커버/막내 테마는 별도 분석 거친 결과 → 단독 신뢰 OK.
+    [5/20 fix] kis_market_top / short_cover / theme:* / learned_strong
+    소스 단독으로도 고신뢰 처리.
+
+    [5/20 사장님 비전] learned_strong = surge_pattern_learner 7일 누적 강세 종목
+    → 가장 신뢰도 높음 (이미 검증된 패턴).
     """
     source_map = get_candidate_source_map()
-    _STRONG_SOLO_SOURCES = ("kis_market_top", "short_cover")
+    _STRONG_SOLO_SOURCES = ("kis_market_top", "short_cover", "learned_strong",
+                            "consecutive_surge", "sector_concurrent_surge")
     result = []
     for code, sources in source_map.items():
         if len(sources) >= 2:
@@ -378,6 +478,85 @@ def get_high_confidence_candidates() -> List[str]:
             result.append(code)
             continue
     return result
+
+
+def get_candidate_score_map() -> Dict[str, int]:
+    """각 종목의 가중치 점수 매핑 (자비스 종목 선정용).
+
+    [5/20 사장님 비전] 사장님 평생 원칙 "종목 선정 80% 정확도" 직접 구현.
+
+    점수 계산:
+      - learned_strong: +50 (7일 누적 검증)
+      - kis_market_top: +30 (오늘 실시간 강세)
+      - sector_concurrent_surge: +25 (테마 동조)
+      - theme:diagnostic_kit: +30 (5/20 100% 적중 검증)
+      - theme:vaccine: +15
+      - theme:antiviral: +0 (5/20 0% 적중)
+      - short_cover: +20
+      - limit_up_trigger: +15
+      - 기타 소스: +10
+      - 다중 소스 보너스: +10 × (소스 수 - 1)
+    """
+    source_map = get_candidate_source_map()
+    weights = {
+        "learned_strong": 50,
+        "kis_market_top": 30,
+        "consecutive_surge": 25,
+        "sector_concurrent_surge": 25,
+        "limit_up_signals": 20,
+        "short_cover": 20,
+        "limit_up_trigger": 15,
+        "limit_up_watchlist": 12,
+        "massive_dual_buy": 15,
+        "oneshot_stealth": 12,
+        "foreign_accumulation": 12,
+        "accumulation_radar": 12,
+        "premium_levels": 10,
+        "missed_gainers_learning": 8,
+        "nxt_eligible": 5,
+    }
+    score_map: Dict[str, int] = {}
+    for code, sources in source_map.items():
+        score = 0
+        for src in sources:
+            if src.startswith("theme:"):
+                sub = src.split(":", 1)[1]
+                if sub == "diagnostic_kit":
+                    score += 30  # 5/20 100% 적중
+                elif sub == "vaccine":
+                    score += 15
+                elif sub == "antiviral":
+                    score += 0   # 5/20 0% 적중
+                else:
+                    score += 10
+            else:
+                score += weights.get(src, 10)
+        # 다중 소스 보너스
+        if len(sources) > 1:
+            score += 10 * (len(sources) - 1)
+        score_map[code] = score
+    return score_map
+
+
+def get_top_candidates(top_k: int = 5) -> List[Dict]:
+    """자비스 매수 후보 TOP K (점수순).
+
+    [자비스 활용]
+      auto_trader.asset_pool_scan_and_buy() 에서 직접 호출.
+      반환된 후보들에 trade_style_decider 적용 → 스타일별 매수.
+    """
+    score_map = get_candidate_score_map()
+    source_map = get_candidate_source_map()
+    # 점수순 정렬
+    sorted_codes = sorted(score_map.items(), key=lambda x: -x[1])[:top_k]
+    return [
+        {
+            "code": code,
+            "score": score,
+            "sources": source_map.get(code, []),
+        }
+        for code, score in sorted_codes
+    ]
 
 
 if __name__ == "__main__":

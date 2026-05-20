@@ -683,6 +683,39 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[COO] A13 brain_state 생성 실패 (무시): {e}")
 
+        # ── ★ A14: 부족 데이터 fallback 재시도 (5/20 사장님 지적) ★ ──
+        # nxt_eligible / foreign_accumulation 1개월+ 미갱신 사고 후
+        # G1에서 fallback 재시도로 매일 자동 갱신 보장
+        try:
+            import os, json as _json, time as _ttime
+            data_store = Path(__file__).resolve().parent.parent / "data_store"
+            now_ts = _ttime.time()
+            # 24h 초과 stale 파일 자동 재시도
+            stale_files = [
+                ("foreign_accumulation.json", "tools.foreign_accumulation_scanner"),
+                ("nxt_eligible.json", None),  # nxt 모듈 미상 — 로그만
+            ]
+            for fname, module in stale_files:
+                fpath = data_store / fname
+                if fpath.exists():
+                    age_h = (now_ts - fpath.stat().st_mtime) / 3600
+                    if age_h > 24 and module:
+                        logger.info(f"[COO] A14 {fname} {age_h:.0f}h stale → 재시도 (모듈: {module})")
+                        # 비동기 재시도 (best-effort)
+                        try:
+                            import subprocess
+                            subprocess.run(
+                                ["./venv/bin/python3.11", "-m", module],
+                                cwd=str(Path(__file__).resolve().parent.parent.parent),
+                                timeout=120, capture_output=True,
+                            )
+                        except Exception as _se:
+                            logger.warning(f"[COO] A14 {fname} 재시도 실패: {_se}")
+                else:
+                    logger.warning(f"[COO] A14 {fname} 미존재 — 5/21+ 별도 fix 필요")
+        except Exception as e:
+            logger.warning(f"[COO] A14 fallback 재시도 실패 (무시): {e}")
+
         # 그룹 상태 업데이트 + 로그 저장
         self.update_group("G1", results)
 
@@ -4151,6 +4184,40 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[COO] 장중 스캔 실패 (무시): {e}")
 
+    async def _job_surge_pattern_learning(self, context=None) -> None:
+        """[5/20 사장님 비전] 매일 15:35 — 급등 종목 패턴 학습.
+
+        +10%/상한가 종목 패턴 추출 → jarvis_learning/surge_patterns/YYYYMMDD.json
+        익일 자비스 종목 선정 시 가중치 자동 반영 (asset_pool_loader 통합).
+        """
+        try:
+            from data.surge_pattern_learner import run_daily_learning
+            result = await asyncio.to_thread(run_daily_learning)
+            logger.info(
+                f"[COO] surge_learner 완료: {result['today_count']}종 / "
+                f"7일 누적 {result['weekly_stats']['total_surge_stocks']}종"
+            )
+            # 텔레그램 알림 (사장님이 매일 결과 받을 수 있게)
+            if self.bot and self.bot.chat_id:
+                stats = result["weekly_stats"]
+                sectors_str = ", ".join([f"{s}({n})" for s, n in stats["top_sectors"][:3]])
+                msg = (
+                    f"🧠 [자비스 패턴 학습 — 15:35]\n"
+                    f"  오늘 +10%+: {result['today_count']}종목\n"
+                    f"  7일 누적: {stats['total_surge_stocks']}종\n"
+                    f"  TOP 섹터: {sectors_str or '없음'}\n"
+                    f"  외인 매수율: {stats['foreign_buy_rate']}% / "
+                    f"기관 매수율: {stats['institution_buy_rate']}%"
+                )
+                try:
+                    await self.bot._app.bot.send_message(
+                        chat_id=int(self.bot.chat_id), text=msg
+                    )
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning(f"[COO] surge_pattern_learner 실패 (무시): {e}")
+
     async def _job_asset_pool_scan(self, context=None) -> None:
         """09:05 1회 — 자비스 자산풀 매수 (사장님 5/19 결정 B안+1주).
 
@@ -4467,6 +4534,12 @@ class TradingCOO:
         logger.info("[COO] 검증모드 청산 등록: 15:25 KST (날짜/토글 자동 분기)")
         jq.run_daily(self._job_verification_settlement, time=kst_time(15, 35))
         logger.info("[COO] 검증모드 정산 등록: 15:35 KST")
+
+        # ★ 5/20 사장님 비전 — surge_pattern_learner 매일 자동 학습 ★
+        # 매일 15:35 (장 마감 + 5분) 자동 실행:
+        # +10%/상한가 종목 패턴 추출 → 다음날 자비스 종목 선정 가중치 반영
+        jq.run_daily(self._job_surge_pattern_learning, time=kst_time(15, 35))
+        logger.info("[COO] 자비스 패턴 학습 등록: 15:35 KST (매일 +10%+ 종목 자동 학습)")
 
         # ── 자비스 일일 회고 (사장님 5/19 23:00 명령: 섹터 추격 타이밍 학습) ──
         # 매일 15:40 — 오늘 자비스 진입 종목 vs 시장 강세 섹터 비교 → 인사이트 누적

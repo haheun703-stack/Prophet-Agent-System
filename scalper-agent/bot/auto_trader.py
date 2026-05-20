@@ -1993,22 +1993,56 @@ class AutoTrader:
                     #     → 트레일링 활성 시 max(stop_loss, trailing_sl)로 자동 교체
                     #   · regime="NORMAL": +3% 도달 시 트레일링 활성, 고점 대비 -3% 스탑
                     #   · entry_price/high_watermark: 트레일링 시스템 진입 키
+                    # ★ 5/20 사장님 비전 — trade_style_decider 자율 결정 ★
+                    # 종목 + 시장 보고 단타/스윙 자율 선택 (SL/TP/보유일 동적 설정)
+                    style_sl_pct = -3.0
+                    style_tp_pct = 5.0
+                    style_max_hold = 0
+                    style_name = "DAY_TRADE"
+                    style_reason = "default"
+                    try:
+                        from data.trade_style_decider import decide_trade_style
+                        # 거래량 비율 (price_info에 있다면)
+                        vol_ratio = float(price_info.get("volume_ratio", 1.0))
+                        chg_pct = float(price_info.get("change_pct", 0.0))
+                        style = decide_trade_style(
+                            code=code, name=name,
+                            change_pct=chg_pct, volume_ratio=vol_ratio,
+                            source_signals=c["sources"],
+                        )
+                        style_name = style.get("style", "DAY_TRADE")
+                        style_sl_pct = style.get("sl_pct") or -3.0
+                        style_tp_pct = style.get("tp_pct") or 5.0
+                        style_max_hold = style.get("max_hold_days", 0)
+                        style_reason = style.get("reason", "")
+                        logger.info(
+                            f"[style] {name}({code}) → {style_name} "
+                            f"SL{style_sl_pct}% TP{style_tp_pct}% {style_max_hold}d "
+                            f"({style_reason})"
+                        )
+                    except Exception as _se:
+                        logger.warning(f"[style] decider 실패 (default 적용): {_se}")
+
                     self._positions[code] = {
                         "name": name, "qty": qty_per_stock,
                         "buy_price": buy_price,
-                        "entry_price": buy_price,                  # 트레일링 시스템 진입 키
-                        "high_watermark": buy_price,               # 고점 추적 시작
-                        "trailing_activated": False,               # +3% 도달 시 활성
-                        "trailing_sl": 0,                          # 고점 대비 -3% 자동 계산
-                        "stop_loss": int(buy_price * 0.97),        # ★ 안전망 SL -3% (5/19 자아성찰 fix)
-                        "take_profit": int(buy_price * 1.05),      # +5% 자동 익절
-                        "regime": "NORMAL",                        # 일반 트레일링 (+3% 활성)
-                        "mode": "day",                             # 본 시스템 자동 SL/TP 가동
+                        "entry_price": buy_price,
+                        "high_watermark": buy_price,
+                        "trailing_activated": False,
+                        "trailing_sl": 0,
+                        "stop_loss": int(buy_price * (1 + style_sl_pct / 100)),
+                        "take_profit": int(buy_price * (1 + style_tp_pct / 100)),
+                        "regime": "NORMAL",
+                        "mode": "day" if style_max_hold == 0 else "swing",
                         "source": "asset_pool",
                         "entry_date": datetime.now().strftime("%Y-%m-%d"),
+                        # ★ 5/20 비전 추가 메타 ★
+                        "trade_style": style_name,
+                        "style_max_hold_days": style_max_hold,
+                        "style_reason": style_reason,
                     }
                     self._save_positions()
-                    bought.append(f"{name}({len(c['sources'])}소스)")
+                    bought.append(f"{name}[{style_name}]")
                 else:
                     failed.append(f"{name}({str(resp.get('msg', '?'))[:20]})")
             except Exception as e:
