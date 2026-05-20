@@ -102,6 +102,74 @@ class AutoTrader:
         # 모드: "day" or "swing"
         self.mode = config.get("bot", {}).get("trade_mode", "swing")
 
+    def _get_jarvis_dynamic_qty(self) -> tuple:
+        """★ 5/21 아이디어 #1 — 자비스 자율 다주 결정 (70억 트레이더 미션 1단계) ★
+
+        시장 상황 보고 1주/2주/3주 자율 결정. config 토글로 활성화/비활성화.
+
+        결정 로직 (보수 → 강세):
+          - EWY +5%+ (미국장 야간 강세 후속 반응 기대) AND regime != BEARISH → 3주
+          - KOSPI +1%+ (한국장 명확 강세) AND regime != BEARISH → 3주
+          - KOSPI +0.5%+ AND regime BULLISH+ → 2주
+          - 기타 (NEUTRAL/약세) → 1주 (안전 기본)
+          - 큰형 advisory PANIC/BEARISH → 1주 강제
+
+        Returns:
+            (qty, reason) — 매수 수량, 사유 텍스트
+        """
+        # 토글 체크 — 기본 false (사장님 5/21 단계적 적용: 5/22부터 on)
+        dynamic_enabled = (
+            self.config.get("bot", {}).get("asset_pool", {}).get("dynamic_qty", False)
+        )
+        if not dynamic_enabled:
+            return 1, "1주 모드 (dynamic_qty=off, 사장님 5/19 결정)"
+
+        qty = 1
+        reason = "기본 1주 (시그널 미달)"
+        try:
+            import json
+            from pathlib import Path
+            base = Path(__file__).resolve().parent.parent / "data_store"
+
+            # EWY (미국장 한국 ETF, 야간 시그널)
+            picks_path = base / "daytrading_picks.json"
+            ewy_1d = 0.0
+            ks200_1d = 0.0
+            if picks_path.exists():
+                pd = json.loads(picks_path.read_text("utf-8"))
+                ewy_1d = float(pd.get("ewy_signal", {}).get("ewy_1d", 0))
+                ks200_1d = float(pd.get("ewy_signal", {}).get("ks200_1d", 0))
+
+            # brain_state (큰형 advisory regime)
+            brain_path = base / "brain_state.json"
+            regime = "NEUTRAL"
+            if brain_path.exists():
+                bd = json.loads(brain_path.read_text("utf-8"))
+                regime = bd.get("regime", "NEUTRAL")
+
+            # 안전 우선: BEARISH/PANIC이면 강제 1주
+            if regime in ("BEARISH", "PANIC"):
+                return 1, f"안전 (regime={regime}) → 1주 강제"
+
+            # 강세 단계 판정
+            if ewy_1d >= 5.0:
+                qty = 3
+                reason = f"강세 (EWY {ewy_1d:+.2f}% 미국장 후속) → 3주"
+            elif ks200_1d >= 1.0:
+                qty = 3
+                reason = f"강세 (KOSPI {ks200_1d:+.2f}%) → 3주"
+            elif ks200_1d >= 0.5 and regime in ("BULLISH", "STRONG_BULL"):
+                qty = 2
+                reason = f"중강세 (KOSPI {ks200_1d:+.2f}% / {regime}) → 2주"
+            else:
+                reason = f"보수 (EWY {ewy_1d:+.2f}% / KOSPI {ks200_1d:+.2f}% / {regime}) → 1주"
+
+        except Exception as e:
+            logger.warning(f"[dynamic_qty] 결정 실패 (기본 1주): {e}")
+            return 1, f"기본 1주 (예외: {type(e).__name__})"
+
+        return qty, reason
+
     def _is_sell_protected(self, code: str, reason: str = "") -> bool:
         """[5/20 사고 후 추가] 사장님 보호 명령 단일 진입점.
 
@@ -1818,9 +1886,18 @@ class AutoTrader:
 
         Args:
             top_k: 최대 매수 종목 수 (기본 5)
-            qty_per_stock: 종목당 수량 (기본 1주, 사장님 1주 모드)
+            qty_per_stock: 종목당 수량 (기본 1주, 사장님 1주 모드).
+                            ★ 5/21 아이디어 #1: dynamic_qty 토글 활성 시 자비스 자율 결정 ★
         """
         from data import verification_mode as _vm
+
+        # ★ 5/21 아이디어 #1 — 자비스 자율 다주 결정 ★
+        # config.bot.asset_pool.dynamic_qty=true 시 시장 상황 보고 1/2/3주 동적 결정
+        # 70억 트레이더 미션 1단계 (5/22 D-Day로 활성화 예정)
+        dyn_qty, dyn_reason = self._get_jarvis_dynamic_qty()
+        if dyn_qty > 1:
+            qty_per_stock = dyn_qty
+            logger.info(f"[dynamic_qty] {dyn_reason}")
 
         async def _send(text):
             if self._send_alert:

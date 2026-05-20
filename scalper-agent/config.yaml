@@ -232,6 +232,15 @@ bot:
   max_auto_positions: 4         # 5/19 2→4 (사장님 "4~5종목 선정" + 자비스 STRICT 4개, 5대 원칙 ① 섹터 2분산)
   max_hold_days: 10             # 스윙 최대 보유일
   scalper_budget: 25000000      # 5/19 신규 — 단타봇 할당 자금 (사장님 위임, 퀀트봇 2,500만 별도)
+
+  # ★ 5/21 아이디어 #1 — 자비스 자율 다주 결정 (70억 트레이더 미션 1단계) ★
+  asset_pool:
+    dynamic_qty: false          # 5/21 검증: false (1주 모드) / 5/22 D-Day: true (강세 시 다주)
+    # true 시 _get_jarvis_dynamic_qty() 호출:
+    #   EWY +5%+ OR KOSPI +1%+ → 3주
+    #   KOSPI +0.5%+ AND regime BULLISH+ → 2주
+    #   외 → 1주 (기본)
+    #   regime BEARISH/PANIC → 1주 강제
                                 # auto_trader가 available_cash = min(cash, scalper_budget) 적용
   # auto_buy_amount: 삭제 — 장 시작 시 실제 잔고 / 종목수로 동적 계산
   # 공식: (가용현금 × (1 - min_cash_ratio)) / 매수종목수
