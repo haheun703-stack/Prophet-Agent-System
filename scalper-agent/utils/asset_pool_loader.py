@@ -480,40 +480,61 @@ def get_high_confidence_candidates() -> List[str]:
     return result
 
 
+def _get_today_change_pct(code: str) -> float:
+    """오늘 등락률 — kis_market_top_cache에서 조회."""
+    cache = _load_json("kis_market_top_cache.json")
+    if not cache:
+        return 0.0
+    if isinstance(cache, list):
+        for x in cache:
+            if isinstance(x, dict) and x.get("code") == code:
+                try:
+                    return float(x.get("change_pct", 0))
+                except (TypeError, ValueError):
+                    return 0.0
+    return 0.0
+
+
 def get_candidate_score_map() -> Dict[str, int]:
-    """각 종목의 가중치 점수 매핑 (자비스 종목 선정용).
+    """[5/20 사장님 지적 fix] 점수 = "내일 오를 종목" 기준 (오늘 강세 기준 X).
 
-    [5/20 사장님 비전] 사장님 평생 원칙 "종목 선정 80% 정확도" 직접 구현.
+    핵심 깨달음:
+      - 오늘 +25% 상한가 = 내일 갭다운 위험 (X)
+      - 오늘 +5~15% + 매수 잔량 = 연속 강세 (O)
+      - 오늘 0~5% + 같은 테마 강세 = 눌림목/미반영 (★ 사장님 황금 패턴)
 
-    점수 계산:
+    소스 점수 (기본):
       - learned_strong: +50 (7일 누적 검증)
-      - kis_market_top: +30 (오늘 실시간 강세)
-      - sector_concurrent_surge: +25 (테마 동조)
-      - theme:diagnostic_kit: +30 (5/20 100% 적중 검증)
-      - theme:vaccine: +15
-      - theme:antiviral: +0 (5/20 0% 적중)
-      - short_cover: +20
-      - limit_up_trigger: +15
-      - 기타 소스: +10
-      - 다중 소스 보너스: +10 × (소스 수 - 1)
+      - sector_concurrent_surge: +35 (★ 테마 동조 = 가장 안전)
+      - theme:diagnostic_kit: +30 (5/20 100% 적중)
+      - kis_market_top: +25 → 오늘 등락률에 따라 패널티 적용
+      - 기타 소스: +10~25
+
+    ★ 오늘 등락률 패널티/보너스 (사장님 5/20 21:40 지적) ★
+      - 오늘 +25%+ (상한가): -50점 (다음날 갭다운 위험)
+      - 오늘 +15~25%: -10점 (조정 위험)
+      - 오늘 +5~15%: +20점 (연속 강세 후보)
+      - 오늘 0~5%: +35점 (★ 미반영 강세 = 가장 안전)
+      - 오늘 -5~0%: +25점 (눌림목 매수)
+      - 오늘 -5% 이하: -20점 (약세 지속 위험)
     """
     source_map = get_candidate_source_map()
     weights = {
         "learned_strong": 50,
-        "kis_market_top": 30,
-        "consecutive_surge": 25,
-        "sector_concurrent_surge": 25,
-        "limit_up_signals": 20,
-        "short_cover": 20,
-        "limit_up_trigger": 15,
-        "limit_up_watchlist": 12,
-        "massive_dual_buy": 15,
-        "oneshot_stealth": 12,
-        "foreign_accumulation": 12,
-        "accumulation_radar": 12,
-        "premium_levels": 10,
-        "missed_gainers_learning": 8,
-        "nxt_eligible": 5,
+        "sector_concurrent_surge": 35,   # ★ 테마 동조 = 가장 안전
+        "kis_market_top": 25,            # 오늘 강세 — 등락률 패널티 별도 적용
+        "consecutive_surge": 20,         # 상한가 연속 = 위험 (낮춤)
+        "limit_up_signals": 15,
+        "short_cover": 25,
+        "limit_up_trigger": 10,          # 상한가 트리거 = 추격 위험 (낮춤)
+        "limit_up_watchlist": 18,        # 워치 = 눌림목 가능성 (높임)
+        "massive_dual_buy": 25,          # 외인+기관 동시 = 강함
+        "oneshot_stealth": 20,
+        "foreign_accumulation": 20,
+        "accumulation_radar": 20,
+        "premium_levels": 12,
+        "missed_gainers_learning": 15,
+        "nxt_eligible": 3,
     }
     score_map: Dict[str, int] = {}
     for code, sources in source_map.items():
@@ -522,11 +543,11 @@ def get_candidate_score_map() -> Dict[str, int]:
             if src.startswith("theme:"):
                 sub = src.split(":", 1)[1]
                 if sub == "diagnostic_kit":
-                    score += 30  # 5/20 100% 적중
+                    score += 30
                 elif sub == "vaccine":
                     score += 15
                 elif sub == "antiviral":
-                    score += 0   # 5/20 0% 적중
+                    score += 0
                 else:
                     score += 10
             else:
@@ -534,6 +555,23 @@ def get_candidate_score_map() -> Dict[str, int]:
         # 다중 소스 보너스
         if len(sources) > 1:
             score += 10 * (len(sources) - 1)
+
+        # ★★★ 5/20 사장님 핵심 지적 — 오늘 등락률 기반 패널티/보너스 ★★★
+        # "이게 오늘 상쳤는 종목 아니니? 내일도 오른다는 근거는 어디에서 온거니?"
+        today_chg = _get_today_change_pct(code)
+        if today_chg >= 25:
+            score -= 50      # 상한가 = 다음날 갭다운 위험
+        elif today_chg >= 15:
+            score -= 10      # 큰 강세 = 조정 위험
+        elif today_chg >= 5:
+            score += 20      # 연속 강세 후보
+        elif today_chg >= 0:
+            score += 35      # ★ 미반영 강세 = 가장 안전 (눌림목/테마 동조 후보) ★
+        elif today_chg >= -5:
+            score += 25      # 눌림목 매수
+        else:
+            score -= 20      # 약세 지속 위험
+
         score_map[code] = score
     return score_map
 
