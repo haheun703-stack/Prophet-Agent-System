@@ -58,7 +58,10 @@ def build_brain_state(verbose: bool = False) -> Dict:
     # 큰형 advisory 조회
     rows = []
     try:
-        from utils.supabase_sql import query_all
+        # 5/21 fix: supabase_sql 모듈은 `query` (다건) / `query_one` (단건) 만 export.
+        # 기존의 `query_all`은 존재하지 않아 ImportError로 항상 fallback path만 탔음
+        # → brain_state.json이 한 번도 생성되지 않음 (DataIntegrity stale 원인)
+        from utils.supabase_sql import query as query_all
         try:
             rows = query_all(
                 "SELECT * FROM quant_bot_advisory WHERE advisory_date = %s "
