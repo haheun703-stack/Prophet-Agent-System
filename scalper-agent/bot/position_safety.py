@@ -65,11 +65,21 @@ def _is_protected(pos: dict) -> bool:
     - sl_disabled=True → 모든 자동 매도 차단
     - source="verification" → 검증 모드 보호
     - source="manual_sync*" → 사장님 수동 매수
+    - source="sync_auto*" → 메모리 누락 자동등록 (사장님 수동 매수일 수 있음, 1사이클 보호)
+
+    ★ 5/21 19:40 bkit:code-analyzer 검증 발견 fix: sync_auto 보호 추가 ★
+    사유: sync_positions가 자동등록한 종목 = 사장님 수동 매수 가능성 = 보호 의심 우선
     """
+    if not pos:
+        # 빈 dict = 메모리 누락 = 보호 가정 (사장님 종목 의심)
+        return True
     if pos.get("sl_disabled"):
         return True
     source = str(pos.get("source", ""))
     if source == "verification" or source.startswith("manual_sync"):
+        return True
+    if source.startswith("sync_auto"):
+        # 자동등록 종목 = 사장님 수동 매수 의심 = 보호 (수동 sl_disabled=false 변경 시까지)
         return True
     return False
 
@@ -174,7 +184,9 @@ def sync_positions(self):
             )
             synced["removed"].append(f"{old.get('name')}({code})")
 
-            # trade_journal 적재 (봇 표준 패턴)
+            # trade_journal 적재 (박사 fix 5/21 19:45: 화이트리스트 안전 매핑)
+            # bkit:code-analyzer 발견: "sync_remove"/"sync_auto" 화이트리스트 없음 → 강등
+            # → 기존 화이트리스트 값 재사용 + note에 sync 컨텍스트 명시
             try:
                 from data import trade_journal as _tj
                 _tj.log_sell(
@@ -183,9 +195,9 @@ def sync_positions(self):
                     qty=int(old.get("qty", 0)),
                     sell_price=0,  # 실제 매도가 불명 (외부 매도 후 발견)
                     buy_price=float(old.get("buy_price", 0)),
-                    event_type="sync_remove",
-                    source="sync_auto",
-                    note="KIS 잔고에서 사라짐 — 동기화 제거",
+                    event_type="sell_close",  # 화이트리스트 호환 (외부 청산 류)
+                    source="guardian",        # 화이트리스트 호환 (안전장치 매도)
+                    note="sync_remove: KIS 잔고에서 사라짐 — 동기화 자동 제거",
                 )
             except Exception as _tj_e:
                 logger.debug(f"[SYNC] trade_journal 적재 실패(무시): {_tj_e}")
@@ -339,11 +351,20 @@ def hard_kill_check(
             if qty <= 0 or buy_price <= 0:
                 continue
 
-            # 박사 fix: 사장님 보호 종목 제외 ★ CRITICAL
+            # 박사 fix: 사장님 보호 종목 제외 ★ CRITICAL (5/21 19:40 강화)
+            # bkit:code-analyzer 발견: 메모리 누락 시 _is_protected(빈 dict)=False 위험
+            # → _is_protected()에 빈 dict 보호 가정 추가 + sync_auto 보호 + 명시 로그
             mem_pos = self._positions.get(code, {})
+            if not mem_pos:
+                # 메모리 누락 = 사장님 수동 매수 의심 = 절대 매도 X
+                logger.warning(
+                    f"[HARD_KILL] 🛡️ {name}({code}) 메모리 미등록 — "
+                    f"사장님 보호 가정 (수동 매수 의심) → 스킵"
+                )
+                continue
             if _is_protected(mem_pos):
-                logger.debug(
-                    f"[HARD_KILL] {name}({code}) 사장님 보호 — 스킵 "
+                logger.info(
+                    f"[HARD_KILL] 🛡️ {name}({code}) 사장님 보호 — 스킵 "
                     f"(sl_disabled={mem_pos.get('sl_disabled')} "
                     f"source={mem_pos.get('source')})"
                 )
@@ -417,18 +438,20 @@ def hard_kill_check(
                             del self._positions[code]
                             self._save_positions()
 
-                        # trade_journal 표준 적재
+                        # trade_journal 표준 적재 (박사 fix 5/21 19:45: 화이트리스트 안전 매핑)
+                        # bkit:code-analyzer 발견: "hard_kill"/"hard_kill_check" 화이트리스트 없음
+                        # → "sell_sl" (손절 류) + "guardian" (안전장치 매도) 사용
                         try:
                             from data import trade_journal as _tj
                             _tj.log_sell(
                                 code=code, name=name, qty=qty,
                                 sell_price=current_price,
                                 buy_price=buy_price,
-                                event_type="hard_kill",
-                                source="hard_kill_check",
+                                event_type="sell_sl",     # 화이트리스트 호환 (손절 류)
+                                source="guardian",         # 화이트리스트 호환 (안전장치)
                                 order_no=(result or {}).get("order_no")
                                           or (result or {}).get("ODNO"),
-                                note=f"HARD_KILL {loss_pct*100:+.2f}%",
+                                note=f"hard_kill: -{kill_pct*100:.0f}% 강제매도 (손실 {loss_pct*100:+.2f}%)",
                             )
                         except Exception as _tj_e:
                             logger.warning(f"[HARD_KILL] trade_journal 실패: {_tj_e}")
