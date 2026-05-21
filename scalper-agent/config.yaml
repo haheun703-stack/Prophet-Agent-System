@@ -234,9 +234,9 @@ bot:
   scalper_budget: 25000000      # 5/19 신규 — 단타봇 할당 자금 (사장님 위임, 퀀트봇 2,500만 별도)
 
   # ★ 5/21 아이디어 #1 — 자비스 자율 다주 결정 (70억 트레이더 미션 1단계) ★
-  # 박사 자율 결정 5/21 09:50: ON (EWY +10% / 미국 +1.5% 강세 명확, 자비스 자율 진화)
+  # 박사 자율 5/21 10:00 사장님 명령 갱신: 5/21~5/22 워밍업 1주 / 5/26 (월) 실전 D-Day
   asset_pool:
-    dynamic_qty: true           # 박사 자율 ON (5/22 09:15 다주 모드 활성)
+    dynamic_qty: false          # 워밍업: 1주 유지 (5/21, 5/22) / 5/26 (월) 실전 시 true
     # true 시 _get_jarvis_dynamic_qty() 호출:
     #   EWY +5%+ OR KOSPI +1%+ → 3주
     #   KOSPI +0.5%+ AND regime BULLISH+ → 2주
