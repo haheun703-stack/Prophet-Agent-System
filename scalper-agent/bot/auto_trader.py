@@ -3638,6 +3638,13 @@ class AutoTrader:
                         f"     진입:{pos['entry_price']:,} 현재:{cp:,} ({pnl:+.1f}%)"
                     )
 
+                # ★ 5/21 09:55 박사 자율 결정 — asset_pool 종목 daily_reeval 보유일 룰 차단 ★
+                # 어제 -293만 사고 (대한전선/SKC/제룡전기/산일전기 "4일 도달" 자동 청산) 재발 방지
+                # asset_pool = 자비스 자율 매수 = 트레일링 익절로만 매도 (보유일 룰 X)
+                # 사장님 "들고 있어" + "5%만 먹지마 트레일링" 영구 원칙 결합
+                if pos.get("source") == "asset_pool":
+                    continue  # daily_reeval 전체 스킵 (트레일링/SL은 _job_monitor_fallback에서 처리)
+
                 # 최대 보유일 초과 (모멘텀 포지션은 5일, 스윙은 config값)
                 # REVERSAL 섹터 종목은 최대 3일로 단축
                 # MOMENTUM 레짐 포지션은 5일로 제한

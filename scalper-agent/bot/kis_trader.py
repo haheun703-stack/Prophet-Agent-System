@@ -1460,15 +1460,26 @@ class KISTrader:
         # 7. 스마트 지정가 매수 (시장가 대비 0.2~0.5% 절약)
         return self.smart_buy(code, qty)
 
-    def liquidate_one(self, code: str) -> dict:
-        """특정 종목 전량 청산"""
+    def liquidate_one(self, code: str, urgent: bool = False) -> dict:
+        """특정 종목 전량 청산.
+
+        ★ 5/21 09:50 사장님 박사 명령: 호가창 보고 지정가 매매 ★
+        기본: smart_sell (지정가 +0.5% → +0.2% → 시장가 폴백, 60초)
+        urgent=True: 긴급 SL 시 시장가 직행 (사고/패닉 시만)
+
+        사유: 5/21 09:35 뷰티스킨 시장가 매도 슬리피지 -6.2% 사고 (-227원/주)
+              → smart_sell 사용했어야 함 → 박사 학습 → 영구 fix
+        """
         bal = self.fetch_balance()
         if not bal or not bal.get("success"):
             return {"success": False, "message": "잔고 조회 실패"}
 
         for pos in bal["positions"]:
             if pos["code"] == code:
-                return self.sell_market(code, pos["qty"])
+                # 박사 자율: 긴급 SL은 시장가 / 일반 익절/리벨런싱은 smart_sell
+                if urgent:
+                    return self.sell_market(code, pos["qty"])
+                return self.smart_sell(code, pos["qty"])
 
         name = CODE_TO_NAME.get(code, code)
         return {"success": False, "message": f"{name}({code}) 보유 없음"}

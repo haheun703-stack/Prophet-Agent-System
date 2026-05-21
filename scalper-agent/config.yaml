@@ -234,18 +234,19 @@ bot:
   scalper_budget: 25000000      # 5/19 신규 — 단타봇 할당 자금 (사장님 위임, 퀀트봇 2,500만 별도)
 
   # ★ 5/21 아이디어 #1 — 자비스 자율 다주 결정 (70억 트레이더 미션 1단계) ★
+  # 박사 자율 결정 5/21 09:50: ON (EWY +10% / 미국 +1.5% 강세 명확, 자비스 자율 진화)
   asset_pool:
-    dynamic_qty: false          # 5/21 검증: false (1주 모드) / 5/22 D-Day: true (강세 시 다주)
+    dynamic_qty: true           # 박사 자율 ON (5/22 09:15 다주 모드 활성)
     # true 시 _get_jarvis_dynamic_qty() 호출:
     #   EWY +5%+ OR KOSPI +1%+ → 3주
     #   KOSPI +0.5%+ AND regime BULLISH+ → 2주
     #   외 → 1주 (기본)
     #   regime BEARISH/PANIC → 1주 강제
 
-    # ★ 5/21 A3 fix — 사장님 "들고 있어" 명령 자동 보호 토글 ★
-    # true 시: asset_pool 매수 종목에 sl_disabled=True 자동 부여 (모든 자동 매도 차단)
-    # false 시: 트레일링 익절/SL 정상 작동 (70억 미션 자동 매매)
-    # 어제 -293만 사고 (daily_reeval_FULL_SELL) 같은 자동 청산 차단 시 → true
+    # ★ 5/21 A3 fix — 자동 보호 토글 ★
+    # 박사 자율 5/21 09:55: false 유지 (트레일링 익절 자동 살림)
+    # 대신 daily_reeval / eod_close 코드에서 source="asset_pool" 종목 자동 스킵으로 보호
+    # → 트레일링 익절 자동 + 보유일 룰 자동 차단 = 두 정책 분리 (박사 결단)
     auto_protect: false
                                 # auto_trader가 available_cash = min(cash, scalper_budget) 적용
   # auto_buy_amount: 삭제 — 장 시작 시 실제 잔고 / 종목수로 동적 계산
