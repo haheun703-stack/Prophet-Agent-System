@@ -1995,11 +1995,29 @@ class AutoTrader:
         try:
             from utils.asset_pool_loader import (
                 get_top_candidates,
+                get_diversified_candidates,
                 get_candidate_source_map,
                 load_limit_up_triggers,
             )
-            # ★ 점수순 TOP K*3 가져와서 필터 후 K개 매수 ★
-            ranked = await asyncio.to_thread(get_top_candidates, top_k * 3)
+            # ★ 5/21 21:30 박사 자율 — 카테고리별 분산 매수 (사장님 전략) ★
+            # 사장님 5/21 21:00: "상한가 엔진 2~3 + NXT 1 + 장중 추매 1~2"
+            # config.bot.asset_pool.diversified=true 시 카테고리 슬롯 분배
+            # false 시 기존 점수순 TOP K (하위 호환)
+            ap_cfg = (self.config.get("bot", {}) or {}).get("asset_pool", {}) or {}
+            use_diversified = bool(ap_cfg.get("diversified", True))
+
+            if use_diversified:
+                ranked = await asyncio.to_thread(
+                    get_diversified_candidates,
+                    int(ap_cfg.get("limit_up_slots", 2)),
+                    int(ap_cfg.get("nxt_slots", 1)),
+                    int(ap_cfg.get("signal_slots", 2)),
+                )
+                logger.info(f"[asset_pool] 카테고리 분산 모드 — {len(ranked)}종 후보")
+            else:
+                # 하위 호환: 점수순 TOP K*3 (필터 전)
+                ranked = await asyncio.to_thread(get_top_candidates, top_k * 3)
+
             source_map = await asyncio.to_thread(get_candidate_source_map)
             triggers = await asyncio.to_thread(load_limit_up_triggers)
             trigger_codes = {t.get("code", "") for t in triggers if isinstance(t, dict)}

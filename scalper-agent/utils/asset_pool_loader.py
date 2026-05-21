@@ -672,6 +672,112 @@ def get_top_candidates(top_k: int = 5) -> List[Dict]:
     ]
 
 
+def get_diversified_candidates(
+    limit_up_slots: int = 2,
+    nxt_slots: int = 1,
+    signal_slots: int = 2,
+) -> List[Dict]:
+    """★ 5/21 21:30 박사 자율 — 카테고리별 분산 매수 후보 (사장님 전략) ★
+
+    사장님 5/21 21:00 명령:
+    "상한가 엔진 2~3종목, nxt에서 강력한거 1종목, 추가로 장중에 추매 1~2종목"
+
+    카테고리별 슬롯 보장:
+      - 상한가 엔진: limit_up_watchlist + limit_up_trigger (폭발 대기 패턴)
+        · 어제 +25%+ 상한가 친 종목은 -50점 패널티로 자동 제외 (5/20 사장님 영구 룰)
+        · 박사 해석 B: "오늘 상한가 가능성" (사장님 5/21 21:30 확정)
+      - NXT 강력: nxt_eligible TOP 1 (어젯밤 NXT 시스템 점수)
+      - 자비스 시그널: massive_dual_buy + oneshot_stealth + foreign_accumulation 다중
+
+    중복 종목은 한 슬롯에 1번만 (다른 슬롯 재배치).
+
+    Returns:
+        [{code, score, sources, category}] 카테고리별 분산된 후보 리스트
+    """
+    score_map = get_candidate_score_map()
+    source_map = get_candidate_source_map()
+
+    # 카테고리별 후보 풀 구성 (점수순)
+    LIMIT_UP_SOURCES = {"limit_up_watchlist", "limit_up_trigger", "limit_up_signals"}
+    NXT_SOURCES = {"nxt_eligible"}
+    SIGNAL_SOURCES = {
+        "massive_dual_buy", "oneshot_stealth", "foreign_accumulation",
+        "accumulation_radar", "consecutive_surge",
+        "sector_concurrent_surge", "learned_strong",
+    }
+
+    pool_limit_up = []
+    pool_nxt = []
+    pool_signal = []
+
+    for code, score in score_map.items():
+        sources = source_map.get(code, [])
+        src_set = set(sources)
+        entry = {"code": code, "score": score, "sources": sources}
+
+        if src_set & LIMIT_UP_SOURCES:
+            pool_limit_up.append(entry)
+        if src_set & NXT_SOURCES:
+            pool_nxt.append(entry)
+        if src_set & SIGNAL_SOURCES:
+            pool_signal.append(entry)
+
+    # 점수순 정렬
+    pool_limit_up.sort(key=lambda x: -x["score"])
+    pool_nxt.sort(key=lambda x: -x["score"])
+    pool_signal.sort(key=lambda x: -x["score"])
+
+    selected: List[Dict] = []
+    selected_codes: Set[str] = set()
+
+    # ① 상한가 엔진 슬롯 (폭발 대기)
+    for entry in pool_limit_up:
+        if entry["code"] not in selected_codes and len([e for e in selected if e.get("category") == "limit_up"]) < limit_up_slots:
+            entry_copy = dict(entry)
+            entry_copy["category"] = "limit_up"
+            selected.append(entry_copy)
+            selected_codes.add(entry["code"])
+
+    # ② NXT 강력 슬롯
+    for entry in pool_nxt:
+        if entry["code"] not in selected_codes and len([e for e in selected if e.get("category") == "nxt"]) < nxt_slots:
+            entry_copy = dict(entry)
+            entry_copy["category"] = "nxt"
+            selected.append(entry_copy)
+            selected_codes.add(entry["code"])
+
+    # ③ 자비스 시그널 슬롯 (massive_dual + oneshot 등 다중 시그널)
+    for entry in pool_signal:
+        if entry["code"] not in selected_codes and len([e for e in selected if e.get("category") == "signal"]) < signal_slots:
+            entry_copy = dict(entry)
+            entry_copy["category"] = "signal"
+            selected.append(entry_copy)
+            selected_codes.add(entry["code"])
+
+    # 부족하면 일반 점수순으로 채움 (graceful fallback)
+    expected_total = limit_up_slots + nxt_slots + signal_slots
+    if len(selected) < expected_total:
+        all_sorted = sorted(score_map.items(), key=lambda x: -x[1])
+        for code, score in all_sorted:
+            if code not in selected_codes and len(selected) < expected_total:
+                selected.append({
+                    "code": code,
+                    "score": score,
+                    "sources": source_map.get(code, []),
+                    "category": "fallback",
+                })
+                selected_codes.add(code)
+
+    logger.info(
+        f"[diversified] 분산 매수 후보: "
+        f"상한가 {sum(1 for e in selected if e['category']=='limit_up')}/{limit_up_slots} "
+        f"NXT {sum(1 for e in selected if e['category']=='nxt')}/{nxt_slots} "
+        f"시그널 {sum(1 for e in selected if e['category']=='signal')}/{signal_slots} "
+        f"fallback {sum(1 for e in selected if e['category']=='fallback')}"
+    )
+    return selected
+
+
 if __name__ == "__main__":
     print("=== asset_pool_loader 자가 진단 ===")
     print()

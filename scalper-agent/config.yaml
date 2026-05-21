@@ -237,6 +237,16 @@ bot:
   # 박사 자율 5/21 10:00 사장님 명령 갱신: 5/21~5/22 워밍업 1주 / 5/26 (월) 실전 D-Day
   asset_pool:
     dynamic_qty: false          # 워밍업: 1주 유지 (5/21, 5/22) / 5/26 (월) 실전 시 true
+
+    # ★ 5/21 21:30 사장님 명령 — 카테고리별 분산 매수 전략 ★
+    # "상한가 엔진 2~3종목, nxt에서 강력한거 1종목, 장중 추매 1~2종목"
+    # 박사 자율 슬롯 분배 (총 5종 1주씩 = 1주 모드 호환)
+    diversified: true             # 분산 매수 ON
+    limit_up_slots: 2             # 상한가 엔진 (limit_up_watchlist + trigger 폭발 대기)
+    nxt_slots: 1                  # NXT 강력 (nxt_eligible TOP 1)
+    signal_slots: 2               # 자비스 시그널 (massive_dual + oneshot 다중)
+    # 합계 5종 — 어제 09:18 자비스 매수 5/5 체결 패턴 유지
+    # 장중 추매 = recovery_add_on (별도 토글, 이미 enabled=true)
     # true 시 _get_jarvis_dynamic_qty() 호출:
     #   EWY +5%+ OR KOSPI +1%+ → 3주
     #   KOSPI +0.5%+ AND regime BULLISH+ → 2주
@@ -274,10 +284,10 @@ bot:
 
   # ── 하락 시 자동 분할 추매 (차트 영웅식 + 장중 multi-signal) ──
   # 매수가 대비 -10%/-20% 도달 시 4시그널(AI/체결강도/호가/VWAP) 통과 시 자동 추매
-  # 기본 OFF — 텔레그램 /추매ON 으로 활성화
+  # ★ 5/21 21:00 사장님 명령: 추매 ON (워밍업 5/22~5/26 사이 검증) ★
   recovery_add_on:
-    enabled: false                # OFF 기본 (사장님이 ON 명령)
-    trigger_pcts: [-10.0, -20.0]  # 1차/2차 추매 트리거 (entry 대비 %)
+    enabled: true                 # 5/21 ON (사장님 "지금 추매 on해라")
+    trigger_pcts: [-5.0, -10.0]   # ★ 1주 모드 호환: 1차 -5% / 2차 -10% (기존 -10/-20에서 빠르게)
     add_amount_ratio: 0.50        # 보유 평가금액의 50% 추매
     max_add_on_count: 2           # 종목당 최대 2회
     block_risk_levels: ["DANGER", "CRISIS"]  # 정보봇 위험등급에서 차단
@@ -287,8 +297,10 @@ bot:
       - "premove"
       - "user_pick"
       - "pipeline"
-    default_add_amount: 1000000   # 잔고/buy_amount 정보 없을 때 폴백
-    min_add_amount: 100000        # 최소 추매 금액
+      - "asset_pool"              # ★ 5/21 박사 자율 추가 — 자비스 매수 종목도 추매 대상
+      - "verification"            # 검증 모드 종목도 추매 대상 (사장님 보호이긴 하나 추매 OK)
+    default_add_amount: 250000    # ★ 5/21 박사 자율: 1주 모드 호환 (평균 종목 25만원)
+    min_add_amount: 5000          # 최소 추매 금액 (1주 가능)
 
     # ── multi-signal (장중 데이터 4시그널 평가) ──
     # 3/4 이상 자동매수, 2/4 confirm 대기, 1/4 이하 skip
