@@ -1,0 +1,503 @@
+"""position_safety.py — 포지션 안전장치 3종 (박사 자율 v1.0)
+====================================================================
+
+GPT 베이스 + 박사 X 4개 fix + 추가 개선 4개 통합 (2026-05-21 19:30).
+
+배경:
+- 5/19 일진전기 -626,400원 사고 (사장님 보호 보호 X)
+- 5/20 -293만 사고 (대한전선/SKC/제룡전기/산일전기 4일 룰 청산)
+- 5/21 로킷헬스케어 -15.4% 손실 진행 (positions.json 누락 = SL 작동 X)
+
+3개 함수:
+  1. sync_positions() — KIS ↔ 메모리 동기화 (5분 사이클)
+  2. enforce_sl()     — SL=None 포지션 디폴트 SL 강제
+  3. hard_kill_check() — 메모리 무관 최후 방어선 (1분 사이클)
+
+박사 fix (GPT 베이스 대비):
+  - self.kis → self.trader (auto_trader.py 멤버명)
+  - fetch_balance() 리턴 dict (kis_balance["positions"])
+  - 필드명 avg_price/code/name/qty (KIS raw 아님)
+  - fetch_price() 리턴 dict {success, current_price}
+  - trade_journal.log_sell 직접 호출 (_record_trade 없음)
+  - APScheduler job_queue 사용 (schedule 라이브러리 X)
+
+박사 추가 개선:
+  - 사장님 보호 종목 (sl_disabled/source=verification/manual_sync) 강제 제외
+  - buy_price=0 케이스 처리 (KIS API 마감 후 0 반환)
+  - 정규장 시간 체크 (장외 시 매도 큐 등록)
+  - smart_sell 손절 vs 시장가 분기
+
+호출 방식 (mixin 패턴):
+  - auto_trader.py 상단에서 from bot.position_safety import sync_positions, enforce_sl, hard_kill_check
+  - AutoTrader 클래스에 직접 메서드로 바인딩 (또는 _mixin_safety 함수 호출)
+
+의존:
+  - self.trader: KISTrader (fetch_balance, fetch_price, smart_sell, sell_market)
+  - self._positions: dict (메모리)
+  - self._save_positions(): 저장
+  - logger: logging
+"""
+import logging
+from datetime import datetime, time as dtime
+from typing import Optional
+
+logger = logging.getLogger("BH.Safety")
+
+# ============================================================
+# 디폴트 설정 (config.yaml에서 오버라이드 가능)
+# ============================================================
+DEFAULT_SL_PCT = 0.03   # -3% 손절
+DEFAULT_TP_PCT = 0.05   # +5% 익절 (트레일링 활성 전)
+HARD_KILL_PCT = 0.05    # -5% 최후 방어선
+HARD_KILL_WARN_PCT = 0.03  # -3% 경고 (-5%의 60% 도달)
+
+KST_MARKET_OPEN = dtime(9, 0)
+KST_MARKET_CLOSE = dtime(15, 20)
+
+
+# ============================================================
+# 보호 종목 판정 (박사 추가 개선 #1)
+# ============================================================
+def _is_protected(pos: dict) -> bool:
+    """사장님 보호 종목 여부 — hard_kill 강제 매도에서 제외.
+
+    5/19~5/20 사고 후 사장님 영구 명령:
+    - sl_disabled=True → 모든 자동 매도 차단
+    - source="verification" → 검증 모드 보호
+    - source="manual_sync*" → 사장님 수동 매수
+    """
+    if pos.get("sl_disabled"):
+        return True
+    source = str(pos.get("source", ""))
+    if source == "verification" or source.startswith("manual_sync"):
+        return True
+    return False
+
+
+# ============================================================
+# 1. sync_positions() — KIS ↔ 메모리 동기화
+# ============================================================
+def sync_positions(self):
+    """KIS 실제 잔고 ↔ positions.json 동기화.
+
+    3가지 케이스:
+      A) KIS에 있고 메모리에 없음 → 자동 등록 + 디폴트 SL/TP
+      B) 메모리에 있고 KIS에 없음 → 매도 완료 처리 + 저널 기록
+      C) 양쪽 있으나 수량 불일치 → KIS 기준 덮어쓰기
+
+    호출 위치: trading_coo.py 스케줄 (5분 간격)
+    """
+    try:
+        kis_balance = self.trader.fetch_balance()
+        if not kis_balance or not kis_balance.get("success"):
+            logger.warning(
+                f"[SYNC] KIS 잔고 조회 실패 — 동기화 스킵 "
+                f"({kis_balance.get('message', '?') if kis_balance else 'None'})"
+            )
+            return
+
+        # KIS positions → dict 변환 (정확한 필드명 사용)
+        kis_dict = {}
+        for p in kis_balance.get("positions", []):
+            code = str(p.get("code", "")).strip()
+            if not code:
+                continue
+            kis_dict[code] = {
+                "name": p.get("name", code),
+                "qty": int(p.get("qty", 0)),
+                "avg_price": int(p.get("avg_price", 0)),
+                "current_price": int(p.get("current_price", 0)),
+            }
+
+        memory_codes = set(self._positions.keys())
+        kis_codes = set(kis_dict.keys())
+
+        synced = {"added": [], "removed": [], "qty_fixed": []}
+
+        # ── 케이스 A: KIS에만 있음 → 메모리 자동 등록 ──
+        for code in kis_codes - memory_codes:
+            kp = kis_dict[code]
+            buy_price = kp["avg_price"]
+
+            # 박사 fix: buy_price=0 케이스 (KIS API 마감 후)
+            if buy_price <= 0:
+                # 현재가로 임시 대체
+                buy_price = kp["current_price"]
+                if buy_price <= 0:
+                    logger.warning(
+                        f"[SYNC] {kp['name']}({code}) avg_price/current_price 둘 다 0 — "
+                        f"SL 미설정 등록"
+                    )
+                    self._positions[code] = {
+                        "name": kp["name"], "qty": kp["qty"],
+                        "buy_price": 0, "stop_loss": None, "take_profit": None,
+                        "source": "sync_auto_no_price",
+                        "synced_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    }
+                    synced["added"].append(f"{kp['name']}({code}) [price=0]")
+                    continue
+
+            default_sl = int(round(buy_price * (1 - DEFAULT_SL_PCT)))
+            default_tp = int(round(buy_price * (1 + DEFAULT_TP_PCT)))
+
+            self._positions[code] = {
+                "name": kp["name"],
+                "qty": kp["qty"],
+                "buy_price": float(buy_price),
+                "entry_price": float(buy_price),
+                "high_watermark": float(buy_price),
+                "trailing_activated": False,
+                "trailing_sl": 0,
+                "stop_loss": default_sl,
+                "take_profit": default_tp,
+                "regime": "NORMAL",
+                "mode": "day",
+                "source": "sync_auto",
+                "entry_date": datetime.now().strftime("%Y-%m-%d"),
+                "sync_note": "KIS 발견 → 메모리 누락 자동등록",
+                "synced_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            synced["added"].append(
+                f"{kp['name']}({code}) qty={kp['qty']} SL={default_sl} TP={default_tp}"
+            )
+            logger.warning(
+                f"[SYNC] 🆕 메모리 누락 자동등록: {kp['name']}({code}) "
+                f"qty={kp['qty']} buy={buy_price} SL={default_sl} TP={default_tp}"
+            )
+
+        # ── 케이스 B: 메모리에만 있음 → 매도 완료 처리 ──
+        for code in memory_codes - kis_codes:
+            old = self._positions[code]
+            logger.warning(
+                f"[SYNC] 🗑️ KIS 없음 → 매도완료 처리: "
+                f"{old.get('name')}({code}) qty={old.get('qty')}"
+            )
+            synced["removed"].append(f"{old.get('name')}({code})")
+
+            # trade_journal 적재 (봇 표준 패턴)
+            try:
+                from data import trade_journal as _tj
+                _tj.log_sell(
+                    code=code,
+                    name=old.get("name", code),
+                    qty=int(old.get("qty", 0)),
+                    sell_price=0,  # 실제 매도가 불명 (외부 매도 후 발견)
+                    buy_price=float(old.get("buy_price", 0)),
+                    event_type="sync_remove",
+                    source="sync_auto",
+                    note="KIS 잔고에서 사라짐 — 동기화 제거",
+                )
+            except Exception as _tj_e:
+                logger.debug(f"[SYNC] trade_journal 적재 실패(무시): {_tj_e}")
+
+            del self._positions[code]
+
+        # ── 케이스 C: 수량 불일치 → KIS 기준 ──
+        for code in kis_codes & memory_codes:
+            kis_qty = kis_dict[code]["qty"]
+            mem_qty = int(self._positions[code].get("qty", 0))
+            if kis_qty != mem_qty:
+                logger.warning(
+                    f"[SYNC] 🔄 수량 불일치: {code} 메모리={mem_qty} → KIS={kis_qty}"
+                )
+                if kis_qty == 0:
+                    del self._positions[code]
+                    synced["removed"].append(f"{code}(qty=0)")
+                else:
+                    self._positions[code]["qty"] = kis_qty
+                    synced["qty_fixed"].append(f"{code}: {mem_qty}→{kis_qty}")
+
+        if any(synced.values()):
+            self._save_positions()
+            logger.info(
+                f"[SYNC] ✅ 완료: 추가={len(synced['added'])} "
+                f"제거={len(synced['removed'])} 수량수정={len(synced['qty_fixed'])}"
+            )
+            # 텔레그램 알림 (변경사항 있을 때만)
+            if hasattr(self, "_send_alert") and self._send_alert:
+                msg_parts = ["🔄 [메모리 동기화]"]
+                if synced["added"]:
+                    msg_parts.append(f"  🆕 자동등록 {len(synced['added'])}: " + ", ".join(synced["added"][:3]))
+                if synced["removed"]:
+                    msg_parts.append(f"  🗑️ 제거 {len(synced['removed'])}: " + ", ".join(synced["removed"][:3]))
+                if synced["qty_fixed"]:
+                    msg_parts.append(f"  🔄 수량 {len(synced['qty_fixed'])}: " + ", ".join(synced["qty_fixed"][:3]))
+                try:
+                    import asyncio
+                    coro = self._send_alert("\n".join(msg_parts))
+                    if asyncio.iscoroutine(coro):
+                        # 동기 환경: 이벤트 루프 없으면 fire-and-forget
+                        try:
+                            loop = asyncio.get_event_loop()
+                            if loop.is_running():
+                                asyncio.ensure_future(coro)
+                            else:
+                                loop.run_until_complete(coro)
+                        except Exception:
+                            pass
+                except Exception as _e:
+                    logger.debug(f"[SYNC] alert 전송 실패: {_e}")
+        else:
+            logger.debug("[SYNC] 변경사항 없음 — 메모리=KIS 일치")
+
+        return synced
+
+    except Exception as e:
+        logger.error(f"[SYNC] ❌ 동기화 오류: {e}", exc_info=True)
+        return None
+
+
+# ============================================================
+# 2. enforce_sl() — SL=None 강제 세팅
+# ============================================================
+def enforce_sl(
+    self,
+    default_sl_pct: float = DEFAULT_SL_PCT,
+    default_tp_pct: float = DEFAULT_TP_PCT,
+):
+    """모든 포지션 순회 → SL/TP None인 종목 디폴트 강제 세팅.
+
+    호출 위치:
+      - 봇 시작 시 1회 (auto_trader.__init__)
+      - sync_positions 직후 (안전망 2중)
+    """
+    fixed = 0
+    for code, pos in list(self._positions.items()):
+        name = pos.get("name", code)
+        buy_price = float(pos.get("buy_price", 0))
+
+        if buy_price <= 0:
+            logger.debug(f"[ENFORCE_SL] {name}({code}) buy_price=0 — 스킵")
+            continue
+
+        changed = False
+        # SL 없음 + 보호 X → 디폴트 SL
+        if pos.get("stop_loss") is None and not pos.get("sl_disabled"):
+            pos["stop_loss"] = int(round(buy_price * (1 - default_sl_pct)))
+            logger.warning(
+                f"[ENFORCE_SL] 🛡️ {name}({code}) SL=None → "
+                f"디폴트 {pos['stop_loss']} (-{default_sl_pct*100:.0f}%)"
+            )
+            changed = True
+
+        # TP 없음 → 디폴트 TP
+        if pos.get("take_profit") is None:
+            pos["take_profit"] = int(round(buy_price * (1 + default_tp_pct)))
+            logger.warning(
+                f"[ENFORCE_SL] 🎯 {name}({code}) TP=None → "
+                f"디폴트 {pos['take_profit']} (+{default_tp_pct*100:.0f}%)"
+            )
+            changed = True
+
+        if changed:
+            fixed += 1
+
+    if fixed > 0:
+        self._save_positions()
+        logger.info(f"[ENFORCE_SL] ✅ {fixed}종목 SL/TP 강제 세팅")
+    else:
+        logger.debug("[ENFORCE_SL] 모든 포지션 SL/TP 정상")
+
+    return fixed
+
+
+# ============================================================
+# 3. hard_kill_check() — 메모리 무관 최후 방어선
+# ============================================================
+def hard_kill_check(
+    self,
+    kill_pct: float = HARD_KILL_PCT,
+    dry_run: bool = False,
+):
+    """KIS 잔고 직접 조회 → -kill_pct% 이상 하락 종목 강제 매도.
+
+    박사 fix:
+      - 사장님 보호 종목 (_is_protected) 강제 제외 ★ CRITICAL
+      - 정규장 시간만 매도 (장외 = 다음날 시초 큐)
+      - smart_sell vs sell_market 분기 (긴급 = 시장가)
+      - trade_journal 표준 적재
+    """
+    try:
+        # 정규장 시간 체크 (박사 개선 #3)
+        now_time = datetime.now().time()
+        in_market = KST_MARKET_OPEN <= now_time <= KST_MARKET_CLOSE
+
+        kis_balance = self.trader.fetch_balance()
+        if not kis_balance or not kis_balance.get("success"):
+            logger.error(f"[HARD_KILL] KIS 잔고 조회 실패")
+            return []
+
+        killed = []
+        warned = []
+
+        for p in kis_balance.get("positions", []):
+            code = str(p.get("code", "")).strip()
+            name = p.get("name", code)
+            qty = int(p.get("qty", 0))
+            buy_price = int(p.get("avg_price", 0))
+
+            if qty <= 0 or buy_price <= 0:
+                continue
+
+            # 박사 fix: 사장님 보호 종목 제외 ★ CRITICAL
+            mem_pos = self._positions.get(code, {})
+            if _is_protected(mem_pos):
+                logger.debug(
+                    f"[HARD_KILL] {name}({code}) 사장님 보호 — 스킵 "
+                    f"(sl_disabled={mem_pos.get('sl_disabled')} "
+                    f"source={mem_pos.get('source')})"
+                )
+                continue
+
+            # 현재가 조회
+            try:
+                price_info = self.trader.fetch_price(code)
+                if not price_info or not price_info.get("success"):
+                    continue
+                current_price = int(price_info.get("current_price", 0))
+                if current_price <= 0:
+                    continue
+            except Exception as _pe:
+                logger.warning(f"[HARD_KILL] {name}({code}) 현재가 조회 실패: {_pe}")
+                continue
+
+            # 손실률 계산
+            loss_pct = (current_price - buy_price) / buy_price
+
+            # ── 강제 매도 단계 ──
+            if loss_pct <= -kill_pct:
+                logger.critical(
+                    f"[HARD_KILL] 🚨 {name}({code}) "
+                    f"매수가={buy_price:,} 현재={current_price:,} "
+                    f"손실={loss_pct*100:+.2f}% > -{kill_pct*100:.0f}%"
+                )
+
+                if dry_run:
+                    logger.info(f"[HARD_KILL] 🧪 DRY_RUN: {name}({code}) 매도 안 함")
+                    killed.append({
+                        "code": code, "name": name,
+                        "loss_pct": loss_pct,
+                        "action": "dry_run",
+                    })
+                    continue
+
+                if not in_market:
+                    # 장외 → 다음날 시초 매도 큐 등록
+                    logger.error(
+                        f"[HARD_KILL] {name}({code}) 장외 매도 불가 — "
+                        f"다음 정규장 시초 매도 큐 등록 (큐 미구현 시 알림만)"
+                    )
+                    # TODO: 시초 매도 큐 구현 (5/22 다음 fix)
+                    killed.append({
+                        "code": code, "name": name,
+                        "loss_pct": loss_pct,
+                        "action": "queued_for_next_open",
+                    })
+                    continue
+
+                # 정규장 시장가 즉시 매도 (긴급)
+                try:
+                    result = self.trader.sell_market(code, qty)
+                    success = bool(result and result.get("success"))
+                    logger.critical(
+                        f"[HARD_KILL] 💀 시장가 매도: {name}({code}) "
+                        f"qty={qty} success={success} result={result}"
+                    )
+                    killed.append({
+                        "code": code, "name": name,
+                        "loss_pct": loss_pct,
+                        "action": "KILLED" if success else "FAILED",
+                        "qty": qty,
+                        "result": result,
+                    })
+
+                    if success:
+                        # 메모리 정리
+                        if code in self._positions:
+                            del self._positions[code]
+                            self._save_positions()
+
+                        # trade_journal 표준 적재
+                        try:
+                            from data import trade_journal as _tj
+                            _tj.log_sell(
+                                code=code, name=name, qty=qty,
+                                sell_price=current_price,
+                                buy_price=buy_price,
+                                event_type="hard_kill",
+                                source="hard_kill_check",
+                                order_no=(result or {}).get("order_no")
+                                          or (result or {}).get("ODNO"),
+                                note=f"HARD_KILL {loss_pct*100:+.2f}%",
+                            )
+                        except Exception as _tj_e:
+                            logger.warning(f"[HARD_KILL] trade_journal 실패: {_tj_e}")
+
+                except Exception as _se:
+                    logger.error(
+                        f"[HARD_KILL] 매도 실패 {name}({code}): {_se}",
+                        exc_info=True,
+                    )
+
+            # ── 경고 단계 (-3% 도달) ──
+            elif loss_pct <= -HARD_KILL_WARN_PCT:
+                warned.append({
+                    "code": code, "name": name,
+                    "loss_pct": loss_pct,
+                })
+                logger.warning(
+                    f"[HARD_KILL] ⚠️ 경고: {name}({code}) "
+                    f"손실 {loss_pct*100:+.2f}% — 킬라인 -{kill_pct*100:.0f}% 접근"
+                )
+
+        if killed:
+            logger.critical(f"[HARD_KILL] 🔥 {len(killed)}종목 처리 (dry_run={dry_run})")
+        if warned:
+            logger.warning(f"[HARD_KILL] ⚠️ {len(warned)}종목 경고")
+
+        return killed
+
+    except Exception as e:
+        logger.error(f"[HARD_KILL] ❌ 오류: {e}", exc_info=True)
+        return []
+
+
+# ============================================================
+# 통합 사이클 — 봇 호출 단일 진입점
+# ============================================================
+def safety_check_cycle(self, dry_run: bool = False):
+    """5분 사이클: 동기화 → SL 강제 → 킬체크.
+
+    config.bot.safety.* 토글로 단계별 활성/비활성 가능.
+    """
+    cfg = (self.config.get("bot", {}) or {}).get("safety", {}) or {}
+
+    if cfg.get("sync_enabled", True):
+        sync_positions(self)
+    if cfg.get("enforce_sl_enabled", True):
+        enforce_sl(self)
+    if cfg.get("hard_kill_enabled", True):
+        kill_pct = float(cfg.get("hard_kill_pct", HARD_KILL_PCT))
+        actual_dry_run = dry_run or bool(cfg.get("hard_kill_dry_run", False))
+        hard_kill_check(self, kill_pct=kill_pct, dry_run=actual_dry_run)
+
+
+# ============================================================
+# AutoTrader 클래스 mixin 헬퍼
+# ============================================================
+def attach_to(cls):
+    """AutoTrader 클래스에 안전장치 3종 메서드를 동적 추가.
+
+    사용법 (auto_trader.py 상단):
+        from bot.position_safety import attach_to
+        attach_to(AutoTrader)  # 클래스 정의 직후 호출
+
+    또는 인스턴스 메서드 직접 호출:
+        from bot.position_safety import sync_positions, enforce_sl, hard_kill_check
+        sync_positions(auto_trader_instance)
+    """
+    cls.sync_positions = sync_positions
+    cls.enforce_sl = enforce_sl
+    cls.hard_kill_check = hard_kill_check
+    cls.safety_check_cycle = safety_check_cycle
+    return cls

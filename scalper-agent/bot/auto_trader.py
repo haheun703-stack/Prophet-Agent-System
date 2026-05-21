@@ -5101,3 +5101,17 @@ class AutoTrader:
 
         logger.info(f"스캔 결과: {len(fulls)}종목 중 {len(candidates)}개 후보")
         return candidates
+
+
+# ============================================================
+# ★ 5/21 박사 자율 — position_safety 3종 메서드 mixin ★
+# ============================================================
+# 5/19 일진전기, 5/20 -293만, 5/21 로킷헬스케어 -15.4% 사고 후 영구 안전장치.
+# 호출: AutoTrader 인스턴스에서 self.sync_positions(), self.enforce_sl(),
+#       self.hard_kill_check(), self.safety_check_cycle() 사용 가능.
+try:
+    from bot.position_safety import attach_to as _attach_safety
+    _attach_safety(AutoTrader)
+    logger.info("[init] position_safety mixin attached — sync/enforce_sl/hard_kill 가동")
+except Exception as _safety_e:
+    logger.error(f"[init] position_safety mixin 실패: {_safety_e}", exc_info=True)

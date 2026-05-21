@@ -248,6 +248,17 @@ bot:
     # 대신 daily_reeval / eod_close 코드에서 source="asset_pool" 종목 자동 스킵으로 보호
     # → 트레일링 익절 자동 + 보유일 룰 자동 차단 = 두 정책 분리 (박사 결단)
     auto_protect: false
+
+  # ★ 5/21 19:30 박사 자율 — position_safety 안전 사이클 (사장님 명령) ★
+  # 5/19 일진전기 / 5/20 -293만 / 5/21 로킷헬스케어 -15.4% 사고 후 영구 안전장치.
+  # 매 5분: sync_positions (KIS↔메모리 동기화) → enforce_sl (SL=None 강제) → hard_kill_check (-5% 최후방어)
+  safety:
+    enabled: true                # 전역 ON
+    sync_enabled: true           # KIS↔메모리 동기화 (메모리 누락 사고 0)
+    enforce_sl_enabled: true     # SL=None 강제 세팅 (sl_disabled 종목은 보호)
+    hard_kill_enabled: true      # -5% 강제 매도 (사장님 보호 종목 제외)
+    hard_kill_pct: 0.05          # -5% 킬 라인
+    hard_kill_dry_run: true      # 5/22 검증: true (로그만) → 5/26 실전: false
                                 # auto_trader가 available_cash = min(cash, scalper_budget) 적용
   # auto_buy_amount: 삭제 — 장 시작 시 실제 잔고 / 종목수로 동적 계산
   # 공식: (가용현금 × (1 - min_cash_ratio)) / 매수종목수

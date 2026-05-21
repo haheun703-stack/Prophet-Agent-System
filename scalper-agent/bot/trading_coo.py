@@ -4193,6 +4193,26 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[COO] 장중 스캔 실패 (무시): {e}")
 
+    async def _job_safety_check(self, context=None) -> None:
+        """★ 5/21 박사 자율 — 5분 반복 포지션 안전 사이클 ★
+
+        sync_positions → enforce_sl → hard_kill_check 통합 호출.
+        호출 자체는 5분마다 실행되지만 config 토글로 단계별 제어 가능.
+        장외 시간에도 동기화 사이클은 작동 (메모리 ↔ KIS 일관성 유지).
+        """
+        try:
+            if not self.auto_trader:
+                return
+            # config 토글 체크 (전역 OFF 시 노옵)
+            cfg = (self.auto_trader.config.get("bot", {}) or {}).get("safety", {}) or {}
+            if not cfg.get("enabled", True):
+                return
+            # 동기 함수 호출 (mixin 메서드)
+            import asyncio
+            await asyncio.to_thread(self.auto_trader.safety_check_cycle)
+        except Exception as e:
+            logger.warning(f"[COO] 안전 사이클 실패 (무시): {e}")
+
     async def _job_surge_pattern_learning(self, context=None) -> None:
         """[5/20 사장님 비전] 매일 15:35 — 급등 종목 패턴 학습.
 
@@ -4561,6 +4581,14 @@ class TradingCOO:
         # 검증 모드 OFF / 시간 외 / 후보 없음 → graceful skip
         jq.run_repeating(self._job_intraday_verification_scan, interval=300, first=540)
         logger.info("[COO] 검증모드 장중 스캔 등록: 5분 반복 (09:05~14:00 활성)")
+
+        # ★ 5/21 박사 자율 — position_safety 안전 사이클 (사장님 명령) ★
+        # 5/19 일진전기 -626,400원 / 5/20 -293만 (4종 자동청산) /
+        # 5/21 로킷헬스케어 -15.4% (메모리 누락 SL 작동 X) 사고 후 영구 안전장치.
+        # 매 5분: sync_positions → enforce_sl → hard_kill_check 통합 사이클.
+        # config.bot.safety.* 토글로 단계별 제어 가능.
+        jq.run_repeating(self._job_safety_check, interval=300, first=120)
+        logger.info("[COO] 포지션 안전 사이클 등록: 5분 반복 (sync + enforce_sl + hard_kill)")
 
         # ── 자비스 자산풀 매수 (사장님 5/19 결정: B 진보 + 1주 모드) ──
         # ★ 5/20 사고 fix: 09:05 → 09:15 이동 ★
