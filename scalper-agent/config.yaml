@@ -247,6 +247,13 @@ bot:
     signal_slots: 2               # 자비스 시그널 (massive_dual + oneshot 다중)
     # 합계 5종 — 어제 09:18 자비스 매수 5/5 체결 패턴 유지
     # 장중 추매 = recovery_add_on (별도 토글, 이미 enabled=true)
+
+    # ★ 5/21 23:00 사장님 명령 — 지정가 추격 매수 (시장가 폴백 X) ★
+    # "지정가로 따라잡으면서 살수 있나" → chase_buy 신규 함수
+    # 5초 사이클로 현재가 추격 (호가 +1 tick 따라 올림)
+    # 시간 초과 시 취소 (시장가 폴백 X)
+    use_chase_buy: true           # chase_buy 사용 (false 시 기존 smart_buy)
+    chase_max_wait_sec: 180       # 최대 3분 추격 (5초 × 36회)
     # true 시 _get_jarvis_dynamic_qty() 호출:
     #   EWY +5%+ OR KOSPI +1%+ → 3주
     #   KOSPI +0.5%+ AND regime BULLISH+ → 2주

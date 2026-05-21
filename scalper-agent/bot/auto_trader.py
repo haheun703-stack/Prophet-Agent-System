@@ -2119,7 +2119,18 @@ class AutoTrader:
 
                 # ── smart_buy (지정가 -0.5% → -0.2% → 시장가 폴백) ──
                 # 사장님 원칙: "왠만하면 지정가, 정 안되면 시장가"
-                resp = await asyncio.to_thread(self.trader.smart_buy, code, qty_per_stock)
+                # ★ 5/21 23:00 사장님 명령 — 지정가 추격 매수 (chase_buy) 사용 ★
+                # config.bot.asset_pool.use_chase_buy=true (기본) → 시장가 폴백 X
+                # false 시 기존 smart_buy (3단계 폴백 포함)
+                ap_buy_cfg = (self.config.get("bot", {}) or {}).get("asset_pool", {}) or {}
+                use_chase = bool(ap_buy_cfg.get("use_chase_buy", True))
+                if use_chase:
+                    chase_wait = int(ap_buy_cfg.get("chase_max_wait_sec", 180))
+                    resp = await asyncio.to_thread(
+                        self.trader.chase_buy, code, qty_per_stock, chase_wait,
+                    )
+                else:
+                    resp = await asyncio.to_thread(self.trader.smart_buy, code, qty_per_stock)
                 if resp.get("success"):
                     # 체결 후 실제 가격 재조회 (smart_buy는 saved_pct 반환하지만 체결가 미반환)
                     buy_price = pre_buy_price

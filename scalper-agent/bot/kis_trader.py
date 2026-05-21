@@ -770,6 +770,132 @@ class KISTrader:
         self._log_trade("SMART_BUY_FAIL", code, name, 0, 3)
         return {"success": False, "message": f"스마트매수 실패 - {max_wait_sec}초 내 미체결 ({name})"}
 
+    def chase_buy(self, code: str, qty: int, max_wait_sec: int = 180,
+                  initial_discount_pct: float = -0.3,
+                  cycle_sec: int = 5) -> dict:
+        """지정가 추격 매수 — 시장가 폴백 X (사장님 5/21 23:00 명령).
+
+        smart_buy 진화 버전:
+          - smart_buy = 3단계 고정 (-0.5%/-0.2%/현재가+0.2%) / 시장가 폴백
+          - chase_buy = N회 동적 추격 (호가 따라 올림) / 시장가 폴백 X
+
+        알고리즘:
+          1. 초기 주문 = 현재가 -0.3% 지정가 (할인)
+          2. 5초 사이클: 체결 체크 + 가격 갱신
+          3. 현재가가 우리 주문가보다 위면 → modify_order로 따라잡기 (+1 tick)
+          4. 시간 초과 → 취소 (시장가 X)
+
+        Args:
+            code: 종목코드
+            qty: 수량
+            max_wait_sec: 최대 대기 (기본 180초 = 3분)
+            initial_discount_pct: 초기 할인율 (기본 -0.3%)
+            cycle_sec: 추격 사이클 (기본 5초)
+
+        Returns:
+            {success, order_no, message, chase_count, final_price}
+        """
+        name = CODE_TO_NAME.get(code, code)
+
+        # 초기 가격 조회
+        price_info = self.fetch_price(code)
+        if not price_info.get("success"):
+            return {"success": False, "message": "현재가 조회 실패"}
+
+        current = price_info["current_price"]
+        tick = self._tick_size(current)
+        # 초기 주문가 = 현재가 + 할인 (음수면 -0.3%)
+        ratio = 1.0 + initial_discount_pct / 100
+        our_price = self._round_to_tick(current * ratio, tick,
+                                          "down" if initial_discount_pct < 0 else "up")
+
+        # 1단계: 초기 주문
+        broker = self._get_broker()
+        try:
+            resp = broker.create_limit_buy_order(symbol=code, price=our_price, quantity=qty)
+        except Exception as e:
+            return {"success": False, "message": f"주문 예외: {e}"}
+
+        if not resp or resp.get("rt_cd") != "0":
+            msg = resp.get("msg1", "?") if resp else "응답 없음"
+            return {"success": False, "message": f"주문 실패: {msg}"}
+
+        order_no = resp.get("output", {}).get("ODNO", "")
+        org_no = resp.get("output", {}).get("KRX_FWDG_ORD_ORGNO", "")
+
+        logger.info(
+            f"[chase_buy] {name}({code}) 시작 @ {our_price:,} "
+            f"(현재가 {current:,}, 할인 {initial_discount_pct:+.2f}%)"
+        )
+
+        # 2단계: 추격 사이클
+        start_time = time.time()
+        chase_count = 0
+        last_logged_price = our_price
+
+        while time.time() - start_time < max_wait_sec:
+            time.sleep(cycle_sec)
+
+            # 체결 체크 (짧은 timeout = 1초)
+            filled = self._wait_for_fill(order_no, 1, org_no=org_no, qty=qty)
+            if filled:
+                self._log_trade("CHASE_BUY", code, name, qty, chase_count + 1)
+                logger.info(
+                    f"[chase_buy] ✅ {name}({code}) 체결 @ {our_price:,} "
+                    f"({chase_count}회 추격, {int(time.time()-start_time)}초)"
+                )
+                return {
+                    "success": True, "order_no": order_no,
+                    "message": f"chase 매수 {name}({code}) {qty}주 @ {our_price:,}원 ({chase_count}회 추격)",
+                    "chase_count": chase_count,
+                    "final_price": our_price,
+                }
+
+            # 현재가 재조회
+            try:
+                new_info = self.fetch_price(code)
+                if not new_info.get("success"):
+                    continue
+                new_current = new_info["current_price"]
+            except Exception:
+                continue
+
+            # 가격 추격 — 현재가가 우리 주문가보다 높으면 +1 tick으로 따라잡기
+            if new_current > our_price:
+                new_tick = self._tick_size(new_current)
+                new_our_price = self._round_to_tick(new_current + new_tick, new_tick, "up")
+                # 너무 자주 모디파이 안 함 (1 tick 차이만 나면 스킵)
+                if new_our_price > our_price:
+                    try:
+                        broker.modify_order(
+                            org_no=org_no, order_no=order_no,
+                            order_type="00", price=new_our_price, quantity=qty, total=True,
+                        )
+                        chase_count += 1
+                        if abs(new_our_price - last_logged_price) >= new_tick * 5:
+                            # 5 tick 이상 차이 날 때만 로그 (스팸 방지)
+                            logger.info(
+                                f"[chase_buy] {name} #{chase_count} 추격: "
+                                f"{our_price:,} → {new_our_price:,} (현재 {new_current:,})"
+                            )
+                            last_logged_price = new_our_price
+                        our_price = new_our_price
+                    except Exception as me:
+                        logger.warning(f"[chase_buy] modify 실패: {me}")
+
+        # 3단계: 시간 초과 → 취소 (시장가 폴백 X — 사장님 명령)
+        self.cancel_order(order_no, org_no=org_no, qty=qty)
+        self._log_trade("CHASE_BUY_FAIL", code, name, 0, chase_count)
+        logger.warning(
+            f"[chase_buy] ❌ {name}({code}) 시간 초과 — "
+            f"{max_wait_sec}초 / {chase_count}회 추격 / 시장가 폴백 X (사장님 명령)"
+        )
+        return {
+            "success": False,
+            "message": f"chase 매수 시간 초과 ({max_wait_sec}초, {chase_count}회 추격, 시장가 폴백 X)",
+            "chase_count": chase_count,
+        }
+
     def smart_sell(self, code: str, qty: int, max_wait_sec: int = 60) -> dict:
         """스마트 지정가 매도 - 3단계 에스컬레이션
 
