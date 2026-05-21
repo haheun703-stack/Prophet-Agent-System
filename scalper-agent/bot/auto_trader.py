@@ -2145,9 +2145,22 @@ class AutoTrader:
                         "stop_loss": int(buy_price * (1 + style_sl_pct / 100)),
                         "take_profit": int(buy_price * (1 + style_tp_pct / 100)),
                         "regime": "NORMAL",
-                        "mode": "day" if style_max_hold == 0 else "swing",
+                        # ★ A2 fix (5/21) — mode 판정을 style_name 기준으로 변경 ★
+                        # 이전 버그: style_max_hold == 0 체크 → DAY_TRADE(max_hold=1)도 mode="swing"
+                        # 결과: 어제 만든 trailing TP fix (L3329 self.mode=="day") 무력화
+                        # 신규: DAY_TRADE → mode="day" 명확히 부여
+                        "mode": "day" if style_name == "DAY_TRADE" else "swing",
                         "source": "asset_pool",
                         "entry_date": datetime.now().strftime("%Y-%m-%d"),
+                        # ★ A3 fix (5/21) — 사장님 보호 토글 ★
+                        # 어제 -293만 사고 재발 방지 + 70억 미션 자동 익절 충돌 해결
+                        # config.bot.asset_pool.auto_protect=true 시 매수 종목 자동 sl_disabled
+                        # 평소: false (자동 익절 작동) / "들고 있어" 명령 시: true (전체 차단)
+                        "sl_disabled": (
+                            self.config.get("bot", {})
+                            .get("asset_pool", {})
+                            .get("auto_protect", False)
+                        ),
                         # ★ 5/20 비전 추가 메타 ★
                         "trade_style": style_name,
                         "style_max_hold_days": style_max_hold,
@@ -3326,9 +3339,12 @@ class AutoTrader:
                             f"진입:{entry:,} -> 현재:{cp:,} ({pnl:+,})"
                         )
 
-                elif self.mode == "day" and cp >= pos["take_profit"] and not pos.get("trailing_activated", False):
-                    # ★ 5/21 사장님 결정: 트레일링 활성 시 고정 TP +5% 매도 비활성화 ★
-                    # 사유: 5/20 전력주 +10% 놓침 패턴 재발 방지
+                elif pos.get("mode") == "day" and cp >= pos["take_profit"] and not pos.get("trailing_activated", False):
+                    # ★ 5/21 A1 fix: self.mode (봇 전역=swing) → pos.get("mode") (개별 종목) ★
+                    # 어제 fix 버그: self.mode == "day"는 항상 False (config trade_mode=swing)
+                    # → 모든 종목 elif 분기 진입 실패 → trailing TP fix 실효성 0
+                    # 신규: pos.get("mode")로 개별 종목 모드 체크 → DAY_TRADE 종목 정상 진입
+                    # 트레일링 활성 시 고정 TP +5% 매도 비활성화 (5/20 전력주 +10% 놓침 재발 방지)
                     # +3% 도달 → 트레일링 활성 → TP 무력화, 고점 -3% 추적
                     # 안전망: +3% 미달 시 (트레일링 비활성) TP +5% 도달하면 익절 (이론상 미발생)
                     # TP 분기 진입 시 actual_qty 보장 (if 분기에서 미정의일 수 있음)

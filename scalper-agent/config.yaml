@@ -241,6 +241,12 @@ bot:
     #   KOSPI +0.5%+ AND regime BULLISH+ → 2주
     #   외 → 1주 (기본)
     #   regime BEARISH/PANIC → 1주 강제
+
+    # ★ 5/21 A3 fix — 사장님 "들고 있어" 명령 자동 보호 토글 ★
+    # true 시: asset_pool 매수 종목에 sl_disabled=True 자동 부여 (모든 자동 매도 차단)
+    # false 시: 트레일링 익절/SL 정상 작동 (70억 미션 자동 매매)
+    # 어제 -293만 사고 (daily_reeval_FULL_SELL) 같은 자동 청산 차단 시 → true
+    auto_protect: false
                                 # auto_trader가 available_cash = min(cash, scalper_budget) 적용
   # auto_buy_amount: 삭제 — 장 시작 시 실제 잔고 / 종목수로 동적 계산
   # 공식: (가용현금 × (1 - min_cash_ratio)) / 매수종목수
