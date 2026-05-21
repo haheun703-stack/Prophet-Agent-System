@@ -4213,6 +4213,26 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[COO] 안전 사이클 실패 (무시): {e}")
 
+    async def _job_process_pending_sells(self, context=None) -> None:
+        """★ 5/21 박사 v1.1 — 09:01 KST 시초 매도 큐 처리 ★
+
+        bkit:code-analyzer WARN #1 fix:
+        장외 hard_kill 도달 종목 = pending_sells.json 큐 등록 →
+        다음 정규장 09:01 시초가 안정화 직후 시장가 매도 일괄 처리.
+
+        시초가 1분 후 호출 = 호가 변동성 최소화 + 빠른 탈출.
+        """
+        try:
+            if not self.auto_trader:
+                return
+            cfg = (self.auto_trader.config.get("bot", {}) or {}).get("safety", {}) or {}
+            if not cfg.get("enabled", True):
+                return
+            import asyncio
+            await asyncio.to_thread(self.auto_trader.process_pending_sells)
+        except Exception as e:
+            logger.warning(f"[COO] 시초 매도 큐 처리 실패 (무시): {e}")
+
     async def _job_surge_pattern_learning(self, context=None) -> None:
         """[5/20 사장님 비전] 매일 15:35 — 급등 종목 패턴 학습.
 
@@ -4589,6 +4609,12 @@ class TradingCOO:
         # config.bot.safety.* 토글로 단계별 제어 가능.
         jq.run_repeating(self._job_safety_check, interval=300, first=120)
         logger.info("[COO] 포지션 안전 사이클 등록: 5분 반복 (sync + enforce_sl + hard_kill)")
+
+        # ★ 5/21 박사 v1.1 — 시초 매도 큐 처리 (bkit:code-analyzer WARN #1 fix) ★
+        # 장외 hard_kill 도달 종목 = pending_sells.json 큐 → 다음 정규장 09:01 자동 매도.
+        # 09:00 시초가 안정화 1분 후 처리 (slippage 최소화).
+        jq.run_daily(self._job_process_pending_sells, time=kst_time(9, 1))
+        logger.info("[COO] 시초 매도 큐 처리 등록: 09:01 KST (장외 hard_kill 큐 → 시장가 매도)")
 
         # ── 자비스 자산풀 매수 (사장님 5/19 결정: B 진보 + 1주 모드) ──
         # ★ 5/20 사고 fix: 09:05 → 09:15 이동 ★

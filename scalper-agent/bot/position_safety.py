@@ -1,4 +1,4 @@
-"""position_safety.py — 포지션 안전장치 3종 (박사 자율 v1.0)
+"""position_safety.py — 포지션 안전장치 3종 + 매도 큐 (박사 자율 v1.1)
 ====================================================================
 
 GPT 베이스 + 박사 X 4개 fix + 추가 개선 4개 통합 (2026-05-21 19:30).
@@ -37,11 +37,41 @@ GPT 베이스 + 박사 X 4개 fix + 추가 개선 4개 통합 (2026-05-21 19:30)
   - self._save_positions(): 저장
   - logger: logging
 """
+import json
 import logging
 from datetime import datetime, time as dtime
-from typing import Optional
+from pathlib import Path
 
 logger = logging.getLogger("BH.Safety")
+
+# ============================================================
+# 매도 큐 파일 (장외 hard_kill 도달 → 다음 정규장 시초 매도)
+# ============================================================
+_PENDING_SELLS_PATH = (
+    Path(__file__).resolve().parent.parent / "data_store" / "pending_sells.json"
+)
+
+
+def _load_pending_sells() -> dict:
+    """장외 큐 로드 — {code: {name, qty, queued_at, reason, ...}}."""
+    try:
+        if _PENDING_SELLS_PATH.exists():
+            return json.loads(_PENDING_SELLS_PATH.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.warning(f"[QUEUE] pending_sells 로드 실패: {e}")
+    return {}
+
+
+def _save_pending_sells(data: dict) -> None:
+    """장외 큐 저장."""
+    try:
+        _PENDING_SELLS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _PENDING_SELLS_PATH.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        logger.error(f"[QUEUE] pending_sells 저장 실패: {e}")
 
 # ============================================================
 # 디폴트 설정 (config.yaml에서 오버라이드 가능)
@@ -226,6 +256,8 @@ def sync_positions(self):
                 f"제거={len(synced['removed'])} 수량수정={len(synced['qty_fixed'])}"
             )
             # 텔레그램 알림 (변경사항 있을 때만)
+            # 박사 fix v1.1: bkit:code-analyzer WARN #2 — asyncio.get_event_loop deprecated
+            # Python 3.12+ 호환: 실행 중 루프 우선, 없으면 fire-and-forget
             if hasattr(self, "_send_alert") and self._send_alert:
                 msg_parts = ["🔄 [메모리 동기화]"]
                 if synced["added"]:
@@ -238,15 +270,17 @@ def sync_positions(self):
                     import asyncio
                     coro = self._send_alert("\n".join(msg_parts))
                     if asyncio.iscoroutine(coro):
-                        # 동기 환경: 이벤트 루프 없으면 fire-and-forget
+                        # Python 3.12+ 안전: 실행 중 루프 발견 시 create_task
                         try:
-                            loop = asyncio.get_event_loop()
-                            if loop.is_running():
-                                asyncio.ensure_future(coro)
-                            else:
-                                loop.run_until_complete(coro)
-                        except Exception:
-                            pass
+                            loop = asyncio.get_running_loop()
+                            loop.create_task(coro)
+                        except RuntimeError:
+                            # 실행 중 루프 없음 (동기 컨텍스트) → asyncio.run
+                            try:
+                                asyncio.run(coro)
+                            except Exception:
+                                # 새 루프 생성 실패도 silent (코어 로직 영향 X)
+                                pass
                 except Exception as _e:
                     logger.debug(f"[SYNC] alert 전송 실패: {_e}")
         else:
@@ -403,12 +437,30 @@ def hard_kill_check(
                     continue
 
                 if not in_market:
-                    # 장외 → 다음날 시초 매도 큐 등록
-                    logger.error(
-                        f"[HARD_KILL] {name}({code}) 장외 매도 불가 — "
-                        f"다음 정규장 시초 매도 큐 등록 (큐 미구현 시 알림만)"
-                    )
-                    # TODO: 시초 매도 큐 구현 (5/22 다음 fix)
+                    # 장외 → 다음 정규장 시초 매도 큐 등록 (박사 fix v1.1)
+                    # bkit:code-analyzer 발견 WARN: 큐 미구현 TODO → 실제 큐 구현
+                    try:
+                        pending = _load_pending_sells()
+                        pending[code] = {
+                            "name": name,
+                            "qty": qty,
+                            "buy_price": buy_price,
+                            "queued_price": current_price,
+                            "loss_pct": round(loss_pct * 100, 2),
+                            "reason": f"hard_kill_offhours -{kill_pct*100:.0f}%",
+                            "queued_at": datetime.now().strftime(
+                                "%Y-%m-%d %H:%M:%S"
+                            ),
+                            "kill_pct": kill_pct,
+                        }
+                        _save_pending_sells(pending)
+                        logger.error(
+                            f"[HARD_KILL] 📋 {name}({code}) 장외 매도 큐 등록 — "
+                            f"다음 정규장 09:00 시초 매도 예약 "
+                            f"(현재 손실 {loss_pct*100:+.2f}%)"
+                        )
+                    except Exception as _qe:
+                        logger.error(f"[HARD_KILL] 큐 등록 실패: {_qe}")
                     killed.append({
                         "code": code, "name": name,
                         "loss_pct": loss_pct,
@@ -506,6 +558,138 @@ def safety_check_cycle(self, dry_run: bool = False):
 
 
 # ============================================================
+# 4. process_pending_sells() — 장외 큐 시초 매도 실행 (박사 fix v1.1)
+# ============================================================
+def process_pending_sells(self):
+    """다음 정규장 시초가 직후 호출 — pending_sells.json 큐 시장가 매도.
+
+    호출 위치: trading_coo.py 스케줄 (09:01 KST, 시초가 안정화 1분 후).
+    각 종목은 시장가 매도 시도 후 큐에서 제거.
+
+    박사 v1.1: bkit:code-analyzer WARN #1 fix (장외 매도 큐 미구현).
+    """
+    try:
+        pending = _load_pending_sells()
+        if not pending:
+            logger.debug("[QUEUE] pending_sells 빈 큐 — 노옵")
+            return
+
+        # 정규장 시간 체크 (안전망)
+        now_time = datetime.now().time()
+        if not (KST_MARKET_OPEN <= now_time <= KST_MARKET_CLOSE):
+            logger.warning(
+                f"[QUEUE] 정규장 외 호출 — 큐 처리 스킵 (대기: {len(pending)}종)"
+            )
+            return
+
+        logger.critical(
+            f"[QUEUE] 🚨 시초 매도 큐 처리 시작 — {len(pending)}종"
+        )
+
+        processed = []
+        for code, info in list(pending.items()):
+            name = info.get("name", code)
+            qty = int(info.get("qty", 0))
+            buy_price = float(info.get("buy_price", 0))
+            queued_reason = info.get("reason", "queued_kill")
+
+            # 사장님 보호 종목 재확인 (큐 등록 후 명령 변경 가능)
+            mem_pos = self._positions.get(code, {})
+            if _is_protected(mem_pos):
+                logger.warning(
+                    f"[QUEUE] 🛡️ {name}({code}) 큐 등록 후 보호 종목 됨 — "
+                    f"매도 취소 (큐에서 제거)"
+                )
+                del pending[code]
+                processed.append({"code": code, "action": "PROTECTED_CANCEL"})
+                continue
+
+            # 시장가 매도 실행 (시초 = 변동성 큼 → 시장가 즉시)
+            try:
+                result = self.trader.sell_market(code, qty)
+                success = bool(result and result.get("success"))
+
+                if success:
+                    # 현재가 조회 (실현 손익 추정)
+                    sell_price = buy_price
+                    try:
+                        price_info = self.trader.fetch_price(code)
+                        if price_info and price_info.get("success"):
+                            sell_price = int(price_info.get("current_price", buy_price))
+                    except Exception:
+                        pass
+
+                    actual_loss = (
+                        (sell_price - buy_price) / buy_price * 100
+                        if buy_price > 0 else 0
+                    )
+                    logger.critical(
+                        f"[QUEUE] 💀 시초 매도 체결: {name}({code}) qty={qty} "
+                        f"매도가 {sell_price:,} 손익 {actual_loss:+.2f}% "
+                        f"(큐 등록 사유: {queued_reason})"
+                    )
+
+                    # 메모리 정리
+                    if code in self._positions:
+                        del self._positions[code]
+                        self._save_positions()
+
+                    # trade_journal 적재 (화이트리스트 안전 매핑)
+                    try:
+                        from data import trade_journal as _tj
+                        _tj.log_sell(
+                            code=code, name=name, qty=qty,
+                            sell_price=sell_price,
+                            buy_price=buy_price,
+                            event_type="sell_sl",
+                            source="guardian",
+                            order_no=(result or {}).get("order_no")
+                                      or (result or {}).get("ODNO"),
+                            note=f"pending_sells 큐 시초 매도: {queued_reason}",
+                        )
+                    except Exception as _tj_e:
+                        logger.warning(f"[QUEUE] trade_journal 실패: {_tj_e}")
+
+                    processed.append({
+                        "code": code, "name": name,
+                        "action": "SOLD",
+                        "sell_price": sell_price,
+                        "loss_pct": actual_loss,
+                    })
+                    del pending[code]
+                else:
+                    logger.error(
+                        f"[QUEUE] ❌ 시초 매도 실패: {name}({code}) result={result}"
+                    )
+                    processed.append({"code": code, "action": "FAILED"})
+                    # 큐에 유지 — 다음 사이클 재시도
+
+            except Exception as _se:
+                logger.error(
+                    f"[QUEUE] 매도 예외 {name}({code}): {_se}",
+                    exc_info=True,
+                )
+                processed.append({"code": code, "action": "ERROR"})
+
+        # 큐 갱신 (성공한 종목만 제거됨)
+        _save_pending_sells(pending)
+
+        sold_count = sum(1 for p in processed if p.get("action") == "SOLD")
+        logger.critical(
+            f"[QUEUE] ✅ 큐 처리 완료: 매도 {sold_count} / "
+            f"보호취소 {sum(1 for p in processed if p.get('action') == 'PROTECTED_CANCEL')} / "
+            f"실패 {sum(1 for p in processed if p.get('action') in ('FAILED','ERROR'))} / "
+            f"잔여 {len(pending)}"
+        )
+
+        return processed
+
+    except Exception as e:
+        logger.error(f"[QUEUE] ❌ 큐 처리 오류: {e}", exc_info=True)
+        return []
+
+
+# ============================================================
 # AutoTrader 클래스 mixin 헬퍼
 # ============================================================
 def attach_to(cls):
@@ -523,4 +707,5 @@ def attach_to(cls):
     cls.enforce_sl = enforce_sl
     cls.hard_kill_check = hard_kill_check
     cls.safety_check_cycle = safety_check_cycle
+    cls.process_pending_sells = process_pending_sells  # 박사 v1.1: 장외 매도 큐
     return cls
