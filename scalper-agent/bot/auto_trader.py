@@ -1891,6 +1891,37 @@ class AutoTrader:
         """
         from data import verification_mode as _vm
 
+        # ★★ 5/21 09:35 절대 원칙 — 매매 전 KIS 실제 계좌 강제 조회 ★★
+        # 사장님 분노 사건 후 영구 룰: positions.json (메모리) ≠ KIS 실제 잔고
+        # 매수 결정 전 반드시 (1) 실제 보유 종목 (2) 현금 (3) 평가손익 확인 → 텔레그램 보고
+        kis_bal = await asyncio.to_thread(self.trader.fetch_balance)
+        if kis_bal and kis_bal.get("success"):
+            actual_positions = kis_bal.get("positions", [])
+            actual_codes = [p.get("code") for p in actual_positions]
+            actual_cash = kis_bal.get("cash", 0)
+            actual_eval_pnl = kis_bal.get("eval_pnl", 0)
+
+            # 매수 전 상태 텔레그램 보고 (절대 원칙)
+            pos_summary = " | ".join([
+                f"{p.get('name','?')}({p.get('qty',0)}주 {p.get('pnl_pct',0):+.1f}%)"
+                for p in actual_positions[:10]
+            ]) or "보유 0"
+            await _send(
+                f"📊 [매매 전 계좌 조회 — 사장님 5/21 절대 원칙]\n"
+                f"  실제 보유: {len(actual_positions)}종 | 현금: {actual_cash:,} | 평가손익: {actual_eval_pnl:+,}\n"
+                f"  {pos_summary}"
+            )
+            logger.info(
+                f"[asset_pool] KIS 실제: {len(actual_positions)}종 / 현금 {actual_cash:,} / "
+                f"PnL {actual_eval_pnl:+,} / 종목 {actual_codes}"
+            )
+
+            # 매수 제외 set에 실제 보유 종목 추가 (메모리 + 실제 합집합)
+            self._real_holdings_codes = set(actual_codes)
+        else:
+            await _send("⚠️ [KIS 잔고 조회 실패] 메모리 기준으로만 매수 진행 — 사장님 확인 필요")
+            self._real_holdings_codes = set()
+
         # ★ 5/21 아이디어 #1 — 자비스 자율 다주 결정 ★
         # config.bot.asset_pool.dynamic_qty=true 시 시장 상황 보고 1/2/3주 동적 결정
         # 70억 트레이더 미션 1단계 (5/22 D-Day로 활성화 예정)
@@ -2001,8 +2032,9 @@ class AutoTrader:
             logger.info("[asset_pool] AVOID 차단 후 0종목 — 스킵")
             return
 
-        # 제외: 보유 종목 + verification 보유 + ETF prefix
-        excluded = set(self._positions.keys())
+        # 제외: 보유 종목 (메모리 + KIS 실제) + verification 보유 + ETF prefix
+        # ★ 5/21 09:35 사장님 분노 사건 후 — 메모리만으로 X, KIS 실제 합집합 강제
+        excluded = set(self._positions.keys()) | getattr(self, "_real_holdings_codes", set())
         try:
             for p in _vm.get_active_positions():
                 excluded.add(p["code"])
