@@ -5147,3 +5147,14 @@ try:
     logger.info("[init] position_safety mixin attached — sync/enforce_sl/hard_kill 가동")
 except Exception as _safety_e:
     logger.error(f"[init] position_safety mixin 실패: {_safety_e}", exc_info=True)
+
+# ★ 5/21 22:30 박사 자율 — jarvis_decision 통합 의사결정 mixin ★
+# 정보봇 악재 + VWAP 상/중/하 + 시총별 SL + 상승/하락 추매 통합
+# dry_run=true 기본 (5/22~5/23 워밍업 검증, 텔레그램 알림만)
+# 5/26 실전 D-Day = dry_run=false (자동 실행)
+try:
+    from bot.jarvis_decision import attach_to as _attach_jarvis
+    _attach_jarvis(AutoTrader)
+    logger.info("[init] jarvis_decision mixin attached — 박사 자율 의사결정 가동")
+except Exception as _jd_e:
+    logger.error(f"[init] jarvis_decision mixin 실패: {_jd_e}", exc_info=True)

@@ -269,6 +269,23 @@ bot:
     hard_kill_enabled: true      # -5% 강제 매도 (사장님 보호 종목 제외)
     hard_kill_pct: 0.05          # -5% 킬 라인
     hard_kill_dry_run: true      # 5/22 검증: true (로그만) → 5/26 실전: false
+
+  # ★ 5/21 22:30 박사 자율 — 통합 의사결정 (사장님 22:00 + 22:30 명령) ★
+  # 정보봇 악재 + VWAP 상/중/하 + 시총별 SL + 상승/하락 추매 통합 판정
+  # 5/22~5/23: dry_run=true (텔레그램 알림만, 데이터 누적)
+  # 5/26 실전 D-Day: dry_run=false (자동 실행)
+  jarvis_decision:
+    enabled: true                # 전역 ON
+    dry_run: true                # ★ 5/22~5/23: true / 5/26 실전: false
+    # 시총 분류 (억 단위)
+    market_cap_large: 10000      # 1조+ = 대형주 (SL -10%)
+    market_cap_mid: 3000         # 3,000억+ = 중형주 (SL -5%)
+    # 그 외 = 소형주 (SL -3%)
+    # VWAP 분기
+    vwap_upper: 1.02             # 상단 = +2%+ → 상승 피라미딩 (+5% 시)
+    vwap_lower: 0.98             # 하단 = -2%- → 하락 추매 (-5% 시)
+    # 익절 기본 (지정가, smart_sell)
+    take_profit_pct: 10.0        # +10% 도달 시 익절 (트레일링과 별개)
                                 # auto_trader가 available_cash = min(cash, scalper_budget) 적용
   # auto_buy_amount: 삭제 — 장 시작 시 실제 잔고 / 종목수로 동적 계산
   # 공식: (가용현금 × (1 - min_cash_ratio)) / 매수종목수

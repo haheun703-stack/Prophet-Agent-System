@@ -4213,6 +4213,45 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[COO] 안전 사이클 실패 (무시): {e}")
 
+    async def _job_jarvis_decision(self, context=None) -> None:
+        """★ 5/21 22:30 박사 자율 — 5분 반복 박사 통합 의사결정 ★
+
+        정보봇 악재 + VWAP 상/중/하 + 시총별 SL + 상승/하락 추매 통합 판정.
+        config.bot.jarvis_decision.enabled=true 시 작동.
+        config.bot.jarvis_decision.dry_run=true 시 텔레그램 알림만 (5/22~5/23).
+        config.bot.jarvis_decision.dry_run=false 시 자동 실행 (5/26 D-Day).
+        """
+        try:
+            if not self.auto_trader:
+                return
+            cfg = (self.auto_trader.config.get("bot", {}) or {}).get("jarvis_decision", {}) or {}
+            if not cfg.get("enabled", False):
+                return
+            dry_run = bool(cfg.get("dry_run", True))
+
+            from bot.jarvis_decision import decide_action
+            for code, pos in list(self.auto_trader._positions.items()):
+                try:
+                    price_info = self.auto_trader.trader.fetch_price(code)
+                    if not price_info or not price_info.get("success"):
+                        continue
+                    cp = int(price_info.get("current_price", 0))
+                    if cp <= 0:
+                        continue
+                    pos_with_code = dict(pos)
+                    pos_with_code["_code"] = code
+                    action, reason = decide_action(pos_with_code, cp)
+                    if action == "HOLD":
+                        continue
+                    # 액션 실행 (dry_run 우선)
+                    self.auto_trader.jarvis_execute_action(
+                        code, action, reason, pos, cp, dry_run=dry_run,
+                    )
+                except Exception as _pe:
+                    logger.debug(f"[JARVIS] {code} 처리 실패: {_pe}")
+        except Exception as e:
+            logger.warning(f"[COO] jarvis_decision 실패 (무시): {e}")
+
     async def _job_process_pending_sells(self, context=None) -> None:
         """★ 5/21 박사 v1.1 — 09:01 KST 시초 매도 큐 처리 ★
 
@@ -4615,6 +4654,12 @@ class TradingCOO:
         # 09:00 시초가 안정화 1분 후 처리 (slippage 최소화).
         jq.run_daily(self._job_process_pending_sells, time=kst_time(9, 1))
         logger.info("[COO] 시초 매도 큐 처리 등록: 09:01 KST (장외 hard_kill 큐 → 시장가 매도)")
+
+        # ★ 5/21 22:30 박사 자율 — 통합 의사결정 (5분 반복, 정규장만) ★
+        # 정보봇 악재 + VWAP 상/중/하 + 시총별 SL + 상승/하락 추매 통합 판정
+        # dry_run=true 기본 → 5/22~5/23 워밍업 / 5/26 dry_run=false → 자동 실행
+        jq.run_repeating(self._job_jarvis_decision, interval=300, first=180)
+        logger.info("[COO] 박사 자율 의사결정 등록: 5분 반복 (악재+VWAP+시총별 SL+추매 통합)")
 
         # ── 자비스 자산풀 매수 (사장님 5/19 결정: B 진보 + 1주 모드) ──
         # ★ 5/20 사고 fix: 09:05 → 09:15 이동 ★
