@@ -182,11 +182,25 @@ class AutoTrader:
         중 2개만 체크. job_daily_reeval(L3208)이 사각지대 — 보호 4종 모두 매도.
         """
         pos = self._positions.get(code) or {}
-        if pos.get("sl_disabled") or str(pos.get("source", "")).startswith("manual_sync"):
+
+        # ★ 5/21 21:00 박사 자율 — CRITICAL #1 동일 패턴 fix ★
+        # bkit:code-analyzer 발견: 메모리 누락 시 빈 dict → 보호 X 우회 위험
+        # → 빈 dict (사장님 수동 매수 의심) + sync_auto (자동등록) 보호 가정
+        if not pos:
+            logger.warning(
+                f"[SELL BLOCKED] {code} — 메모리 미등록 (사장님 수동 매수 의심) / "
+                f"reason={reason} → 보호 가정 매도 차단"
+            )
+            return True
+
+        source_str = str(pos.get("source", ""))
+        if (pos.get("sl_disabled")
+                or source_str.startswith("manual_sync")
+                or source_str.startswith("sync_auto")):
             logger.warning(
                 f"[SELL BLOCKED] {pos.get('name', code)}({code}) — "
                 f"reason={reason} / sl_disabled={pos.get('sl_disabled')} "
-                f"source={pos.get('source')}"
+                f"source={source_str}"
             )
             # RED ALERT 텔레그램 (사일런트 차단 방지)
             if self._send_alert:
