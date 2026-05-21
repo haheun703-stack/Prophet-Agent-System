@@ -526,16 +526,21 @@ def get_candidate_score_map() -> Dict[str, int]:
       - 오늘 -5% 이하: -20점 (약세 지속 위험)
     """
     source_map = get_candidate_source_map()
+    # ★ 5/21 박사 자율 fix — 5/21 상한가 7종 분석 후 가중치 재조정 ★
+    # 어제 시그널 5/7 감지 (71%) but 매수 1/7 = 박사 후보 우선순위 시스템 X
+    # 원인: consecutive_surge/massive_dual_buy 가중치 낮음 → TOP 5 탈락
+    # 검증: 어제 매수 누락한 4종 모두 오늘 +20%~+30% 상한가
+    # 박사 결단: 결과 검증된 시그널 가중치 ↑
     weights = {
         "learned_strong": 50,
         "sector_concurrent_surge": 35,   # ★ 테마 동조 = 가장 안전
         "kis_market_top": 25,            # 오늘 강세 — 등락률 패널티 별도 적용
-        "consecutive_surge": 20,         # 상한가 연속 = 위험 (낮춤)
+        "consecutive_surge": 30,         # ★ 5/21 fix: 20→30 (오늘 상한가 2종 검증 — 피델릭스/대원전선우)
         "limit_up_signals": 15,
         "short_cover": 25,
         "limit_up_trigger": 10,          # 상한가 트리거 = 추격 위험 (낮춤)
         "limit_up_watchlist": 18,        # 워치 = 눌림목 가능성 (높임)
-        "massive_dual_buy": 25,          # 외인+기관 동시 = 강함
+        "massive_dual_buy": 35,          # ★ 5/21 fix: 25→35 (오늘 상한가 3종 검증 — LG/제주반도체/가온전선)
         "oneshot_stealth": 20,
         "foreign_accumulation": 20,
         "accumulation_radar": 20,
@@ -543,6 +548,61 @@ def get_candidate_score_map() -> Dict[str, int]:
         "missed_gainers_learning": 15,
         "nxt_eligible": 3,
     }
+    # ★ 5/21 박사 자율 — 매크로 패널티 (개선 액션 #1) ★
+    # 외인 N일 연속 매도 = 약세장 = 점수 패널티 (5/21 -15일 연속 + 반도체 -1.2조)
+    # brain_state + jgis_morning_context에서 외인 streak 가져옴
+    macro_penalty = 0
+    try:
+        import json
+        from pathlib import Path
+        base = Path(__file__).resolve().parent.parent / "data_store"
+
+        # 외인 streak (음수 = 매도 연속)
+        ctx_path = base / "jgis_morning_context.json"
+        if ctx_path.exists():
+            ctx = json.loads(ctx_path.read_text(encoding="utf-8"))
+            f_streak = int(ctx.get("foreign_streak", 0))
+            if f_streak <= -10:
+                macro_penalty -= 15  # 강한 약세장
+            elif f_streak <= -7:
+                macro_penalty -= 10  # 중강 약세장
+            elif f_streak <= -3:
+                macro_penalty -= 5   # 약세장
+
+        # brain_state regime
+        brain_path = base / "brain_state.json"
+        if brain_path.exists():
+            bd = json.loads(brain_path.read_text(encoding="utf-8"))
+            regime = bd.get("regime", "NEUTRAL")
+            if regime == "PANIC":
+                macro_penalty -= 20
+            elif regime == "BEARISH":
+                macro_penalty -= 10
+
+        if macro_penalty < 0:
+            logger.info(f"[score] 매크로 패널티 적용: {macro_penalty}점")
+    except Exception as _me:
+        logger.debug(f"[score] 매크로 패널티 계산 실패 (무시): {_me}")
+
+    # ★ 5/21 박사 자율 — 섹터 변동성 패널티 (개선 액션 #2 단순 버전) ★
+    # ATR 백테스트는 주말 작업. 우선 변동성 큰 섹터 -점 적용.
+    # 5/21 로킷헬스케어 -15.4% 사고 = 의료/바이오 변동성 큰 섹터
+    HIGH_VOLATILITY_SECTORS = {
+        "의약품", "제약", "의료정밀", "바이오", "헬스케어",
+        "엔터테인먼트", "게임",  # 변동성 추가
+    }
+    try:
+        universe_path = Path(__file__).resolve().parent.parent / "data_store" / "universe.json"
+        sector_map = {}
+        if universe_path.exists():
+            u = json.loads(universe_path.read_text(encoding="utf-8"))
+            if isinstance(u, dict):
+                for c, info in u.items():
+                    if isinstance(info, dict):
+                        sector_map[c] = info.get("sector", "")
+    except Exception:
+        sector_map = {}
+
     score_map: Dict[str, int] = {}
     for code, sources in source_map.items():
         score = 0
@@ -562,6 +622,14 @@ def get_candidate_score_map() -> Dict[str, int]:
         # 다중 소스 보너스
         if len(sources) > 1:
             score += 10 * (len(sources) - 1)
+
+        # ★ 5/21 박사 자율 — 매크로 패널티 적용 ★
+        score += macro_penalty
+
+        # ★ 5/21 박사 자율 — 섹터 변동성 패널티 ★
+        sector = sector_map.get(code, "")
+        if sector in HIGH_VOLATILITY_SECTORS:
+            score -= 5
 
         # ★★★ 5/20 사장님 핵심 지적 — 오늘 등락률 기반 패널티/보너스 ★★★
         # "이게 오늘 상쳤는 종목 아니니? 내일도 오른다는 근거는 어디에서 온거니?"
