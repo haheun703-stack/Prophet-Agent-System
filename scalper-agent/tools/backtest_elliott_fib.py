@@ -156,6 +156,24 @@ def collect_sample_codes(limit: int = 100, source: str = "surge_patterns") -> Li
 
 
 # ── 4파 저점 피보 % 측정 ──────────────────────────
+def _cap_band(cap_억: float) -> str:
+    """시총 구간 분류 (사장님 5/22 19:50 명령 E단계).
+
+    100~500억:   소형
+    500~1000억:  중소형
+    1000~5000억: 중대형
+    5000억+:     대형
+    """
+    if cap_억 < 500:
+        return "소형(100-500억)"
+    elif cap_억 < 1000:
+        return "중소형(500-1000억)"
+    elif cap_억 < 5000:
+        return "중대형(1000-5000억)"
+    else:
+        return "대형(5000억+)"
+
+
 def measure_fib_retracement(bars: Sequence[Dict]) -> Optional[Dict]:
     """1파~4파 저점 패턴 감지 + 피보 % 계산.
 
@@ -187,15 +205,20 @@ def measure_fib_retracement(bars: Sequence[Dict]) -> Optional[Dict]:
     # 피보 되돌림 % — 4파 저점이 3파 길이의 몇 % 되돌림인가
     fib_retracement_pct = (w3h - w4l) / wave_3_length * 100.0
 
-    # 5파 진입 성공 여부 — w4 이후 캔들 중 w3 고점 돌파 여부
+    # 5파 진입 성공 여부 + 도달 소요 일수 + 최대 수익 (B단계 정밀화 5/22 19:50)
     succeeded_to_w5 = False
     max_high_after_w4 = 0
-    for b in bars[w4 + 1:]:
-        if b["high"] > max_high_after_w4:
-            max_high_after_w4 = b["high"]
-        if b["high"] > w3h:
+    days_to_w5 = 0          # 5파 진입까지 소요 일수
+    max_gain_high = 0       # w4 이후 최고가 (5파 도달 후도 포함)
+    for offset, b in enumerate(bars[w4 + 1:], start=1):
+        if b["high"] > max_gain_high:
+            max_gain_high = b["high"]
+        if not succeeded_to_w5 and b["high"] > w3h:
             succeeded_to_w5 = True
-            break
+            days_to_w5 = offset
+            max_high_after_w4 = b["high"]
+    if not succeeded_to_w5:
+        max_high_after_w4 = max_gain_high
 
     # 4파 저점 vs 1파 고점 (파동 중첩 금지 룰)
     non_overlap = w4l > w1h
@@ -226,6 +249,8 @@ def measure_fib_retracement(bars: Sequence[Dict]) -> Optional[Dict]:
         "zone_signal": zone_info["signal"],
         "zone_confidence": zone_info["confidence"],
         "max_gain_after_w4_pct": round((max_high_after_w4 / w4l - 1) * 100, 2) if w4l > 0 else 0,
+        "max_gain_full_pct": round((max_gain_high / w4l - 1) * 100, 2) if w4l > 0 else 0,
+        "days_to_w5": days_to_w5,  # 0 = 5파 도달 X
     }
 
 
@@ -265,6 +290,9 @@ def run_backtest(limit: int = 50, delay: float = 0.3,
             # 슬라이딩 윈도우 — 한 종목에서 여러 4파 사이클 탐지
             n = len(bars)
             patterns_found = 0
+            # E단계: 종목 metadata (시총/섹터) 주입
+            sector = s.get("sector", "")
+            cap_band = _cap_band(s.get("cap", 0))
             for start in range(0, n - window_size + 1, window_step):
                 window = bars[start:start + window_size]
                 m = measure_fib_retracement(window)
@@ -272,6 +300,8 @@ def run_backtest(limit: int = 50, delay: float = 0.3,
                     continue
                 m["code"] = code
                 m["name"] = s["name"]
+                m["sector"] = sector
+                m["cap_band"] = cap_band
                 m["window_start"] = window[0].get("date", "")
                 m["window_end"] = window[-1].get("date", "")
                 measurements.append(m)
@@ -318,6 +348,12 @@ def run_backtest(limit: int = 50, delay: float = 0.3,
         "rule_combination_success": _rule_combination_success(measurements),
         # ★ A+C: zone × 룰 결합 최적 ★
         "optimal_combinations": _optimal_combinations(measurements),
+        # ★ B. 5파 진입 risk/reward + 소요 일수 ★
+        "zone_risk_reward": _zone_risk_reward(measurements),
+        # ★ E. 시총별 zone 성공률 ★
+        "cap_band_zone_matrix": _cap_band_zone_matrix(measurements),
+        # ★ E. 섹터별 zone 성공률 ★
+        "sector_zone_top": _sector_zone_top(measurements),
         "raw_measurements": measurements[:20],
     }
 
@@ -377,6 +413,84 @@ def _rule_combination_success(measurements: List[Dict]) -> Dict:
                 "vs_baseline_multiple": round(rate / avg, 2) if avg else 0,
             }
     return result
+
+
+def _zone_risk_reward(measurements: List[Dict]) -> Dict:
+    """B. zone별 risk/reward — 진입 후 평균 수익 + 최대 수익 + 소요 일수."""
+    zones = ["too_shallow", "fib_38_safe", "fib_50_standard",
+             "korean_low", "trend_caution", "trend_end"]
+    result = {}
+    for z in zones:
+        in_zone = [m for m in measurements if m["zone"] == z]
+        if not in_zone:
+            continue
+        succeeded = [m for m in in_zone if m["succeeded_to_w5"]]
+        # 진입 후 평균 수익 (w4 → 최고가, 성공 X 종목 포함)
+        all_gains = [m["max_gain_full_pct"] for m in in_zone]
+        succ_gains = [m["max_gain_after_w4_pct"] for m in succeeded]
+        succ_days = [m["days_to_w5"] for m in succeeded if m["days_to_w5"] > 0]
+        result[z] = {
+            "count": len(in_zone),
+            "succeeded": len(succeeded),
+            "success_rate": round(len(succeeded) / len(in_zone) * 100, 1),
+            "avg_gain_all": round(statistics.mean(all_gains), 2) if all_gains else 0,
+            "avg_gain_succeeded": round(statistics.mean(succ_gains), 2) if succ_gains else 0,
+            "avg_days_to_w5": round(statistics.mean(succ_days), 1) if succ_days else 0,
+            "risk_reward": round(
+                (statistics.mean(succ_gains) * len(succeeded) / len(in_zone)), 2
+            ) if succ_gains else 0,  # 기대수익 = 평균수익 × 성공률
+        }
+    return result
+
+
+def _cap_band_zone_matrix(measurements: List[Dict]) -> Dict:
+    """E. 시총별 zone 성공률 매트릭스."""
+    bands = ["소형(100-500억)", "중소형(500-1000억)",
+             "중대형(1000-5000억)", "대형(5000억+)"]
+    zones = ["fib_38_safe", "fib_50_standard", "korean_low",
+             "trend_caution", "trend_end"]
+    result = {}
+    for band in bands:
+        band_data = {}
+        for z in zones:
+            match = [m for m in measurements
+                     if m.get("cap_band") == band and m["zone"] == z]
+            if not match:
+                continue
+            succ = [m for m in match if m["succeeded_to_w5"]]
+            band_data[z] = {
+                "count": len(match),
+                "succeeded": len(succ),
+                "success_rate": round(len(succ) / len(match) * 100, 1),
+            }
+        if band_data:
+            result[band] = band_data
+    return result
+
+
+def _sector_zone_top(measurements: List[Dict]) -> List[Dict]:
+    """E. 섹터별 zone 최고 성공률 (표본 5건+)."""
+    from collections import defaultdict
+    sector_zone = defaultdict(list)
+    for m in measurements:
+        key = (m.get("sector", ""), m["zone"])
+        sector_zone[key].append(m)
+
+    results = []
+    for (sector, zone), items in sector_zone.items():
+        if len(items) < 5:  # 표본 5건 미만 무시
+            continue
+        succ = [m for m in items if m["succeeded_to_w5"]]
+        rate = len(succ) / len(items) * 100
+        results.append({
+            "sector": sector,
+            "zone": zone,
+            "count": len(items),
+            "succeeded": len(succ),
+            "success_rate": round(rate, 1),
+        })
+    results.sort(key=lambda x: -x["success_rate"])
+    return results[:15]
 
 
 def _optimal_combinations(measurements: List[Dict]) -> List[Dict]:
@@ -503,6 +617,23 @@ def main():
         print(f"  {i}. zone={opt['zone']:<18} non_overlap={opt['non_overlap']!s:<5} "
               f"alt_or_sideways={opt['has_alt_or_sideways']!s:<5} → "
               f"{opt['count']:>3}건 / {opt['success_rate']:>5}% (x{opt['vs_baseline_multiple']})")
+
+    print(f"\n[★ B. zone별 risk/reward — 진입 후 수익/소요 일수 ★]")
+    for z, c in result.get("zone_risk_reward", {}).items():
+        print(f"  {z:<18} {c['count']:>3}건 / 성공률 {c['success_rate']:>5}% / "
+              f"성공 수익 +{c['avg_gain_succeeded']:>5}% / 도달 {c['avg_days_to_w5']:>4}일 / "
+              f"기대수익 +{c['risk_reward']}%")
+
+    print(f"\n[★ E. 시총별 zone 성공률 매트릭스 ★]")
+    for band, zones in result.get("cap_band_zone_matrix", {}).items():
+        print(f"  [{band}]")
+        for z, c in zones.items():
+            print(f"    {z:<18} {c['count']:>3}건 / {c['success_rate']:>5}%")
+
+    print(f"\n[★ E. 섹터별 zone 성공률 TOP 15 ★]")
+    for i, s in enumerate(result.get("sector_zone_top", [])[:15], 1):
+        print(f"  {i:>2}. [{s['sector']:<12}] {s['zone']:<18} "
+              f"{s['count']:>3}건 / 성공률 {s['success_rate']:>5}%")
 
     if args.save:
         out_path = _ROOT / "data_store" / "backtest" / "elliott_fib_382.json"
