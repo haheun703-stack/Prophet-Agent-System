@@ -32,7 +32,7 @@ sys.path.insert(0, str(_ROOT))
 from dotenv import load_dotenv
 load_dotenv(_ROOT.parent / ".env")
 
-from bot.elliott_wave import _identify_waves
+from bot.elliott_wave import _identify_waves, _classify_wave_shape, evaluate_fib_zone
 
 logger = logging.getLogger("BH.BacktestFib")
 logging.basicConfig(
@@ -200,6 +200,18 @@ def measure_fib_retracement(bars: Sequence[Dict]) -> Optional[Dict]:
     # 4파 저점 vs 1파 고점 (파동 중첩 금지 룰)
     non_overlap = w4l > w1h
 
+    # 파동 형태 (교대 법칙 검증용)
+    w2_shape = _classify_wave_shape(bars, w1, w2) if w2 is not None else "unknown"
+    w4_shape = _classify_wave_shape(bars, w3, len(bars) - 1)
+    alternation_ok = (
+        (w2_shape == "V_sharp" and w4_shape == "sideways") or
+        (w2_shape == "sideways" and w4_shape == "V_sharp")
+    )
+    sideways_w4 = (w4_shape == "sideways")
+
+    # zone 평가
+    zone_info = evaluate_fib_zone(fib_retracement_pct)
+
     return {
         "w1_high": w1h, "w2_low": w2l, "w3_high": w3h, "w4_low": w4l,
         "wave_3_length": wave_3_length,
@@ -207,6 +219,12 @@ def measure_fib_retracement(bars: Sequence[Dict]) -> Optional[Dict]:
         "succeeded_to_w5": succeeded_to_w5,
         "max_high_after_w4": max_high_after_w4,
         "non_overlap_check": non_overlap,
+        "alternation_ok": alternation_ok,
+        "sideways_w4": sideways_w4,
+        "w2_shape": w2_shape, "w4_shape": w4_shape,
+        "zone": zone_info["zone"],
+        "zone_signal": zone_info["signal"],
+        "zone_confidence": zone_info["confidence"],
         "max_gain_after_w4_pct": round((max_high_after_w4 / w4l - 1) * 100, 2) if w4l > 0 else 0,
     }
 
@@ -278,6 +296,7 @@ def run_backtest(limit: int = 50, delay: float = 0.3,
         "total_samples": len(samples),
         "valid_measurements": len(measurements),
         "succeeded_w5": len(succeeded),
+        "overall_success_rate": round(len(succeeded) / len(measurements) * 100, 2),
         "stats_all": {
             "mean": round(statistics.mean(pcts), 2),
             "median": round(statistics.median(pcts), 2),
@@ -289,13 +308,106 @@ def run_backtest(limit: int = 50, delay: float = 0.3,
             "mean": round(statistics.mean(succeeded_pcts), 2) if succeeded_pcts else 0,
             "median": round(statistics.median(succeeded_pcts), 2) if succeeded_pcts else 0,
             "stdev": round(statistics.stdev(succeeded_pcts), 2) if len(succeeded_pcts) >= 2 else 0,
+            "mean_gain_pct": round(statistics.mean([m["max_gain_after_w4_pct"] for m in succeeded]), 2) if succeeded else 0,
         },
         "bucket_distribution": _bucket_distribution(pcts),
         "comparison_with_382": _compare_to_382(measurements),
-        "raw_measurements": measurements[:20],  # 샘플만
+        # ★ A. zone별 정밀 5파 성공률 (사장님 5/22 명령) ★
+        "zone_success_rates": _zone_success_rates(measurements),
+        # ★ C. 룰 결합 성공률 (non_overlap + alternation + sideways) ★
+        "rule_combination_success": _rule_combination_success(measurements),
+        # ★ A+C: zone × 룰 결합 최적 ★
+        "optimal_combinations": _optimal_combinations(measurements),
+        "raw_measurements": measurements[:20],
     }
 
     return result
+
+
+def _zone_success_rates(measurements: List[Dict]) -> Dict:
+    """A. zone별 5파 성공률 + 평균 수익률 (4단계 zone)."""
+    zones = ["too_shallow", "fib_38_safe", "fib_50_standard",
+             "korean_typical", "trend_end_risk"]
+    result = {}
+    for z in zones:
+        in_zone = [m for m in measurements if m["zone"] == z]
+        succeeded = [m for m in in_zone if m["succeeded_to_w5"]]
+        if in_zone:
+            result[z] = {
+                "count": len(in_zone),
+                "succeeded": len(succeeded),
+                "success_rate": round(len(succeeded) / len(in_zone) * 100, 1),
+                "mean_gain_pct": round(
+                    statistics.mean([m["max_gain_after_w4_pct"] for m in succeeded]), 2
+                ) if succeeded else 0,
+            }
+    return result
+
+
+def _rule_combination_success(measurements: List[Dict]) -> Dict:
+    """C. 룰 결합별 성공률 (non_overlap + alternation + sideways).
+
+    8가지 조합 (3룰 × 2상태 = 2^3 = 8).
+    """
+    overall = len(measurements)
+    succeeded_all = sum(1 for m in measurements if m["succeeded_to_w5"])
+    avg = round(succeeded_all / overall * 100, 2) if overall else 0
+
+    combos = {
+        "all_3_rules": ("non_overlap_check", True, "alternation_ok", True, "sideways_w4", True),
+        "no_overlap_only": ("non_overlap_check", True, "alternation_ok", False, "sideways_w4", False),
+        "alternation_only": ("non_overlap_check", False, "alternation_ok", True, "sideways_w4", False),
+        "sideways_only": ("non_overlap_check", False, "alternation_ok", False, "sideways_w4", True),
+        "overlap_alt": ("non_overlap_check", True, "alternation_ok", True, "sideways_w4", False),
+        "overlap_sideways": ("non_overlap_check", True, "alternation_ok", False, "sideways_w4", True),
+        "alt_sideways": ("non_overlap_check", False, "alternation_ok", True, "sideways_w4", True),
+        "none": ("non_overlap_check", False, "alternation_ok", False, "sideways_w4", False),
+    }
+    result = {"_avg_baseline": avg}
+    for name, (k1, v1, k2, v2, k3, v3) in combos.items():
+        match = [m for m in measurements
+                 if m[k1] == v1 and m[k2] == v2 and m[k3] == v3]
+        succ = [m for m in match if m["succeeded_to_w5"]]
+        if match:
+            rate = round(len(succ) / len(match) * 100, 1)
+            result[name] = {
+                "count": len(match),
+                "succeeded": len(succ),
+                "success_rate": rate,
+                "vs_baseline_multiple": round(rate / avg, 2) if avg else 0,
+            }
+    return result
+
+
+def _optimal_combinations(measurements: List[Dict]) -> List[Dict]:
+    """A+C: zone × 룰 결합 모든 조합 — 진짜 최적 셋팅 도출."""
+    overall_avg = round(
+        sum(1 for m in measurements if m["succeeded_to_w5"]) / len(measurements) * 100, 2
+    ) if measurements else 0
+
+    candidates = []
+    for zone in ["fib_38_safe", "fib_50_standard", "korean_typical", "trend_end_risk"]:
+        for non_overlap in [True, False]:
+            for has_alt_or_sideways in [True, False]:
+                match = [m for m in measurements if m["zone"] == zone
+                         and m["non_overlap_check"] == non_overlap
+                         and (m["alternation_ok"] or m["sideways_w4"]) == has_alt_or_sideways]
+                if len(match) < 3:  # 표본 3건 미만 무시
+                    continue
+                succ = [m for m in match if m["succeeded_to_w5"]]
+                rate = round(len(succ) / len(match) * 100, 1)
+                candidates.append({
+                    "zone": zone,
+                    "non_overlap": non_overlap,
+                    "has_alt_or_sideways": has_alt_or_sideways,
+                    "count": len(match),
+                    "succeeded": len(succ),
+                    "success_rate": rate,
+                    "vs_baseline_multiple": round(rate / overall_avg, 2) if overall_avg else 0,
+                })
+    # 성공률 순 정렬
+    candidates.sort(key=lambda x: -x["success_rate"])
+    return candidates[:10]
 
 
 def _bucket_distribution(pcts: List[float]) -> Dict:
@@ -372,6 +484,25 @@ def main():
     print(f"\n[38.2% ± tolerance 5파 성공률]")
     for tol, c in result["comparison_with_382"].items():
         print(f"  {tol:<6}: {c['in_zone_count']:>3}건 / 성공 {c['succeeded']:>3}건 / 성공률 {c['success_rate']}%")
+
+    print(f"\n[★ A. zone별 정밀 5파 성공률 ★]  baseline={result['overall_success_rate']}%")
+    for zone, c in result.get("zone_success_rates", {}).items():
+        bar = "█" * int(c["success_rate"] / 5)
+        print(f"  {zone:<20} {c['count']:>3}건 / 성공 {c['succeeded']:>3}건 / {c['success_rate']:>5}% (수익+{c['mean_gain_pct']}%) {bar}")
+
+    print(f"\n[★ C. 룰 결합 성공률 ★]  baseline={result['rule_combination_success'].get('_avg_baseline', 0)}%")
+    rcs = result.get("rule_combination_success", {})
+    for name, c in rcs.items():
+        if name.startswith("_"):
+            continue
+        if isinstance(c, dict):
+            print(f"  {name:<22} {c['count']:>3}건 / {c['success_rate']:>5}% (x{c['vs_baseline_multiple']})")
+
+    print(f"\n[★ A+C 최적 조합 TOP 10 ★]")
+    for i, opt in enumerate(result.get("optimal_combinations", [])[:10], 1):
+        print(f"  {i}. zone={opt['zone']:<18} non_overlap={opt['non_overlap']!s:<5} "
+              f"alt_or_sideways={opt['has_alt_or_sideways']!s:<5} → "
+              f"{opt['count']:>3}건 / {opt['success_rate']:>5}% (x{opt['vs_baseline_multiple']})")
 
     if args.save:
         out_path = _ROOT / "data_store" / "backtest" / "elliott_fib_382.json"
