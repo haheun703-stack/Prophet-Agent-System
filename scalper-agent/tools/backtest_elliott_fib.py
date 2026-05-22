@@ -51,6 +51,38 @@ def collect_sample_codes(limit: int = 100, source: str = "surge_patterns") -> Li
           "surge_patterns"  — jarvis_learning/surge_patterns/*.json (최근 +5%+ 누적)
           "limit_up"        — daily_limit_up_history (이전 표본, 부적합 입증)
     """
+    if source == "universe":
+        # 사장님 5/22 명령 옵션 C: 더 큰 universe 표본 (상한가 외 종목 추가)
+        # 필터: 시총 100억~5,000억 (중소형 변동성) + 거래량 활발
+        try:
+            uni_path = _ROOT / "data_store" / "universe.json"
+            if not uni_path.exists():
+                logger.error("universe.json 없음")
+                return []
+            u = json.loads(uni_path.read_text(encoding="utf-8"))
+            candidates = []
+            for code, info in u.items():
+                if not isinstance(info, dict):
+                    continue
+                cap = info.get("cap_억", 0)
+                vol = info.get("volume", 0)
+                # 필터: 시총 100~5,000억 + 거래량 10만+
+                if 100 <= cap <= 5000 and vol >= 100_000:
+                    candidates.append({
+                        "code": code,
+                        "name": info.get("name", code),
+                        "sector": info.get("sector", ""),
+                        "cap": cap,
+                        "volume": vol,
+                    })
+            # 거래량 기준 정렬 (활발한 종목 우선)
+            candidates.sort(key=lambda x: -x["volume"])
+            logger.info(f"universe 필터링: 2596 → {len(candidates)}건 → 상위 {limit}건")
+            return candidates[:limit]
+        except Exception as e:
+            logger.error(f"universe 표본 실패: {e}")
+            return []
+
     if source == "active_limit_up":
         # 사장님 5/22 명령: 상한가 2번+ 친 종목 (6개월 백테스트용)
         try:
@@ -307,8 +339,8 @@ def main():
     parser.add_argument("--limit", type=int, default=50, help="표본 종목 수 (기본 50)")
     parser.add_argument("--delay", type=float, default=0.3, help="KIS API 대기 (초)")
     parser.add_argument("--source", type=str, default="surge_patterns",
-                        choices=["active_limit_up", "surge_patterns", "limit_up"],
-                        help="표본 소스 (사장님 5/22 명령: active_limit_up)")
+                        choices=["universe", "active_limit_up", "surge_patterns", "limit_up"],
+                        help="표본 소스 (universe=옵션 C 대규모 / active_limit_up=상한가 2번+)")
     parser.add_argument("--window", type=int, default=60, help="슬라이딩 윈도우 봉수 (기본 60)")
     parser.add_argument("--step", type=int, default=20, help="슬라이딩 스텝 (기본 20)")
     parser.add_argument("--save", action="store_true", help="JSON 저장")
