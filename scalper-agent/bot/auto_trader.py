@@ -2025,8 +2025,31 @@ class AutoTrader:
             logger.warning(f"[asset_pool] 자산 풀 로드 실패: {e}")
             return
 
+        # ★ 5/22 21:00 정보봇 교차 검증 (사장님 "정보봇도 다 믿지 마라") ★
+        # 단계 1: 단타봇 candidates × 정보봇 STRONG_BUY 교차 검증
+        # 단계 2: elliott enrich (G 통합)
+        # 단계 3: elliott AVOID/NO_ENTRY로 jgis_only 차단 (단타봇 우선)
+        ap_jgis_enabled = bool(ap_cfg.get("jgis_cross_validate", True))
+        if ap_jgis_enabled:
+            try:
+                from utils.asset_pool_elliott import merge_and_cross_validate_jgis
+                ranked = await asyncio.to_thread(
+                    merge_and_cross_validate_jgis, ranked, 10
+                )
+                cv_counts = {"both": 0, "dantabot_only": 0, "jgis_only": 0}
+                for r in ranked:
+                    cs = r.get("cross_status", "dantabot_only")
+                    if cs in cv_counts:
+                        cv_counts[cs] += 1
+                logger.info(
+                    f"[asset_pool] jgis 교차검증 — DOUBLE {cv_counts['both']}건 / "
+                    f"단타봇 {cv_counts['dantabot_only']}건 / "
+                    f"jgis만 {cv_counts['jgis_only']}건"
+                )
+            except Exception as e:
+                logger.warning(f"[asset_pool] jgis 교차검증 실패 (무시): {e}")
+
         # ★ 5/22 20:00 G 통합 — elliott 4파 분석 + metadata 가중치 (사장님 명령) ★
-        # 옵션 B: trading_coo 변경 X / asset_pool_scan_and_buy 안에서 후처리
         # 백테스트 검증 (universe 200종 / baseline 20.4%):
         #   fib_38_safe + 중대형 = 50% 성공 (★ 최우선 ★)
         #   korean_low = 9.1% 성공 (★ 회피 — score -10 ★)
@@ -2035,11 +2058,14 @@ class AutoTrader:
         if ap_elliott_enabled:
             try:
                 from utils.asset_pool_elliott import (
-                    enrich_with_elliott, summarize_elliott_distribution,
+                    enrich_with_elliott, apply_elliott_cross_block,
+                    summarize_elliott_distribution,
                 )
                 ranked = await asyncio.to_thread(
                     enrich_with_elliott, ranked, self.trader, 0.3, 20, True
                 )
+                # ★ jgis_only 종목 중 elliott AVOID/NO_ENTRY = 단타봇 우선 차단 ★
+                ranked = apply_elliott_cross_block(ranked)
                 summary = summarize_elliott_distribution(ranked)
                 logger.info(
                     f"[asset_pool] elliott G통합 적용 — {summary['total']}종 "

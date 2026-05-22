@@ -153,6 +153,141 @@ def enrich_with_elliott(
     return enriched
 
 
+def merge_and_cross_validate_jgis(
+    dantabot_candidates: List[Dict],
+    jgis_top_limit: int = 10,
+) -> List[Dict]:
+    """단타봇 자체 candidates × 정보봇 STRONG_BUY 교차 검증 (사장님 5/22 21:00 명령).
+
+    ★ 사장님 원칙 ★: "정보봇도 다 믿지 마라. 단타봇 자체와 비교해서 확인"
+
+    교차 검증 4가지 시나리오:
+      1. 단타봇 + 정보봇 둘 다 시그널: +50 보너스 (★ 강한 매수)
+      2. 단타봇 단독: 그대로 (자체 시그널 신뢰)
+      3. 정보봇 단독: +20 합류 (보수 — 단타봇 발굴 X but jgis 검증)
+      4. 정보봇 단독 + 후속 elliott AVOID: 회피 (cross_block 플래그)
+
+    Args:
+        dantabot_candidates: get_diversified_candidates 결과 (단타봇 자체)
+        jgis_top_limit: 정보봇 STRONG_BUY 상위 N건
+
+    Returns:
+        합집합 candidates with:
+          - cross_validated: bool (단타봇+정보봇 동시)
+          - cross_status: "both" / "dantabot_only" / "jgis_only" / "jgis_blocked"
+          - cross_bonus: +50 / 0 / +20 / 0
+          - jgis_signal: {sniper, smart_money, supply, composite}
+    """
+    # 단타봇 candidates code set
+    dantabot_codes = {c.get("code") for c in dantabot_candidates}
+
+    # 정보봇 STRONG_BUY 가져오기
+    jgis_codes = set()
+    jgis_sigs_by_code = {}
+    try:
+        from bot.jgis_signal_consumer import top_strong_buy_signals
+        tops = top_strong_buy_signals(limit=jgis_top_limit)
+        for sig in tops:
+            jgis_codes.add(sig.code)
+            jgis_sigs_by_code[sig.code] = {
+                "sniper_signal": sig.sniper_signal,
+                "sniper_score": sig.sniper_score,
+                "smart_money_signal": sig.smart_money_signal,
+                "smart_money_score": sig.smart_money_score,
+                "supply_grade": sig.supply_grade,
+                "supply_score": sig.supply_score,
+                "composite": sig.composite_score,
+                "name": sig.name,
+                "sector": sig.sector,
+            }
+    except Exception as e:
+        logger.warning(f"[cross_validate] jgis 조회 실패: {e}")
+
+    if not jgis_codes:
+        # 정보봇 시그널 없음 → 단타봇 그대로
+        for c in dantabot_candidates:
+            c["cross_status"] = "dantabot_only"
+            c["cross_validated"] = False
+            c["cross_bonus"] = 0
+        return dantabot_candidates
+
+    merged = []
+    overlap = dantabot_codes & jgis_codes  # 1. 둘 다 시그널
+
+    # 단타봇 candidates 처리
+    for c in dantabot_candidates:
+        code = c.get("code")
+        if code in overlap:
+            # ★ 시나리오 1: 단타봇 + 정보봇 둘 다 → 강한 매수 ★
+            c["cross_status"] = "both"
+            c["cross_validated"] = True
+            c["cross_bonus"] = 50
+            c["score"] = c.get("score", 0) + 50
+            c["jgis_signal"] = jgis_sigs_by_code[code]
+            logger.info(
+                f"[cross_validate] ★ DOUBLE ★ {code} {c.get('name', '')[:8]} "
+                f"단타봇+정보봇 동시 → +50 (jgis={jgis_sigs_by_code[code]['sniper_signal']})"
+            )
+        else:
+            # 시나리오 2: 단타봇 단독 → 그대로
+            c["cross_status"] = "dantabot_only"
+            c["cross_validated"] = False
+            c["cross_bonus"] = 0
+        merged.append(c)
+
+    # 정보봇 단독 종목 합류 (시나리오 3)
+    jgis_only_codes = jgis_codes - dantabot_codes
+    for code in jgis_only_codes:
+        sig = jgis_sigs_by_code[code]
+        merged.append({
+            "code": code,
+            "name": sig["name"],
+            "score": int(sig["composite"]) + 20,  # composite + 20 보너스
+            "sources": ["jgis_strong_buy"],
+            "category": "jgis_priority",
+            "cross_status": "jgis_only",
+            "cross_validated": False,
+            "cross_bonus": 20,
+            "jgis_signal": sig,
+        })
+        logger.info(
+            f"[cross_validate] JGIS_ONLY {code} {sig['name'][:8]} "
+            f"정보봇 단독 → +20 (단타봇 X / jgis_composite={sig['composite']})"
+        )
+
+    return merged
+
+
+def apply_elliott_cross_block(candidates: List[Dict]) -> List[Dict]:
+    """elliott zone × jgis 시그널 교차 검증 차단 (시나리오 4).
+
+    정보봇 단독 종목이 elliott AVOID/NO_ENTRY zone이면 cross_block:
+      - jgis가 STRONG_BUY 말하지만 elliott 분석 결과 추세 종료 의심
+      - 단타봇 elliott 신뢰 (자체 분석 우선)
+      - score를 큰 폭 차감 (사실상 매수 차단)
+
+    enrich_with_elliott 호출 후에 호출.
+    """
+    blocked = 0
+    for c in candidates:
+        cross_status = c.get("cross_status", "")
+        elliott_signal = c.get("elliott_signal", "")
+        if cross_status == "jgis_only" and elliott_signal in ("AVOID", "NO_ENTRY"):
+            old_score = c.get("score", 0)
+            c["score"] = old_score - 100  # 사실상 매수 차단
+            c["cross_status"] = "jgis_blocked"
+            c["cross_block_reason"] = f"jgis STRONG_BUY but elliott {elliott_signal}"
+            blocked += 1
+            logger.warning(
+                f"[cross_block] {c['code']} {c.get('name', '')[:8]} — "
+                f"jgis STRONG_BUY but elliott {elliott_signal} → 매수 차단 (-100)"
+            )
+    if blocked > 0:
+        logger.info(f"[cross_block] {blocked}건 차단 — 단타봇 elliott 우선")
+        candidates.sort(key=lambda x: -x.get("score", 0))
+    return candidates
+
+
 def summarize_elliott_distribution(candidates: List[Dict]) -> Dict:
     """elliott 적용 후보 분포 요약 (보고용)."""
     if not candidates:

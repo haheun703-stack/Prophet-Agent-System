@@ -70,5 +70,81 @@ class TestAssetPoolElliott(unittest.TestCase):
         self.assertIn("summarize_elliott_distribution", module_attrs)
 
 
+    def test_6_cross_validate_both(self):
+        """⑥ 단타봇 + 정보봇 동시 시그널 → cross_status='both' / +50 보너스"""
+        from utils.asset_pool_elliott import merge_and_cross_validate_jgis
+        from unittest.mock import patch, MagicMock
+
+        with patch("bot.jgis_signal_consumer.top_strong_buy_signals") as mock_top:
+            # 정보봇 STRONG_BUY = HPSP (403870) + 단타봇 candidate에도 있음
+            mock_sig = MagicMock()
+            mock_sig.code = "403870"
+            mock_sig.name = "HPSP"
+            mock_sig.sector = "반도체"
+            mock_sig.sniper_signal = "반등임박"
+            mock_sig.sniper_score = 82
+            mock_sig.smart_money_signal = "DUAL_FLOW"
+            mock_sig.smart_money_score = 105
+            mock_sig.supply_grade = "A+"
+            mock_sig.supply_score = 98
+            mock_sig.composite_score = 90.0
+            mock_top.return_value = [mock_sig]
+
+            dantabot = [{"code": "403870", "name": "HPSP", "score": 100}]
+            merged = merge_and_cross_validate_jgis(dantabot, jgis_top_limit=10)
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["cross_status"], "both")
+        self.assertTrue(merged[0]["cross_validated"])
+        self.assertEqual(merged[0]["cross_bonus"], 50)
+        self.assertEqual(merged[0]["score"], 150)  # 100 + 50
+
+    def test_7_cross_validate_jgis_only(self):
+        """⑦ 정보봇 단독 → cross_status='jgis_only' / 새 종목 합류 +20"""
+        from utils.asset_pool_elliott import merge_and_cross_validate_jgis
+        from unittest.mock import patch, MagicMock
+
+        with patch("bot.jgis_signal_consumer.top_strong_buy_signals") as mock_top:
+            mock_sig = MagicMock()
+            mock_sig.code = "999999"
+            mock_sig.name = "정보봇단독"
+            mock_sig.sector = ""
+            mock_sig.sniper_signal = "반등임박"
+            mock_sig.sniper_score = 80
+            mock_sig.smart_money_signal = ""
+            mock_sig.smart_money_score = 0
+            mock_sig.supply_grade = ""
+            mock_sig.supply_score = 0
+            mock_sig.composite_score = 75.0
+            mock_top.return_value = [mock_sig]
+
+            dantabot = [{"code": "AAA", "score": 50}]
+            merged = merge_and_cross_validate_jgis(dantabot, jgis_top_limit=10)
+
+        self.assertEqual(len(merged), 2)
+        jgis_only = [c for c in merged if c.get("cross_status") == "jgis_only"]
+        self.assertEqual(len(jgis_only), 1)
+        self.assertEqual(jgis_only[0]["code"], "999999")
+        self.assertEqual(jgis_only[0]["score"], 95)  # composite 75 + 20
+
+    def test_8_cross_block_jgis_only_avoid(self):
+        """⑧ 정보봇 단독 + elliott AVOID → cross_block (-100 사실상 차단)"""
+        from utils.asset_pool_elliott import apply_elliott_cross_block
+
+        candidates = [
+            {"code": "A", "name": "정보봇단독", "score": 95,
+             "cross_status": "jgis_only", "elliott_signal": "AVOID"},
+            {"code": "B", "name": "더블", "score": 150,
+             "cross_status": "both", "elliott_signal": "AVOID"},  # both는 차단 X
+        ]
+        result = apply_elliott_cross_block(candidates)
+        a = next(c for c in result if c["code"] == "A")
+        b = next(c for c in result if c["code"] == "B")
+        self.assertEqual(a["cross_status"], "jgis_blocked")
+        self.assertEqual(a["score"], -5)  # 95 - 100
+        self.assertEqual(b["cross_status"], "both")  # both는 그대로
+        self.assertEqual(b["score"], 150)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
