@@ -214,20 +214,34 @@ def sync_positions(self):
             )
             synced["removed"].append(f"{old.get('name')}({code})")
 
+            # ★ 5/22 단타봇 fix (TODO ⑭) ★ guardian 가짜 매도 -100% 회계 결함 fix
+            # 사장님 5/22 11:50 명령: 진짜 손익 왜곡 → 실제 매도가 best-effort 추적
+            # sell_price=0 → KIS 현재가 (시장 시점) 또는 buy_price 폴백 (손익 0%)
+            # 결함 영구 기록: [[project_5_22_evening_learning_fix]] TODO ⑭
+            buy_price_old = float(old.get("buy_price", 0))
+            sell_price_est = buy_price_old  # 폴백: 손익 0% (가짜 -100% 방지)
+            try:
+                price_info = self.trader.fetch_price(code)
+                if price_info and price_info.get("success"):
+                    current_px = int(price_info.get("current_price", 0))
+                    if current_px > 0:
+                        sell_price_est = float(current_px)
+            except Exception as _px_e:
+                logger.debug(f"[SYNC] {code} fetch_price 실패(폴백 buy_price): {_px_e}")
+
             # trade_journal 적재 (박사 fix 5/21 19:45: 화이트리스트 안전 매핑)
-            # bkit:code-analyzer 발견: "sync_remove"/"sync_auto" 화이트리스트 없음 → 강등
-            # → 기존 화이트리스트 값 재사용 + note에 sync 컨텍스트 명시
             try:
                 from data import trade_journal as _tj
                 _tj.log_sell(
                     code=code,
                     name=old.get("name", code),
                     qty=int(old.get("qty", 0)),
-                    sell_price=0,  # 실제 매도가 불명 (외부 매도 후 발견)
-                    buy_price=float(old.get("buy_price", 0)),
+                    sell_price=sell_price_est,  # ★ 5/22 fix: 시장 현재가 또는 buy_price 폴백 ★
+                    buy_price=buy_price_old,
                     event_type="sell_close",  # 화이트리스트 호환 (외부 청산 류)
                     source="guardian",        # 화이트리스트 호환 (안전장치 매도)
-                    note="sync_remove: KIS 잔고에서 사라짐 — 동기화 자동 제거",
+                    note=f"sync_remove: KIS 잔고 사라짐 / sell_price_est={sell_price_est:.0f} "
+                         f"(5/22 단타봇 TODO ⑭ fix — 가짜 -100% 방지)",
                 )
             except Exception as _tj_e:
                 logger.debug(f"[SYNC] trade_journal 적재 실패(무시): {_tj_e}")

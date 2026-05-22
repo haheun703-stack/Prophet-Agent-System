@@ -4272,6 +4272,31 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[COO] 시초 매도 큐 처리 실패 (무시): {e}")
 
+    # ═════════════════════════════════════════════
+    # 단타봇 자율 보고 스케줄러 (TODO ⑮, 사장님 5/22 11:50 명령)
+    # ═════════════════════════════════════════════
+    async def _job_scheduled_report(self, context=None, *, report_type: str = "midday") -> dict:
+        """단타봇 자율 보고 — KIS 실측 + 텔레그램 전송.
+
+        영구 메모리 [[feedback_self_monitoring_realtime_5_22]]:
+        "단타봇 N시 보고 약속 → 사장님 입력 무관 자율 보고"
+
+        스케줄: 09:30 morning / 11:30 midday / 14:00 jarvis_weakness /
+                14:30 weekend_hold (금요일만) / 15:35 close
+        """
+        try:
+            from bot.scheduled_reports import send_scheduled_report
+            trader = self.auto_trader.trader if self.auto_trader else None
+            chat_id = getattr(self.bot, "chat_id", None) if self.bot else None
+            if not trader:
+                logger.warning(f"[COO] 자율 보고 {report_type}: trader 미연결 — 스킵")
+                return {"sent": False, "error": "no_trader"}
+            result = await send_scheduled_report(trader, self.bot, chat_id, report_type)
+            return result
+        except Exception as e:
+            logger.warning(f"[COO] 자율 보고 {report_type} 실패 (무시): {e}")
+            return {"sent": False, "error": str(e)[:200]}
+
     async def _job_surge_pattern_learning(self, context=None) -> None:
         """[5/20 사장님 비전] 매일 15:35 — 급등 종목 패턴 학습.
 
@@ -4667,6 +4692,27 @@ class TradingCOO:
         # 09:15로 이동 (10분 안정화 후) → 데이터 신뢰성 향상
         jq.run_daily(self._job_asset_pool_scan, time=kst_time(9, 15))
         logger.info("[COO] 자산풀 매수 등록: 09:15 KST (5/20 사고 후 이동, B 진보 + 1주 모드)")
+
+        # ── ★ 5/22 단타봇 자율 보고 스케줄러 (TODO ⑮, 사장님 5/22 11:50 명령) ★ ──
+        # 영구 메모리 [[feedback_self_monitoring_realtime_5_22]]:
+        # "단타봇 N시 보고 약속 → 사장님 입력 무관 자율 보고"
+        # 5/22 사고: 단타봇 14:00/14:30 보고 약속 → 사장님 안 부르니 침묵 → 잘못된 정보 보고
+        try:
+            from functools import partial
+            from bot.scheduled_reports import SCHEDULES
+            for sched_time, _rtype in SCHEDULES:
+                jq.run_daily(
+                    partial(self._job_scheduled_report, report_type=_rtype),
+                    time=sched_time,
+                    name=f"sched_report_{_rtype}",
+                )
+            logger.info(
+                f"[COO] 단타봇 자율 보고 등록: {len(SCHEDULES)}건 "
+                f"(09:30 morning / 11:30 midday / 14:00 jarvis_weakness / "
+                f"14:30 weekend_hold / 15:35 close)"
+            )
+        except Exception as e:
+            logger.warning(f"[COO] 자율 보고 스케줄러 등록 실패 (무시): {e}")
 
         # ── 알고리즘 A: 섹터 동조 카운터 텔레그램 알림 (5/19 5/18 백테스트 적중) ──
         # 09:30 / 11:00 / 13:00 — 같은 섹터 4개+ 동시 +10%+ 시 즉시 알림
