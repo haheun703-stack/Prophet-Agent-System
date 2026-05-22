@@ -47,9 +47,35 @@ def collect_sample_codes(limit: int = 100, source: str = "surge_patterns") -> Li
 
     Args:
         source:
-          "surge_patterns" — jarvis_learning/surge_patterns/*.json (최근 +5%+ 누적, 추천)
-          "limit_up"       — daily_limit_up_history (상한가 후 = 5파 끝남, 부적합 입증)
+          "active_limit_up" — daily_limit_up_history 2회+ active 종목 (사장님 5/22 명령)
+          "surge_patterns"  — jarvis_learning/surge_patterns/*.json (최근 +5%+ 누적)
+          "limit_up"        — daily_limit_up_history (이전 표본, 부적합 입증)
     """
+    if source == "active_limit_up":
+        # 사장님 5/22 명령: 상한가 2번+ 친 종목 (6개월 백테스트용)
+        try:
+            from utils.supabase_sql import query
+            sql = """
+                SELECT ticker, name,
+                       COUNT(*) AS n_active,
+                       MAX(date) AS latest,
+                       MAX(consecutive_days) AS max_consec,
+                       MAX(peak_close) AS peak
+                FROM daily_limit_up_history
+                WHERE date >= CURRENT_DATE - INTERVAL '180 days'
+                GROUP BY ticker, name
+                HAVING COUNT(*) >= 2
+                ORDER BY COUNT(*) DESC, MAX(date) DESC
+                LIMIT %s
+            """
+            rows = query(sql, (limit,))
+            return [{"code": r["ticker"], "name": r["name"],
+                     "n_active": r["n_active"], "latest": r["latest"]}
+                    for r in (rows or [])]
+        except Exception as e:
+            logger.error(f"active_limit_up 표본 실패: {e}")
+            return []
+
     if source == "surge_patterns":
         codes_seen = set()
         results = []
@@ -154,45 +180,55 @@ def measure_fib_retracement(bars: Sequence[Dict]) -> Optional[Dict]:
 
 
 # ── 메인 백테스트 ─────────────────────────────────
-def run_backtest(limit: int = 50, delay: float = 0.3) -> Dict:
+def run_backtest(limit: int = 50, delay: float = 0.3,
+                 source: str = "surge_patterns",
+                 window_size: int = 60, window_step: int = 20) -> Dict:
     """전체 백테스트 흐름.
 
     Args:
         limit: 표본 종목 수
         delay: KIS API 호출 간 대기 (rate limit)
+        source: 표본 소스 (active_limit_up / surge_patterns / limit_up)
+        window_size: 슬라이딩 윈도우 크기 (일봉 봉수, 기본 60 ≈ 3개월)
+        window_step: 슬라이딩 스텝 (기본 20)
     """
     from bot.kis_trader import KISTrader
     trader = KISTrader()
 
     # 1) 표본 수집
-    samples = collect_sample_codes(limit=limit)
+    samples = collect_sample_codes(limit=limit, source=source)
     if not samples:
-        logger.error("표본 0건 — Supabase 연결 실패 또는 데이터 없음")
+        logger.error(f"표본 0건 — source={source}")
         return {}
-    logger.info(f"표본 수집: {len(samples)}건")
+    logger.info(f"표본 수집 ({source}): {len(samples)}건")
 
-    # 2) 각 종목 일봉 끌어와 4파 분석
+    # 2) 각 종목 일봉 끌어와 슬라이딩 윈도우로 4파 분석
     measurements = []
     for i, s in enumerate(samples, 1):
         code = s["code"]
         try:
             bars = trader.fetch_daily_chart(code)
-            if not bars or len(bars) < 20:
+            if not bars or len(bars) < window_size:
                 logger.warning(f"[{i}/{len(samples)}] {code} {s['name']}: 일봉 부족 ({len(bars or [])}개)")
                 continue
 
-            m = measure_fib_retracement(bars)
-            if m is None:
-                logger.warning(f"[{i}/{len(samples)}] {code} {s['name']}: 4파 미감지")
-                continue
+            # 슬라이딩 윈도우 — 한 종목에서 여러 4파 사이클 탐지
+            n = len(bars)
+            patterns_found = 0
+            for start in range(0, n - window_size + 1, window_step):
+                window = bars[start:start + window_size]
+                m = measure_fib_retracement(window)
+                if m is None:
+                    continue
+                m["code"] = code
+                m["name"] = s["name"]
+                m["window_start"] = window[0].get("date", "")
+                m["window_end"] = window[-1].get("date", "")
+                measurements.append(m)
+                patterns_found += 1
 
-            m["code"] = code
-            m["name"] = s["name"]
-            m["limit_up_date"] = str(s.get("limit_up_date"))
-            measurements.append(m)
-
-            if i % 10 == 0:
-                logger.info(f"진행 {i}/{len(samples)} — 측정 {len(measurements)}건")
+            if i % 5 == 0:
+                logger.info(f"진행 {i}/{len(samples)} — 누적 측정 {len(measurements)}건")
 
             time.sleep(delay)  # rate limit
         except Exception as e:
@@ -270,11 +306,17 @@ def main():
     parser = argparse.ArgumentParser(description="엘리어트 38.2% 피보 백테스트")
     parser.add_argument("--limit", type=int, default=50, help="표본 종목 수 (기본 50)")
     parser.add_argument("--delay", type=float, default=0.3, help="KIS API 대기 (초)")
+    parser.add_argument("--source", type=str, default="surge_patterns",
+                        choices=["active_limit_up", "surge_patterns", "limit_up"],
+                        help="표본 소스 (사장님 5/22 명령: active_limit_up)")
+    parser.add_argument("--window", type=int, default=60, help="슬라이딩 윈도우 봉수 (기본 60)")
+    parser.add_argument("--step", type=int, default=20, help="슬라이딩 스텝 (기본 20)")
     parser.add_argument("--save", action="store_true", help="JSON 저장")
     args = parser.parse_args()
 
-    print(f"\n=== 엘리어트 38.2% 백테스트 시작 (표본 {args.limit}건) ===\n")
-    result = run_backtest(limit=args.limit, delay=args.delay)
+    print(f"\n=== 엘리어트 38.2% 백테스트 (source={args.source} / 표본 {args.limit}건 / 윈도우 {args.window}봉) ===\n")
+    result = run_backtest(limit=args.limit, delay=args.delay,
+                          source=args.source, window_size=args.window, window_step=args.step)
 
     if result.get("error"):
         print(f"❌ {result['error']}")
