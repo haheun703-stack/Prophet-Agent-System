@@ -1,0 +1,211 @@
+# -*- coding: utf-8 -*-
+"""asset_pool × elliott_wave 통합 모듈 (사장님 5/22 20:00 G 통합 명령).
+
+asset_pool_loader의 후보 종목들에 elliott 4파 분석 + metadata 가중치 적용.
+
+호출 흐름 (5/26 D-Day 09:15):
+    1. trading_coo._job_asset_pool_scan() → auto_trader.asset_pool_scan_and_buy()
+    2. asset_pool_loader.get_diversified_candidates() → 분산 5종 후보
+    3. ★ enrich_with_elliott(candidates, trader) ← 이 모듈 ★
+    4. 각 후보별:
+       - KIS fetch_daily_chart (일봉 200영업일)
+       - detect_elliott_pattern (4파 분석)
+       - boost_with_metadata (시총/섹터 가중치)
+    5. score에 elliott_boost 합산 + 점수순 재정렬
+
+영구 메모리:
+  - [[feedback_verify_external_knowledge]] — 외부 자료 → 데이터 검증
+  - [[project_5_22_evening_learning_fix]] — 풀세트 D + 엘리어트
+"""
+import logging
+import time
+from pathlib import Path
+from typing import Dict, List, Optional
+
+logger = logging.getLogger(__name__)
+
+
+def _cap_band(cap_억: float) -> str:
+    """시총 구간 분류 (백테스트 매트릭스 검증 — universe 200종)."""
+    if cap_억 < 500:
+        return "소형(100-500억)"
+    elif cap_억 < 1000:
+        return "중소형(500-1000억)"
+    elif cap_억 < 5000:
+        return "중대형(1000-5000억)"
+    else:
+        return "대형(5000억+)"
+
+
+def _load_universe() -> Dict:
+    """universe.json 로드 (cap/sector metadata)."""
+    try:
+        import json
+        path = Path(__file__).resolve().parent.parent / "data_store" / "universe.json"
+        if not path.exists():
+            logger.warning("universe.json 없음 — metadata 가중치 적용 X")
+            return {}
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.warning(f"universe.json 로드 실패: {e}")
+        return {}
+
+
+def enrich_with_elliott(
+    candidates: List[Dict],
+    trader,
+    delay: float = 0.3,
+    daily_bars_min: int = 20,
+    log_each: bool = True,
+) -> List[Dict]:
+    """후보 종목에 elliott 점수 + metadata 가중치 적용 + 재정렬.
+
+    Args:
+        candidates: [{code, name, score, sources, ...}] 후보 리스트
+        trader: KISTrader 인스턴스 (fetch_daily_chart 호출용)
+        delay: KIS API 호출 간 대기 (rate limit, 기본 0.3초)
+        daily_bars_min: 최소 일봉 개수 (미달 시 skip)
+        log_each: 각 종목 결과 로그 출력
+
+    Returns:
+        elliott_boost / elliott_zone / elliott_signal 필드 추가된 candidates,
+        score 합산 후 점수순 재정렬.
+
+    Note:
+        - candidates의 score 필드를 elliott_boost만큼 가산
+        - 4파 미감지 또는 일봉 부족 시 elliott_boost=0 (변화 X)
+        - 5/22 백테스트 검증된 zone × cap × sector 가중치 적용
+    """
+    if not candidates:
+        return []
+
+    # 지연 import (circular 회피)
+    try:
+        from bot.elliott_wave import detect_elliott_pattern, boost_with_metadata
+    except Exception as e:
+        logger.error(f"elliott_wave import 실패: {e}")
+        return candidates
+
+    universe = _load_universe()
+
+    enriched = []
+    for c in candidates:
+        code = c.get("code")
+        if not code:
+            enriched.append(c)
+            continue
+
+        # 기본값 (실패 케이스 대비)
+        c.setdefault("elliott_boost", 0)
+        c.setdefault("elliott_zone", "unknown")
+        c.setdefault("elliott_signal", "NO_DATA")
+
+        try:
+            bars = trader.fetch_daily_chart(code)
+            if not bars or len(bars) < daily_bars_min:
+                if log_each:
+                    logger.debug(f"[elliott_enrich] {code}: 일봉 부족 ({len(bars or [])}봉)")
+                enriched.append(c)
+                continue
+
+            result = detect_elliott_pattern(bars)
+
+            # metadata
+            info = universe.get(code, {}) if isinstance(universe, dict) else {}
+            cap = info.get("cap_억", 0) if isinstance(info, dict) else 0
+            cap_band = _cap_band(cap)
+            sector = info.get("sector", "") if isinstance(info, dict) else ""
+
+            boost = boost_with_metadata(result, cap_band=cap_band, sector=sector)
+            c["elliott_boost"] = boost
+            c["elliott_zone"] = result.fib_zone_name
+            c["elliott_signal"] = result.fib_zone_signal
+            c["elliott_fib_pct"] = result.fib_retracement_pct
+            c["cap_band"] = cap_band
+            c["sector_for_elliott"] = sector
+
+            # score 합산 (기존 score + elliott_boost)
+            old_score = c.get("score", 0)
+            c["score"] = old_score + boost
+            c["score_breakdown"] = {
+                "base": old_score,
+                "elliott_boost": boost,
+                "total": c["score"],
+            }
+
+            if log_each:
+                logger.info(
+                    f"[elliott_enrich] {code} {c.get('name', '?')[:8]:<8} "
+                    f"zone={result.fib_zone_name:<18} signal={result.fib_zone_signal:<12} "
+                    f"cap={cap_band[:10]:<10} sector={sector[:6]:<6} "
+                    f"boost={boost:+d} → score {old_score} → {c['score']}"
+                )
+
+            if delay > 0:
+                time.sleep(delay)
+        except Exception as e:
+            logger.warning(f"[elliott_enrich] {code} 실패 (무시): {e}")
+
+        enriched.append(c)
+
+    # 점수 순 재정렬
+    enriched.sort(key=lambda x: -x.get("score", 0))
+    return enriched
+
+
+def summarize_elliott_distribution(candidates: List[Dict]) -> Dict:
+    """elliott 적용 후보 분포 요약 (보고용)."""
+    if not candidates:
+        return {"total": 0, "zone_distribution": {}, "avg_boost": 0}
+
+    zone_count = {}
+    boosts = []
+    for c in candidates:
+        z = c.get("elliott_zone", "unknown")
+        zone_count[z] = zone_count.get(z, 0) + 1
+        b = c.get("elliott_boost", 0)
+        if isinstance(b, (int, float)):
+            boosts.append(b)
+
+    summary = {
+        "total": len(candidates),
+        "zone_distribution": zone_count,
+        "avg_boost": round(sum(boosts) / len(boosts), 1) if boosts else 0,
+        "max_boost": max(boosts) if boosts else 0,
+        "min_boost": min(boosts) if boosts else 0,
+        "top_candidate": {
+            "code": candidates[0].get("code"),
+            "name": candidates[0].get("name"),
+            "score": candidates[0].get("score"),
+            "elliott_zone": candidates[0].get("elliott_zone"),
+        } if candidates else None,
+    }
+    return summary
+
+
+if __name__ == "__main__":
+    import json as _json
+
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
+    print("=== asset_pool_elliott 데모 (Mock trader) ===\n")
+
+    # Mock trader
+    class MockTrader:
+        def fetch_daily_chart(self, code):
+            # 데모: 20봉 단순 패턴
+            return [
+                {"date": f"2026-05-{i:02d}", "open": 100 + i, "high": 100 + i + 2,
+                 "low": 100 + i - 1, "close": 100 + i + 1, "volume": 1000}
+                for i in range(1, 21)
+            ]
+
+    candidates = [
+        {"code": "005930", "name": "삼성전자", "score": 100, "sources": ["limit_up"]},
+        {"code": "204320", "name": "HL만도", "score": 80, "sources": ["nxt"]},
+    ]
+    enriched = enrich_with_elliott(candidates, MockTrader(), delay=0, log_each=True)
+    print("\n=== 결과 ===")
+    for c in enriched:
+        print(_json.dumps(c, ensure_ascii=False, default=str)[:200])
+    print("\n=== 요약 ===")
+    print(_json.dumps(summarize_elliott_distribution(enriched), ensure_ascii=False, indent=2))
