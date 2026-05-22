@@ -131,6 +131,60 @@ class TestElliottWave(unittest.TestCase):
         # 핵심은 buy_signal=False여야 함 (4파 형성 안 됐으므로)
         self.assertFalse(result.buy_signal)
 
+    def test_8_fib_zone_4tier_setting(self):
+        """⑧ 4단계 zone 진입 (사장님 5/22 19:13 명령 — 200종 백테스트 검증):
+           - 28~48%: fib_38_safe / BUY / conf 1.0 (성공률 43.8%, 평균의 2.15배)
+           - 48~62%: fib_50_standard / BUY / conf 0.7
+           - 62~80%: korean_typical / BUY / conf 0.5
+           - 80%+: trend_end_risk / WAIT / conf 0.2
+           - 0~28%: too_shallow / NO_ENTRY / conf 0
+        """
+        from bot.elliott_wave import evaluate_fib_zone
+
+        # 38.2% 안전 zone
+        r1 = evaluate_fib_zone(38.2)
+        self.assertEqual(r1["zone"], "fib_38_safe")
+        self.assertEqual(r1["signal"], "BUY")
+        self.assertEqual(r1["confidence"], 1.0)
+
+        # 28% 경계 (포함)
+        r2 = evaluate_fib_zone(28.0)
+        self.assertEqual(r2["zone"], "fib_38_safe")
+
+        # 48% 경계 (제외 — fib_50으로)
+        r3 = evaluate_fib_zone(48.0)
+        self.assertEqual(r3["zone"], "fib_50_standard")
+        self.assertEqual(r3["confidence"], 0.7)
+
+        # 한국 일반 70%
+        r4 = evaluate_fib_zone(70.0)
+        self.assertEqual(r4["zone"], "korean_typical")
+        self.assertEqual(r4["confidence"], 0.5)
+
+        # 추세 종료 85%
+        r5 = evaluate_fib_zone(85.0)
+        self.assertEqual(r5["zone"], "trend_end_risk")
+        self.assertEqual(r5["signal"], "WAIT")
+        self.assertEqual(r5["confidence"], 0.2)
+
+        # 너무 얕음 20%
+        r6 = evaluate_fib_zone(20.0)
+        self.assertEqual(r6["zone"], "too_shallow")
+        self.assertEqual(r6["signal"], "NO_ENTRY")
+        self.assertEqual(r6["confidence"], 0.0)
+
+    def test_9_fib_retracement_pct_recorded(self):
+        """⑨ ElliottResult에 fib_retracement_pct 실제값 기록 (5/22 추가):
+           - 단순 fib_zone_match (bool) → 실제 % 값 + zone 이름 + signal 모두 기록
+        """
+        result = detect_elliott_pattern(PATTERN_FIVE_WAVE_OK)
+        self.assertIsNotNone(result.fib_retracement_pct)
+        self.assertIn(result.fib_zone_name, [
+            "fib_38_safe", "fib_50_standard", "korean_typical",
+            "trend_end_risk", "too_shallow", "unknown"
+        ])
+        self.assertIn(result.fib_zone_signal, ["BUY", "WAIT", "NO_ENTRY"])
+
     def test_7_score_boost_thresholds(self):
         """⑦ elliott_score_boost 임계값:
            - buy_signal=True → 25

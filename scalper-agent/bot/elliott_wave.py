@@ -36,6 +36,35 @@ WavePhase = Literal[
 ]
 
 
+# ── 4단계 피보 진입 셋팅 (사장님 5/22 19:13 명령 — 200종 백테스트 검증) ─────
+# 표본 285건 × 5파 성공 58건 = 평균 성공률 20.4%
+# 38.2% ± 10% 구간 성공률 43.8% = 평균의 2.15배 (★ 사장님 자료 검증됨 ★)
+FIB_ZONES = [
+    # (lo, hi, confidence, zone_name, signal)
+    (28, 48,  1.0, "fib_38_safe",        "BUY"),       # ★ 보수 안전 (43.8% 성공) ★
+    (48, 62,  0.7, "fib_50_standard",    "BUY"),       # 50% 피보 표준
+    (62, 80,  0.5, "korean_typical",     "BUY"),       # 한국 일반 (61.8/78.6)
+    (80, 9999, 0.2, "trend_end_risk",    "WAIT"),      # 추세 종료 의심 (표본 64%)
+    (0,  28,  0.0, "too_shallow",        "NO_ENTRY"),  # 너무 얕음
+]
+
+
+def evaluate_fib_zone(fib_retracement_pct: float) -> Dict:
+    """피보 되돌림 % → 진입 신호 + confidence (백테스트 285건 기반).
+
+    Args:
+        fib_retracement_pct: 4파 저점이 3파 길이의 몇 % 되돌림 (양수, 0~100+)
+
+    Returns:
+        {signal: BUY/WAIT/NO_ENTRY, confidence: 0~1, zone: zone_name}
+    """
+    p = fib_retracement_pct
+    for lo, hi, conf, name, sig in FIB_ZONES:
+        if lo <= p < hi:
+            return {"signal": sig, "confidence": conf, "zone": name}
+    return {"signal": "NO_ENTRY", "confidence": 0.0, "zone": "unknown"}
+
+
 # ── 결과 데이터클래스 ─────────────────────────────
 @dataclass
 class ElliottResult:
@@ -64,6 +93,9 @@ class ElliottResult:
     wave_4_low: Optional[float] = None
     fib_382_level: Optional[float] = None
     fib_zone_match: bool = False
+    fib_retracement_pct: Optional[float] = None  # 5/22 추가 — 실제 측정값
+    fib_zone_name: str = "unknown"               # 5/22 추가 — 4단계 zone 이름
+    fib_zone_signal: str = "NO_ENTRY"            # 5/22 추가 — BUY/WAIT/NO_ENTRY
     non_overlap_check: bool = False
     alternation_check: str = "unknown"
     wave_2_shape: str = "unknown"
@@ -296,13 +328,17 @@ def detect_elliott_pattern(
     fib_382 = w3_high - wave_3_length * 0.382
     result.fib_382_level = round(fib_382, 2)
 
-    tolerance = fib_382 * (fib_tolerance_pct / 100.0)
-    fib_lower = fib_382 - tolerance
-    fib_upper = fib_382 + tolerance
-
-    # 현재 가격 (또는 4파 저점)이 38.2% ± tolerance 구간 진입
+    # ★ 5/22 19:13 사장님 명령 — 4단계 진입 셋팅 (200종 백테스트 검증) ★
+    # 단순 38.2% ± tolerance → 4단계 zone 진입 (BUY confidence 1.0/0.7/0.5/0.2)
     check_price = w4_low if w4_idx is not None else cur
-    result.fib_zone_match = bool(fib_lower <= check_price <= fib_upper)
+    actual_fib_pct = (w3_high - check_price) / wave_3_length * 100.0
+    result.fib_retracement_pct = round(actual_fib_pct, 2)
+
+    zone_info = evaluate_fib_zone(actual_fib_pct)
+    result.fib_zone_name = zone_info["zone"]
+    result.fib_zone_signal = zone_info["signal"]
+    # fib_zone_match: BUY 신호 (confidence ≥ 0.5) = True
+    result.fib_zone_match = bool(zone_info["signal"] == "BUY")
 
     # ── 3) 파동 중첩 금지 — 4파 저점 > 1파 고점 ──
     result.non_overlap_check = bool(w4_low > w1_high)
@@ -334,30 +370,34 @@ def detect_elliott_pattern(
         else:
             result.phase = "wave_4_pullback"
 
-    # ── 6) 매수 시그널 종합 (4룰 통과율) ──
-    rules_passed = 0
-    if result.fib_zone_match:
-        rules_passed += 1
+    # ── 6) 매수 시그널 종합 (5/22 갱신 — fib zone 가중치 적용) ──
+    # 4룰 가산: 비중첩 + 교대 + 횡보 + zone confidence
+    rules_passed = 0.0
     if result.non_overlap_check:
-        rules_passed += 1
+        rules_passed += 1.0
     if alt_ok:
-        rules_passed += 1
+        rules_passed += 1.0
     if result.wave_4_shape == "sideways":
-        rules_passed += 1
+        rules_passed += 1.0
+    # fib zone confidence (BUY=1.0/0.7/0.5, WAIT=0.2, NO=0)
+    rules_passed += zone_info["confidence"]
 
     result.confidence = round(rules_passed / 4.0, 2)
 
-    # 4룰 모두 통과 + wave_5_start = 매수 시그널
+    # 매수 시그널 — wave_5_start + zone BUY + 다른 룰 다수 통과
     result.buy_signal = bool(
-        result.confidence == 1.0 and result.phase == "wave_5_start"
+        result.phase == "wave_5_start"
+        and zone_info["signal"] == "BUY"
+        and result.non_overlap_check
+        and (alt_ok or result.wave_4_shape == "sideways")
     )
 
-    # ── 7) reason 작성 ──
+    # ── 7) reason 작성 (5/22 갱신 — zone 정보 포함) ──
     reasons = []
-    if result.fib_zone_match:
-        reasons.append(f"피보 38.2% 지지 OK ({result.fib_382_level:,})")
-    else:
-        reasons.append(f"피보 38.2% 미충족 (현재 {check_price:,} vs {result.fib_382_level:,})")
+    reasons.append(
+        f"피보 되돌림 {actual_fib_pct:.1f}% [{result.fib_zone_name}] "
+        f"signal={result.fib_zone_signal} conf={zone_info['confidence']}"
+    )
     if result.non_overlap_check:
         reasons.append(f"파동중첩 금지 OK (w4 {w4_low:,} > w1 {w1_high:,})")
     else:
@@ -367,8 +407,9 @@ def detect_elliott_pattern(
     result.reason = " / ".join(reasons)
 
     logger.info(
-        f"[elliott_wave] phase={result.phase} confidence={result.confidence:.2f} "
-        f"buy_signal={result.buy_signal} fib_382={result.fib_382_level}"
+        f"[elliott_wave] phase={result.phase} fib={actual_fib_pct:.1f}% "
+        f"zone={result.fib_zone_name} signal={result.fib_zone_signal} "
+        f"buy={result.buy_signal} conf={result.confidence:.2f}"
     )
 
     return result
