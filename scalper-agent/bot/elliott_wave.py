@@ -461,6 +461,71 @@ def elliott_score_boost(result: ElliottResult, max_boost: int = 25) -> int:
     return 0
 
 
+# ── B+E metadata 가중치 (사장님 5/22 19:55 명령) ─────────
+def boost_with_metadata(
+    result: ElliottResult,
+    cap_band: str = "",
+    sector: str = "",
+    max_boost: int = 25,
+) -> int:
+    """zone 점수 + 시총/섹터 metadata 가중치 (B+E 백테스트 검증).
+
+    Args:
+        result: detect_elliott_pattern 결과
+        cap_band: 시총 구간 (예: "중대형(1000-5000억)" / "소형(100-500억)")
+        sector: 섹터 (예: "제약", "의료정밀", "전기전자")
+
+    Returns:
+        zone 기본 점수 + metadata 가중치 적용된 최종 점수
+
+    B+E 백테스트 결과 (universe 200종):
+      시총 매트릭스:
+        - 중대형(1000~5000억) × fib_38_safe: 50% 성공 (★)
+        - 중대형 × fib_50_standard: 32% 성공
+        - 중소형(500~1000억) × trend_caution: 31.2% (특이)
+        - 소형(100~500억) × 전체: 0~10% (★ 회피 ★)
+
+      섹터 × zone TOP:
+        - 제약 × trend_caution: 60% (★ 베이스라인 3배 ★)
+        - 의료정밀 × trend_caution: 60% (★ 동일 ★)
+        - 일반서비스 × trend_end: 60% (★)
+        - 기계장비 × trend_end: 40%
+        - 전기전자 × fib_50_standard: 30.8% (표본 13건)
+
+    asset_pool_loader 호출 패턴:
+        result = detect_elliott_pattern(candles)
+        info = universe.get(code, {})
+        score += boost_with_metadata(result, cap_band, info.get("sector", ""))
+    """
+    base = elliott_score_boost(result, max_boost=max_boost)
+
+    # 시총 가중치 (E 매트릭스 검증)
+    if "1000-5000" in cap_band:
+        base += 5   # ★ 중대형 = 최강 ★
+    elif "100-500" in cap_band:
+        base -= 5   # 소형 = 회피
+
+    # 섹터 × zone 조합 보너스 (E TOP 검증)
+    zone = result.fib_zone_name
+    if zone == "trend_caution":
+        if sector in ("제약", "의료정밀"):
+            base += 10  # ★ 60% 성공 ★
+    elif zone == "trend_end":
+        if sector == "일반서비스":
+            base += 5   # 60% (표본 5건)
+        elif sector == "기계장비":
+            base += 3   # 40%
+    elif zone == "fib_50_standard":
+        if sector == "전기전자":
+            base += 3   # 30.8% (표본 13건, 신뢰도 ↑)
+
+    logger.debug(
+        f"[boost_with_metadata] zone={zone} cap={cap_band} sector={sector} "
+        f"→ base={elliott_score_boost(result, max_boost)} → final={base}"
+    )
+    return base
+
+
 if __name__ == "__main__":
     # 데모: 인위 캔들 패턴으로 검증
     import json

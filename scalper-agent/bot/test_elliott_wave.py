@@ -215,6 +215,67 @@ class TestElliottWave(unittest.TestCase):
         )
         self.assertEqual(elliott_score_boost(r), 25)
 
+    # ─── B+E metadata 가중치 테스트 (5/22 19:55 사장님 명령) ─────
+    def test_13_metadata_mid_cap_boost(self):
+        """⑬ 중대형(1000~5000억) × fib_38_safe: +5 가중치 → 30점."""
+        from bot.elliott_wave import ElliottResult, boost_with_metadata
+        r = ElliottResult(
+            phase="wave_5_start", buy_signal=True,
+            fib_zone_name="fib_38_safe", fib_zone_signal="BUY",
+        )
+        self.assertEqual(
+            boost_with_metadata(r, cap_band="중대형(1000-5000억)", sector="전기전자"),
+            30  # 25 + 5
+        )
+
+    def test_14_metadata_small_cap_penalty(self):
+        """⑭ 소형(100~500억) × fib_38_safe: -5 패널티 → 20점."""
+        from bot.elliott_wave import ElliottResult, boost_with_metadata
+        r = ElliottResult(
+            phase="wave_5_start", buy_signal=True,
+            fib_zone_name="fib_38_safe", fib_zone_signal="BUY",
+        )
+        self.assertEqual(
+            boost_with_metadata(r, cap_band="소형(100-500억)", sector="화학"),
+            20  # 25 - 5
+        )
+
+    def test_15_metadata_pharma_trend_caution_bonus(self):
+        """⑮ 제약 × trend_caution: +10 보너스 (60% 성공 검증) → 20점."""
+        from bot.elliott_wave import ElliottResult, boost_with_metadata
+        r = ElliottResult(
+            phase="wave_5_start", buy_signal=True,
+            fib_zone_name="trend_caution", fib_zone_signal="BUY_CAUTION",
+        )
+        self.assertEqual(
+            boost_with_metadata(r, cap_band="중대형(1000-5000억)", sector="제약"),
+            25  # 10 + 5(중대형) + 10(제약×trend_caution)
+        )
+
+    def test_16_metadata_medical_precision_bonus(self):
+        """⑯ 의료정밀 × trend_caution: +10 보너스 → 20점."""
+        from bot.elliott_wave import ElliottResult, boost_with_metadata
+        r = ElliottResult(
+            phase="wave_5_start", buy_signal=True,
+            fib_zone_name="trend_caution", fib_zone_signal="BUY_CAUTION",
+        )
+        self.assertEqual(
+            boost_with_metadata(r, cap_band="", sector="의료정밀"),
+            20  # 10 + 10(의료정밀×trend_caution)
+        )
+
+    def test_17_metadata_avoid_with_mid_cap_still_penalty(self):
+        """⑰ AVOID는 -10 + 중대형 +5 = -5 (★ 시총 보너스로도 AVOID 회피 X ★)."""
+        from bot.elliott_wave import ElliottResult, boost_with_metadata
+        r = ElliottResult(
+            phase="wave_5_start", buy_signal=False,
+            fib_zone_name="korean_low", fib_zone_signal="AVOID",
+        )
+        self.assertEqual(
+            boost_with_metadata(r, cap_band="중대형(1000-5000억)", sector="전기전자"),
+            -5  # -10 + 5
+        )
+
     def test_9_fib_retracement_pct_recorded(self):
         """⑨ ElliottResult에 fib_retracement_pct 실제값 기록 (5/22 추가):
            - 단순 fib_zone_match (bool) → 실제 % 값 + zone 이름 + signal 모두 기록
