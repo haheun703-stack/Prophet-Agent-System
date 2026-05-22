@@ -2025,8 +2025,33 @@ class AutoTrader:
             logger.warning(f"[asset_pool] 자산 풀 로드 실패: {e}")
             return
 
+        # ★ 5/22 20:00 G 통합 — elliott 4파 분석 + metadata 가중치 (사장님 명령) ★
+        # 옵션 B: trading_coo 변경 X / asset_pool_scan_and_buy 안에서 후처리
+        # 백테스트 검증 (universe 200종 / baseline 20.4%):
+        #   fib_38_safe + 중대형 = 50% 성공 (★ 최우선 ★)
+        #   korean_low = 9.1% 성공 (★ 회피 — score -10 ★)
+        #   제약/의료정밀 × trend_caution = 60% (★ 섹터 보너스 ★)
+        ap_elliott_enabled = bool(ap_cfg.get("elliott_enrich", True))
+        if ap_elliott_enabled:
+            try:
+                from utils.asset_pool_elliott import (
+                    enrich_with_elliott, summarize_elliott_distribution,
+                )
+                ranked = await asyncio.to_thread(
+                    enrich_with_elliott, ranked, self.trader, 0.3, 20, True
+                )
+                summary = summarize_elliott_distribution(ranked)
+                logger.info(
+                    f"[asset_pool] elliott G통합 적용 — {summary['total']}종 "
+                    f"평균 boost {summary['avg_boost']:+.1f} / "
+                    f"분포 {summary['zone_distribution']}"
+                )
+            except Exception as e:
+                logger.warning(f"[asset_pool] elliott enrich 실패 (무시): {e}")
+
         # ★ 5/20 fix: 최소 점수 임계값 30 (이상한 종목 자동 제외) ★
         # 진원생명과학(90점)/티웨이(65점) 같은 고점수만 통과
+        # ★ 5/22 G통합 후 ★: elliott_boost (-10~+30) 반영된 score 기준 필터
         _MIN_SCORE = 30
         ranked = [r for r in ranked if r.get("score", 0) >= _MIN_SCORE]
         if not ranked:
