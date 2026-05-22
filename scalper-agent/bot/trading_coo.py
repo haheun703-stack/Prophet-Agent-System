@@ -4273,6 +4273,76 @@ class TradingCOO:
             logger.warning(f"[COO] 시초 매도 큐 처리 실패 (무시): {e}")
 
     # ═════════════════════════════════════════════
+    # 장중 실시간 수급 추적 — 4번 알람 (사장님 5/22 20:30 명령)
+    # 정보봇 시그널 60% + 단타봇 자체 40% 결합 점수
+    # ═════════════════════════════════════════════
+    async def _job_intraday_supply_alert(self, context=None) -> dict:
+        """09:30 / 11:00 / 13:00 / 14:30 4번 자동 알람.
+
+        정보봇 sniper / smart_money / supply_scoring + 단타봇 5분봉/체결강도/호가/VWAP
+        결합 종합 점수 → 보유 + 후보 종목 텔레그램 알림.
+        """
+        try:
+            from datetime import datetime as _dt
+            from bot.intraday_supply_tracker import evaluate_realtime, format_4times_report
+
+            trader = self.auto_trader.trader if self.auto_trader else None
+            if not trader:
+                logger.warning("[intraday_supply] trader 미연결 — 스킵")
+                return {"sent": False, "error": "no_trader"}
+
+            # 보유 종목 + 정보봇 TOP 신호 종목 통합
+            codes = set()
+            try:
+                b = trader.fetch_balance()
+                for p in b.get("positions", []):
+                    if p.get("code"):
+                        codes.add(str(p["code"]))
+            except Exception:
+                pass
+
+            # 정보봇 TOP STRONG_BUY 5종 추가
+            try:
+                from bot.jgis_signal_consumer import top_strong_buy_signals
+                tops = top_strong_buy_signals(limit=5)
+                for sig in tops:
+                    codes.add(sig.code)
+            except Exception as _e:
+                logger.debug(f"[intraday_supply] jgis top 조회 실패: {_e}")
+
+            if not codes:
+                logger.info("[intraday_supply] 추적 종목 0건")
+                return {"sent": False, "skipped": True}
+
+            # 각 종목 실시간 점수
+            now_label = _dt.now().strftime("%H:%M")
+            scores = {}
+            for code in list(codes)[:15]:
+                try:
+                    s = await asyncio.to_thread(
+                        evaluate_realtime, code, trader, "", now_label
+                    )
+                    scores[code] = s
+                except Exception as _e:
+                    logger.debug(f"[intraday_supply] {code} 실패: {_e}")
+
+            # 보고 작성 + 텔레그램
+            message = format_4times_report(scores, now_label)
+            chat_id = getattr(self.bot, "chat_id", None) if self.bot else None
+            if self.bot and chat_id and context:
+                try:
+                    await context.bot.send_message(chat_id=chat_id, text=message)
+                    logger.info(f"[intraday_supply] {now_label} 알람 전송 ({len(scores)}종)")
+                except Exception as te:
+                    logger.warning(f"[intraday_supply] 텔레그램 전송 실패: {te}")
+            else:
+                logger.info(f"[intraday_supply] {now_label} (chat_id 없어 로그만): {len(scores)}종")
+            return {"sent": True, "count": len(scores), "time": now_label}
+        except Exception as e:
+            logger.warning(f"[intraday_supply] 전체 실패: {e}")
+            return {"sent": False, "error": str(e)[:200]}
+
+    # ═════════════════════════════════════════════
     # 단타봇 자율 보고 스케줄러 (TODO ⑮, 사장님 5/22 11:50 명령)
     # ═════════════════════════════════════════════
     async def _job_scheduled_report(self, context=None, *, report_type: str = "midday") -> dict:
@@ -4713,6 +4783,14 @@ class TradingCOO:
             )
         except Exception as e:
             logger.warning(f"[COO] 자율 보고 스케줄러 등록 실패 (무시): {e}")
+
+        # ── ★ 5/22 20:30 4번 수급 알람 (사장님 명령 — 정보봇 + 단타봇 결합) ★ ──
+        # 정보봇 sniper 5/21 score=82 → 다음날 +10% 적중 검증
+        # 09:30 / 11:00 / 13:00 / 14:30 자동 알람 (보유 + jgis TOP STRONG_BUY 5종)
+        for _h, _m in [(9, 30), (11, 0), (13, 0), (14, 30)]:
+            jq.run_daily(self._job_intraday_supply_alert, time=kst_time(_h, _m),
+                         name=f"intraday_supply_{_h:02d}{_m:02d}")
+        logger.info("[COO] 4번 수급 알람 등록: 09:30 / 11:00 / 13:00 / 14:30 (정보봇+단타봇 결합)")
 
         # ── 알고리즘 A: 섹터 동조 카운터 텔레그램 알림 (5/19 5/18 백테스트 적중) ──
         # 09:30 / 11:00 / 13:00 — 같은 섹터 4개+ 동시 +10%+ 시 즉시 알림
