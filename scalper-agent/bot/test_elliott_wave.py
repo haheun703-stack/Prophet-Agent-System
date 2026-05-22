@@ -95,23 +95,24 @@ class TestElliottWave(unittest.TestCase):
                          f"fib_zone_match=True (125는 140.23±5% 벗어남), w4_low={result.wave_4_low}")
         self.assertFalse(result.buy_signal)
 
-    def test_4_alternation_violation(self):
-        """④ 교대법칙 위반: 2파/4파 둘 다 V_sharp → alternation FAIL"""
-        # 2파 V_sharp 유지 + 4파도 짧고 급격하게 (V_sharp 만듦)
-        modified = list(PATTERN_FIVE_WAVE_OK)
-        # 4파를 짧고 급격하게 (V_sharp): 캔들 적게 + 변동 크게
-        # idx 13~14만 사용, w4 저점 idx 14에서 146까지 급락
-        modified = modified[:13] + [
-            _make_candle(160, 161, 146, 147, 2500),  # 한 캔들에 급락 (V_sharp)
-            _make_candle(147, 149, 146, 148, 1500),  # idx 14 (w4 저점)
-        ]
+    def test_4_alternation_no_longer_blocks(self):
+        """④ 교대법칙 / 횡보 룰 제거 (5/22 19:30 A+C 백테스트 검증):
 
+        이전: 4룰 다 통과해야 buy_signal=True
+        정정: 교대법칙 + 횡보 룰 의미 X (false negative 발생) → buy_signal 의사결정에서 제외
+
+        buy_signal = wave_5_start + zone BUY + non_overlap_check 만.
+        """
+        modified = list(PATTERN_FIVE_WAVE_OK)
+        # 4파를 짧고 급격하게 (V_sharp) — 교대법칙 FAIL 의도
+        modified = modified[:13] + [
+            _make_candle(160, 161, 146, 147, 2500),
+            _make_candle(147, 149, 146, 148, 1500),
+        ]
         result = detect_elliott_pattern(modified)
-        # 4파 형태가 V_sharp이면 교대법칙 위반
-        if result.wave_4_shape == "V_sharp":
-            self.assertEqual(result.alternation_check, "FAIL_same_shape")
-            self.assertFalse(result.buy_signal)
-        # 캔들 너무 적어 unknown 가능 — 그 경우는 자동 통과
+        # ★ 정정: 교대법칙 FAIL이어도 zone BUY + non_overlap 시 buy_signal 가능 ★
+        # alternation_check는 정보용으로 기록되지만 buy_signal 의사결정 X
+        # (캔들 부족 시 unknown 가능)
 
     def test_5_insufficient_candles(self):
         """⑤ 캔들 부족: phase=unknown / reason="캔들 부족" """
@@ -131,12 +132,13 @@ class TestElliottWave(unittest.TestCase):
         # 핵심은 buy_signal=False여야 함 (4파 형성 안 됐으므로)
         self.assertFalse(result.buy_signal)
 
-    def test_8_fib_zone_4tier_setting(self):
-        """⑧ 4단계 zone 진입 (사장님 5/22 19:13 명령 — 200종 백테스트 검증):
-           - 28~48%: fib_38_safe / BUY / conf 1.0 (성공률 43.8%, 평균의 2.15배)
-           - 48~62%: fib_50_standard / BUY / conf 0.7
-           - 62~80%: korean_typical / BUY / conf 0.5
-           - 80%+: trend_end_risk / WAIT / conf 0.2
+    def test_8_fib_zone_5tier_setting(self):
+        """⑧ 5단계 zone 진입 (사장님 5/22 19:30 A+C 정밀 백테스트 정정):
+           - 28~48%: fib_38_safe / BUY / conf 1.0 (성공률 46.7%, x2.3)
+           - 48~62%: fib_50_standard / BUY / conf 0.7 (성공률 30.8%)
+           - 62~80%: korean_low / AVOID / conf 0.1 (성공률 9.1% ★ 회피 ★)
+           - 80~100%: trend_caution / BUY_CAUTION / conf 0.4 (성공률 20.8%, 큰 수익)
+           - 100%+: trend_end / NO_ENTRY / conf 0
            - 0~28%: too_shallow / NO_ENTRY / conf 0
         """
         from bot.elliott_wave import evaluate_fib_zone
@@ -156,22 +158,62 @@ class TestElliottWave(unittest.TestCase):
         self.assertEqual(r3["zone"], "fib_50_standard")
         self.assertEqual(r3["confidence"], 0.7)
 
-        # 한국 일반 70%
+        # ★ 62~80% korean_low AVOID ★ (5/22 정정 — 성공률 9.1%)
         r4 = evaluate_fib_zone(70.0)
-        self.assertEqual(r4["zone"], "korean_typical")
-        self.assertEqual(r4["confidence"], 0.5)
+        self.assertEqual(r4["zone"], "korean_low")
+        self.assertEqual(r4["signal"], "AVOID")
+        self.assertEqual(r4["confidence"], 0.1)
 
-        # 추세 종료 85%
+        # 80~100% trend_caution BUY_CAUTION
         r5 = evaluate_fib_zone(85.0)
-        self.assertEqual(r5["zone"], "trend_end_risk")
-        self.assertEqual(r5["signal"], "WAIT")
-        self.assertEqual(r5["confidence"], 0.2)
+        self.assertEqual(r5["zone"], "trend_caution")
+        self.assertEqual(r5["signal"], "BUY_CAUTION")
+        self.assertEqual(r5["confidence"], 0.4)
+
+        # 100%+ trend_end NO_ENTRY
+        r6 = evaluate_fib_zone(110.0)
+        self.assertEqual(r6["zone"], "trend_end")
+        self.assertEqual(r6["signal"], "NO_ENTRY")
 
         # 너무 얕음 20%
-        r6 = evaluate_fib_zone(20.0)
-        self.assertEqual(r6["zone"], "too_shallow")
-        self.assertEqual(r6["signal"], "NO_ENTRY")
-        self.assertEqual(r6["confidence"], 0.0)
+        r7 = evaluate_fib_zone(20.0)
+        self.assertEqual(r7["zone"], "too_shallow")
+        self.assertEqual(r7["signal"], "NO_ENTRY")
+        self.assertEqual(r7["confidence"], 0.0)
+
+    def test_10_korean_low_avoid_penalty(self):
+        """⑩ korean_low (62~80%) AVOID 패널티 -10점 (5/22 정정).
+
+        실측 성공률 9.1% = baseline x0.45 → 진입 시 손실 가능성 큼.
+        elliott_score_boost가 -10점 반환하여 asset_pool 점수 차감.
+        """
+        from bot.elliott_wave import ElliottResult, elliott_score_boost
+        r = ElliottResult(
+            phase="wave_5_start", buy_signal=False,
+            fib_zone_name="korean_low", fib_zone_signal="AVOID",
+            confidence=0.5,
+        )
+        self.assertEqual(elliott_score_boost(r), -10)
+
+    def test_11_trend_caution_partial_boost(self):
+        """⑪ trend_caution (80~100%) +10점 부스트 (보수 진입)."""
+        from bot.elliott_wave import ElliottResult, elliott_score_boost
+        r = ElliottResult(
+            phase="wave_5_start", buy_signal=True,
+            fib_zone_name="trend_caution", fib_zone_signal="BUY_CAUTION",
+            confidence=0.6,
+        )
+        self.assertEqual(elliott_score_boost(r), 10)
+
+    def test_12_fib_38_safe_max_boost(self):
+        """⑫ fib_38_safe (28~48%) +25점 최대 부스트 (★ 최우선 ★)."""
+        from bot.elliott_wave import ElliottResult, elliott_score_boost
+        r = ElliottResult(
+            phase="wave_5_start", buy_signal=True,
+            fib_zone_name="fib_38_safe", fib_zone_signal="BUY",
+            confidence=1.0,
+        )
+        self.assertEqual(elliott_score_boost(r), 25)
 
     def test_9_fib_retracement_pct_recorded(self):
         """⑨ ElliottResult에 fib_retracement_pct 실제값 기록 (5/22 추가):
@@ -186,16 +228,21 @@ class TestElliottWave(unittest.TestCase):
         self.assertIn(result.fib_zone_signal, ["BUY", "WAIT", "NO_ENTRY"])
 
     def test_7_score_boost_thresholds(self):
-        """⑦ elliott_score_boost 임계값:
-           - buy_signal=True → 25
+        """⑦ elliott_score_boost 임계값 (5/22 19:30 zone별 차등):
+           - buy_signal=True + fib_38_safe → 25
+           - buy_signal=True + fib_50_standard → 18
+           - buy_signal=True + trend_caution → 10
+           - AVOID 시그널 → -10 (패널티)
            - wave_4_pullback + confidence≥0.75 → 15
            - wave_3_running → 10
            - 그 외 → 0
         """
         from bot.elliott_wave import ElliottResult
 
-        # buy_signal
-        r1 = ElliottResult(buy_signal=True, phase="wave_5_start", confidence=1.0)
+        # buy_signal + 최우선 zone
+        r1 = ElliottResult(buy_signal=True, phase="wave_5_start",
+                           fib_zone_name="fib_38_safe", fib_zone_signal="BUY",
+                           confidence=1.0)
         self.assertEqual(elliott_score_boost(r1), 25)
 
         # 4파 pullback + 0.75

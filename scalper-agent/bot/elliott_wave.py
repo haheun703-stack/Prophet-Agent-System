@@ -36,16 +36,28 @@ WavePhase = Literal[
 ]
 
 
-# ── 4단계 피보 진입 셋팅 (사장님 5/22 19:13 명령 — 200종 백테스트 검증) ─────
-# 표본 285건 × 5파 성공 58건 = 평균 성공률 20.4%
-# 38.2% ± 10% 구간 성공률 43.8% = 평균의 2.15배 (★ 사장님 자료 검증됨 ★)
+# ── 5단계 피보 진입 셋팅 (사장님 5/22 19:30 A+C 정밀 백테스트 검증) ─────
+# 표본 285건 × 5파 성공 58건 = baseline 20.35%
+# zone별 실측 성공률 (universe 200종):
+#   28~48%   (fib_38_safe):     46.7% (x2.3 ★ 최우선) / 평균 수익 +28.1%
+#   48~62%   (fib_50_standard): 30.8% (x1.5)         / 평균 수익 +39.5%
+#   62~80%   (korean_low):      9.1%  (x0.45 ★ 회피 ★) / 평균 수익 +38.8%
+#   80~100%  (trend_caution):   20.8% (x1.0)         / 평균 수익 +48.9% (★ 큰 수익 ★)
+#   100%+    (trend_end):       추세 종료 의심 — 회피
+#   0~28%    (too_shallow):     얕은 되돌림 — 4파 미형성
+#
+# ★ 5/22 19:30 단타봇 진짜 정정 ★ A+C 최적 조합 TOP:
+#   1. fib_38_safe + non_overlap=False → 75% (x3.69)
+#   2. fib_38_safe + non_overlap=True → 66.7% (x3.28)
+#   ⚠️ alternation_check + sideways_w4 룰 = baseline 이하 (false negative 발생) → 제거
 FIB_ZONES = [
     # (lo, hi, confidence, zone_name, signal)
-    (28, 48,  1.0, "fib_38_safe",        "BUY"),       # ★ 보수 안전 (43.8% 성공) ★
-    (48, 62,  0.7, "fib_50_standard",    "BUY"),       # 50% 피보 표준
-    (62, 80,  0.5, "korean_typical",     "BUY"),       # 한국 일반 (61.8/78.6)
-    (80, 9999, 0.2, "trend_end_risk",    "WAIT"),      # 추세 종료 의심 (표본 64%)
-    (0,  28,  0.0, "too_shallow",        "NO_ENTRY"),  # 너무 얕음
+    (28, 48,   1.0, "fib_38_safe",     "BUY"),         # ★ 최우선 (46.7% 성공) ★
+    (48, 62,   0.7, "fib_50_standard", "BUY"),         # 차선 (30.8%)
+    (62, 80,   0.1, "korean_low",      "AVOID"),       # ★ 회피 (9.1% 최악) ★
+    (80, 100,  0.4, "trend_caution",   "BUY_CAUTION"), # 큰 수익 (+49%, 성공 20.8%)
+    (100, 9999, 0.0, "trend_end",      "NO_ENTRY"),    # 추세 종료
+    (0,  28,   0.0, "too_shallow",     "NO_ENTRY"),    # 너무 얕음
 ]
 
 
@@ -337,8 +349,8 @@ def detect_elliott_pattern(
     zone_info = evaluate_fib_zone(actual_fib_pct)
     result.fib_zone_name = zone_info["zone"]
     result.fib_zone_signal = zone_info["signal"]
-    # fib_zone_match: BUY 신호 (confidence ≥ 0.5) = True
-    result.fib_zone_match = bool(zone_info["signal"] == "BUY")
+    # fib_zone_match: BUY 또는 BUY_CAUTION 시 True (AVOID/NO_ENTRY는 False)
+    result.fib_zone_match = bool(zone_info["signal"] in ("BUY", "BUY_CAUTION"))
 
     # ── 3) 파동 중첩 금지 — 4파 저점 > 1파 고점 ──
     result.non_overlap_check = bool(w4_low > w1_high)
@@ -370,26 +382,24 @@ def detect_elliott_pattern(
         else:
             result.phase = "wave_4_pullback"
 
-    # ── 6) 매수 시그널 종합 (5/22 갱신 — fib zone 가중치 적용) ──
-    # 4룰 가산: 비중첩 + 교대 + 횡보 + zone confidence
+    # ── 6) 매수 시그널 종합 (5/22 19:30 A+C 정밀 백테스트 정정) ──
+    # ★ 이전 4룰 (피보+비중첩+교대+횡보) 다 통과 = 성공률 0% (false negative) ★
+    # ★ alternation_check + sideways_w4 룰 제거 (baseline 이하) ★
+    # 진짜 유효 룰: zone confidence + non_overlap_check 만
     rules_passed = 0.0
     if result.non_overlap_check:
         rules_passed += 1.0
-    if alt_ok:
-        rules_passed += 1.0
-    if result.wave_4_shape == "sideways":
-        rules_passed += 1.0
-    # fib zone confidence (BUY=1.0/0.7/0.5, WAIT=0.2, NO=0)
+    # fib zone confidence (1.0/0.7/0.4/0.1/0.0)
     rules_passed += zone_info["confidence"]
+    # 정보 보존: alt_ok / wave_4_shape는 reason에만 출력 (의사결정 X)
+    result.confidence = round(rules_passed / 2.0, 2)
 
-    result.confidence = round(rules_passed / 4.0, 2)
-
-    # 매수 시그널 — wave_5_start + zone BUY + 다른 룰 다수 통과
+    # 매수 시그널 — wave_5_start + zone BUY/BUY_CAUTION + non_overlap만
+    # (교대법칙/횡보 룰 제거 — A+C 검증 결과)
     result.buy_signal = bool(
         result.phase == "wave_5_start"
-        and zone_info["signal"] == "BUY"
+        and zone_info["signal"] in ("BUY", "BUY_CAUTION")
         and result.non_overlap_check
-        and (alt_ok or result.wave_4_shape == "sideways")
     )
 
     # ── 7) reason 작성 (5/22 갱신 — zone 정보 포함) ──
@@ -417,19 +427,33 @@ def detect_elliott_pattern(
 
 # ── 외부 통합 헬퍼 ─────────────────────────────────
 def elliott_score_boost(result: ElliottResult, max_boost: int = 25) -> int:
-    """엘리어트 분석 결과 → asset_pool 점수 보정 (0~25점).
+    """엘리어트 분석 결과 → asset_pool 점수 보정 (zone별 차등, 5/22 백테스트 검증).
 
-    - buy_signal True: +25점 (5파 진입 직전)
-    - phase == wave_4_pullback + confidence ≥ 0.75: +15점 (4파 형성 중)
-    - phase == wave_3_running: +10점 (아직 3파 진행)
-    - 그 외: 0점
+    A+C 정밀 백테스트 결과 (universe 200종, baseline 20.4%):
+      - fib_38_safe   (28~48%): 46.7% 성공 → +25점 (★ 최우선)
+      - fib_50_standard (48~62%): 30.8% 성공 → +18점
+      - trend_caution (80~100%): 20.8% 성공 + 큰 수익 → +10점 (보수)
+      - korean_low (62~80%): 9.1% 성공 → -10점 ★ 패널티 ★ (회피)
+      - too_shallow / trend_end: 0점
 
     asset_pool_loader 호출 패턴:
         result = detect_elliott_pattern(candles)
         score += elliott_score_boost(result)
     """
     if result.buy_signal:
-        return max_boost
+        zone = result.fib_zone_name
+        if zone == "fib_38_safe":
+            return max_boost      # 25점 (성공률 46.7%)
+        elif zone == "fib_50_standard":
+            return 18             # 18점 (성공률 30.8%)
+        elif zone == "trend_caution":
+            return 10             # 10점 (큰 수익 가능, 보수)
+
+    # 회피 zone — 패널티 (asset_pool 점수에서 차감)
+    if result.fib_zone_signal == "AVOID":
+        return -10  # ★ 5/22 단타봇 정정 — 62~80% 진입 패널티 ★
+
+    # 진행 중 — 미래 4파 형성 기대
     if result.phase == "wave_4_pullback" and result.confidence >= 0.75:
         return 15
     if result.phase == "wave_3_running":
