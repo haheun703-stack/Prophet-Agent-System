@@ -1,0 +1,277 @@
+# -*- coding: utf-8 -*-
+"""엘리어트 38.2% 피보 비율 백테스트 (사장님 5/22 16:30 비판 응답).
+
+사장님 영구 룰 [[feedback_verify_external_knowledge]]:
+> "남의 말만 듣지 말고 우리가 검증을 해봐야된다. 얼마의 수치가 맞는건지"
+
+목적:
+  - 사장님 자료 (trading factory 영상) "피보 38.2%" 무비판 수용 사고 → 실데이터 검증
+  - 과거 +20%+ 종목 50건+ 표본 → 4파 저점 분포 측정
+  - 38.2% vs 다른 비율 (23.6 / 50 / 61.8) 통계 비교
+  - 최적 비율 결정 → elliott_wave.py 파라미터 갱신
+
+데이터 소스:
+  - 정보봇 Supabase: daily_limit_up_history (+20%+ 상한가 종목)
+  - KIS API: fetch_daily_chart (일봉 200영업일)
+  - 일봉 단위 1파/2파/3파/4파 패턴 분석
+
+영구 메모리: [[project_5_22_evening_learning_fix]] TODO ⑯
+"""
+import argparse
+import json
+import logging
+import statistics
+import sys
+import time
+from pathlib import Path
+from typing import Dict, List, Optional, Sequence, Tuple
+
+_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_ROOT))
+
+from dotenv import load_dotenv
+load_dotenv(_ROOT.parent / ".env")
+
+from bot.elliott_wave import _identify_waves
+
+logger = logging.getLogger("BH.BacktestFib")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+)
+
+
+# ── 표본 수집 ─────────────────────────────────────
+def collect_sample_codes(limit: int = 100) -> List[Dict]:
+    """daily_limit_up_history에서 최근 +20%+ 상한가 종목 표본 수집."""
+    try:
+        from utils.supabase_sql import query
+        sql = """
+            SELECT ticker, name, date
+            FROM daily_limit_up_history
+            WHERE date >= CURRENT_DATE - INTERVAL '90 days'
+            ORDER BY date DESC, vol_ratio DESC
+            LIMIT %s
+        """
+        rows = query(sql, (limit,))
+        return [{"code": r["ticker"], "name": r["name"], "limit_up_date": r["date"]}
+                for r in (rows or [])]
+    except Exception as e:
+        logger.error(f"표본 수집 실패: {e}")
+        return []
+
+
+# ── 4파 저점 피보 % 측정 ──────────────────────────
+def measure_fib_retracement(bars: Sequence[Dict]) -> Optional[Dict]:
+    """1파~4파 저점 패턴 감지 + 피보 % 계산.
+
+    Args:
+        bars: 일봉 OHLCV 리스트 (시간순)
+
+    Returns:
+        {w1_high, w2_low, w3_high, w4_low, wave_3_length,
+         fib_retracement_pct, succeeded_to_w5}
+        None: 패턴 미감지
+    """
+    if len(bars) < 20:
+        return None
+
+    w1, w2, w3, w4 = _identify_waves(bars, lookback=3)
+    if w1 is None or w3 is None or w4 is None:
+        return None
+
+    w1h = bars[w1]["high"]
+    w2l = bars[w2]["low"] if w2 is not None else 0
+    w3h = bars[w3]["high"]
+    w4l = bars[w4]["low"]
+
+    # 3파 길이 (보수적 — w2 저점 → w3 고점)
+    wave_3_length = w3h - w2l
+    if wave_3_length <= 0:
+        return None
+
+    # 피보 되돌림 % — 4파 저점이 3파 길이의 몇 % 되돌림인가
+    fib_retracement_pct = (w3h - w4l) / wave_3_length * 100.0
+
+    # 5파 진입 성공 여부 — w4 이후 캔들 중 w3 고점 돌파 여부
+    succeeded_to_w5 = False
+    max_high_after_w4 = 0
+    for b in bars[w4 + 1:]:
+        if b["high"] > max_high_after_w4:
+            max_high_after_w4 = b["high"]
+        if b["high"] > w3h:
+            succeeded_to_w5 = True
+            break
+
+    # 4파 저점 vs 1파 고점 (파동 중첩 금지 룰)
+    non_overlap = w4l > w1h
+
+    return {
+        "w1_high": w1h, "w2_low": w2l, "w3_high": w3h, "w4_low": w4l,
+        "wave_3_length": wave_3_length,
+        "fib_retracement_pct": round(fib_retracement_pct, 2),
+        "succeeded_to_w5": succeeded_to_w5,
+        "max_high_after_w4": max_high_after_w4,
+        "non_overlap_check": non_overlap,
+        "max_gain_after_w4_pct": round((max_high_after_w4 / w4l - 1) * 100, 2) if w4l > 0 else 0,
+    }
+
+
+# ── 메인 백테스트 ─────────────────────────────────
+def run_backtest(limit: int = 50, delay: float = 0.3) -> Dict:
+    """전체 백테스트 흐름.
+
+    Args:
+        limit: 표본 종목 수
+        delay: KIS API 호출 간 대기 (rate limit)
+    """
+    from bot.kis_trader import KISTrader
+    trader = KISTrader()
+
+    # 1) 표본 수집
+    samples = collect_sample_codes(limit=limit)
+    if not samples:
+        logger.error("표본 0건 — Supabase 연결 실패 또는 데이터 없음")
+        return {}
+    logger.info(f"표본 수집: {len(samples)}건")
+
+    # 2) 각 종목 일봉 끌어와 4파 분석
+    measurements = []
+    for i, s in enumerate(samples, 1):
+        code = s["code"]
+        try:
+            bars = trader.fetch_daily_chart(code)
+            if not bars or len(bars) < 20:
+                logger.warning(f"[{i}/{len(samples)}] {code} {s['name']}: 일봉 부족 ({len(bars or [])}개)")
+                continue
+
+            m = measure_fib_retracement(bars)
+            if m is None:
+                logger.warning(f"[{i}/{len(samples)}] {code} {s['name']}: 4파 미감지")
+                continue
+
+            m["code"] = code
+            m["name"] = s["name"]
+            m["limit_up_date"] = str(s.get("limit_up_date"))
+            measurements.append(m)
+
+            if i % 10 == 0:
+                logger.info(f"진행 {i}/{len(samples)} — 측정 {len(measurements)}건")
+
+            time.sleep(delay)  # rate limit
+        except Exception as e:
+            logger.error(f"{code} 실패: {e}")
+
+    # 3) 통계 분석
+    if not measurements:
+        return {"error": "측정 0건"}
+
+    pcts = [m["fib_retracement_pct"] for m in measurements]
+    succeeded = [m for m in measurements if m["succeeded_to_w5"]]
+    succeeded_pcts = [m["fib_retracement_pct"] for m in succeeded]
+
+    result = {
+        "total_samples": len(samples),
+        "valid_measurements": len(measurements),
+        "succeeded_w5": len(succeeded),
+        "stats_all": {
+            "mean": round(statistics.mean(pcts), 2),
+            "median": round(statistics.median(pcts), 2),
+            "stdev": round(statistics.stdev(pcts), 2) if len(pcts) >= 2 else 0,
+            "min": min(pcts),
+            "max": max(pcts),
+        },
+        "stats_succeeded": {
+            "mean": round(statistics.mean(succeeded_pcts), 2) if succeeded_pcts else 0,
+            "median": round(statistics.median(succeeded_pcts), 2) if succeeded_pcts else 0,
+            "stdev": round(statistics.stdev(succeeded_pcts), 2) if len(succeeded_pcts) >= 2 else 0,
+        },
+        "bucket_distribution": _bucket_distribution(pcts),
+        "comparison_with_382": _compare_to_382(measurements),
+        "raw_measurements": measurements[:20],  # 샘플만
+    }
+
+    return result
+
+
+def _bucket_distribution(pcts: List[float]) -> Dict:
+    """피보 % 구간별 분포."""
+    buckets = {
+        "0~23.6%": 0, "23.6~38.2%": 0, "38.2~50%": 0,
+        "50~61.8%": 0, "61.8~78.6%": 0, "78.6%+": 0,
+    }
+    for p in pcts:
+        if p < 23.6: buckets["0~23.6%"] += 1
+        elif p < 38.2: buckets["23.6~38.2%"] += 1
+        elif p < 50.0: buckets["38.2~50%"] += 1
+        elif p < 61.8: buckets["50~61.8%"] += 1
+        elif p < 78.6: buckets["61.8~78.6%"] += 1
+        else: buckets["78.6%+"] += 1
+    return buckets
+
+
+def _compare_to_382(measurements: List[Dict]) -> Dict:
+    """38.2% ± tolerance 구간 진입 종목의 5파 성공률.
+
+    여러 tolerance 비교:
+      - ±2.5% / ±5% / ±10% / ±15%
+    """
+    result = {}
+    for tol in [2.5, 5.0, 10.0, 15.0]:
+        in_zone = [m for m in measurements
+                   if 38.2 - tol <= m["fib_retracement_pct"] <= 38.2 + tol]
+        succeeded = [m for m in in_zone if m["succeeded_to_w5"]]
+        result[f"±{tol}%"] = {
+            "in_zone_count": len(in_zone),
+            "succeeded": len(succeeded),
+            "success_rate": round(len(succeeded) / len(in_zone) * 100, 1) if in_zone else 0,
+        }
+    return result
+
+
+# ── 메인 실행 ─────────────────────────────────────
+def main():
+    parser = argparse.ArgumentParser(description="엘리어트 38.2% 피보 백테스트")
+    parser.add_argument("--limit", type=int, default=50, help="표본 종목 수 (기본 50)")
+    parser.add_argument("--delay", type=float, default=0.3, help="KIS API 대기 (초)")
+    parser.add_argument("--save", action="store_true", help="JSON 저장")
+    args = parser.parse_args()
+
+    print(f"\n=== 엘리어트 38.2% 백테스트 시작 (표본 {args.limit}건) ===\n")
+    result = run_backtest(limit=args.limit, delay=args.delay)
+
+    if result.get("error"):
+        print(f"❌ {result['error']}")
+        return 1
+
+    print(f"\n=== 결과 요약 ===")
+    print(f"총 표본: {result['total_samples']}건")
+    print(f"4파 패턴 측정 성공: {result['valid_measurements']}건")
+    print(f"5파 진입 성공: {result['succeeded_w5']}건")
+    print(f"\n[전체 측정 통계]")
+    s = result["stats_all"]
+    print(f"  평균: {s['mean']}% / 중앙값: {s['median']}% / 표준편차: {s['stdev']}%")
+    print(f"  범위: {s['min']}% ~ {s['max']}%")
+    print(f"\n[5파 성공 종목만 통계]")
+    sw = result["stats_succeeded"]
+    print(f"  평균: {sw['mean']}% / 중앙값: {sw['median']}% / 표준편차: {sw['stdev']}%")
+    print(f"\n[피보 % 구간 분포]")
+    for k, v in result["bucket_distribution"].items():
+        bar = "█" * v
+        print(f"  {k:<14} {v:>3}건 {bar}")
+    print(f"\n[38.2% ± tolerance 5파 성공률]")
+    for tol, c in result["comparison_with_382"].items():
+        print(f"  {tol:<6}: {c['in_zone_count']:>3}건 / 성공 {c['succeeded']:>3}건 / 성공률 {c['success_rate']}%")
+
+    if args.save:
+        out_path = _ROOT / "data_store" / "backtest" / "elliott_fib_382.json"
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(result, ensure_ascii=False, indent=2, default=str),
+                            encoding="utf-8")
+        print(f"\n💾 저장: {out_path}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

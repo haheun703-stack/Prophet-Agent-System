@@ -1843,6 +1843,77 @@ class KISTrader:
             logger.warning(f"[분봉] {code} 예외: {e}")
             return []
 
+    def fetch_daily_chart(self, code: str, start_date: str = "", end_date: str = "",
+                          period: str = "D", adj: bool = True) -> list:
+        """일/주/월/년 차트 (FHKST03010100) — 5/22 단타봇 자율 추가 (엘리어트 백테스트용).
+
+        Args:
+            code: 종목코드
+            start_date: 시작일 (YYYYMMDD, 빈값=과거 100영업일 정도)
+            end_date:   종료일 (YYYYMMDD, 빈값=오늘)
+            period: D=일봉 / W=주봉 / M=월봉 / Y=년봉
+            adj:    수정주가 True(0) / 원주가 False(1)
+
+        Returns:
+            [{"date","open","high","low","close","volume"}, ...] 시간순 (오래된 것 먼저)
+
+        Note:
+            KIS 일봉 API 한 번 호출당 최대 100봉 (~4.5개월).
+            사장님 영구 룰 [feedback_verify_external_knowledge] — 외부 지식 (38.2%) 백테스트 의무.
+        """
+        from datetime import datetime, timedelta
+        if not end_date:
+            end_date = datetime.now().strftime("%Y%m%d")
+        if not start_date:
+            start_date = (datetime.now() - timedelta(days=200)).strftime("%Y%m%d")
+
+        params = {
+            "FID_COND_MRKT_DIV_CODE": "J",
+            "FID_INPUT_ISCD": code,
+            "FID_INPUT_DATE_1": start_date,
+            "FID_INPUT_DATE_2": end_date,
+            "FID_PERIOD_DIV_CODE": period,
+            "FID_ORG_ADJ_PRC": "0" if adj else "1",
+        }
+        try:
+            import requests
+            broker = self._get_broker()
+            token = broker.access_token
+            if not token.startswith("Bearer "):
+                token = f"Bearer {token}"
+            headers = {
+                "content-type": "application/json; charset=utf-8",
+                "authorization": token,
+                "appkey": broker.api_key,
+                "appsecret": broker.api_secret,
+                "tr_id": "FHKST03010100",
+                "custtype": "P",
+            }
+            url = f"{broker.base_url}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
+            resp = requests.get(url, headers=headers, params=params, timeout=10)
+            data = resp.json()
+            if data.get("rt_cd") != "0":
+                logger.warning(f"[일봉] {code} 실패: {data.get('msg1', '')}")
+                return []
+            output2 = data.get("output2", [])
+            bars = []
+            for r in output2:
+                if not r.get("stck_bsop_date"):
+                    continue
+                bars.append({
+                    "date": r.get("stck_bsop_date", ""),
+                    "open": _safe_int(r.get("stck_oprc")),
+                    "high": _safe_int(r.get("stck_hgpr")),
+                    "low": _safe_int(r.get("stck_lwpr")),
+                    "close": _safe_int(r.get("stck_clpr")),
+                    "volume": _safe_int(r.get("acml_vol")),
+                })
+            bars.reverse()  # 오래된 것 먼저 (시간순)
+            return bars
+        except Exception as e:
+            logger.warning(f"[일봉] {code} 예외: {e}")
+            return []
+
     def fetch_5min_candles(self, code: str, count_5min: int = 6) -> list:
         """5분봉 집계 (1분봉 N×5개 → 5분봉 N개).
 
