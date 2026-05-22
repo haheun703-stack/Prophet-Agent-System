@@ -82,6 +82,19 @@ class ElliottResult:
 Candle = Dict[str, float]
 
 
+def _is_trading_halted(candle: Candle) -> bool:
+    """거래정지 봉 판정 (5/22 단타봇 manual 검증 발견).
+
+    O=H=L=C + Volume=0 = 거래정지 (예: 금호에이치티 4/9~5/4 한 달치).
+    이런 봉을 스윙 분석에 포함하면 옛날 패턴 잘못 잡음.
+    """
+    return (
+        candle.get("volume", 0) == 0
+        and candle.get("open") == candle.get("high")
+        == candle.get("low") == candle.get("close")
+    )
+
+
 def _swing_highs_lows(
     candles: Sequence[Candle], lookback: int = 3
 ) -> Tuple[List[int], List[int]]:
@@ -89,6 +102,9 @@ def _swing_highs_lows(
 
     한 캔들이 좌우 lookback 캔들보다 high가 크면 스윙 고점,
     low가 작으면 스윙 저점.
+
+    ★ 5/22 단타봇 fix ★ 거래정지 봉 (Volume=0 + O=H=L=C) 자동 제외.
+    금호에이치티 manual 검증에서 한 달치 정지가 알고리즘 왜곡 발견.
 
     Args:
         candles: 시간순 캔들 리스트
@@ -102,13 +118,28 @@ def _swing_highs_lows(
     lows: List[int] = []
 
     for i in range(lookback, n - lookback):
+        # 거래정지 봉 스킵 (단타봇 5/22 fix)
+        if _is_trading_halted(candles[i]):
+            continue
+
         hi = candles[i]["high"]
         lo = candles[i]["low"]
 
-        is_high = all(hi > candles[i - k]["high"] for k in range(1, lookback + 1)) and \
-                  all(hi > candles[i + k]["high"] for k in range(1, lookback + 1))
-        is_low = all(lo < candles[i - k]["low"] for k in range(1, lookback + 1)) and \
-                 all(lo < candles[i + k]["low"] for k in range(1, lookback + 1))
+        # 좌우 비교 시에도 거래정지 봉 무시
+        left_highs = [candles[i - k]["high"] for k in range(1, lookback + 1)
+                      if not _is_trading_halted(candles[i - k])]
+        right_highs = [candles[i + k]["high"] for k in range(1, lookback + 1)
+                       if not _is_trading_halted(candles[i + k])]
+        left_lows = [candles[i - k]["low"] for k in range(1, lookback + 1)
+                     if not _is_trading_halted(candles[i - k])]
+        right_lows = [candles[i + k]["low"] for k in range(1, lookback + 1)
+                      if not _is_trading_halted(candles[i + k])]
+
+        if not left_highs or not right_highs:
+            continue
+
+        is_high = all(hi > h for h in left_highs) and all(hi > h for h in right_highs)
+        is_low = all(lo < lo2 for lo2 in left_lows) and all(lo < lo2 for lo2 in right_lows)
 
         if is_high:
             highs.append(i)

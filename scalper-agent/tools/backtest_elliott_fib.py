@@ -42,8 +42,44 @@ logging.basicConfig(
 
 
 # ── 표본 수집 ─────────────────────────────────────
-def collect_sample_codes(limit: int = 100) -> List[Dict]:
-    """daily_limit_up_history에서 최근 +20%+ 상한가 종목 표본 수집."""
+def collect_sample_codes(limit: int = 100, source: str = "surge_patterns") -> List[Dict]:
+    """표본 수집 — 5/22 단타봇 자율 변경 (상승 추세 종목으로).
+
+    Args:
+        source:
+          "surge_patterns" — jarvis_learning/surge_patterns/*.json (최근 +5%+ 누적, 추천)
+          "limit_up"       — daily_limit_up_history (상한가 후 = 5파 끝남, 부적합 입증)
+    """
+    if source == "surge_patterns":
+        codes_seen = set()
+        results = []
+        sp_dir = _ROOT / "data_store" / "jarvis_learning" / "surge_patterns"
+        if not sp_dir.exists():
+            logger.error(f"{sp_dir} 폴더 없음")
+            return []
+        # 최신 파일부터 수집
+        for fp in sorted(sp_dir.glob("*.json"), reverse=True):
+            try:
+                data = json.loads(fp.read_text(encoding="utf-8"))
+                for s in data.get("stocks", []):
+                    code = s.get("code")
+                    if code and code not in codes_seen:
+                        codes_seen.add(code)
+                        results.append({
+                            "code": code,
+                            "name": s.get("name", code),
+                            "surge_date": fp.stem,  # YYYYMMDD
+                            "max_pct": s.get("max_pct", 0),
+                        })
+                        if len(results) >= limit:
+                            break
+                if len(results) >= limit:
+                    break
+            except Exception as e:
+                logger.warning(f"{fp.name} 로드 실패: {e}")
+        return results
+
+    # 폴백: limit_up_history (이전 표본 — 부적합 입증)
     try:
         from utils.supabase_sql import query
         sql = """
