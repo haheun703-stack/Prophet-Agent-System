@@ -288,6 +288,94 @@ def apply_elliott_cross_block(candidates: List[Dict]) -> List[Dict]:
     return candidates
 
 
+def apply_korean_surge_pattern_bonus(
+    candidates: List[Dict],
+    log_each: bool = True,
+) -> List[Dict]:
+    """★ 5/23 토 사장님 결정 B ★ 한국형 V자 반등 zone 보너스.
+
+    surge_elliott_correlation 발견:
+      - 상한가 직전 70%가 korean_low/trend_caution/trend_end 영역
+      - 외부 책 'sweet 38.2%' = 한국 상한가 직전 ≠ (6.1% 평균)
+      - 한국형 = 깊은 되돌림 후 V자 반등 (62-100%+)
+
+    zone × consec 매트릭스 (raw 30건):
+      - korean_low (62-80%) × 2회차: 8건 ← V자 반등 패턴
+      - trend_caution (80-100%) × 2회차: 6건 ← 강력 추세
+      - trend_end (100%+) × 3회차: 2건 (SK증권우 fib 122%) ← 진짜 강세
+
+    적용 룰:
+      - korean_low + consec >= 2 → +10 (V_RECOVERY)
+      - trend_caution + consec >= 2 → +15 (STRONG_PUSH)
+      - trend_end + consec >= 3 → +20 (BREAKOUT — 진짜 추세)
+      - 그 외 → 0
+
+    Args:
+        candidates: enrich_with_elliott + apply_surge_recurrence_bonus 적용 후 후보
+                    elliott_zone + surge_recurrence_consec 필드 필요
+        log_each: 각 종목 로그 출력
+
+    Returns:
+        보너스 적용된 candidates (점수 정렬 X — 호출자에서 정렬)
+
+    Note:
+        - surge_recurrence_consec이 없으면 0회로 간주 (보너스 X)
+        - elliott_zone이 'unknown'이면 보너스 X
+        - sweet (fib_38_safe) 종목은 이미 boost_with_metadata에서 +25 받음
+          이 함수는 외부 책 sweet 아닌 한국형 zone만 추가 보너스
+    """
+    if not candidates:
+        return candidates
+
+    bonus_applied = 0
+    pattern_dist = {"V_RECOVERY": 0, "STRONG_PUSH": 0, "BREAKOUT": 0, "NONE": 0}
+
+    for c in candidates:
+        zone = c.get("elliott_zone", "")
+        consec = c.get("surge_recurrence_consec", 0) or 0
+
+        bonus = 0
+        pattern = "NONE"
+
+        if zone == "korean_low" and consec >= 2:
+            bonus = 10
+            pattern = "V_RECOVERY"
+        elif zone == "trend_caution" and consec >= 2:
+            bonus = 15
+            pattern = "STRONG_PUSH"
+        elif zone == "trend_end" and consec >= 3:
+            bonus = 20
+            pattern = "BREAKOUT"
+
+        c["korean_pattern"] = pattern
+        c["korean_pattern_bonus"] = bonus
+
+        if bonus > 0:
+            old_score = c.get("score", 0)
+            c["score"] = old_score + bonus
+            bonus_applied += 1
+            pattern_dist[pattern] += 1
+            if log_each:
+                logger.info(
+                    f"[korean_surge] {pattern} {c['code']} {c.get('name','')[:8]} "
+                    f"zone={zone} consec={consec} → +{bonus} "
+                    f"(score {old_score} → {c['score']})"
+                )
+        else:
+            pattern_dist["NONE"] += 1
+
+    logger.info(
+        f"[korean_surge] 적용 — 총 {len(candidates)}종 / 보너스 {bonus_applied}건 / "
+        f"분포: V_RECOVERY {pattern_dist['V_RECOVERY']} / "
+        f"STRONG_PUSH {pattern_dist['STRONG_PUSH']} / "
+        f"BREAKOUT {pattern_dist['BREAKOUT']}"
+    )
+
+    # 점수 순 재정렬
+    candidates.sort(key=lambda x: -x.get("score", 0))
+    return candidates
+
+
 def apply_surge_recurrence_bonus(
     candidates: List[Dict],
     days_back: int = 2,

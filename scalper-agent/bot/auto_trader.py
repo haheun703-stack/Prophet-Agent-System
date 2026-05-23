@@ -2086,6 +2086,18 @@ class AutoTrader:
         except Exception as e:
             logger.warning(f"[asset_pool] surge_recurrence 실패 (무시): {e}")
 
+        # ★ 5/23 토 사장님 결정 B ★ 한국형 V자 반등 zone 보너스
+        # surge_elliott_correlation 발견: 상한가 직전 70%가 korean_low/trend_caution/trend_end
+        # 외부 sweet 38.2% ≠ 한국형 V자 반등 패턴 (raw 30건 분석)
+        try:
+            from utils.asset_pool_elliott import apply_korean_surge_pattern_bonus
+            ranked = await asyncio.to_thread(
+                apply_korean_surge_pattern_bonus, ranked, True
+            )
+            logger.info(f"[asset_pool] korean_surge_pattern 적용 후 후보 {len(ranked)}종")
+        except Exception as e:
+            logger.warning(f"[asset_pool] korean_surge_pattern 실패 (무시): {e}")
+
         # ★ 5/20 fix: 최소 점수 임계값 30 (이상한 종목 자동 제외) ★
         # 진원생명과학(90점)/티웨이(65점) 같은 고점수만 통과
         # ★ 5/22 G통합 후 ★: elliott_boost (-10~+30) 반영된 score 기준 필터
