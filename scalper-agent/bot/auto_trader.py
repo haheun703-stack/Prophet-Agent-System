@@ -2176,12 +2176,65 @@ class AutoTrader:
             f"💎 [자산풀 후보] {len(filtered)}종목 — 자비스 3게이트 체크 진행"
         )
 
-        bought, failed, gate_blocked = [], [], []
+        # ★★★ 5/23 토 사장님 결정 — 눌림 매수 -3% 룰 ★★★
+        # 백테스트 결과 (surge_elliott_correlation raw 30건):
+        #   - 시가 매수 후 평균 -6.95% 빠짐 (87% 종목)
+        #   - 저점 매수 시 평균 +15.44% (시가의 2.17배)
+        #   - -3% 눌림 매수 = 진입 80% + 평균 +9.19% (시가 +7.11% 대비 +2.08%p 우세)
+        # 사장님 직관 100% 데이터 검증 완료
+        entry_mode = str(ap_cfg.get("entry_mode", "open")).lower()
+        target_pullback = float(ap_cfg.get("pullback_target_pct", -3.0))
+
+        # pullback 모드 시 시가 정보 수집
+        open_prices_for_pullback = {}
+        if entry_mode == "pullback_3pct":
+            for c in filtered:
+                try:
+                    bars = await asyncio.to_thread(self.trader.fetch_minute_chart, c["code"], 5)
+                    if bars:
+                        open_prices_for_pullback[c["code"]] = bars[0].get("open", 0)
+                except Exception as _e:
+                    logger.debug(f"[pullback] {c['code']} 시가 fetch 실패: {_e}")
+            await _send(
+                f"⏳ [눌림 매수 모드] {len(open_prices_for_pullback)}종 시가 수집 — "
+                f"시가 대비 {target_pullback}% 도달 시만 매수 (사장님 5/23 토 결정)"
+            )
+
+        bought, failed, gate_blocked, pullback_skipped = [], [], [], []
         for c in filtered:
             code = c["code"]
             name = c["name"] or code
             sources_tag = ",".join(c["sources"])
             try:
+                # ★ 5/23 토 룰 — pullback_3pct 모드: 시가 대비 -3% 미달 종목 skip ★
+                if entry_mode == "pullback_3pct":
+                    op = open_prices_for_pullback.get(code, 0)
+                    if op > 0:
+                        try:
+                            cur_resp = await asyncio.to_thread(self.trader.fetch_price, code)
+                            if cur_resp and cur_resp.get("success"):
+                                cur = float(cur_resp.get("current_price", 0))
+                                if cur > 0:
+                                    change_pct = (cur - op) / op * 100
+                                    if change_pct > target_pullback:
+                                        pullback_skipped.append(
+                                            f"{name}({change_pct:+.1f}% > {target_pullback}%)"
+                                        )
+                                        logger.info(
+                                            f"[pullback_skip] {code} {name} "
+                                            f"시가 {op:,} → 현재 {int(cur):,} ({change_pct:+.2f}%) "
+                                            f"— {target_pullback}% 미달 → 매수 X (별도 cron 재시도)"
+                                        )
+                                        continue
+                                    else:
+                                        logger.info(
+                                            f"[pullback_HIT] ★ {code} {name} "
+                                            f"시가 {op:,} → 현재 {int(cur):,} ({change_pct:+.2f}%) "
+                                            f"★ -3% 도달 → 매수 진행"
+                                        )
+                        except Exception as _pe:
+                            logger.warning(f"[pullback] {code} 현재가 fetch 실패 (계속): {_pe}")
+
                 # ── 자비스 3게이트 (사장님 5/20 결정: 매수 전 자비스가 종목 봄) ──
                 gate = await asyncio.to_thread(self._jarvis_3gate_check, code)
                 if not gate.get("ok"):
@@ -2327,12 +2380,15 @@ class AutoTrader:
 
         msg = [
             f"💎 [자산풀 매수 결과] ✅ {len(bought)}/{len(filtered)}종목",
-            f"  · 후보 {len(filtered)} → 게이트차단 {len(gate_blocked)} / 실패 {len(failed)} / 체결 {len(bought)}",
+            f"  · 후보 {len(filtered)} → 게이트차단 {len(gate_blocked)} / "
+            f"눌림미달 {len(pullback_skipped)} / 실패 {len(failed)} / 체결 {len(bought)}",
         ]
         if bought:
             msg.append("  ✅ " + ", ".join(bought))
         if gate_blocked:
             msg.append(f"  🚪 3게이트 차단: " + ", ".join(gate_blocked[:5]))
+        if pullback_skipped:
+            msg.append(f"  ⏳ 눌림 미달 (별도 cron 재시도): " + ", ".join(pullback_skipped[:5]))
         if failed:
             msg.append(f"  ❌ 매수 실패: " + ", ".join(failed[:3]))
         await _send("\n".join(msg))
