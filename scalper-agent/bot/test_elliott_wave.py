@@ -42,24 +42,33 @@ PATTERN_FIVE_WAVE_OK = [
     _make_candle(114, 135, 113, 133, 3500),
     _make_candle(133, 152, 132, 150, 4500),
     _make_candle(150, 162, 149, 160, 5000),    # w3 고점 (idx 12)
-    _make_candle(160, 161, 153, 154, 2200),
-    _make_candle(154, 155, 148, 149, 1900),
-    _make_candle(149, 150, 146, 147, 1500),    # w4 저점 (idx 15)
-    _make_candle(147, 149, 146.5, 148, 1400),
-    _make_candle(148, 149.5, 147, 148.5, 1300),
-    _make_candle(148.5, 150, 147.5, 149, 1400),
+    # ★ 5/23 토 단타봇 자율 정밀화 ★ — w4 sweet 41% (fib (162-138)/57*100 = 42.1%)
+    # 이전 w4=146 (fib 28%) = 새 too_shallow → 단위 테스트 실패
+    # 새 w4=138 (fib 42.1%) = ★ 진짜 sweet spot (5/23 백테스트 55.6%) ★
+    _make_candle(160, 161, 145, 146, 2200),
+    _make_candle(146, 147, 140, 141, 1900),
+    _make_candle(141, 142, 138, 139, 1500),    # w4 저점 (idx 15) — 138 sweet
+    _make_candle(139, 141, 138.5, 140, 1400),
+    _make_candle(140, 141.5, 139, 140.5, 1300),
+    _make_candle(140.5, 142, 139.5, 141, 1400),
 ]
 
 
 class TestElliottWave(unittest.TestCase):
 
     def test_1_normal_five_wave_entry(self):
-        """① 정상 5파 진입: 4룰 모두 통과 → buy_signal=True / confidence=1.0"""
+        """① 정상 5파 진입: zone BUY + non_overlap → buy_signal=True / confidence=1.0
+
+        ★ 5/23 토 정밀화 ★ — w4 fib 42.1% (sweet 36-46) zone fib_38_safe BUY
+        교대법칙은 정보용 (alt_ok에 무관 — 5/22 19:30 룰 제거).
+        """
         result = detect_elliott_pattern(PATTERN_FIVE_WAVE_OK)
         self.assertEqual(result.phase, "wave_5_start", f"phase={result.phase}, reason={result.reason}")
         self.assertTrue(result.fib_zone_match, f"fib_zone_match=False, reason={result.reason}")
+        self.assertEqual(result.fib_zone_name, "fib_38_safe", f"zone={result.fib_zone_name} (sweet 36-46 안이어야 함)")
         self.assertTrue(result.non_overlap_check, "non_overlap_check=False")
-        self.assertEqual(result.alternation_check, "OK_alternating")
+        # 교대법칙은 정보용 — 5/22 19:30 룰 제거 (buy_signal 의사결정 X)
+        self.assertIn(result.alternation_check, ("OK_alternating", "FAIL_same_shape"))
         self.assertTrue(result.buy_signal)
         self.assertEqual(result.confidence, 1.0)
         self.assertEqual(elliott_score_boost(result), 25)
@@ -133,49 +142,57 @@ class TestElliottWave(unittest.TestCase):
         self.assertFalse(result.buy_signal)
 
     def test_8_fib_zone_5tier_setting(self):
-        """⑧ 5단계 zone 진입 (사장님 5/22 19:30 A+C 정밀 백테스트 정정):
-           - 28~48%: fib_38_safe / BUY / conf 1.0 (성공률 46.7%, x2.3)
-           - 48~62%: fib_50_standard / BUY / conf 0.7 (성공률 30.8%)
-           - 62~80%: korean_low / AVOID / conf 0.1 (성공률 9.1% ★ 회피 ★)
-           - 80~100%: trend_caution / BUY_CAUTION / conf 0.4 (성공률 20.8%, 큰 수익)
-           - 100%+: trend_end / NO_ENTRY / conf 0
-           - 0~28%: too_shallow / NO_ENTRY / conf 0
+        """⑧ 5단계 zone (★ 5/23 토 단타봇 fine-grained 정밀화 ★):
+           - 0~36%:   too_shallow / NO_ENTRY / conf 0 (28-36 sweet 미달 회피)
+           - 36~46%:  fib_38_safe / BUY / conf 1.0 (★ 진짜 sweet — 성공률 55.6% x2.73)
+           - 46~62%:  fib_50_standard / BUY / conf 0.7 (성공률 37-40%)
+           - 62~80%:  korean_low / AVOID / conf 0.1 (성공률 9.1% ★ 회피 ★)
+           - 80~100%: trend_caution / BUY_CAUTION / conf 0.4 (큰 수익 +52%)
+           - 100%+:   trend_end / NO_ENTRY / conf 0 (추세 종료)
         """
         from bot.elliott_wave import evaluate_fib_zone
 
-        # 38.2% 안전 zone
-        r1 = evaluate_fib_zone(38.2)
-        self.assertEqual(r1["zone"], "fib_38_safe")
+        # ★ 진짜 sweet 41% (5/23 정밀화) ★
+        r1 = evaluate_fib_zone(41.0)
+        self.assertEqual(r1["zone"], "fib_38_safe", "41% sweet center")
         self.assertEqual(r1["signal"], "BUY")
         self.assertEqual(r1["confidence"], 1.0)
 
-        # 28% 경계 (포함)
-        r2 = evaluate_fib_zone(28.0)
+        # 36% sweet 경계 (포함)
+        r2 = evaluate_fib_zone(36.0)
         self.assertEqual(r2["zone"], "fib_38_safe")
 
-        # 48% 경계 (제외 — fib_50으로)
-        r3 = evaluate_fib_zone(48.0)
+        # 30% — 새 boundary로 too_shallow (이전 fib_38_safe였지만 sweet 미달)
+        r2b = evaluate_fib_zone(30.0)
+        self.assertEqual(r2b["zone"], "too_shallow", "30% sweet 미달 → 새 NO_ENTRY")
+
+        # 46% 경계 (제외 — fib_50으로)
+        r3 = evaluate_fib_zone(46.0)
         self.assertEqual(r3["zone"], "fib_50_standard")
         self.assertEqual(r3["confidence"], 0.7)
 
-        # ★ 62~80% korean_low AVOID ★ (5/22 정정 — 성공률 9.1%)
+        # 55% — 새 fib_50_standard 범위 (46-62) 안
+        r3b = evaluate_fib_zone(55.0)
+        self.assertEqual(r3b["zone"], "fib_50_standard")
+
+        # ★ 62~80% korean_low AVOID ★ (그대로 — 성공률 9.1%)
         r4 = evaluate_fib_zone(70.0)
         self.assertEqual(r4["zone"], "korean_low")
         self.assertEqual(r4["signal"], "AVOID")
         self.assertEqual(r4["confidence"], 0.1)
 
-        # 80~100% trend_caution BUY_CAUTION
+        # 80~100% trend_caution BUY_CAUTION (그대로)
         r5 = evaluate_fib_zone(85.0)
         self.assertEqual(r5["zone"], "trend_caution")
         self.assertEqual(r5["signal"], "BUY_CAUTION")
         self.assertEqual(r5["confidence"], 0.4)
 
-        # 100%+ trend_end NO_ENTRY
+        # 100%+ trend_end NO_ENTRY (그대로)
         r6 = evaluate_fib_zone(110.0)
         self.assertEqual(r6["zone"], "trend_end")
         self.assertEqual(r6["signal"], "NO_ENTRY")
 
-        # 너무 얕음 20%
+        # 너무 얕음 20% (그대로 too_shallow)
         r7 = evaluate_fib_zone(20.0)
         self.assertEqual(r7["zone"], "too_shallow")
         self.assertEqual(r7["signal"], "NO_ENTRY")
