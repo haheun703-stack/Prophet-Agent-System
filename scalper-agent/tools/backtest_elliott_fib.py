@@ -354,6 +354,9 @@ def run_backtest(limit: int = 50, delay: float = 0.3,
         "cap_band_zone_matrix": _cap_band_zone_matrix(measurements),
         # ★ E. 섹터별 zone 성공률 ★
         "sector_zone_top": _sector_zone_top(measurements),
+        # ★ 5/23 토 단타봇 자율 추가 — fine-grained 2% grid search ★
+        "fine_grained_grid": _fine_grained_grid_search(measurements, step=2.0, bucket_width=10.0),
+        "sweet_spot": _find_sweet_spot(_fine_grained_grid_search(measurements, step=2.0, bucket_width=10.0)),
         "raw_measurements": measurements[:20],
     }
 
@@ -559,6 +562,96 @@ def _compare_to_382(measurements: List[Dict]) -> Dict:
     return result
 
 
+def _fine_grained_grid_search(measurements: List[Dict],
+                              step: float = 2.0,
+                              bucket_width: float = 10.0,
+                              min_samples: int = 5) -> List[Dict]:
+    """★ 5/23 토 단타봇 자율 추가 ★ 2% 단위 sliding bucket grid search.
+
+    어제 zone 단위 (28-48 / 48-62 / 62-80 / 80-100) 너무 거칠어
+    진짜 sweet spot (예: 36-46%) 안 보임 → fine-grained 재분석.
+
+    Args:
+        step: 슬라이딩 스텝 (기본 2%)
+        bucket_width: 버킷 폭 (기본 10% = ±5%)
+        min_samples: 통계 신뢰 최소 표본 (기본 5)
+
+    Returns:
+        [{lo, hi, count, succeeded, success_rate, mean_gain}, ...]
+        성공률 내림차순 정렬 — 진짜 sweet spot이 TOP 1~3에 드러남.
+    """
+    if not measurements:
+        return []
+
+    overall_avg = sum(1 for m in measurements if m["succeeded_to_w5"]) / len(measurements) * 100
+    buckets = []
+    start = 20.0  # 너무 얕은 0~20% 제외
+    end = 110.0   # 100%+ 추세 종료 위까지
+
+    p = start
+    while p + bucket_width <= end:
+        lo, hi = p, p + bucket_width
+        in_b = [m for m in measurements
+                if lo <= m["fib_retracement_pct"] < hi]
+        if len(in_b) >= min_samples:
+            succ = [m for m in in_b if m["succeeded_to_w5"]]
+            rate = len(succ) / len(in_b) * 100
+            gains = [m["max_gain_after_w4_pct"] for m in succ]
+            buckets.append({
+                "lo": round(lo, 1),
+                "hi": round(hi, 1),
+                "center": round((lo + hi) / 2, 1),
+                "count": len(in_b),
+                "succeeded": len(succ),
+                "success_rate": round(rate, 1),
+                "vs_baseline_x": round(rate / overall_avg, 2) if overall_avg else 0,
+                "mean_gain_pct": round(statistics.mean(gains), 2) if gains else 0,
+                "expected_gain": round(rate / 100 * (statistics.mean(gains) if gains else 0), 2),
+            })
+        p += step
+
+    # 정렬: 성공률 우선 (기대수익 가중)
+    buckets.sort(key=lambda b: -b["success_rate"])
+    return buckets
+
+
+def _find_sweet_spot(grid: List[Dict]) -> Optional[Dict]:
+    """★ 5/23 토 추가 ★ grid에서 진짜 sweet spot 1건 도출.
+
+    조건:
+      - 표본 8건+ (통계 신뢰)
+      - 성공률 baseline × 1.5+ (의미 있는 우위)
+      - 동률 시 기대수익 우선
+    """
+    if not grid:
+        return None
+    qualified = [b for b in grid if b["count"] >= 8 and b["vs_baseline_x"] >= 1.5]
+    if not qualified:
+        # 폴백: 표본 5건+ 중 성공률 1위
+        qualified = [b for b in grid if b["count"] >= 5]
+    if not qualified:
+        return None
+    qualified.sort(key=lambda b: (-b["success_rate"], -b["expected_gain"]))
+    return qualified[0]
+
+
+def _zone_window_sensitivity(measurements: List[Dict]) -> Dict:
+    """★ 5/23 토 추가 ★ 윈도우 크기 sensitivity 분석 (참고용).
+
+    같은 백테스트 한 호출 안에서는 window 1개만 사용하므로,
+    여기서는 window_start~window_end 분포만 메타 정보 제공.
+    실제 multi-window 비교는 별도 백테스트 호출로 진행.
+    """
+    if not measurements:
+        return {}
+    # window 길이가 동일하니 단순 카운트만
+    return {
+        "_note": "single-window run; use --window 60/90/120 separate runs for sensitivity",
+        "window_span_samples": len({(m.get("window_start", ""), m.get("window_end", ""))
+                                    for m in measurements}),
+    }
+
+
 # ── 메인 실행 ─────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(description="엘리어트 38.2% 피보 백테스트")
@@ -634,6 +727,23 @@ def main():
     for i, s in enumerate(result.get("sector_zone_top", [])[:15], 1):
         print(f"  {i:>2}. [{s['sector']:<12}] {s['zone']:<18} "
               f"{s['count']:>3}건 / 성공률 {s['success_rate']:>5}%")
+
+    print(f"\n[★ 5/23 토 단타봇 자율 — Fine-Grained 2% Grid Search ★] baseline={result['overall_success_rate']}%")
+    print(f"  (bucket 폭 10% = ±5% / 표본 5건+ / 성공률 내림차순 TOP 15)")
+    for i, b in enumerate(result.get("fine_grained_grid", [])[:15], 1):
+        bar = "█" * int(b["success_rate"] / 3)
+        print(f"  {i:>2}. {b['lo']:>5.1f}~{b['hi']:>5.1f}% (중심 {b['center']:>5.1f}%) "
+              f"{b['count']:>3}건 / 성공률 {b['success_rate']:>5}% "
+              f"(x{b['vs_baseline_x']:<4}) 수익 +{b['mean_gain_pct']:>5}% "
+              f"기대 +{b['expected_gain']:>5}% {bar}")
+
+    ss = result.get("sweet_spot")
+    if ss:
+        print(f"\n[★★★ 진짜 SWEET SPOT (5/23 단타봇 자율 결정) ★★★]")
+        print(f"  범위: {ss['lo']}% ~ {ss['hi']}% (중심 {ss['center']}%)")
+        print(f"  표본: {ss['count']}건 / 성공: {ss['succeeded']}건 / 성공률 {ss['success_rate']}% (x{ss['vs_baseline_x']} baseline)")
+        print(f"  평균 수익: +{ss['mean_gain_pct']}% / 기대 수익: +{ss['expected_gain']}%")
+        print(f"  → elliott_wave.py FIB_ZONES 정밀 조정 후보")
 
     if args.save:
         out_path = _ROOT / "data_store" / "backtest" / "elliott_fib_382.json"
