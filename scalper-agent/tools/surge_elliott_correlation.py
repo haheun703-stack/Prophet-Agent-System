@@ -143,6 +143,85 @@ def measure_pre_surge_elliott(bars: Sequence[Dict], d_day_idx: int,
     return result
 
 
+def measure_buy_timing(bars: Sequence[Dict], d_day_idx: int) -> Dict:
+    """★ 5/23 토 사장님 핵심 질문 ★ 매수 타이밍 시나리오별 수익 측정.
+
+    사장님 질문:
+      "오를 종목 → 09:15(시가) vs 15:00(전날 종가) vs NXT 어느게 최적?"
+
+    측정 (일봉 기준 — 분봉 정밀도는 추후):
+      A. D-Day 09:15 시가 매수 → D-Day 고가 익절
+         매수가 = D-Day open / 매도가 = D-Day high
+         수익 = (high - open) / open × 100
+
+      B. D-1 15:00 종가 매수 (전날 종가 베팅) → D-Day 고가 익절
+         매수가 = D-1 close / 매도가 = D-Day high
+         수익 = (D-Day high - D-1 close) / D-1 close × 100
+
+      C. D-1 15:00 매수 → D-Day 종가 익절 (보수)
+         매수가 = D-1 close / 매도가 = D-Day close
+         수익 = (D-Day close - D-1 close) / D-1 close × 100
+
+      D. D-Day 09:15 매수 → D-Day 종가 익절 (보수)
+         매수가 = D-Day open / 매도가 = D-Day close
+         수익 = (D-Day close - D-Day open) / D-Day open × 100
+
+    추가 측정:
+      - 갭상승율: (D-Day open - D-1 close) / D-1 close × 100
+        → 양수면 09:15 매수 시 이미 갭 받아 비싸게 매수
+      - D-Day 변동률: (high - low) / open × 100
+      - 종가 위치: (close - low) / (high - low) × 100  (장중 위치)
+
+    Args:
+        bars: 일봉 시간순
+        d_day_idx: 상한가 D-Day 인덱스 (> 0)
+
+    Returns:
+        시나리오별 수익 + 갭상승 + 변동 통계
+    """
+    if d_day_idx < 1 or d_day_idx >= len(bars):
+        return {"error": "invalid_idx"}
+
+    d_1 = bars[d_day_idx - 1]
+    d_0 = bars[d_day_idx]
+
+    d_1_close = d_1.get("close", 0)
+    d_0_open = d_0.get("open", 0)
+    d_0_high = d_0.get("high", 0)
+    d_0_low = d_0.get("low", 0)
+    d_0_close = d_0.get("close", 0)
+
+    if d_1_close <= 0 or d_0_open <= 0 or d_0_high <= 0:
+        return {"error": "invalid_prices"}
+
+    # 시나리오 수익률
+    a_open_to_high = (d_0_high - d_0_open) / d_0_open * 100
+    b_d1close_to_high = (d_0_high - d_1_close) / d_1_close * 100
+    c_d1close_to_close = (d_0_close - d_1_close) / d_1_close * 100
+    d_open_to_close = (d_0_close - d_0_open) / d_0_open * 100
+
+    # 갭상승율 + 변동
+    gap_pct = (d_0_open - d_1_close) / d_1_close * 100
+    range_pct = (d_0_high - d_0_low) / d_0_open * 100 if d_0_open > 0 else 0
+    close_position = ((d_0_close - d_0_low) / (d_0_high - d_0_low) * 100
+                      if d_0_high > d_0_low else 50)
+
+    return {
+        "d_1_close": d_1_close,
+        "d_0_open": d_0_open,
+        "d_0_high": d_0_high,
+        "d_0_low": d_0_low,
+        "d_0_close": d_0_close,
+        "gap_pct": round(gap_pct, 2),
+        "range_pct": round(range_pct, 2),
+        "close_position_pct": round(close_position, 2),
+        "A_915_open_to_high": round(a_open_to_high, 2),
+        "B_d1close_to_high": round(b_d1close_to_high, 2),
+        "C_d1close_to_close": round(c_d1close_to_close, 2),
+        "D_open_to_close": round(d_open_to_close, 2),
+    }
+
+
 def find_next_surge(bars: Sequence[Dict], d_day_idx: int,
                     surge_pct: float = 25.0, max_search_days: int = 30) -> Optional[int]:
     """D-Day 이후 다음 상한가(+25%+) 시점 — 재상한가 사이클 측정.
@@ -228,6 +307,9 @@ def run_correlation_backtest(days_back: int = 30, limit: int = 200,
             consec = s.get("consecutive_days", 1)
             consecutive_surge_distribution[consec] += 1
 
+            # ★ 5/23 토 사장님 핵심 질문 ★ 매수 타이밍 측정
+            timing = measure_buy_timing(bars, d_idx)
+
             results.append({
                 "ticker": code,
                 "name": name,
@@ -238,6 +320,7 @@ def run_correlation_backtest(days_back: int = 30, limit: int = 200,
                 "pre_surge_elliott": pre,
                 "best_entry_offset": pre.get("best_entry", {}).get("day_offset") if pre.get("best_entry") else None,
                 "next_surge_days": next_n,
+                "buy_timing": timing,
             })
 
             if i % 10 == 0:
@@ -276,6 +359,37 @@ def run_correlation_backtest(days_back: int = 30, limit: int = 200,
 
     best_entries = [r["best_entry_offset"] for r in results if r["best_entry_offset"] is not None]
 
+    # ★ 5/23 토 사장님 핵심 — 매수 타이밍 통계 ★
+    timings_valid = [r["buy_timing"] for r in results
+                     if r.get("buy_timing") and "error" not in r["buy_timing"]]
+
+    def _stats(values):
+        if not values:
+            return {"count": 0, "mean": 0, "median": 0, "win_rate": 0, "max": 0, "min": 0}
+        positives = sum(1 for v in values if v > 0)
+        return {
+            "count": len(values),
+            "mean": round(statistics.mean(values), 2),
+            "median": round(statistics.median(values), 2),
+            "stdev": round(statistics.stdev(values), 2) if len(values) >= 2 else 0,
+            "win_rate": round(positives / len(values) * 100, 1),
+            "max": round(max(values), 2),
+            "min": round(min(values), 2),
+        }
+
+    timing_stats = {}
+    if timings_valid:
+        timing_stats = {
+            "sample_count": len(timings_valid),
+            "A_915_open_to_high": _stats([t["A_915_open_to_high"] for t in timings_valid]),
+            "B_d1close_to_high": _stats([t["B_d1close_to_high"] for t in timings_valid]),
+            "C_d1close_to_close": _stats([t["C_d1close_to_close"] for t in timings_valid]),
+            "D_open_to_close": _stats([t["D_open_to_close"] for t in timings_valid]),
+            "gap_pct": _stats([t["gap_pct"] for t in timings_valid]),
+            "range_pct": _stats([t["range_pct"] for t in timings_valid]),
+            "close_position_pct": _stats([t["close_position_pct"] for t in timings_valid]),
+        }
+
     return {
         "total_samples": len(samples),
         "valid_measurements": valid_count,
@@ -298,6 +412,8 @@ def run_correlation_backtest(days_back: int = 30, limit: int = 200,
             "rate_pct": round(len(next_surge_days) / valid_count * 100, 1),
         },
         "consecutive_surge_distribution": dict(consecutive_surge_distribution),
+        # ★ 5/23 토 사장님 핵심 질문 — 매수 타이밍 통계 ★
+        "buy_timing_stats": timing_stats,
         "raw_results": results[:30],
     }
 
@@ -351,6 +467,42 @@ def main():
     print(f"\n[연속 상한가 분포]")
     for consec, cnt in sorted(r["consecutive_surge_distribution"].items()):
         print(f"  {consec}회차: {cnt}건")
+
+    # ★ 5/23 토 사장님 핵심 질문 — 매수 타이밍 ★
+    bts = r.get("buy_timing_stats", {})
+    if bts:
+        print(f"\n[★★★ 매수 타이밍 시나리오 비교 (사장님 5/23 토 핵심 질문) ★★★]")
+        print(f"  표본: {bts['sample_count']}건")
+        print()
+        scenarios = [
+            ("A. 09:15 시가 → 고가", "A_915_open_to_high", "당일 시가 직후 매수 → 상한가 익절"),
+            ("B. 전날 15:00 → 고가", "B_d1close_to_high", "전날 종가 매수 → 다음날 상한가"),
+            ("C. 전날 15:00 → 종가", "C_d1close_to_close", "전날 매수 → 다음날 종가 보수 익절"),
+            ("D. 09:15 → 종가",    "D_open_to_close",    "당일 매수 → 종가 보수 익절"),
+        ]
+        for name, key, desc in scenarios:
+            s = bts[key]
+            print(f"  [{name}] {desc}")
+            print(f"    평균 {s['mean']:>6}% / 중앙값 {s['median']:>6}% / 표준편차 {s['stdev']:>5}% / "
+                  f"승률 {s['win_rate']:>5}% / 최대 +{s['max']}% / 최소 {s['min']}%")
+
+        print(f"\n  [참고 — 시장 컨디션]")
+        print(f"    갭상승율 (D-Day open vs D-1 close): 평균 {bts['gap_pct']['mean']}% / 중앙값 {bts['gap_pct']['median']}%")
+        print(f"    일중 변동 (range/open): 평균 {bts['range_pct']['mean']}%")
+        print(f"    종가 위치 (장중 0=저점/100=고점): 평균 {bts['close_position_pct']['mean']}")
+
+        # 결론 자동 도출 (평균 수익률 순)
+        scenario_scores = [
+            ("A 09:15→high", bts["A_915_open_to_high"]["mean"]),
+            ("B 15:00→high", bts["B_d1close_to_high"]["mean"]),
+            ("C 15:00→close", bts["C_d1close_to_close"]["mean"]),
+            ("D 09:15→close", bts["D_open_to_close"]["mean"]),
+        ]
+        scenario_scores.sort(key=lambda x: -x[1])
+        print(f"\n  ★ 평균 수익률 순위 ★")
+        for i, (name, sc) in enumerate(scenario_scores, 1):
+            mark = " ★★★ 최우선" if i == 1 else ""
+            print(f"    {i}. {name:<20} 평균 +{sc}%{mark}")
 
     if args.save:
         out_path = _ROOT / "data_store" / "backtest" / "surge_elliott_correlation.json"
