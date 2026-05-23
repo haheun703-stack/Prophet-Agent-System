@@ -288,6 +288,128 @@ def apply_elliott_cross_block(candidates: List[Dict]) -> List[Dict]:
     return candidates
 
 
+def apply_surge_recurrence_bonus(
+    candidates: List[Dict],
+    days_back: int = 2,
+    base_bonus: int = 20,
+    consecutive_bonus: int = 5,
+) -> List[Dict]:
+    """★ 5/23 토 사장님 결정 A-2 ★ 재상한가 사이클 watchlist 보너스.
+
+    5/23 백테스트 발견 (surge_elliott_correlation):
+      - 1개월 상한가의 10.6%가 평균 2일 만에 다시 +25%+ 폭발
+      - 연속 상한가 분포: 2회차 85% / 3회차 15%
+      - 즉 "어제 상한가 친 종목 → 오늘 또 가능성 ★"
+
+    동작:
+      - daily_limit_up_history WHERE date >= (CURRENT_DATE - days_back)
+      - 후보에 이미 있으면 score + base_bonus + consecutive_bonus × (consec-1)
+      - 후보에 없으면 새 후보 추가 (score = 50 + base_bonus + consec_bonus)
+      - sources에 "surge_recurrence" 태그 추가
+      - cross_status 유지 (jgis/elliott과 독립 룰)
+
+    Args:
+        candidates: enrich_with_elliott 결과 (또는 그 전 단계)
+        days_back: 며칠 전까지 상한가 (기본 2일 — 5/23 평균 2일)
+        base_bonus: 기본 보너스 (기본 +20)
+        consecutive_bonus: 연속 횟수당 추가 (기본 +5)
+
+    Returns:
+        보너스 적용된 candidates (점수 정렬 X — 호출자에서 정렬)
+    """
+    if not candidates and days_back <= 0:
+        return candidates
+
+    # 어제~그저께 상한가 종목 조회
+    surge_codes = {}  # code → {consecutive, date}
+    try:
+        from utils.supabase_sql import query
+        sql = """
+            SELECT ticker, name, date, COALESCE(consecutive_days, 1) AS consec
+            FROM daily_limit_up_history
+            WHERE date >= CURRENT_DATE - INTERVAL '%s days'
+              AND date < CURRENT_DATE
+            ORDER BY consec DESC, date DESC
+        """
+        rows = query(sql, (days_back,))
+        for r in (rows or []):
+            code = r.get("ticker", "")
+            if code:
+                # 가장 최근 + 가장 높은 consec 우선
+                if code not in surge_codes or r.get("consec", 1) > surge_codes[code]["consec"]:
+                    surge_codes[code] = {
+                        "consec": r.get("consec", 1),
+                        "date": str(r.get("date", "")),
+                        "name": r.get("name", ""),
+                    }
+    except Exception as e:
+        logger.warning(f"[surge_recurrence] DB 조회 실패: {e}")
+        return candidates
+
+    if not surge_codes:
+        logger.info(f"[surge_recurrence] 최근 {days_back}일 상한가 0건 — 보너스 X")
+        return candidates
+
+    # 기존 후보 코드 set
+    existing = {c.get("code"): i for i, c in enumerate(candidates)}
+
+    bonus_applied = 0
+    new_added = 0
+
+    # 기존 후보에 보너스 적용
+    for code, info in surge_codes.items():
+        consec = info["consec"]
+        bonus = base_bonus + consecutive_bonus * (consec - 1)
+
+        if code in existing:
+            idx = existing[code]
+            c = candidates[idx]
+            old_score = c.get("score", 0)
+            c["score"] = old_score + bonus
+            c["surge_recurrence_bonus"] = bonus
+            c["surge_recurrence_consec"] = consec
+            c["surge_recurrence_date"] = info["date"]
+            srcs = c.get("sources", [])
+            if "surge_recurrence" not in srcs:
+                srcs.append("surge_recurrence")
+                c["sources"] = srcs
+            bonus_applied += 1
+            logger.info(
+                f"[surge_recurrence] BONUS {code} {info['name'][:8]} "
+                f"consec={consec} → +{bonus} (score {old_score} → {c['score']})"
+            )
+        else:
+            # 새 후보 추가 (base 50 + bonus)
+            new_score = 50 + bonus
+            candidates.append({
+                "code": code,
+                "name": info["name"],
+                "score": new_score,
+                "sources": ["surge_recurrence"],
+                "category": "surge_recurrence",
+                "surge_recurrence_bonus": bonus,
+                "surge_recurrence_consec": consec,
+                "surge_recurrence_date": info["date"],
+                "cross_status": "surge_recurrence",
+                "cross_validated": False,
+                "cross_bonus": 0,
+            })
+            new_added += 1
+            logger.info(
+                f"[surge_recurrence] NEW {code} {info['name'][:8]} "
+                f"consec={consec} → score {new_score}"
+            )
+
+    logger.info(
+        f"[surge_recurrence] 적용 완료 — DB {len(surge_codes)}건 / "
+        f"기존 +bonus {bonus_applied}건 / 신규 {new_added}건"
+    )
+
+    # 점수 순 재정렬
+    candidates.sort(key=lambda x: -x.get("score", 0))
+    return candidates
+
+
 def summarize_elliott_distribution(candidates: List[Dict]) -> Dict:
     """elliott 적용 후보 분포 요약 (보고용)."""
     if not candidates:

@@ -2075,6 +2075,17 @@ class AutoTrader:
             except Exception as e:
                 logger.warning(f"[asset_pool] elliott enrich 실패 (무시): {e}")
 
+        # ★ 5/23 토 사장님 결정 A-2 ★ 재상한가 사이클 watchlist (+20점 / consec +5)
+        # 백테스트 surge_elliott_correlation: 1개월 상한가의 10.6%가 평균 2일 만에 재상한가
+        try:
+            from utils.asset_pool_elliott import apply_surge_recurrence_bonus
+            ranked = await asyncio.to_thread(
+                apply_surge_recurrence_bonus, ranked, 2, 20, 5
+            )
+            logger.info(f"[asset_pool] surge_recurrence 적용 후 후보 {len(ranked)}종")
+        except Exception as e:
+            logger.warning(f"[asset_pool] surge_recurrence 실패 (무시): {e}")
+
         # ★ 5/20 fix: 최소 점수 임계값 30 (이상한 종목 자동 제외) ★
         # 진원생명과학(90점)/티웨이(65점) 같은 고점수만 통과
         # ★ 5/22 G통합 후 ★: elliott_boost (-10~+30) 반영된 score 기준 필터
