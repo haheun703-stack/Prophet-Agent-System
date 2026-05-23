@@ -1882,13 +1882,25 @@ class AutoTrader:
             logger.warning(f"[3gate] {code} 체크 예외: {e}")
             return {"ok": False, "reason": f"예외: {type(e).__name__}", "price_info": {}}
 
-    async def asset_pool_scan_and_buy(self, top_k: int = 5, qty_per_stock: int = 1):
+    async def asset_pool_scan_and_buy(self, top_k: int = 5, qty_per_stock: int = 1,
+                                       timing_mode: str = "open"):
         """자비스 자산 풀 → 매수 (5/19 결함 2 수정, 5/20 D-Day 배포).
 
         사장님 5/19 지적: "asset_pool_loader가 자동 매수 경로에 wire-up 안 됨"
         → 4종 자산 통합 풀에서 고신뢰(2개+ 소스 일치) 종목 TOP K 1주씩 매수.
 
-        호출 시점: 09:00 morning_rec 실행 직후 1회 (장 시작 후 5분 이내).
+        ★ 5/23 토 사장님 결정 ★ 양쪽 분산 가동:
+          - 09:15 timing_mode='open' (top_k=3) — 당일 시가 매수
+          - 14:50 timing_mode='previous_close' (top_k=2) — 전일 종가 매수
+                                                            (다음날 갭+상승 기대, B 시나리오 평균 +8.54%)
+
+        Args:
+            top_k: 매수 종목 수
+            qty_per_stock: 종목당 수량 (기본 1주)
+            timing_mode: 'open' (당일 09:15) | 'previous_close' (전일 14:50)
+                         로그 + 텔레그램 알림용. 매수 로직 동일 (chase_buy + 트레일링).
+
+        호출 시점: 09:15 (open) + 14:50 (previous_close) 분산.
         사장님 1주 모드 기본 (qty_per_stock=1).
 
         안전망 (intraday와 동일 표준):
@@ -2172,8 +2184,13 @@ class AutoTrader:
             logger.info("[asset_pool] 필터 후 0종목 — 스킵")
             return
 
+        # ★ 5/23 토 사장님 결정 ★ timing_mode 알림 표시
+        timing_label = {
+            "open": "🌅 [당일 09:15 시가 매수]",
+            "previous_close": "🌆 [전일 14:50 종가 매수 — 다음날 갭+상승 기대]",
+        }.get(timing_mode, f"[{timing_mode}]")
         await _send(
-            f"💎 [자산풀 후보] {len(filtered)}종목 — 자비스 3게이트 체크 진행"
+            f"💎 [자산풀 후보] {timing_label} {len(filtered)}종목 — 자비스 3게이트 체크 진행"
         )
 
         # ★★★ 5/23 토 사장님 결정 — 눌림 매수 -3% 룰 ★★★

@@ -4416,11 +4416,43 @@ class TradingCOO:
             if not self.auto_trader:
                 return
             # 사장님 5/19 결정: B 진보 + 1주 모드
+            # ★ 5/23 토 사장님 결정 ★ top_k=5 → top_k=3 (양쪽 분산, 14:50과 합쳐 총 5종)
             await self.auto_trader.asset_pool_scan_and_buy(
-                top_k=5, qty_per_stock=1
+                top_k=3, qty_per_stock=1, timing_mode="open"
             )
         except Exception as e:
             logger.warning(f"[COO] 자산풀 매수 실패 (무시): {e}")
+
+    async def _job_asset_pool_previous_close(self, context=None) -> None:
+        """★ 5/23 토 사장님 결정 — 신규 14:50 cron ★ 전일 종가 매수 (다음날 매도).
+
+        백테스트 결과 (surge_elliott_correlation 73건):
+          - 전일 종가 매수 평균 +8.54% / 승률 84.8% / 최대 +29.87% / 최소 -7.48%
+          - vs 당일 09:15 시가 +8.10% — +0.44%p 우세
+
+        사장님 직관 (5/23 토):
+          "그날 9시 매수 X / 전날 눌렸을 때 매수가 맞다"
+
+        호출 시점: 14:50 (정규장 마감 10분 전 — 종가 베팅)
+        매수 종목: top_k=2 (사장님 1주 모드, 09:15 3종 + 14:50 2종 = 총 5종)
+
+        주의:
+          - 금요일 14:50 매수 = 토/일 갭 risk (향후 회피 룰 추가 검토)
+          - 매도는 다음날 트레일링 자동 (mode='day' 유지)
+        """
+        try:
+            from data import verification_mode as _vm
+            if not _vm.is_active():
+                logger.info("[COO] [asset_pool_pc] verification 모드 OFF — 스킵")
+                return
+            if not self.auto_trader:
+                return
+            # ★ 5/23 토 신규: timing_mode='previous_close' + top_k=2 ★
+            await self.auto_trader.asset_pool_scan_and_buy(
+                top_k=2, qty_per_stock=1, timing_mode="previous_close"
+            )
+        except Exception as e:
+            logger.warning(f"[COO] 14:50 전일종가 매수 실패 (무시): {e}")
 
     async def _job_sector_concurrent_alert(self, context=None) -> None:
         """09:30 / 11:00 / 13:00 — 알고리즘 A 섹터 동조 카운터 텔레그램 알림.
@@ -4760,8 +4792,17 @@ class TradingCOO:
         # ★ 5/20 사고 fix: 09:05 → 09:15 이동 ★
         # 5/20 09:05 자비스 5종 일괄 차단 — 시초가 5분 = 체결강도/거래량 안정화 전
         # 09:15로 이동 (10분 안정화 후) → 데이터 신뢰성 향상
+        # ★ 5/23 토 사장님 결정 ★ top_k=5 → top_k=3 (양쪽 분산 가동)
         jq.run_daily(self._job_asset_pool_scan, time=kst_time(9, 15))
-        logger.info("[COO] 자산풀 매수 등록: 09:15 KST (5/20 사고 후 이동, B 진보 + 1주 모드)")
+        logger.info("[COO] 자산풀 매수 등록: 09:15 KST (당일 시가 — top_k=3 분산)")
+
+        # ★★ 5/23 토 사장님 결정 — 전일 14:50 매수 신규 cron ★★
+        # 백테스트 (surge_elliott_correlation): 전일 종가 매수 평균 +8.54% / 승률 84.8%
+        # 사장님 직관: "그날 9시 매수 X / 전날 눌렸을 때 매수가 맞다"
+        # 매수 시점: 14:50 (정규장 마감 10분 전) — 종가 베팅 + 다음날 갭+상승 기대
+        # 종목 분산: top_k=2 (09:15 3종 + 14:50 2종 = 총 5종 사장님 1주 모드)
+        jq.run_daily(self._job_asset_pool_previous_close, time=kst_time(14, 50))
+        logger.info("[COO] 자산풀 매수 등록 (★ 5/23 토 신규 ★): 14:50 KST (전일 종가 — top_k=2 다음날 매도)")
 
         # ── ★ 5/22 단타봇 자율 보고 스케줄러 (TODO ⑮, 사장님 5/22 11:50 명령) ★ ──
         # 영구 메모리 [[feedback_self_monitoring_realtime_5_22]]:
