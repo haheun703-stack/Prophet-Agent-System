@@ -2049,10 +2049,22 @@ class AutoTrader:
             except Exception as e:
                 logger.warning(f"[asset_pool] jgis 교차검증 실패 (무시): {e}")
 
+        # ★ 5/23 토 사장님 결정 A-2 ★ 재상한가 사이클 watchlist (+20점 / consec +5)
+        # 백테스트 surge_elliott_correlation: 1개월 상한가의 10.6%가 평균 2일 만에 재상한가
+        # ★ 순서 중요 ★ — enrich_with_elliott 전에 호출해야 신규 종목도 elliott 분석 받음
+        try:
+            from utils.asset_pool_elliott import apply_surge_recurrence_bonus
+            ranked = await asyncio.to_thread(
+                apply_surge_recurrence_bonus, ranked, 2, 20, 5
+            )
+            logger.info(f"[asset_pool] surge_recurrence 적용 후 후보 {len(ranked)}종")
+        except Exception as e:
+            logger.warning(f"[asset_pool] surge_recurrence 실패 (무시): {e}")
+
         # ★ 5/22 20:00 G 통합 — elliott 4파 분석 + metadata 가중치 (사장님 명령) ★
         # 백테스트 검증 (universe 200종 / baseline 20.4%):
-        #   fib_38_safe + 중대형 = 50% 성공 (★ 최우선 ★)
-        #   korean_low = 9.1% 성공 (★ 회피 — score -10 ★)
+        #   fib_38_safe (sweet 36-46%) = 55.6% 성공 (★ 최우선 — 5/23 정밀화 ★)
+        #   korean_low = 9.1% 성공 (★ 일반 매수는 회피 — score -10 ★)
         #   제약/의료정밀 × trend_caution = 60% (★ 섹터 보너스 ★)
         ap_elliott_enabled = bool(ap_cfg.get("elliott_enrich", True))
         if ap_elliott_enabled:
@@ -2075,20 +2087,10 @@ class AutoTrader:
             except Exception as e:
                 logger.warning(f"[asset_pool] elliott enrich 실패 (무시): {e}")
 
-        # ★ 5/23 토 사장님 결정 A-2 ★ 재상한가 사이클 watchlist (+20점 / consec +5)
-        # 백테스트 surge_elliott_correlation: 1개월 상한가의 10.6%가 평균 2일 만에 재상한가
-        try:
-            from utils.asset_pool_elliott import apply_surge_recurrence_bonus
-            ranked = await asyncio.to_thread(
-                apply_surge_recurrence_bonus, ranked, 2, 20, 5
-            )
-            logger.info(f"[asset_pool] surge_recurrence 적용 후 후보 {len(ranked)}종")
-        except Exception as e:
-            logger.warning(f"[asset_pool] surge_recurrence 실패 (무시): {e}")
-
         # ★ 5/23 토 사장님 결정 B ★ 한국형 V자 반등 zone 보너스
         # surge_elliott_correlation 발견: 상한가 직전 70%가 korean_low/trend_caution/trend_end
         # 외부 sweet 38.2% ≠ 한국형 V자 반등 패턴 (raw 30건 분석)
+        # ★ enrich_with_elliott 후에 호출 — zone 필드 필요 ★
         try:
             from utils.asset_pool_elliott import apply_korean_surge_pattern_bonus
             ranked = await asyncio.to_thread(
