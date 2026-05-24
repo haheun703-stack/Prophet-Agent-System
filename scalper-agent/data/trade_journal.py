@@ -166,7 +166,10 @@ def log_sell(
     Returns:
         True = 적재 성공
     """
-    if event_type not in _VALID_EVENT_TYPES or not event_type.startswith("sell") and event_type != "manual_sell":
+    # ★ 5/24 검수 fix ★ 연산자 우선순위 명시 (and/or 혼합 정확화)
+    if (event_type not in _VALID_EVENT_TYPES) or (
+        not event_type.startswith("sell") and event_type != "manual_sell"
+    ):
         logger.warning(f"[trade_journal] 비매도 event_type '{event_type}' → 'sell_close' 처리")
         event_type = "sell_close"
     if source not in _VALID_SOURCES:

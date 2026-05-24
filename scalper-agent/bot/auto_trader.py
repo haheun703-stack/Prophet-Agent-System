@@ -3454,17 +3454,19 @@ class AutoTrader:
             note_str = f" {note}" if note else ""
             msg = f"{icon} 매매: {side} {name}({code}) {qty}주 @{price:,}{pnl_str}{src_str}{note_str}"
 
-            # _alert는 async — sync 컨텍스트에서 안전하게 dispatch
+            # _alert는 async — sync 컨텍스트 안전 dispatch
+            # ★ 5/24 검수 fix ★ deprecated get_event_loop() → get_running_loop() + 폴백
             try:
                 import asyncio
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    asyncio.ensure_future(self._alert(msg))
-                else:
-                    loop.run_until_complete(self._alert(msg))
-            except RuntimeError:
-                # 이벤트 루프 없음 → 로그만 (사장님 알림 누락 가능성 경고)
-                logger.warning(f"[notify_trade] 이벤트 루프 없음 — 알림 누락: {msg}")
+                try:
+                    loop = asyncio.get_running_loop()
+                    # 실행 중 루프 있음 — ensure_future 안전
+                    asyncio.ensure_future(self._alert(msg), loop=loop)
+                except RuntimeError:
+                    # 실행 중 루프 없음 (순수 sync 컨텍스트) → 로그만
+                    logger.warning(f"[notify_trade] 이벤트 루프 없음 — 알림 누락: {msg}")
+            except Exception as _ne:
+                logger.error(f"[notify_trade] dispatch 실패: {_ne}")
         except Exception as e:
             logger.error(f"[notify_trade] 텔레그램 알림 실패: {e}")
 

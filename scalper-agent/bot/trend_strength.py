@@ -111,19 +111,24 @@ def compute_trend_strength(trader, code: str, current_price: int) -> Dict:
         # 음수면 0점 (VWAP 하단)
 
     # ── Factor 4: 체결강도 (0~2점) ──
+    # ★ 5/24 검수 fix ★ 데이터 없으면 0점 (이전: 기본 100 → 가짜 1점)
     flow_intensity = 0.0
     flow_score = 0
     try:
         flow = collect_flow_intensity(code)
         if flow:
-            # flow_intensity.json 형식 추정 — 가능한 키 후보
-            flow_intensity = float(flow.get("intensity",
-                                  flow.get("flow_intensity",
-                                  flow.get("strength", 100))))
-            if flow_intensity >= 150:
-                flow_score = 2
-            elif flow_intensity >= 100:
-                flow_score = 1
+            raw = flow.get("intensity")
+            if raw is None:
+                raw = flow.get("flow_intensity")
+            if raw is None:
+                raw = flow.get("strength")
+            if raw is not None:
+                flow_intensity = float(raw)
+                if flow_intensity >= 150:
+                    flow_score = 2
+                elif flow_intensity >= 100:
+                    flow_score = 1
+            # raw 가 None 이면 flow_score=0 유지 (가짜 점수 X)
     except Exception:
         pass
 
@@ -161,9 +166,18 @@ def is_genuine_weakening(strength: Dict, prev_strength: Optional[Dict] = None) -
         - 체결강도 < 100
 
     이 3개 동시 만족 = 진짜 약화. 일부만이면 일시 조정.
+
+    ★ 5/24 검수 fix ★ factors 없거나 기본값만 있으면 보수적으로 True 반환
+    (data 부재 = 안전 결정 불가 → 차단 안 발동 = 매도 진행 = 안전 default)
     """
     f = strength.get("factors", {})
-    vwap_below = f.get("vwap_diff_pct", 0) < 0
-    vol_dry = f.get("volume_ratio", 1.0) < 1.0
-    flow_weak = f.get("flow_intensity", 100) < 100
-    return vwap_below and vol_dry and flow_weak
+    if not f or strength.get("grade") == "UNKNOWN":
+        # 데이터 부재 → 보수적으로 진짜 약화 처리 → 13-D 차단 안 됨
+        return True
+    # 명시적 값 있는 경우만 검증 (기본값 fallback 시 None 처리)
+    vwap_diff = f.get("vwap_diff_pct")
+    vol_ratio = f.get("volume_ratio")
+    flow_int = f.get("flow_intensity")
+    if vwap_diff is None or vol_ratio is None or flow_int is None:
+        return True   # 데이터 부재 = 보수적
+    return (vwap_diff < 0) and (vol_ratio < 1.0) and (flow_int < 100)
