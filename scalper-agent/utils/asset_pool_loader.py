@@ -534,6 +534,158 @@ def _load_continuation_score_map() -> Dict[str, float]:
         return {}
 
 
+def _load_theme_gain_map(top_n_themes: int = 10,
+                          min_events: int = 3,
+                          cache_ttl_sec: int = 3600) -> Dict[str, Dict]:
+    """★ 5/24 사장님 지적 ★ theme_map.json (302개) 세부 테마 동적 가중치.
+
+    사장님 시장 관점 [feedback_market_view_small_caps_5_24]:
+        KIS 표준 22 sector ≠ 단타 관점
+        세부 테마 = 원전/전력기기/조선/광통신/로봇/반도체장비/2차전지 등
+
+    로직:
+        1. theme_map.json 302개 테마 (code → [theme1, theme2, ...] 역매핑)
+        2. history.json events 의 종목 → 테마 매핑
+        3. 테마별 평균 max_gain_after 산출
+        4. 상위 N개 테마 자동 가중치 (rank별)
+
+    Returns:
+        {
+            "theme_bonus": {theme_name: bonus_score},
+            "code_themes": {code: [theme1, ...]},  # 종목 → 테마 매핑
+        }
+    """
+    import json
+    import time as _t
+    from pathlib import Path
+
+    if not hasattr(_load_theme_gain_map, "_cache"):
+        _load_theme_gain_map._cache = {"ts": 0, "data": {"theme_bonus": {}, "code_themes": {}}}
+    cache = _load_theme_gain_map._cache
+    if cache["ts"] and (_t.time() - cache["ts"]) < cache_ttl_sec:
+        return cache["data"]
+
+    try:
+        base = Path(__file__).resolve().parent.parent / "data_store"
+        theme_path = base / "theme_map.json"
+        hist_path = base / "limit_up" / "history.json"
+        if not theme_path.exists() or not hist_path.exists():
+            return {"theme_bonus": {}, "code_themes": {}}
+
+        tm = json.loads(theme_path.read_text(encoding="utf-8"))
+        # tm["themes"] = {theme_code: {name, codes}}
+        themes = tm.get("themes", {})
+        code_to_themes: Dict[str, List[str]] = tm.get("code_to_themes", {})
+
+        # 사전 code_to_themes 없으면 역인덱스 구축
+        if not code_to_themes and themes:
+            for t_code, t_info in themes.items():
+                if not isinstance(t_info, dict):
+                    continue
+                name = t_info.get("name")
+                for c in t_info.get("codes", []):
+                    code_to_themes.setdefault(c, []).append(name)
+
+        # theme_map.json code_to_themes 구조: {code: [{theme_code, theme_name}, ...]}
+        # → 종목코드 → 테마 이름 리스트로 변환
+        code_theme_names: Dict[str, List[str]] = {}
+        for c, theme_list in code_to_themes.items():
+            if not isinstance(theme_list, list):
+                continue
+            names = []
+            for t in theme_list:
+                if isinstance(t, dict):
+                    n = t.get("theme_name") or t.get("name")
+                    if n:
+                        names.append(n)
+                elif isinstance(t, str):
+                    names.append(t)
+            if names:
+                code_theme_names[c] = names
+
+        # history events → 테마별 gain
+        data = json.loads(hist_path.read_text(encoding="utf-8"))
+        events = data.get("events", [])
+        theme_gains: Dict[str, List[float]] = {}
+        for e in events:
+            code = e.get("code")
+            gain = e.get("max_gain_after")
+            if not code or gain is None:
+                continue
+            for theme_name in code_theme_names.get(code, []):
+                theme_gains.setdefault(theme_name, []).append(float(gain))
+
+        # 필터 + 평균 + 정렬
+        theme_stats = []
+        for name, gains in theme_gains.items():
+            if len(gains) < min_events:
+                continue
+            avg = sum(gains) / len(gains)
+            theme_stats.append((name, avg, len(gains)))
+        theme_stats.sort(key=lambda x: -x[1])
+
+        # 상위 N개 가중치
+        rank_weights = [15, 12, 10, 8, 7, 6, 5, 4, 3, 2]
+        theme_bonus: Dict[str, int] = {}
+        for i, (name, avg, n) in enumerate(theme_stats[:top_n_themes]):
+            theme_bonus[name] = rank_weights[i] if i < len(rank_weights) else 2
+
+        if theme_bonus:
+            top3 = list(theme_bonus.items())[:3]
+            logger.info(f"[theme_gain] 동적 테마 가중치 (top {len(theme_bonus)}): "
+                          + ", ".join(f"{n}(+{w})" for n, w in top3))
+
+        result = {"theme_bonus": theme_bonus, "code_themes": code_theme_names}
+        cache["ts"] = int(_t.time())
+        cache["data"] = result
+        return result
+    except Exception as _e:
+        logger.debug(f"[theme_gain] 동적 산출 실패: {_e}")
+        return {"theme_bonus": {}, "code_themes": {}}
+
+
+def _detect_group_rotation(top_today_codes: List[str],
+                             today_change_map: Dict[str, float],
+                             min_surge_count: int = 2,
+                             surge_threshold: float = 5.0) -> Dict[str, int]:
+    """★ 5/24 사장님 지적 ★ 그룹주 로테이션 감지 → 후발 종목 가중치.
+
+    로직:
+        1. 오늘 강세 종목 (today_change >= 5%) 중 그룹주 그룹별 카운트
+        2. 같은 그룹 N종 강세 시 → 그 그룹 다른 종목에 가중치 (+10)
+        3. 그룹 전체 로테이션 진행 중 → 후발 종목 매수 기회
+
+    Args:
+        top_today_codes: 오늘 매수 후보 종목 코드 리스트
+        today_change_map: {code: change_pct}
+        min_surge_count: 그룹 로테이션 인정 최소 강세 종목 수
+
+    Returns:
+        {code: bonus_score} 그룹 로테이션 후발 종목들
+    """
+    code_to_group = _build_code_to_group_map()
+
+    # 오늘 강세 그룹 카운트
+    group_surge: Dict[str, int] = {}
+    for code, ch in today_change_map.items():
+        if ch >= surge_threshold:
+            group = code_to_group.get(code)
+            if group:
+                group_surge[group] = group_surge.get(group, 0) + 1
+
+    # 로테이션 진행 중 그룹 → 후발 종목 보너스
+    bonus: Dict[str, int] = {}
+    for group, count in group_surge.items():
+        if count < min_surge_count:
+            continue
+        # 같은 그룹의 다른 종목 (오늘 강세 X)
+        for code in GROUP_STOCK_MAP.get(group, []):
+            ch = today_change_map.get(code, 0)
+            if ch < surge_threshold:   # 아직 안 오른 종목
+                bonus[code] = bonus.get(code, 0) + 10
+    return bonus
+
+
 def _continuation_score_adjustment(cs: float) -> int:
     """★ 5/24 백테스트 검증 ★ continuation_score zone별 점수 조정.
 
@@ -548,6 +700,67 @@ def _continuation_score_adjustment(cs: float) -> int:
     if cs < 70:
         return 30   # ★ Sweet Zone — 강한 보너스 ★
     return 15      # zone 70+ — 보조 보너스
+
+
+# ★ 5/24 사장님 영구 시장 전망 ★ [feedback_market_view_small_caps_5_24]
+# "대형주는 조금씩 올라가고 단타의 연속 = 소부장 + 소형주 + 세부 테마/그룹주 로테이션"
+#
+# 시총 구간별 단타 우대 (소부장/소형주 핵심)
+CAP_BAND_BONUS = {
+    "초소형":  -3,    # ~100억 (위험)
+    "소형":   +10,   # 100~1000억 ★ 소부장 다수 ★
+    "중소형": +8,    # 1000~5000억 ★ 단타 핵심 ★
+    "중대형": +3,    # 5000억~1조
+    "대형":   +0,    # 1조~5조
+    "초대형": -5,    # 5조+ (단타 대상 X)
+}
+
+
+def _classify_cap_band(cap_억: float) -> str:
+    """시총 구간 분류 (사장님 5/24 직관 기반)."""
+    if cap_억 < 100:
+        return "초소형"
+    if cap_억 < 1000:
+        return "소형"
+    if cap_억 < 5000:
+        return "중소형"
+    if cap_억 < 10000:
+        return "중대형"
+    if cap_억 < 50000:
+        return "대형"
+    return "초대형"
+
+
+# ★ 5/24 사장님 지적 ★ 그룹주 매핑 (로테이션 감지용)
+# theme_map.json에 없음 → 수동 정의 (단타봇 자체 학습 데이터)
+GROUP_STOCK_MAP = {
+    "삼성그룹": ["005930", "005935", "028260", "010140", "207940", "032830",
+                "009150", "018260", "006400", "029780", "010620"],
+    "SK그룹":  ["034730", "000660", "011790", "017670", "096770", "003600",
+                "006120", "001740", "006800", "036570"],
+    "LG그룹":  ["003550", "066570", "051900", "051910", "032640", "001120",
+                "034220", "108670", "108670", "002270"],
+    "현대그룹": ["005380", "005440", "086280", "012330", "011200", "057050",
+                "001450", "267250", "010620"],
+    "두산":    ["000150", "336260", "241560", "042670", "081000"],
+    "한화":    ["000880", "088350", "001460", "009830", "272210"],
+    "롯데":    ["004990", "023530", "071840", "011170", "012170"],
+    "GS":     ["078930", "001250", "006360"],
+    "포스코":  ["005490", "047050", "003670"],
+    "신세계":  ["004170", "031430", "035250"],
+    "셀트리온": ["068270", "091990"],
+    "카카오":  ["035720", "323410", "293490"],
+    "네이버":  ["035420"],
+}
+
+
+def _build_code_to_group_map() -> Dict[str, str]:
+    """종목코드 → 그룹주 이름 역매핑."""
+    result = {}
+    for group, codes in GROUP_STOCK_MAP.items():
+        for c in codes:
+            result[c] = group
+    return result
 
 
 # ★ 5/24 사장님 지적 ★ 섹터 가중치는 매일 변경됨 → 동적 산출 필수
@@ -731,8 +944,39 @@ def get_candidate_score_map() -> Dict[str, int]:
     # ★ 5/24 사장님 영구 룰 ★ continuation_score 종목별 평균 (백테스트 검증)
     cs_map = _load_continuation_score_map()
 
-    # ★ 5/24 사장님 지적 ★ 섹터 가중치 동적 산출 (매일 갱신)
+    # ★ 5/24 사장님 지적 ★ 섹터 가중치 동적 산출 (KIS 22 표준 sector)
     sector_gain_map = _load_sector_gain_map(top_n_sectors=5, min_events=5)
+
+    # ★ 5/24 사장님 지적 ★ 세부 테마 가중치 동적 (theme_map.json 302개)
+    theme_data = _load_theme_gain_map(top_n_themes=10, min_events=3)
+    theme_bonus_map = theme_data.get("theme_bonus", {})
+    code_to_themes = theme_data.get("code_themes", {})
+
+    # ★ 5/24 사장님 지적 ★ 그룹주 로테이션 감지 (오늘 등락률 기반)
+    # today_change_map 사전 수집
+    today_change_map = {}
+    for code in source_map:
+        today_change_map[code] = _get_today_change_pct(code)
+    group_rotation_bonus = _detect_group_rotation(
+        list(source_map.keys()), today_change_map,
+        min_surge_count=2, surge_threshold=5.0,
+    )
+    if group_rotation_bonus:
+        logger.info(f"[group_rotation] 후발 종목 가중치: {len(group_rotation_bonus)}개")
+
+    # 시총 정보 매핑 (universe.json)
+    cap_map: Dict[str, float] = {}
+    try:
+        from pathlib import Path
+        import json as _json
+        universe_path = Path(__file__).resolve().parent.parent / "data_store" / "universe.json"
+        if universe_path.exists():
+            u = _json.loads(universe_path.read_text(encoding="utf-8"))
+            for c, info in u.items():
+                if isinstance(info, dict):
+                    cap_map[c] = float(info.get("cap_억", 0))
+    except Exception:
+        pass
 
     score_map: Dict[str, int] = {}
     for code, sources in source_map.items():
@@ -769,6 +1013,25 @@ def get_candidate_score_map() -> Dict[str, int]:
         # ★ 5/24 사장님 지적 ★ 섹터 가중치 동적 (매일 갱신 — hardcoded 제거)
         if sector in sector_gain_map:
             score += sector_gain_map[sector]
+
+        # ★ 5/24 사장님 지적 ★ 세부 테마 가중치 (theme_map.json 302개)
+        # 종목이 여러 테마에 속할 수 있음 → 가장 강한 테마 보너스만 적용 (중복 방지)
+        if theme_bonus_map and code in code_to_themes:
+            best_theme_bonus = 0
+            for theme_name in code_to_themes[code]:
+                if theme_name in theme_bonus_map:
+                    best_theme_bonus = max(best_theme_bonus, theme_bonus_map[theme_name])
+            score += best_theme_bonus
+
+        # ★ 5/24 사장님 시장 전망 ★ 시총 가중치 (소부장/소형주 우대)
+        cap = cap_map.get(code, 0)
+        if cap > 0:
+            cap_band = _classify_cap_band(cap)
+            score += CAP_BAND_BONUS.get(cap_band, 0)
+
+        # ★ 5/24 사장님 지적 ★ 그룹주 로테이션 후발 가중치
+        if code in group_rotation_bonus:
+            score += group_rotation_bonus[code]
 
         # ★★★ 5/20 사장님 핵심 지적 — 오늘 등락률 기반 패널티/보너스 ★★★
         # "이게 오늘 상쳤는 종목 아니니? 내일도 오른다는 근거는 어디에서 온거니?"
