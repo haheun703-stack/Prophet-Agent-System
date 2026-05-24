@@ -23,7 +23,10 @@ sys.path.insert(0, str(_ROOT))
 # pure-function 형태로 메서드 로직만 재구현해서 테스트 (auto_trader.py 헬퍼와 동기화)
 
 def compute_dynamic_trailing_sl(pos: dict, current_price: int) -> int:
-    """auto_trader.AutoTrader._compute_dynamic_trailing_sl 로직 mirror (테스트 전용)."""
+    """auto_trader.AutoTrader._compute_dynamic_trailing_sl 로직 mirror (테스트 전용).
+
+    13-B + 13-E 통합 (trend_strength 보정은 13-C 별도 테스트 파일에서 검증).
+    """
     entry = pos.get("entry_price", 0)
     if entry <= 0:
         return pos.get("trailing_sl", 0)
@@ -41,7 +44,14 @@ def compute_dynamic_trailing_sl(pos: dict, current_price: int) -> int:
 
     pos["trailing_activated"] = True
 
-    if hwm_pct >= 20.0:
+    # 13-E: 상한가 직전 zone 세분화
+    if hwm_pct >= 29.0:
+        trail_pct = 0.15
+        pos["limit_up_phase"] = True
+    elif hwm_pct >= 25.0:
+        trail_pct = 0.12
+        pos["limit_up_phase"] = True
+    elif hwm_pct >= 20.0:
         trail_pct = 0.10
     elif hwm_pct >= 10.0:
         trail_pct = 0.07
@@ -49,6 +59,10 @@ def compute_dynamic_trailing_sl(pos: dict, current_price: int) -> int:
         trail_pct = 0.05
     else:
         trail_pct = 0.02 if is_momentum else 0.03
+
+    # 13-E ratchet: limit_up_phase 진입 후 최소 -10%
+    if pos.get("limit_up_phase") and trail_pct < 0.10:
+        trail_pct = 0.10
 
     trail_sl = int(hwm * (1 - trail_pct))
     if hwm > entry * (1 + activation_threshold / 100):
@@ -101,12 +115,12 @@ def test_strong_zone():
 
 
 def test_limit_up_imminent():
-    """+25% 상한가 임박 → -10%."""
+    """+22% 상한가 임박 (zone 20~25) → -10%."""
     pos = _make_pos(10_000)
-    sl = compute_dynamic_trailing_sl(pos, 12_500)
-    # hwm = 12500, trail_sl = 12500 * 0.90 = 11250
-    assert sl == 11_250, f"상한가 -10% 기대 11250, 실제 {sl}"
-    print(f"[PASS] +25% 상한가 임박 → -10% (SL={sl})")
+    sl = compute_dynamic_trailing_sl(pos, 12_200)
+    # hwm = 12200, trail_sl = 12200 * 0.90 = 10980
+    assert sl == 10_980, f"+22% -10% 기대 10980, 실제 {sl}"
+    print(f"[PASS] +22% 상한가 임박 → -10% (SL={sl})")
 
 
 def test_momentum_weak():
@@ -158,6 +172,43 @@ def test_zone_boundary_4_99pct():
     print(f"[PASS] +4.99% 경계 zone (약한) (SL={sl})")
 
 
+def test_13e_limit_up_imminent_25pct():
+    """13-E: +25% 도달 → -12% + limit_up_phase True."""
+    pos = _make_pos(10_000)
+    sl = compute_dynamic_trailing_sl(pos, 12_500)
+    # hwm 12500, trail_sl = 12500 * 0.88 = 11000
+    assert sl == 11_000, f"+25% -12% 기대 11000, 실제 {sl}"
+    assert pos.get("limit_up_phase") is True, "limit_up_phase True 기대"
+    print(f"[PASS] 13-E +25% -12% + limit_up_phase True (SL={sl})")
+
+
+def test_13e_limit_up_reached_29pct():
+    """13-E: +29% 상한가 도달 → -15% (풀린 시점만 매도)."""
+    pos = _make_pos(10_000)
+    sl = compute_dynamic_trailing_sl(pos, 12_900)
+    # hwm 12900, trail_sl = 12900 * 0.85 = 10965
+    assert sl == 10_965, f"+29% -15% 기대 10965, 실제 {sl}"
+    assert pos.get("limit_up_phase") is True
+    print(f"[PASS] 13-E +29% 상한가 -15% (SL={sl})")
+
+
+def test_13e_phase_flag_safety_net():
+    """13-E ratchet 안전망: limit_up_phase=True인데 hwm 강제 리셋된 가상 시나리오.
+
+    실전에서 hwm은 max라 떨어질 일 없지만, 외부 수동 리셋 등 안전망 검증.
+    """
+    pos = _make_pos(10_000)
+    pos["limit_up_phase"] = True   # 한 번 도달했다고 가정
+    pos["high_watermark"] = 10_500   # 외부에서 강제 리셋된 시나리오 (정상 X)
+    pos["trailing_activated"] = True
+    sl = compute_dynamic_trailing_sl(pos, 10_500)
+    # hwm 10500 → hwm_pct = 5% → 기본 trail_pct = 0.05
+    # 그러나 limit_up_phase ratchet → trail_pct = 0.10 최소
+    # → trail_sl = 10500 * 0.90 = 9450 → max(9450, 10000 본전 보장) = 10000
+    assert sl == 10_000, f"limit_up_phase 안전망 (본전 보장) 기대 10000, 실제 {sl}"
+    print(f"[PASS] 13-E limit_up_phase 안전망 (-10% 최소 + 본전 보장) (SL={sl})")
+
+
 if __name__ == "__main__":
     print("=" * 60)
     print("★ 5/24 13-B 동적 트레일링 폭 단위 테스트 ★")
@@ -173,6 +224,9 @@ if __name__ == "__main__":
         test_gigarane_regression,
         test_zone_boundary_5pct,
         test_zone_boundary_4_99pct,
+        test_13e_limit_up_imminent_25pct,
+        test_13e_limit_up_reached_29pct,
+        test_13e_phase_flag_safety_net,
     ]
     passed = 0
     failed = 0

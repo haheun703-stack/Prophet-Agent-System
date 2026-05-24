@@ -3079,9 +3079,10 @@ class AutoTrader:
                 entry = pos["entry_price"]
                 pnl_pct = (snap.price / entry - 1) * 100 if entry > 0 else 0
 
-                # ★ 5/24 13-B: 수익률 클래스별 동적 트레일링 폭 (hwm 갱신 포함) ★
-                # 기가레인/아나패스 사고 fix — +3~5%/-3%, +5~10%/-5%, +10~20%/-7%, +20%+/-10%
-                self._compute_dynamic_trailing_sl(pos, snap.price)
+                # ★ 5/24 13-B + 13-C: 동적 트레일링 폭 + 추세 강도 보정 ★
+                # 기가레인/아나패스 사고 fix + 강한 추세 조정 인내 (학습 데이터 연동)
+                strength = self._get_trend_strength_cached(pos, code, snap.price)
+                self._compute_dynamic_trailing_sl(pos, snap.price, trend_strength=strength)
 
                 if snap.decision == "FULL_SELL":
                     logger.info(f"AI 전량매도: {code} @ {snap.price:,} ({snap.decision_reason})")
@@ -3302,6 +3303,39 @@ class AutoTrader:
         # (1) DYING + HIGH confidence → Guardian 즉시 재평가
         #     뉴스 Kill-Switch → WEAKENING에서도 Guardian 재평가
         news_triggered = eye_adj > EYE_RISK_MAP.get(verdict.verdict, 0)
+
+        # ★ 5/24 13-D: 강한 추세 일시 조정 보호 (False Positive 방지) ★
+        # 사장님 명령 (기가레인 사고 5/22 09:50):
+        #   - 강한 추세 일시 조정 → 매도 차단
+        #   - 진짜 약화 (VWAP+거래량+체결강도 동시) 만 매도
+        # 단, 뉴스 Kill-Switch (news_triggered)는 보호 적용 X — 진짜 외부 위험.
+        if (verdict.verdict == "DYING" and verdict.confidence >= 0.70 and not news_triggered):
+            try:
+                cp_check = 0
+                if self._eye and code in self._eye._buffers:
+                    latest = self._eye._buffers[code].latest
+                    if latest:
+                        cp_check = latest.price
+                if not cp_check:
+                    cp_check = pos.get("entry_price", 0)
+
+                strength = self._get_trend_strength_cached(pos, code, cp_check)
+                if strength:
+                    from bot.trend_strength import is_strong_trend, is_genuine_weakening
+                    if is_strong_trend(strength) and not is_genuine_weakening(strength):
+                        logger.info(
+                            f"[13-D PROTECT] {name}({code}) DYING 차단 - 강한 추세 일시 조정 "
+                            f"(grade={strength.get('grade')}, factors={strength.get('factors')})"
+                        )
+                        await self._alert(
+                            f"🛡️ [13-D] {name} DYING 매도 차단\n"
+                            f"   추세 강도: {strength.get('grade')} (점수 {strength.get('score')})\n"
+                            f"   진짜 약화 X → 일시 조정 판단, 매도 보류"
+                        )
+                        return   # 매도 차단 — 일시 조정 인내
+            except Exception as _e13d:
+                logger.warning(f"[13-D] 추세 강도 검증 실패 {code}: {_e13d}")
+
         if (verdict.verdict == "DYING" and verdict.confidence >= 0.70) or news_triggered:
             try:
                 from data.position_guardian import evaluate_position
@@ -3434,8 +3468,9 @@ class AutoTrader:
         except Exception as e:
             logger.error(f"[notify_trade] 텔레그램 알림 실패: {e}")
 
-    def _compute_dynamic_trailing_sl(self, pos: dict, current_price: int) -> int:
-        """★ 5/24 사장님 결정 13-B: 수익률 클래스별 동적 트레일링 폭 ★
+    def _compute_dynamic_trailing_sl(self, pos: dict, current_price: int,
+                                       trend_strength: Optional[dict] = None) -> int:
+        """★ 5/24 사장님 결정 13-B + 13-C: 수익률 클래스별 동적 트레일링 폭 + 추세 강도 보정 ★
 
         기가레인(+8.21%) / 아나패스(+1.39%) 사고 fix — 좁은 -3% 폭이 강한 추세에서 짧은 익절 유발.
 
@@ -3446,6 +3481,11 @@ class AutoTrader:
             +20%+   → -10% (상한가 임박, 안전망)
 
         MOMENTUM regime은 활성 임계값이 +1.5%로 더 낮고 약한 단계 폭도 -2%.
+
+        13-C 보정 (trend_strength 전달 시):
+            STRONG/EXPLOSIVE → 한 단계 위 폭 (조정 인내)
+            WEAK             → 한 단계 아래 폭 (빠른 익절)
+            MID/UNKNOWN/None → 기본 폭 유지
 
         Returns:
             갱신된 trailing_sl (ratchet — 절대 내려가지 않음).
@@ -3468,9 +3508,16 @@ class AutoTrader:
 
         pos["trailing_activated"] = True
 
-        # 수익률 클래스별 동적 폭 (hwm_pct 기준 — 조정 중에도 폭 유지)
-        if hwm_pct >= 20.0:
-            trail_pct = 0.10   # 상한가 임박: -10% 안전망
+        # 수익률 클래스별 기본 폭 (hwm_pct 기준 — 조정 중에도 폭 유지)
+        # ★ 13-E: 상한가 직전 zone 추가 세분화 ★
+        if hwm_pct >= 29.0:
+            trail_pct = 0.15   # 상한가 도달 (+29.5%): 풀린 시점만 매도 (-15% 안전망)
+            pos["limit_up_phase"] = True
+        elif hwm_pct >= 25.0:
+            trail_pct = 0.12   # +25%+ 상한가 직전: 더 견딤 (-12%)
+            pos["limit_up_phase"] = True
+        elif hwm_pct >= 20.0:
+            trail_pct = 0.10   # +20%+ 상한가 임박: -10% 안전망
         elif hwm_pct >= 10.0:
             trail_pct = 0.07   # 강한 추세: -7%
         elif hwm_pct >= 5.0:
@@ -3478,12 +3525,49 @@ class AutoTrader:
         else:
             trail_pct = 0.02 if is_momentum else 0.03   # 약한: -2%/-3%
 
+        # ★ 13-E ratchet: 한번 limit_up_phase 진입 시 trail_pct 최소 0.10 유지 ★
+        # (가격 빠져서 hwm_pct 떨어져도 상한가 도달 이력은 유지 — 안전망)
+        if pos.get("limit_up_phase") and trail_pct < 0.10:
+            trail_pct = 0.10
+
+        # ★ 13-C 추세 강도 보정 — 강한 추세는 더 견디게, 약한 추세는 빠른 익절 ★
+        if trend_strength:
+            grade = trend_strength.get("grade", "")
+            UPGRADE = {0.02: 0.03, 0.03: 0.05, 0.05: 0.07, 0.07: 0.10, 0.10: 0.10}
+            DOWNGRADE = {0.10: 0.07, 0.07: 0.05, 0.05: 0.03, 0.03: 0.03, 0.02: 0.02}
+            if grade in ("STRONG", "EXPLOSIVE"):
+                trail_pct = UPGRADE.get(trail_pct, trail_pct)
+            elif grade == "WEAK":
+                trail_pct = DOWNGRADE.get(trail_pct, trail_pct)
+
         trail_sl = int(hwm * (1 - trail_pct))
         if hwm > entry * (1 + activation_threshold / 100):
             trail_sl = max(trail_sl, entry)   # 본전 확보
 
         pos["trailing_sl"] = max(pos.get("trailing_sl", 0), trail_sl)
         return pos["trailing_sl"]
+
+    def _get_trend_strength_cached(self, pos: dict, code: str, current_price: int,
+                                     ttl_sec: int = 60) -> Optional[dict]:
+        """★ 13-C: 추세 강도 캐시 (60초 TTL) ★
+
+        매 tick KIS API 호출 방지 — pos["trend_strength"]에 캐시.
+        TTL 만료 시 갱신, best-effort (계산 실패 시 None 반환).
+        """
+        try:
+            import time as _t
+            cached = pos.get("trend_strength_cache")
+            now = int(_t.time())
+            if cached and (now - cached.get("ts", 0)) < ttl_sec:
+                return cached
+            # 갱신
+            from bot.trend_strength import compute_trend_strength
+            strength = compute_trend_strength(self.trader, code, current_price)
+            pos["trend_strength_cache"] = strength
+            return strength
+        except Exception as e:
+            logger.debug(f"[trend_strength] {code} 계산 실패 (무시): {e}")
+            return None
 
     def _check_quick_exit(self, pos: dict, current_price: int, pnl_pct: float):
         """빠른 익절 모드 — 차트 영웅식 유연 회전 (3-tier).
@@ -3558,8 +3642,9 @@ class AutoTrader:
                 entry = pos["entry_price"]
                 name = pos.get("name", code)
 
-                # ★ 5/24 13-B: 동적 트레일링 폭 (helper — hwm 갱신 + ratchet 보장) ★
-                self._compute_dynamic_trailing_sl(pos, cp)
+                # ★ 5/24 13-B + 13-C: 동적 트레일링 폭 + 추세 강도 보정 ★
+                strength = self._get_trend_strength_cached(pos, code, cp)
+                self._compute_dynamic_trailing_sl(pos, cp, trend_strength=strength)
                 hwm = pos["high_watermark"]
                 pnl_pct = (cp / entry - 1) * 100 if entry > 0 else 0
 
