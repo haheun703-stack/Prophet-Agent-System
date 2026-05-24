@@ -550,13 +550,81 @@ def _continuation_score_adjustment(cs: float) -> int:
     return 15      # zone 70+ — 보조 보너스
 
 
-# ★ 5/24 백테스트 검증 ★ 섹터 가중치 (history.json 693 events 기반)
-HIGH_GAIN_SECTORS = {
-    "전기전자": 10,    # 212건 / 평균 +59.4%
-    "유통":     10,    # 42건 / 평균 +51.9% (의외)
-    "IT서비스":  5,
-    "기계장비":  5,
-}
+# ★ 5/24 사장님 지적 ★ 섹터 가중치는 매일 변경됨 → 동적 산출 필수
+# [feedback_verify_external_knowledge]: 외부/주관 임계값 hard-coded X
+# 매일 G7 EVENING_BRAIN history.json 갱신 후 자동 재계산
+def _load_sector_gain_map(top_n_sectors: int = 5,
+                            min_events: int = 5,
+                            cache_ttl_sec: int = 3600) -> Dict[str, int]:
+    """★ 5/24 사장님 지적 ★ history.json에서 섹터별 평균 max_gain 자동 산출.
+
+    매일 G7 EVENING_BRAIN의 build_limit_up_history 갱신 직후 호출 → 최신 섹터 강세 반영.
+
+    로직:
+        1. history.json events 섹터별 그룹화
+        2. min_events (기본 5건) 이상 표본 있는 섹터만 채택
+        3. 평균 max_gain_after 계산 → 상위 top_n_sectors (기본 5개)
+        4. 가중치 부여:
+           rank 1: +12 / rank 2: +10 / rank 3: +8 / rank 4: +6 / rank 5: +4
+        5. 결과를 모듈 캐시에 저장 (1시간 TTL)
+
+    Returns:
+        {sector_name: bonus_score} 매일 갱신
+    """
+    import json
+    import time as _t
+    from pathlib import Path
+
+    # 모듈 캐시 (성능)
+    if not hasattr(_load_sector_gain_map, "_cache"):
+        _load_sector_gain_map._cache = {"ts": 0, "data": {}}
+    cache = _load_sector_gain_map._cache
+    if cache["ts"] and (_t.time() - cache["ts"]) < cache_ttl_sec:
+        return cache["data"]
+
+    try:
+        base = Path(__file__).resolve().parent.parent / "data_store"
+        hist_path = base / "limit_up" / "history.json"
+        if not hist_path.exists():
+            logger.debug("[sector_gain] history.json 없음 — 동적 가중치 스킵")
+            return {}
+        data = json.loads(hist_path.read_text(encoding="utf-8"))
+        events = data.get("events", [])
+
+        sector_gains: Dict[str, List[float]] = {}
+        for e in events:
+            sec = e.get("sector") or "기타"
+            gain = e.get("max_gain_after")
+            if gain is None:
+                continue
+            sector_gains.setdefault(sec, []).append(float(gain))
+
+        # 필터 + 평균 + 정렬
+        sector_stats = []
+        for sec, gains in sector_gains.items():
+            if len(gains) < min_events:
+                continue
+            avg = sum(gains) / len(gains)
+            sector_stats.append((sec, avg, len(gains)))
+        sector_stats.sort(key=lambda x: -x[1])
+
+        # 상위 N개 가중치 (rank 따라 차등)
+        rank_weights = [12, 10, 8, 6, 4]
+        result: Dict[str, int] = {}
+        for i, (sec, avg, n) in enumerate(sector_stats[:top_n_sectors]):
+            result[sec] = rank_weights[i] if i < len(rank_weights) else 4
+
+        if result:
+            top_log = ", ".join(f"{s}(+{result[s]}/{int(sector_gains[s] and sum(sector_gains[s])/len(sector_gains[s])):.0f}%)"
+                                  for s in result)
+            logger.info(f"[sector_gain] 동적 가중치 (top {len(result)}): {top_log}")
+
+        cache["ts"] = int(_t.time())
+        cache["data"] = result
+        return result
+    except Exception as _e:
+        logger.debug(f"[sector_gain] 동적 산출 실패: {_e}")
+        return {}
 
 
 def get_candidate_score_map() -> Dict[str, int]:
@@ -663,6 +731,9 @@ def get_candidate_score_map() -> Dict[str, int]:
     # ★ 5/24 사장님 영구 룰 ★ continuation_score 종목별 평균 (백테스트 검증)
     cs_map = _load_continuation_score_map()
 
+    # ★ 5/24 사장님 지적 ★ 섹터 가중치 동적 산출 (매일 갱신)
+    sector_gain_map = _load_sector_gain_map(top_n_sectors=5, min_events=5)
+
     score_map: Dict[str, int] = {}
     for code, sources in source_map.items():
         score = 0
@@ -695,9 +766,9 @@ def get_candidate_score_map() -> Dict[str, int]:
         if code in cs_map:
             score += _continuation_score_adjustment(cs_map[code])
 
-        # ★ 5/24 백테스트 검증 ★ 섹터 가중치 (전기전자/유통 우대)
-        if sector in HIGH_GAIN_SECTORS:
-            score += HIGH_GAIN_SECTORS[sector]
+        # ★ 5/24 사장님 지적 ★ 섹터 가중치 동적 (매일 갱신 — hardcoded 제거)
+        if sector in sector_gain_map:
+            score += sector_gain_map[sector]
 
         # ★★★ 5/20 사장님 핵심 지적 — 오늘 등락률 기반 패널티/보너스 ★★★
         # "이게 오늘 상쳤는 종목 아니니? 내일도 오른다는 근거는 어디에서 온거니?"

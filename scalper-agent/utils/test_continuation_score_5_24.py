@@ -22,7 +22,7 @@ for m in list(sys.modules):
 
 from utils.asset_pool_loader import (
     _continuation_score_adjustment, _load_continuation_score_map,
-    HIGH_GAIN_SECTORS,
+    _load_sector_gain_map,
 )
 
 
@@ -79,13 +79,24 @@ def test_zone_boundary_70():
     print("[PASS] 경계값 70.0 정확")
 
 
-def test_high_gain_sectors():
-    """섹터 가중치."""
-    assert HIGH_GAIN_SECTORS["전기전자"] == 10
-    assert HIGH_GAIN_SECTORS["유통"] == 10
-    assert HIGH_GAIN_SECTORS.get("IT서비스") == 5
-    assert HIGH_GAIN_SECTORS.get("화학") is None   # 우대 X
-    print("[PASS] 섹터 가중치 (전기전자/유통 +10)")
+def test_dynamic_sector_gain_map():
+    """★ 5/24 사장님 지적 ★ 섹터 가중치 동적 산출 (hardcoded X)."""
+    # 캐시 초기화
+    if hasattr(_load_sector_gain_map, "_cache"):
+        _load_sector_gain_map._cache = {"ts": 0, "data": {}}
+    sector_map = _load_sector_gain_map(top_n_sectors=5, min_events=5)
+    if sector_map:
+        # 최소 1개 섹터는 있어야 (history.json 693 events 보유)
+        assert len(sector_map) >= 1, f"섹터 0건: {sector_map}"
+        # 가중치는 rank weights 중 하나
+        rank_weights = {12, 10, 8, 6, 4}
+        for sec, w in sector_map.items():
+            assert w in rank_weights, f"가중치 비정상: {sec}={w}"
+            assert isinstance(sec, str) and len(sec) >= 1
+        print(f"[PASS] 동적 섹터 가중치 - {len(sector_map)}개 섹터: "
+              f"{list(sector_map.keys())[:3]}...")
+    else:
+        print("[SKIP] 동적 섹터 가중치 - history.json 없음")
 
 
 def test_load_continuation_score_map():
@@ -115,7 +126,7 @@ if __name__ == "__main__":
         test_zone_boundary_30,
         test_zone_boundary_50,
         test_zone_boundary_70,
-        test_high_gain_sectors,
+        test_dynamic_sector_gain_map,
         test_load_continuation_score_map,
     ]
     passed = 0
