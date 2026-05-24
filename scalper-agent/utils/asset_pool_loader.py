@@ -534,9 +534,31 @@ def _load_continuation_score_map() -> Dict[str, float]:
         return {}
 
 
+def _filter_events_by_recency(events: List[Dict], lookback_days: int) -> List[Dict]:
+    """★ 5/24 사장님 지적 ★ 단기 윈도우 필터 (매일/2-3일 로테이션 민감).
+
+    Args:
+        lookback_days: 최근 N영업일 (7=초단기, 14=단기, 30=중기, 60=장기)
+    """
+    from datetime import datetime, timedelta
+    cutoff = datetime.now() - timedelta(days=lookback_days)
+    filtered = []
+    for e in events:
+        ld = e.get("limit_date", "")
+        try:
+            d = datetime.strptime(str(ld), "%Y-%m-%d")
+            if d >= cutoff:
+                filtered.append(e)
+        except (ValueError, TypeError):
+            continue
+    return filtered
+
+
 def _load_theme_gain_map(top_n_themes: int = 10,
                           min_events: int = 3,
-                          cache_ttl_sec: int = 3600) -> Dict[str, Dict]:
+                          cache_ttl_sec: int = 3600,
+                          lookback_days: int = 14,
+                          combine_long_term: bool = True) -> Dict[str, Dict]:
     """★ 5/24 사장님 지적 ★ theme_map.json (302개) 세부 테마 동적 가중치.
 
     사장님 시장 관점 [feedback_market_view_small_caps_5_24]:
@@ -603,36 +625,56 @@ def _load_theme_gain_map(top_n_themes: int = 10,
             if names:
                 code_theme_names[c] = names
 
-        # history events → 테마별 gain
+        # history events → 테마별 gain (단기/장기 분리)
         data = json.loads(hist_path.read_text(encoding="utf-8"))
-        events = data.get("events", [])
-        theme_gains: Dict[str, List[float]] = {}
-        for e in events:
-            code = e.get("code")
-            gain = e.get("max_gain_after")
-            if not code or gain is None:
-                continue
-            for theme_name in code_theme_names.get(code, []):
-                theme_gains.setdefault(theme_name, []).append(float(gain))
+        events_all = data.get("events", [])
 
-        # 필터 + 평균 + 정렬
+        # ★ 5/24 사장님 지적 ★ 단기 윈도우 (최근 N일) — 매일/2-3일 로테이션 민감
+        events_short = _filter_events_by_recency(events_all, lookback_days)
+
+        def _theme_avg(evts: List[Dict]) -> Dict[str, float]:
+            gains: Dict[str, List[float]] = {}
+            for e in evts:
+                code = e.get("code")
+                gain = e.get("max_gain_after")
+                if not code or gain is None:
+                    continue
+                for theme_name in code_theme_names.get(code, []):
+                    gains.setdefault(theme_name, []).append(float(gain))
+            return {n: (sum(g) / len(g), len(g)) for n, g in gains.items()}
+
+        short_avg = _theme_avg(events_short)   # 단기
+        long_avg = _theme_avg(events_all) if combine_long_term else {}
+
+        # 결합: 단기 60% + 장기 40% (사장님 단타 회전 우선)
         theme_stats = []
-        for name, gains in theme_gains.items():
-            if len(gains) < min_events:
-                continue
-            avg = sum(gains) / len(gains)
-            theme_stats.append((name, avg, len(gains)))
+        seen_themes = set(short_avg.keys()) | set(long_avg.keys())
+        for name in seen_themes:
+            s_data = short_avg.get(name)   # (avg, n)
+            l_data = long_avg.get(name)
+            # 단기 표본 부족하면 장기만 / 둘 다 있으면 결합
+            if s_data and s_data[1] >= min_events:
+                if l_data and combine_long_term:
+                    combined = s_data[0] * 0.6 + l_data[0] * 0.4
+                else:
+                    combined = s_data[0]
+                theme_stats.append((name, combined, s_data[1], "short"))
+            elif l_data and l_data[1] >= min_events and combine_long_term:
+                # 단기 표본 부족 → 장기 평균 × 0.5 (보수적)
+                theme_stats.append((name, l_data[0] * 0.5, l_data[1], "long_only"))
         theme_stats.sort(key=lambda x: -x[1])
 
         # 상위 N개 가중치
         rank_weights = [15, 12, 10, 8, 7, 6, 5, 4, 3, 2]
         theme_bonus: Dict[str, int] = {}
-        for i, (name, avg, n) in enumerate(theme_stats[:top_n_themes]):
+        for i, stat in enumerate(theme_stats[:top_n_themes]):
+            name = stat[0]
             theme_bonus[name] = rank_weights[i] if i < len(rank_weights) else 2
 
         if theme_bonus:
             top3 = list(theme_bonus.items())[:3]
-            logger.info(f"[theme_gain] 동적 테마 가중치 (top {len(theme_bonus)}): "
+            logger.info(f"[theme_gain] 동적 가중치 lookback={lookback_days}d "
+                          f"(top {len(theme_bonus)}): "
                           + ", ".join(f"{n}(+{w})" for n, w in top3))
 
         result = {"theme_bonus": theme_bonus, "code_themes": code_theme_names}
@@ -768,7 +810,9 @@ def _build_code_to_group_map() -> Dict[str, str]:
 # 매일 G7 EVENING_BRAIN history.json 갱신 후 자동 재계산
 def _load_sector_gain_map(top_n_sectors: int = 5,
                             min_events: int = 5,
-                            cache_ttl_sec: int = 3600) -> Dict[str, int]:
+                            cache_ttl_sec: int = 3600,
+                            lookback_days: int = 14,
+                            combine_long_term: bool = True) -> Dict[str, int]:
     """★ 5/24 사장님 지적 ★ history.json에서 섹터별 평균 max_gain 자동 산출.
 
     매일 G7 EVENING_BRAIN의 build_limit_up_history 갱신 직후 호출 → 최신 섹터 강세 반영.
@@ -802,23 +846,38 @@ def _load_sector_gain_map(top_n_sectors: int = 5,
             logger.debug("[sector_gain] history.json 없음 — 동적 가중치 스킵")
             return {}
         data = json.loads(hist_path.read_text(encoding="utf-8"))
-        events = data.get("events", [])
+        events_all = data.get("events", [])
 
-        sector_gains: Dict[str, List[float]] = {}
-        for e in events:
-            sec = e.get("sector") or "기타"
-            gain = e.get("max_gain_after")
-            if gain is None:
-                continue
-            sector_gains.setdefault(sec, []).append(float(gain))
+        # ★ 5/24 사장님 지적 ★ 단기 윈도우 (매일/2-3일 회전 민감)
+        events_short = _filter_events_by_recency(events_all, lookback_days)
 
-        # 필터 + 평균 + 정렬
+        def _sec_avg(evts: List[Dict]) -> Dict[str, tuple]:
+            gains: Dict[str, List[float]] = {}
+            for e in evts:
+                sec = e.get("sector") or "기타"
+                g = e.get("max_gain_after")
+                if g is None:
+                    continue
+                gains.setdefault(sec, []).append(float(g))
+            return {s: (sum(g) / len(g), len(g)) for s, g in gains.items()}
+
+        short_avg = _sec_avg(events_short)
+        long_avg = _sec_avg(events_all) if combine_long_term else {}
+
+        # 단기 60% + 장기 40% 결합
         sector_stats = []
-        for sec, gains in sector_gains.items():
-            if len(gains) < min_events:
-                continue
-            avg = sum(gains) / len(gains)
-            sector_stats.append((sec, avg, len(gains)))
+        seen = set(short_avg.keys()) | set(long_avg.keys())
+        for sec in seen:
+            s_data = short_avg.get(sec)
+            l_data = long_avg.get(sec)
+            if s_data and s_data[1] >= min_events:
+                if l_data and combine_long_term:
+                    combined = s_data[0] * 0.6 + l_data[0] * 0.4
+                else:
+                    combined = s_data[0]
+                sector_stats.append((sec, combined, s_data[1]))
+            elif l_data and l_data[1] >= min_events and combine_long_term:
+                sector_stats.append((sec, l_data[0] * 0.5, l_data[1]))
         sector_stats.sort(key=lambda x: -x[1])
 
         # 상위 N개 가중치 (rank 따라 차등)
@@ -828,9 +887,9 @@ def _load_sector_gain_map(top_n_sectors: int = 5,
             result[sec] = rank_weights[i] if i < len(rank_weights) else 4
 
         if result:
-            top_log = ", ".join(f"{s}(+{result[s]}/{int(sector_gains[s] and sum(sector_gains[s])/len(sector_gains[s])):.0f}%)"
-                                  for s in result)
-            logger.info(f"[sector_gain] 동적 가중치 (top {len(result)}): {top_log}")
+            top_log = ", ".join(f"{s}(+{result[s]})" for s in result)
+            logger.info(f"[sector_gain] 동적 가중치 lookback={lookback_days}d "
+                          f"(top {len(result)}): {top_log}")
 
         cache["ts"] = int(_t.time())
         cache["data"] = result
