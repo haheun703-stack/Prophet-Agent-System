@@ -502,6 +502,63 @@ def _get_today_change_pct(code: str) -> float:
     return 0.0
 
 
+def _load_continuation_score_map() -> Dict[str, float]:
+    """★ 5/24 사장님 영구 룰 ★ continuation_score 종목별 평균 매핑.
+
+    백테스트 검증 (5/24 stock_selection_accuracy_5_24.py):
+        score 0-30 zone (n=218):  평균 max_gain +1.57% (거의 무익)
+        score 30-50 zone (n=95):  평균 max_gain +21.75%
+        score 50-70 zone (n=253): 평균 max_gain +68.67% ★ Sweet Zone ★
+        score 70-90+ zone (n=127): 평균 max_gain +44.60% (이미 폭등 후)
+
+    history.json events의 종목별 평균 continuation_score 반환.
+    """
+    try:
+        import json
+        from pathlib import Path
+        base = Path(__file__).resolve().parent.parent / "data_store"
+        hist_path = base / "limit_up" / "history.json"
+        if not hist_path.exists():
+            return {}
+        data = json.loads(hist_path.read_text(encoding="utf-8"))
+        events = data.get("events", [])
+        scores_by_code: Dict[str, List[float]] = {}
+        for e in events:
+            code = e.get("code")
+            cs = e.get("continuation_score")
+            if code and cs is not None:
+                scores_by_code.setdefault(code, []).append(float(cs))
+        return {c: round(sum(s) / len(s), 1) for c, s in scores_by_code.items() if s}
+    except Exception as _e:
+        logger.debug(f"[continuation_score] 로드 실패: {_e}")
+        return {}
+
+
+def _continuation_score_adjustment(cs: float) -> int:
+    """★ 5/24 백테스트 검증 ★ continuation_score zone별 점수 조정.
+
+    zone 0-30 차단 (218건 = 평균 +1.57% 거의 무익)
+    zone 50-70 우선 (253건 = 평균 +68.67% 가장 강력)
+    zone 70-90+ 보조 (이미 폭등 — 추가 상승 여력 제한)
+    """
+    if cs < 30:
+        return -40   # 강한 패널티 (실질 차단)
+    if cs < 50:
+        return 5    # 약한 보너스
+    if cs < 70:
+        return 30   # ★ Sweet Zone — 강한 보너스 ★
+    return 15      # zone 70+ — 보조 보너스
+
+
+# ★ 5/24 백테스트 검증 ★ 섹터 가중치 (history.json 693 events 기반)
+HIGH_GAIN_SECTORS = {
+    "전기전자": 10,    # 212건 / 평균 +59.4%
+    "유통":     10,    # 42건 / 평균 +51.9% (의외)
+    "IT서비스":  5,
+    "기계장비":  5,
+}
+
+
 def get_candidate_score_map() -> Dict[str, int]:
     """[5/20 사장님 지적 fix] 점수 = "내일 오를 종목" 기준 (오늘 강세 기준 X).
 
@@ -603,6 +660,9 @@ def get_candidate_score_map() -> Dict[str, int]:
     except Exception:
         sector_map = {}
 
+    # ★ 5/24 사장님 영구 룰 ★ continuation_score 종목별 평균 (백테스트 검증)
+    cs_map = _load_continuation_score_map()
+
     score_map: Dict[str, int] = {}
     for code, sources in source_map.items():
         score = 0
@@ -630,6 +690,14 @@ def get_candidate_score_map() -> Dict[str, int]:
         sector = sector_map.get(code, "")
         if sector in HIGH_VOLATILITY_SECTORS:
             score -= 5
+
+        # ★ 5/24 백테스트 검증 ★ continuation_score zone 보너스/패널티
+        if code in cs_map:
+            score += _continuation_score_adjustment(cs_map[code])
+
+        # ★ 5/24 백테스트 검증 ★ 섹터 가중치 (전기전자/유통 우대)
+        if sector in HIGH_GAIN_SECTORS:
+            score += HIGH_GAIN_SECTORS[sector]
 
         # ★★★ 5/20 사장님 핵심 지적 — 오늘 등락률 기반 패널티/보너스 ★★★
         # "이게 오늘 상쳤는 종목 아니니? 내일도 오른다는 근거는 어디에서 온거니?"

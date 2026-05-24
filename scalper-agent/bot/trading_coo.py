@@ -1897,6 +1897,18 @@ class TradingCOO:
         except Exception as e:
             logger.error(f"[COO] AUTO-RECOVERY 실행 실패: {e}")
 
+        # ★ 5/24 사장님 영구 룰 ★ limit_up history.json 일일 갱신
+        # 백테스트 검증 (stock_selection_accuracy_5_24.py):
+        #   continuation_score 분포 → asset_pool_loader가 zone 보너스/패널티 적용
+        #   이 데이터가 최신이어야 단타봇 종목 선정 정확도 ↑
+        try:
+            from data.limit_up_scanner import build_limit_up_history
+            logger.info("[COO] G7: limit_up history.json 일일 갱신 시작")
+            result = await asyncio.to_thread(build_limit_up_history, days=60)
+            logger.info(f"[COO] G7: history.json 갱신 완료 — {len(result)} events")
+        except Exception as e:
+            logger.warning(f"[COO] G7: history.json 갱신 실패 (무시): {e}")
+
         logger.info("[COO] ═══ G7 EVENING_BRAIN 완료 ═══")
         return results
 
