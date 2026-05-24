@@ -102,6 +102,15 @@ class AutoTrader:
         # 모드: "day" or "swing"
         self.mode = config.get("bot", {}).get("trade_mode", "swing")
 
+        # ★ 5/24 사장님 결정 15번: trade_journal callback 등록 (매매 즉시 텔레그램 보고) ★
+        # 영구 룰 [feedback_self_monitoring_realtime_5_22]
+        try:
+            from data import trade_journal as _tj
+            _tj.register_trade_callback(self._on_trade_event)
+            logger.info("[auto_trader] trade_journal callback 등록 — 매매 즉시 텔레그램 알림 활성")
+        except Exception as _cb_e:
+            logger.warning(f"[auto_trader] callback 등록 실패: {_cb_e}")
+
     def _get_jarvis_dynamic_qty(self) -> tuple:
         """★ 5/21 아이디어 #1 — 자비스 자율 다주 결정 (70억 트레이더 미션 1단계) ★
 
@@ -3068,28 +3077,11 @@ class AutoTrader:
 
                 # ── 고점 추적 (AI 모니터에서도) ──
                 entry = pos["entry_price"]
-                pos["high_watermark"] = max(pos.get("high_watermark", entry), snap.price)
                 pnl_pct = (snap.price / entry - 1) * 100 if entry > 0 else 0
 
-                # MOMENTUM vs NORMAL 트레일링 분기
-                if pos.get("regime") == "MOMENTUM":
-                    # MOMENTUM: +1.5%부터 트레일링, 고점 대비 -2%
-                    if pnl_pct >= 1.5 or pos.get("trailing_activated"):
-                        pos["trailing_activated"] = True
-                        hwm = pos["high_watermark"]
-                        trail_sl = int(hwm * 0.98)  # -2% (vs NORMAL -3%)
-                        if pnl_pct >= 1.5:
-                            trail_sl = max(trail_sl, entry)
-                        pos["trailing_sl"] = max(pos.get("trailing_sl", 0), trail_sl)
-                else:
-                    # NORMAL: 기존 +3%부터 트레일링, 고점 대비 -3%
-                    if pnl_pct >= 3.0 or pos.get("trailing_activated"):
-                        pos["trailing_activated"] = True
-                        hwm = pos["high_watermark"]
-                        trail_sl = int(hwm * 0.97)
-                        if pnl_pct >= 3.0 or hwm > entry * 1.03:
-                            trail_sl = max(trail_sl, entry)
-                        pos["trailing_sl"] = max(pos.get("trailing_sl", 0), trail_sl)
+                # ★ 5/24 13-B: 수익률 클래스별 동적 트레일링 폭 (hwm 갱신 포함) ★
+                # 기가레인/아나패스 사고 fix — +3~5%/-3%, +5~10%/-5%, +10~20%/-7%, +20%+/-10%
+                self._compute_dynamic_trailing_sl(pos, snap.price)
 
                 if snap.decision == "FULL_SELL":
                     logger.info(f"AI 전량매도: {code} @ {snap.price:,} ({snap.decision_reason})")
@@ -3395,6 +3387,104 @@ class AutoTrader:
         )
         await self._alert(msg)
 
+    def _on_trade_event(self, side: str, code: str, name: str, qty: int,
+                         price: float, source: str = "",
+                         entry_price: float = 0, note: str = "") -> None:
+        """★ 5/24 15번: trade_journal callback — 매매 즉시 텔레그램 보고 ★"""
+        self._notify_trade_sync(
+            side=side, code=code, name=name, qty=int(qty),
+            price=int(price), entry_price=int(entry_price) if entry_price else 0,
+            source=source, note=note,
+        )
+
+    def _notify_trade_sync(self, side: str, code: str, name: str, qty: int,
+                            price: int, entry_price: int = 0, source: str = "",
+                            note: str = "") -> None:
+        """★ 5/24 15번: 매수/매도 즉시 텔레그램 보고 ★ (사장님 영구 룰 self_monitoring_realtime_5_22)
+
+        - 사장님 5/22 11:50 사고 후 영구 의무: 매매 발생 즉시 알림 → 사장님 실시간 인지.
+        - sync 컨텍스트에서도 안전하게 호출 가능 (asyncio.ensure_future + 폴백 로깅).
+        - 형식 통일: "🟢/🔴 매매: SIDE 종목(code) qty주 @price [src] (note)"
+
+        Args:
+            side: "BUY" or "SELL"
+            entry_price: SELL일 때 손익률 계산 (0이면 손익 미표기)
+        """
+        try:
+            icon = "🟢" if side == "BUY" else "🔴"
+            pnl_str = ""
+            if side == "SELL" and entry_price > 0:
+                pnl_pct = (price / entry_price - 1) * 100
+                pnl_str = f" ({pnl_pct:+.2f}%)"
+            src_str = f" [{source}]" if source else ""
+            note_str = f" {note}" if note else ""
+            msg = f"{icon} 매매: {side} {name}({code}) {qty}주 @{price:,}{pnl_str}{src_str}{note_str}"
+
+            # _alert는 async — sync 컨텍스트에서 안전하게 dispatch
+            try:
+                import asyncio
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.ensure_future(self._alert(msg))
+                else:
+                    loop.run_until_complete(self._alert(msg))
+            except RuntimeError:
+                # 이벤트 루프 없음 → 로그만 (사장님 알림 누락 가능성 경고)
+                logger.warning(f"[notify_trade] 이벤트 루프 없음 — 알림 누락: {msg}")
+        except Exception as e:
+            logger.error(f"[notify_trade] 텔레그램 알림 실패: {e}")
+
+    def _compute_dynamic_trailing_sl(self, pos: dict, current_price: int) -> int:
+        """★ 5/24 사장님 결정 13-B: 수익률 클래스별 동적 트레일링 폭 ★
+
+        기가레인(+8.21%) / 아나패스(+1.39%) 사고 fix — 좁은 -3% 폭이 강한 추세에서 짧은 익절 유발.
+
+        사장님 결정 (project_5_22_evening_learning_fix.md):
+            +3~5%   → -3% (약한 추세, 기존)
+            +5~10%  → -5% (중간)
+            +10~20% → -7% (강한)
+            +20%+   → -10% (상한가 임박, 안전망)
+
+        MOMENTUM regime은 활성 임계값이 +1.5%로 더 낮고 약한 단계 폭도 -2%.
+
+        Returns:
+            갱신된 trailing_sl (ratchet — 절대 내려가지 않음).
+            트레일링 미활성 시 기존 값 반환.
+        """
+        entry = pos.get("entry_price", 0)
+        if entry <= 0:
+            return pos.get("trailing_sl", 0)
+
+        pos["high_watermark"] = max(pos.get("high_watermark", entry), current_price)
+        hwm = pos["high_watermark"]
+        hwm_pct = (hwm / entry - 1) * 100
+        pnl_pct = (current_price / entry - 1) * 100
+
+        is_momentum = pos.get("regime") == "MOMENTUM"
+        activation_threshold = 1.5 if is_momentum else 3.0
+
+        if pnl_pct < activation_threshold and not pos.get("trailing_activated"):
+            return pos.get("trailing_sl", 0)
+
+        pos["trailing_activated"] = True
+
+        # 수익률 클래스별 동적 폭 (hwm_pct 기준 — 조정 중에도 폭 유지)
+        if hwm_pct >= 20.0:
+            trail_pct = 0.10   # 상한가 임박: -10% 안전망
+        elif hwm_pct >= 10.0:
+            trail_pct = 0.07   # 강한 추세: -7%
+        elif hwm_pct >= 5.0:
+            trail_pct = 0.05   # 중간: -5%
+        else:
+            trail_pct = 0.02 if is_momentum else 0.03   # 약한: -2%/-3%
+
+        trail_sl = int(hwm * (1 - trail_pct))
+        if hwm > entry * (1 + activation_threshold / 100):
+            trail_sl = max(trail_sl, entry)   # 본전 확보
+
+        pos["trailing_sl"] = max(pos.get("trailing_sl", 0), trail_sl)
+        return pos["trailing_sl"]
+
     def _check_quick_exit(self, pos: dict, current_price: int, pnl_pct: float):
         """빠른 익절 모드 — 차트 영웅식 유연 회전 (3-tier).
 
@@ -3468,26 +3558,18 @@ class AutoTrader:
                 entry = pos["entry_price"]
                 name = pos.get("name", code)
 
-                # ── 고점(high_watermark) 갱신 ──
-                pos["high_watermark"] = max(pos.get("high_watermark", entry), cp)
+                # ★ 5/24 13-B: 동적 트레일링 폭 (helper — hwm 갱신 + ratchet 보장) ★
+                self._compute_dynamic_trailing_sl(pos, cp)
                 hwm = pos["high_watermark"]
                 pnl_pct = (cp / entry - 1) * 100 if entry > 0 else 0
 
-                # ── 인트라데이 트레일링 SL 계산 ──
-                if pnl_pct >= 3.0 or pos.get("trailing_activated"):
-                    pos["trailing_activated"] = True
-                    trail_sl = int(hwm * 0.97)  # 고점 -3%
-                    if pnl_pct >= 3.0 or hwm > entry * 1.03:
-                        trail_sl = max(trail_sl, entry)  # 본전 확보
-                    # ratchet: 절대 내려가지 않음
-                    pos["trailing_sl"] = max(pos.get("trailing_sl", 0), trail_sl)
-
-                    # target_state에도 동기화
+                # target_state 동기화 (트레일링 활성 시)
+                if pos.get("trailing_activated"):
                     ts = pos.get("target_state")
                     if ts:
                         ts.high_watermark = hwm
                         ts.trailing_activated = True
-                        ts.trailing_sl = max(ts.trailing_sl, pos["trailing_sl"])
+                        ts.trailing_sl = max(ts.trailing_sl, pos.get("trailing_sl", 0))
 
                 # ── 유효 SL = max(기존 SL, 트레일링 SL) ──
                 effective_sl = max(pos["stop_loss"], pos.get("trailing_sl", 0))

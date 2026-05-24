@@ -50,6 +50,34 @@ _VALID_EVENT_TYPES = {
     "manual_sell",      # 사장님 수동 매도
 }
 
+# ★ 5/24 사장님 결정 15번: 매매 직후 자동 callback (텔레그램 즉시 보고용) ★
+# 영구 룰 [feedback_self_monitoring_realtime_5_22]: 매수/매도 즉시 사장님 인지
+_trade_callbacks = []
+
+
+def register_trade_callback(callback):
+    """매매 직후 호출될 callback 등록.
+
+    Signature: callback(side: str, code: str, name: str, qty: int, price: float,
+                        source: str, entry_price: float = 0, note: str = "") -> None
+        side: "BUY" or "SELL"
+        entry_price: SELL인 경우 매수가 (PnL 계산용)
+    """
+    if callback not in _trade_callbacks:
+        _trade_callbacks.append(callback)
+
+
+def _fire_callbacks(side: str, code: str, name: str, qty: int, price: float,
+                    source: str, entry_price: float = 0, note: str = "") -> None:
+    """내부 — log_buy/log_sell 성공 후 호출 (best-effort)."""
+    for cb in _trade_callbacks:
+        try:
+            cb(side=side, code=code, name=name, qty=qty, price=price,
+               source=source, entry_price=entry_price, note=note or "")
+        except Exception as _cb_e:
+            logger.warning(f"[trade_journal] callback 실패 (무시): {type(_cb_e).__name__}: {_cb_e}")
+
+
 _VALID_SOURCES = {
     "morning_rec",      # 09:00 morning_recommendation 자동
     "verification",     # 검증 모드 morning_rec (1주씩)
@@ -107,9 +135,14 @@ def log_buy(
             ),
         )
         logger.info(f"[trade_journal] BUY [{code}] {name} {qty}주 @{price:,.0f} ({source})")
+        _fire_callbacks(side="BUY", code=code, name=name, qty=int(qty),
+                        price=float(price), source=source, note=note or "")
         return True
     except Exception as e:
         logger.warning(f"[trade_journal] BUY 적재 실패 (무시): {type(e).__name__}: {e}")
+        # 적재 실패해도 매매 자체는 발생했을 수 있으므로 callback은 발사
+        _fire_callbacks(side="BUY", code=code, name=name, qty=int(qty),
+                        price=float(price), source=source, note=note or "")
         return False
 
 
@@ -174,9 +207,15 @@ def log_sell(
             f"[trade_journal] SELL [{code}] {name} {qty_i}주 "
             f"{buy_price_f:,.0f} → {sell_price_f:,.0f} ({pnl_pct:+.2f}%) [{event_type}/{source}]"
         )
+        _fire_callbacks(side="SELL", code=code, name=name, qty=qty_i,
+                        price=sell_price_f, source=source,
+                        entry_price=buy_price_f, note=f"{event_type}{(' '+note) if note else ''}")
         return True
     except Exception as e:
         logger.warning(f"[trade_journal] SELL 적재 실패 (무시): {type(e).__name__}: {e}")
+        _fire_callbacks(side="SELL", code=code, name=name, qty=qty_i,
+                        price=sell_price_f, source=source,
+                        entry_price=buy_price_f, note=f"{event_type}{(' '+note) if note else ''}")
         return False
 
 
