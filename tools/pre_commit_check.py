@@ -50,7 +50,33 @@ RULES = [
         "pattern": r'parts\[\d+\]',
         "msg": "parts[N] 직접 인덱싱 금지 — _parse_flow_csv() 유틸 사용 (C1 규칙)",
         "severity": "CRITICAL",
-        "exclude_files": ["telegram_bot.py"],  # 텔레그램 커맨드 파싱은 CSV가 아님
+        "exclude_files": ["telegram_bot.py"],
+    },
+    # ★ 사장님 5/25 영구 룰 위반 자동 차단 (REVIEW_3TIER_RULE.md) ★
+    {
+        "id": "RULE-001",
+        "name": "사장님 5/25 트레일링 -3% 일관 룰 위반 (옛 multi-zone)",
+        "pattern": r'trail_pct\s*=\s*0\.(07|10|12|15)\b',
+        "msg": (
+            "★ 사장님 5/25 영구 룰 위반 ★ trail_pct = 0.07/0.10/0.12/0.15 = 옛 multi-zone\n"
+            "         → 사장님: '-7%, -10%, -12%, -15%까지 회귀를 놔둘 필요가 있냐'\n"
+            "         → 모든 trail은 -3% 일관 (bot.dynamic_trailing.decide_trailing 위임)\n"
+            "         → 상한가 +25%+는 limit_up_split_sell 모듈 분리"
+        ),
+        "severity": "CRITICAL",
+        "exclude_files": ["dynamic_trailing.py", "test_compute_trailing_real_5_25.py"],
+    },
+    {
+        "id": "RULE-003",
+        "name": "_send UnboundLocalError 패턴 (정의 전 사용)",
+        "pattern": r'^\s*await\s+_send\s*\(',
+        "msg": (
+            "⚠️ await _send(...) 사용 시 같은 함수 안에 'async def _send' 정의 위치 확인 필수\n"
+            "         → 정의가 호출보다 뒤에 있으면 UnboundLocalError (5/25 1차 사고)\n"
+            "         → 함수 진입 직후 _send 정의 표준"
+        ),
+        "severity": "HIGH",   # AST 검증 필요 — 패턴만으로는 false positive 있음 → HIGH로 경고만
+        "exclude_files": [],
     },
 ]
 
