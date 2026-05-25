@@ -24,7 +24,7 @@
 """
 import logging
 from dataclasses import dataclass
-from typing import Dict, List, Literal, Optional, Sequence
+from typing import Dict, Literal, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 

@@ -36,9 +36,9 @@
 영구 메모리: [[feedback_trailing_only_tp]] + 5/25 사장님 룰 3
 """
 import logging
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional
-from datetime import datetime, date
+from dataclasses import dataclass
+from typing import Optional
+from datetime import date
 
 logger = logging.getLogger(__name__)
 
