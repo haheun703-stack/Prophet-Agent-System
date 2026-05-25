@@ -3593,80 +3593,69 @@ class AutoTrader:
 
     def _compute_dynamic_trailing_sl(self, pos: dict, current_price: int,
                                        trend_strength: Optional[dict] = None) -> int:
-        """★ 5/24 사장님 결정 13-B + 13-C: 수익률 클래스별 동적 트레일링 폭 + 추세 강도 보정 ★
+        """★ 5/25 사장님 영구 룰 ★ 고점 -3% 일관 트레일링 (실제 매매 경로 적용).
 
-        기가레인(+8.21%) / 아나패스(+1.39%) 사고 fix — 좁은 -3% 폭이 강한 추세에서 짧은 익절 유발.
+        ★ 어제 5/25 commit에서 단위 테스트(dynamic_trailing.py)만 단순화 했고
+           실제 매매 경로(이 함수)는 옛 multi-zone -7/-10/-12/-15% 그대로 둔
+           단타봇 사고 → 5/26 D-Day 전 즉시 fix (commit-after-e120a12) ★
 
-        사장님 결정 (project_5_22_evening_learning_fix.md):
-            +3~5%   → -3% (약한 추세, 기존)
-            +5~10%  → -5% (중간)
-            +10~20% → -7% (강한)
-            +20%+   → -10% (상한가 임박, 안전망)
+        사장님 5/25 영구 룰 (단타봇 13-B/13-E 자율 룰 폐기):
+        > "오르는거는 최종 올랐는거에서 힘없이 떨어질때 -3% 되면 팔고 나오자"
+        > "-7%, -10%, -12%, -15%까지 회귀를 놔둘 필요가 있냐"
 
-        MOMENTUM regime은 활성 임계값이 +1.5%로 더 낮고 약한 단계 폭도 -2%.
+        새 룰:
+            매입~+3%  : 비활성 (NORMAL SL = 매입가 -3%, 호출자 fallback)
+            +3%+      : 트레일링 활성 → ★ 고점 -3% 일관 ★ (전 zone)
+            +25%+     : limit_up_split_sell 모듈로 분리 (절반 +29% + 절반 D+1 이월)
 
-        13-C 보정 (trend_strength 전달 시):
-            STRONG/EXPLOSIVE → 한 단계 위 폭 (조정 인내)
-            WEAK             → 한 단계 아래 폭 (빠른 익절)
-            MID/UNKNOWN/None → 기본 폭 유지
+        위임: bot.dynamic_trailing.decide_trailing (단순화 모듈)
 
         Returns:
             갱신된 trailing_sl (ratchet — 절대 내려가지 않음).
             트레일링 미활성 시 기존 값 반환.
         """
+        from bot.dynamic_trailing import decide_trailing, compute_trailing_sl
+
         entry = pos.get("entry_price", 0)
         if entry <= 0:
             return pos.get("trailing_sl", 0)
 
         pos["high_watermark"] = max(pos.get("high_watermark", entry), current_price)
         hwm = pos["high_watermark"]
-        hwm_pct = (hwm / entry - 1) * 100
         pnl_pct = (current_price / entry - 1) * 100
 
-        is_momentum = pos.get("regime") == "MOMENTUM"
-        activation_threshold = 1.5 if is_momentum else 3.0
+        # trend_strength 인자 → dynamic_trailing 입력으로 변환 (호출 site 호환)
+        flow_intensity = None
+        vwap_position = None
+        if trend_strength:
+            flow_intensity = trend_strength.get("flow_intensity")
+            vwap_position = trend_strength.get("vwap_position")
 
-        if pnl_pct < activation_threshold and not pos.get("trailing_activated"):
+        decision = decide_trailing(
+            pnl_pct=pnl_pct,
+            flow_intensity=flow_intensity,
+            vwap_position=vwap_position,
+        )
+
+        # 활성 임계값(+3%) 미만 → NORMAL SL(매입가 -3%)만 호출자가 적용
+        if pnl_pct < decision.activation_pct and not pos.get("trailing_activated"):
             return pos.get("trailing_sl", 0)
 
         pos["trailing_activated"] = True
 
-        # 수익률 클래스별 기본 폭 (hwm_pct 기준 — 조정 중에도 폭 유지)
-        # ★ 13-E: 상한가 직전 zone 추가 세분화 ★
-        if hwm_pct >= 29.0:
-            trail_pct = 0.15   # 상한가 도달 (+29.5%): 풀린 시점만 매도 (-15% 안전망)
+        # +25%+ 상한가 임박은 limit_up_split_sell 모듈이 분리 매도 처리.
+        # 마커만 남기고 트레일링은 동일 -3% (절반 매도 후 D+1 이월분 보호용)
+        if decision.strength == "limit_up_imminent":
             pos["limit_up_phase"] = True
-        elif hwm_pct >= 25.0:
-            trail_pct = 0.12   # +25%+ 상한가 직전: 더 견딤 (-12%)
-            pos["limit_up_phase"] = True
-        elif hwm_pct >= 20.0:
-            trail_pct = 0.10   # +20%+ 상한가 임박: -10% 안전망
-        elif hwm_pct >= 10.0:
-            trail_pct = 0.07   # 강한 추세: -7%
-        elif hwm_pct >= 5.0:
-            trail_pct = 0.05   # 중간: -5%
-        else:
-            trail_pct = 0.02 if is_momentum else 0.03   # 약한: -2%/-3%
 
-        # ★ 13-E ratchet: 한번 limit_up_phase 진입 시 trail_pct 최소 0.10 유지 ★
-        # (가격 빠져서 hwm_pct 떨어져도 상한가 도달 이력은 유지 — 안전망)
-        if pos.get("limit_up_phase") and trail_pct < 0.10:
-            trail_pct = 0.10
+        # ★ 5/25 사장님 룰 ★ 고점 -3% 일관 (decision.trail_pct = 3.0)
+        trail_sl = compute_trailing_sl(hwm, decision)
 
-        # ★ 13-C 추세 강도 보정 — 강한 추세는 더 견디게, 약한 추세는 빠른 익절 ★
-        if trend_strength:
-            grade = trend_strength.get("grade", "")
-            UPGRADE = {0.02: 0.03, 0.03: 0.05, 0.05: 0.07, 0.07: 0.10, 0.10: 0.10}
-            DOWNGRADE = {0.10: 0.07, 0.07: 0.05, 0.05: 0.03, 0.03: 0.03, 0.02: 0.02}
-            if grade in ("STRONG", "EXPLOSIVE"):
-                trail_pct = UPGRADE.get(trail_pct, trail_pct)
-            elif grade == "WEAK":
-                trail_pct = DOWNGRADE.get(trail_pct, trail_pct)
+        # 본전 확보 (+3% 도달 시 SL >= entry)
+        if hwm > entry * (1 + decision.activation_pct / 100):
+            trail_sl = max(trail_sl, entry)
 
-        trail_sl = int(hwm * (1 - trail_pct))
-        if hwm > entry * (1 + activation_threshold / 100):
-            trail_sl = max(trail_sl, entry)   # 본전 확보
-
+        # ratchet — SL 절대 안 내려감
         pos["trailing_sl"] = max(pos.get("trailing_sl", 0), trail_sl)
         return pos["trailing_sl"]
 
@@ -4547,6 +4536,11 @@ class AutoTrader:
         """
         if not self.is_running:
             return
+        # ★ CRITICAL #3 fix (5/25 재검수) ★ 휴장일 발동 차단 — 다른 모든 job과 동일 표준
+        # 휴장일에 시장가 매도 시도 = 장 외 API 호출 + 텔레그램 의미 없는 알람
+        if not is_trading_day():
+            logger.info("[eod_split_check] 휴장일 — 룰 B skip")
+            return
         try:
             from bot.limit_up_split_sell import should_trigger_eod_split
 
@@ -4598,20 +4592,44 @@ class AutoTrader:
                         self.trader.sell_market, code, decision.sell_qty, 1,
                     )
                     if sell_resp and sell_resp.get("success"):
-                        # 절반 보유 → pending_next_day 마커
+                        # ★ HIGH #4 fix (5/25 재검수) ★ 부분 체결 검증 — KIS 잔량 재조회 후 sync
+                        # rt_cd=0 (주문 접수)만으로 success=True 가능 → 실제 잔량으로 메모리 갱신
+                        await asyncio.sleep(1.5)   # 체결 안정화 대기
+                        bal_after = await asyncio.to_thread(self.trader.fetch_balance)
+                        actual_qty = qty   # fallback (조회 실패 시 원 qty 유지)
+                        if bal_after and bal_after.get("success"):
+                            for kp_after in bal_after.get("positions", []):
+                                if kp_after.get("code") == code:
+                                    actual_qty = int(kp_after.get("qty", 0))
+                                    break
+                            else:
+                                actual_qty = 0  # 잔고에 없음 = 전량 청산됨 (예상치 못한 케이스)
+
+                        # 절반 보유 → pending_next_day 마커 (실제 잔량 기준)
                         pos["already_split"] = True
                         pos["pending_next_day"] = True
                         pos["split_date"] = datetime.now().date().isoformat()
-                        pos["qty"] = decision.hold_qty
+                        pos["qty"] = actual_qty
+                        # ★ HIGH #3 fix (5/25 재검수) ★ D+1 이월분 stop_loss 갱신
+                        # 옛 매수가 -3% SL은 D+1 갭다운 시 칼매도 → 사장님 "인내 보유" 의도 위반
+                        # 룰 C 보호망(-7%+ 갭다운만 매도)에 맡기고 옛 SL 제거 + 트레일링도 reset
+                        # (트레일링은 D+1 시초가 후 새 hwm 기준으로 재계산)
+                        pos["stop_loss"] = 0   # SL 비활성 → 룰 C 보호망 + 트레일링만
+                        pos["trailing_sl"] = 0
+                        pos["trailing_activated"] = False
+                        pos["high_watermark"] = 0   # D+1 시초가 기준 재시작
                         self._positions[code] = pos
                         triggered.append({
                             "code": code, "name": kp.get("name", code),
                             "pnl_pct": pnl_pct,
-                            "sell_qty": decision.sell_qty, "hold_qty": decision.hold_qty,
+                            "sell_qty": qty - actual_qty,
+                            "hold_qty": actual_qty,
+                            "expected_sell": decision.sell_qty,
                         })
                         logger.info(
                             f"[eod_split] ✅ 룰 B 발동 {code} ({kp.get('name','?')}) "
-                            f"+{pnl_pct:.2f}% / {decision.sell_qty}주 매도 + {decision.hold_qty}주 D+1 이월"
+                            f"+{pnl_pct:.2f}% / 실매도 {qty - actual_qty}주 + 보유 {actual_qty}주 D+1 이월 "
+                            f"(예상 매도 {decision.sell_qty}주)"
                         )
                     else:
                         logger.warning(f"[eod_split] 절반 매도 실패 {code}: {sell_resp}")
@@ -4650,6 +4668,10 @@ class AutoTrader:
         """
         if not self.is_running:
             return
+        # ★ CRITICAL #3 fix (5/25 재검수) ★ 휴장일 발동 차단 — 다른 모든 job과 동일 표준
+        if not is_trading_day():
+            logger.info("[d1_gap_check] 휴장일 — 룰 C skip")
+            return
         try:
             from bot.limit_up_split_sell import should_force_sell_on_gap_down
 
@@ -4685,15 +4707,38 @@ class AutoTrader:
                 try:
                     sell_resp = await asyncio.to_thread(self.trader.sell_market, code, qty, 1)
                     if sell_resp and sell_resp.get("success"):
-                        pos.pop("pending_next_day", None)
-                        self._positions.pop(code, None)
+                        # ★ HIGH #4 fix (5/25 재검수) ★ 부분 체결 검증 — KIS 잔량 재조회 후 sync
+                        # 시초가 부분 체결 가능 → 실제 잔량 확인 후 메모리 갱신
+                        await asyncio.sleep(2.0)   # 시초가 체결 안정화 (룰 B보다 더 길게)
+                        bal_after = await asyncio.to_thread(self.trader.fetch_balance)
+                        remaining_qty = qty   # fallback
+                        if bal_after and bal_after.get("success"):
+                            remaining_qty = 0
+                            for kp_after in bal_after.get("positions", []):
+                                if kp_after.get("code") == code:
+                                    remaining_qty = int(kp_after.get("qty", 0))
+                                    break
+
+                        if remaining_qty == 0:
+                            # 전량 매도 완료 — 정상 케이스
+                            pos.pop("pending_next_day", None)
+                            self._positions.pop(code, None)
+                        else:
+                            # 부분 체결 — 잔량 남음 → 메모리 갱신 + pending 유지 (다음 사이클 재시도)
+                            pos["qty"] = remaining_qty
+                            self._positions[code] = pos
+                            logger.warning(
+                                f"[d1_gap] ⚠️ 부분 체결 {code}: 시도 {qty}주 / 잔량 {remaining_qty}주"
+                            )
+
                         triggered.append({
                             "code": code, "name": kp.get("name", code),
-                            "d1_pnl": d1_pnl, "qty": qty,
+                            "d1_pnl": d1_pnl,
+                            "sell_qty": qty - remaining_qty, "remaining": remaining_qty,
                         })
                         logger.warning(
                             f"[d1_gap] 🛡️ 룰 C 보호망 발동 {code} ({kp.get('name','?')}) "
-                            f"D+1 {d1_pnl:+.2f}% / {qty}주 시장가 매도"
+                            f"D+1 {d1_pnl:+.2f}% / 실매도 {qty - remaining_qty}주 / 잔량 {remaining_qty}주"
                         )
                     else:
                         logger.warning(f"[d1_gap] 매도 실패 {code}: {sell_resp}")

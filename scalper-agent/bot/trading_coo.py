@@ -4765,9 +4765,12 @@ class TradingCOO:
         jq.run_daily(self.auto_trader.job_eod_split_check, time=kst_time(15, 26))
         logger.info("[COO] ★ 룰 B 장 마감 분할 매도 등록: 15:26 KST (+10%+ asset_pool 절반 익절 + D+1 이월)")
 
-        # ★ 5/25 사장님 룰 C ★ 09:00 D+1 시초가 갭다운 보호망 (pending_next_day -7%+ 즉시 매도)
-        jq.run_daily(self.auto_trader.job_d1_gap_check, time=kst_time(9, 0))
-        logger.info("[COO] ★ 룰 C D+1 갭다운 보호망 등록: 09:00 KST (pending_next_day -7%+ 즉시 매도)")
+        # ★ 5/25 사장님 룰 C ★ 09:01 D+1 시초가 갭다운 보호망 (pending_next_day -7%+ 즉시 매도)
+        # ★ CRITICAL #2 fix (5/25 재검수) ★ 09:00 → 09:01 (시초가 1분 안정화 후 매도)
+        # 09:00 정각: KIS pnl_rate가 전일 종가 기준일 가능성 + 시초가 호가만 형성 → 부분 체결/실패 위험
+        # 5/20 자비스 사고 후 09:05→09:15 이동한 이력 참고. 09:01은 시초가 형성 후 1분.
+        jq.run_daily(self.auto_trader.job_d1_gap_check, time=kst_time(9, 1))
+        logger.info("[COO] ★ 룰 C D+1 갭다운 보호망 등록: 09:01 KST (pending_next_day -7%+ 즉시 매도, 시초가 1분 안정화)")
         jq.run_daily(self._job_verification_settlement, time=kst_time(15, 35))
         logger.info("[COO] 검증모드 정산 등록: 15:35 KST")
 

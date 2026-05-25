@@ -25,6 +25,14 @@ from verifiers._common import send_telegram, save_state, load_state, make_result
 
 
 def _is_market_hours() -> bool:
+    """장중 여부 — ★ 5/25 휴장일 알람 폭주 fix ★ 거래일 + 09:00~15:30."""
+    # 휴장일(주말/공휴일) 즉시 False — 봇 알람 폭주 차단
+    try:
+        from data.trading_calendar import is_trading_day
+        if not is_trading_day():
+            return False
+    except Exception:
+        pass   # 캘린더 import 실패 시 fallback (시간만 체크)
     now = datetime.now().time()
     return time(9, 0) <= now <= time(15, 30)
 

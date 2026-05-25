@@ -141,6 +141,15 @@ def _check_nightwatch_backfill() -> Tuple[List[str], List[str]]:
 
 
 def run() -> Dict:
+    # ★ 5/25 휴장일 알람 폭주 fix ★ 휴장일 + 직전 거래일이 어제가 아니면 점검 skip
+    # 휴장일에는 정보봇/큰형/JGIS 데이터 갱신 X (정상 동작) — 알람 의미 X
+    is_holiday_today = False
+    try:
+        from data.trading_calendar import is_trading_day
+        is_holiday_today = not is_trading_day()
+    except Exception:
+        pass
+
     f_issues, f_infos = _check_files()
     s_issues, s_infos = _check_supabase()
     n_issues, n_infos = _check_nightwatch_backfill()
@@ -160,10 +169,12 @@ def run() -> Dict:
         "supabase_infos": s_infos,
         "nightwatch_issues": n_issues,
         "nightwatch_infos": n_infos,
+        "is_holiday": is_holiday_today,
     })
     save_state("data_integrity", result)
 
-    if not ok:
+    # 휴장일에는 텔레그램 알람 발송 X (state 저장만)
+    if not ok and not is_holiday_today:
         lines = ["", "[발견된 이상]"]
         lines.extend(all_issues)
         send_telegram(fmt_alert("DataIntegrity 🚨", "", lines))
