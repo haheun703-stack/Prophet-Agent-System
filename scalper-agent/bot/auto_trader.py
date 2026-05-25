@@ -111,27 +111,41 @@ class AutoTrader:
         except Exception as _cb_e:
             logger.warning(f"[auto_trader] callback 등록 실패: {_cb_e}")
 
-    def _get_jarvis_dynamic_qty(self) -> tuple:
-        """★ 5/21 아이디어 #1 — 자비스 자율 다주 결정 (70억 트레이더 미션 1단계) ★
+    def _get_jarvis_dynamic_qty(self, code: Optional[str] = None, top_k: int = 5) -> tuple:
+        """★ 5/21 아이디어 #1 + 5/25 사장님 명령 확장 ★ 자비스 자율 수량 결정.
 
-        시장 상황 보고 1주/2주/3주 자율 결정. config 토글로 활성화/비활성화.
+        ★ 5/25 신설 ★ budget_mode='split_cash' 시 금액 분배 모드 활성:
+          - 가용현금 × (1 - min_cash_ratio) / top_k = 종목당 예산
+          - 종목 현재가(fetch_price) → qty = int(예산 / current_price)
+          - 사장님 명령: "1주 X / 자금 분배 / 현금 30% 보존"
 
-        결정 로직 (보수 → 강세):
-          - EWY +5%+ (미국장 야간 강세 후속 반응 기대) AND regime != BEARISH → 3주
-          - KOSPI +1%+ (한국장 명확 강세) AND regime != BEARISH → 3주
+        기존 budget_mode='shares' (1/2/3주) 로직:
+          - EWY +5%+ AND regime != BEARISH → 3주
+          - KOSPI +1%+ AND regime != BEARISH → 3주
           - KOSPI +0.5%+ AND regime BULLISH+ → 2주
-          - 기타 (NEUTRAL/약세) → 1주 (안전 기본)
-          - 큰형 advisory PANIC/BEARISH → 1주 강제
+          - 기타 → 1주 (안전 기본)
+          - regime BEARISH/PANIC → 1주 강제
+
+        Args:
+            code: 종목코드 (split_cash 모드에서 fetch_price용)
+            top_k: 매수 종목수 (split_cash 분배 분모)
 
         Returns:
             (qty, reason) — 매수 수량, 사유 텍스트
         """
-        # 토글 체크 — 기본 false (사장님 5/21 단계적 적용: 5/22부터 on)
+        # 토글 체크 — 기본 false
         dynamic_enabled = (
             self.config.get("bot", {}).get("asset_pool", {}).get("dynamic_qty", False)
         )
         if not dynamic_enabled:
             return 1, "1주 모드 (dynamic_qty=off, 사장님 5/19 결정)"
+
+        # ★ 5/25 사장님 명령 ★ budget_mode='split_cash' 분기
+        budget_mode = (
+            self.config.get("bot", {}).get("asset_pool", {}).get("budget_mode", "shares")
+        )
+        if budget_mode == "split_cash":
+            return self._calc_split_cash_qty(code, top_k)
 
         qty = 1
         reason = "기본 1주 (시그널 미달)"
@@ -178,6 +192,67 @@ class AutoTrader:
             return 1, f"기본 1주 (예외: {type(e).__name__})"
 
         return qty, reason
+
+    def _calc_split_cash_qty(self, code: Optional[str], top_k: int) -> tuple:
+        """★ 5/25 사장님 명령 ★ budget_mode='split_cash' 금액 분배 qty 계산.
+
+        공식: qty = int( (가용현금 × (1 - min_cash_ratio)) / top_k / current_price )
+
+        Args:
+            code: 종목코드 (fetch_price 호출용)
+            top_k: 매수 종목수 (분배 분모)
+
+        Returns:
+            (qty, reason)
+
+        사장님 5/25 명령:
+          - 현금 30% 보존 (min_cash_ratio=0.30)
+          - 5종 분배 (top_k=5, 09:15 3종 + 14:50 2종)
+          - 종목당 약 516만 (3,686만 × 0.70 / 5)
+          - 1주 X / 다주 분배 매매
+        """
+        if not code:
+            logger.warning("[split_cash] code 누락 → 1주 fallback")
+            return 1, "1주 (split_cash: code 누락)"
+
+        try:
+            # 가용현금 + min_cash_ratio (5/25 사장님 명령 0.30)
+            kis_bal = self.trader.fetch_balance()
+            if not kis_bal or not kis_bal.get("success"):
+                logger.warning("[split_cash] KIS 잔고 조회 실패 → 1주 fallback")
+                return 1, "1주 (split_cash: 잔고 조회 실패)"
+
+            cash = kis_bal.get("cash", 0)
+            min_cash_ratio = self.config.get("risk", {}).get("min_cash_ratio", 0.30)
+            scalper_budget = self.config.get("bot", {}).get("scalper_budget", 0)
+
+            # 단타봇 할당 자금 제한 (퀀트봇과 분리, 5/19 신규)
+            available = min(cash, scalper_budget) if scalper_budget > 0 else cash
+            budget_total = int(available * (1.0 - min_cash_ratio))
+            budget_per_stock = budget_total // max(1, top_k)
+
+            # 현재가 조회 (qty 계산용)
+            price_resp = self.trader.fetch_price(code)
+            if not price_resp or not price_resp.get("success"):
+                logger.warning(f"[split_cash] {code} 현재가 조회 실패 → 1주 fallback")
+                return 1, f"1주 (split_cash: {code} 가격 조회 실패)"
+
+            current_price = price_resp.get("current_price", 0)
+            if current_price <= 0:
+                logger.warning(f"[split_cash] {code} 현재가 0 → 1주 fallback")
+                return 1, f"1주 (split_cash: {code} 가격 0)"
+
+            qty = max(1, budget_per_stock // current_price)
+            reason = (
+                f"split_cash: 현금 {cash:,} × 0.70 / {top_k}종 = 종목당 {budget_per_stock:,} / "
+                f"@{current_price:,} = {qty}주 (사장님 5/25 룰)"
+            )
+            logger.info(f"[split_cash] {code} {reason}")
+            return qty, reason
+
+        except Exception as e:
+            logger.warning(f"[split_cash] 예외 (기본 1주): {e}")
+            return 1, f"1주 (split_cash 예외: {type(e).__name__})"
 
     def _is_sell_protected(self, code: str, reason: str = "") -> bool:
         """[5/20 사고 후 추가] 사장님 보호 명령 단일 진입점.
@@ -1957,13 +2032,18 @@ class AutoTrader:
             await _send("⚠️ [KIS 잔고 조회 실패] 메모리 기준으로만 매수 진행 — 사장님 확인 필요")
             self._real_holdings_codes = set()
 
-        # ★ 5/21 아이디어 #1 — 자비스 자율 다주 결정 ★
-        # config.bot.asset_pool.dynamic_qty=true 시 시장 상황 보고 1/2/3주 동적 결정
-        # 70억 트레이더 미션 1단계 (5/22 D-Day로 활성화 예정)
-        dyn_qty, dyn_reason = self._get_jarvis_dynamic_qty()
-        if dyn_qty > 1:
-            qty_per_stock = dyn_qty
-            logger.info(f"[dynamic_qty] {dyn_reason}")
+        # ★ 5/21 아이디어 #1 + 5/25 사장님 명령 ★ 자비스 자율 수량 결정
+        # budget_mode='shares' (기존 1/2/3주): 여기서 전체 계산
+        # budget_mode='split_cash' (5/25 신설): 매수 루프 안에서 종목별 fetch_price 후 계산
+        ap_cfg_qty = (self.config.get("bot", {}) or {}).get("asset_pool", {}) or {}
+        budget_mode = str(ap_cfg_qty.get("budget_mode", "shares"))
+        if budget_mode != "split_cash":
+            dyn_qty, dyn_reason = self._get_jarvis_dynamic_qty()
+            if dyn_qty > 1:
+                qty_per_stock = dyn_qty
+                logger.info(f"[dynamic_qty] {dyn_reason}")
+        else:
+            logger.info(f"[dynamic_qty] budget_mode=split_cash → 매수 루프에서 종목별 fetch_price 후 qty 계산 (사장님 5/25 룰)")
 
         async def _send(text):
             if self._send_alert:
@@ -2170,6 +2250,13 @@ class AutoTrader:
         except Exception:
             pass
 
+        # ★ 5/25 사장님 명령 ★ exclude_codes (보유 유지 종목 자동 매수 제외)
+        # config.bot.asset_pool.exclude_codes: ["005930"] (삼성전자 보유 유지)
+        _excl_cfg = (self.config.get("bot", {}) or {}).get("asset_pool", {}).get("exclude_codes", []) or []
+        if _excl_cfg:
+            excluded |= set(str(c) for c in _excl_cfg)
+            logger.info(f"[asset_pool] exclude_codes 적용: {_excl_cfg} (사장님 5/25 보유 유지)")
+
         ETF_PREFIXES = (
             "KODEX", "TIGER", "RISE", "PLUS", "ACE", "SOL",
             "KOSEF", "ARIRANG", "HANARO", "KoAct",
@@ -2231,6 +2318,15 @@ class AutoTrader:
             code = c["code"]
             name = c["name"] or code
             sources_tag = ",".join(c["sources"])
+
+            # ★ 5/25 사장님 명령 ★ budget_mode='split_cash' 시 종목별 fetch_price 후 qty 계산
+            # 공식: qty = int(가용현금 × 0.70 / top_k / current_price)
+            if budget_mode == "split_cash":
+                dyn_qty_s, dyn_reason_s = self._get_jarvis_dynamic_qty(code=code, top_k=top_k)
+                if dyn_qty_s > 0:
+                    qty_per_stock = dyn_qty_s
+                    logger.info(f"[split_cash] {name}({code}) {dyn_reason_s}")
+
             try:
                 # ★ 5/23 토 룰 — pullback_3pct 모드: 시가 대비 -3% 미달 종목 skip ★
                 if entry_mode == "pullback_3pct":

@@ -1,25 +1,26 @@
 # -*- coding: utf-8 -*-
-"""동적 트레일링 정밀화 모듈 (사장님 5/22 09:50 명령).
+"""동적 트레일링 모듈 (★ 5/25 사장님 룰 정확 복귀 ★).
 
-사장님 발화:
-> "기가레인이 5% 정도 먹고 나온거 같은데 지금 11%이상 급등을하고 있는데
->  이런부분도 우리가 코드를 정밀하게 짜서 끝까지 올라가는걸 잘 지켜보고 팔아야된다"
+★ 5/25 사장님 영구 룰 (단타봇 13-B 자율 룰 폐기 후 단순화) ★
+> "오르는거는 최종 올랐는거에서 힘없이 떨어질때 -3% 되면 팔고 나오자"
+> "-7%, -10%, -12%, -15%까지 회귀를 놔둘 필요가 있냐"
 
 영구 룰 [[feedback_trailing_only_tp]] (사장님 5/21 08:25):
   - 고정 +5% TP 비활성 (모든 source)
   - 트레일링만 — 추세 끝까지 추적
 
-5/22 사고 사례:
-  - 09:19 기가레인 +8.21% 익절 → 30분 후 +12.73% (놓침 +4.52%)
-  - 09:11 아나패스 +1.39% 익절 → 2h47m 후 +13.5% (놓침 +12.11%)
+★ 5/25 변경 사항 ★:
+  - 13-B 동적 트레일링 (-3/-5/-7/-10) 폐기 — 단타봇 5/22 자율 설계 사장님 룰 위반
+  - 13-E 상한가 직전 (-12/-15) 폐기 — limit_up_split_sell 모듈로 이관
+  - ★ 모든 zone 고점 -3% 일관 ★
 
-이 모듈 — 추세 강도 기반 동적 트레일링 폭 계산:
-  - 약한  (+3~5%):  고점 -3% 추적
-  - 중간  (+5~10%): 고점 -5% 추적
-  - 강한  (+10%+):  고점 -7~10% 추적 (큰 폭)
-  - 상한가 (+20%+): 트레일링 OFF / 상한가 풀린 시점 매도
+새 룰:
+  - 매입~+3% : 비활성 (NORMAL SL = 매입가 -3%)
+  - +3%+ : 트레일링 활성 → 고점 -3% 일관 추적
+  - 상한가 (+25%+) : ★ limit_up_split_sell 모듈로 분리 ★
+                    (절반 +29% 매도 + 절반 NXT 이월 + D+1 트레일링)
 
-영구 메모리: [[project_5_22_evening_learning_fix]] TODO ⑬
+영구 메모리: [[feedback_trailing_only_tp]] + 5/25 사장님 룰 1
 """
 import logging
 from dataclasses import dataclass
@@ -104,49 +105,53 @@ def decide_trailing(
     flow_intensity: Optional[float] = None,
     vwap_position: Optional[str] = None,
 ) -> TrailingDecision:
-    """동적 트레일링 폭 결정.
+    """트레일링 결정 — ★ 5/25 사장님 룰 ★ 고점 -3% 일관.
 
     Args:
         pnl_pct: 현재 평가손익 % (양수 = 수익)
-        five_min_bars: 5분봉 OHLCV (선택)
+        five_min_bars: 5분봉 OHLCV (선택 — strength 분류용)
         flow_intensity: 체결강도 (선택)
         vwap_position: VWAP 위치 (선택)
 
     Returns:
-        TrailingDecision (trail_pct, activation_pct, strength, reason)
+        TrailingDecision (trail_pct=3.0, activation_pct=3.0, strength, reason)
 
-    트레일링 룰:
-        weak             (+0~5%):  activation +3%, trail -3% (기존 그대로)
-        moderate         (+5~10%): activation +5%, trail -5%
-        strong           (+10%+):  activation +5%, trail -7% (큰 폭 추적)
-        limit_up_imminent (+25%+):  activation +5%, trail -10% (상한가 추적)
+    ★ 5/25 사장님 룰 ★:
+        매입~+3%        : 비활성 (NORMAL SL = 매입가 -3%, dynamic_trailing 미적용)
+        +3%+ (전 zone) : activation +3%, trail -3% ★ 고점 -3% 일관 ★
+        상한가 (+25%+) : limit_up_split_sell 모듈로 분리 (절반 +29% + 절반 D+1 이월)
+
+    strength 분류는 다른 모듈에서 활용 (학습/로그) 가능 — trail_pct는 일관.
     """
     strength = classify_trend_strength(pnl_pct, five_min_bars, flow_intensity, vwap_position)
 
+    # ★ 5/25 사장님 영구 룰 ★ 모든 zone 고점 -3% 일관
+    # 13-B 동적 (-3/-5/-7/-10) + 13-E 상한가 직전 (-12/-15) ★ 폐기 ★
+    # 사장님: "-7%, -10%, -12%, -15%까지 회귀를 놔둘 필요가 있냐"
+    trail = 3.0
+    activation = 3.0
+
     if strength == "limit_up_imminent":
-        trail, activation = 10.0, 5.0
-        reason = f"상한가 임박 (+{pnl_pct:.2f}%) → 트레일링 -10% (큰 폭)"
+        # 상한가 +25%+ — limit_up_split_sell 모듈에서 처리 (참고용 reason만)
+        reason = f"상한가 임박 (+{pnl_pct:.2f}%) → limit_up_split_sell 처리 (절반 매도 + 절반 D+1 이월)"
     elif strength == "strong":
-        trail, activation = 7.0, 5.0
-        reason = f"강한 추세 (+{pnl_pct:.2f}%) → 트레일링 -7% (확장)"
+        reason = f"강한 추세 (+{pnl_pct:.2f}%) → 고점 -3% (사장님 5/25 일관 룰)"
     elif strength == "moderate":
-        trail, activation = 5.0, 5.0
-        reason = f"중간 추세 (+{pnl_pct:.2f}%) → 트레일링 -5%"
+        reason = f"중간 추세 (+{pnl_pct:.2f}%) → 고점 -3% (사장님 5/25 일관 룰)"
     else:  # weak
-        trail, activation = 3.0, 3.0
-        reason = f"약한 추세 (+{pnl_pct:.2f}%) → 트레일링 -3% (기존)"
+        reason = f"약한 추세 (+{pnl_pct:.2f}%) → 고점 -3% (사장님 5/25 일관 룰)"
 
     decision = TrailingDecision(
         trail_pct=trail,
         activation_pct=activation,
         strength=strength,
         reason=reason,
-        disable_fixed_tp=True,  # 사장님 영구 룰
+        disable_fixed_tp=True,  # 사장님 영구 룰 [[feedback_trailing_only_tp]]
     )
 
     logger.info(
         f"[dynamic_trailing] pnl={pnl_pct:.2f}% strength={strength} "
-        f"trail=-{trail:.1f}% activation=+{activation:.1f}%"
+        f"trail=-{trail:.1f}% activation=+{activation:.1f}% (★ 5/25 사장님 일관 룰 ★)"
     )
     return decision
 
