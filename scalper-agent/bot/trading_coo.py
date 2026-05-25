@@ -4760,9 +4760,10 @@ class TradingCOO:
         jq.run_daily(self._job_verification_close, time=kst_time(15, 25))
         logger.info("[COO] 검증모드 청산 등록: 15:25 KST (날짜/토글 자동 분기)")
 
-        # ★ 5/25 사장님 룰 B ★ 15:25 장 마감 분할 매도 점검 (+10%+ asset_pool → 절반 + D+1 이월)
-        jq.run_daily(self.auto_trader.job_eod_split_check, time=kst_time(15, 25))
-        logger.info("[COO] ★ 룰 B 장 마감 분할 매도 등록: 15:25 KST (+10%+ asset_pool 절반 익절 + D+1 이월)")
+        # ★ 5/25 사장님 룰 B ★ 15:26 장 마감 분할 매도 점검 (+10%+ asset_pool → 절반 + D+1 이월)
+        # ★ HIGH #2 fix (5/25 검수) ★ 15:25 verification_close 1분 후 작동 (positions sync 보장)
+        jq.run_daily(self.auto_trader.job_eod_split_check, time=kst_time(15, 26))
+        logger.info("[COO] ★ 룰 B 장 마감 분할 매도 등록: 15:26 KST (+10%+ asset_pool 절반 익절 + D+1 이월)")
 
         # ★ 5/25 사장님 룰 C ★ 09:00 D+1 시초가 갭다운 보호망 (pending_next_day -7%+ 즉시 매도)
         jq.run_daily(self.auto_trader.job_d1_gap_check, time=kst_time(9, 0))

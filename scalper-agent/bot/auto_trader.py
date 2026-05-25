@@ -111,7 +111,8 @@ class AutoTrader:
         except Exception as _cb_e:
             logger.warning(f"[auto_trader] callback 등록 실패: {_cb_e}")
 
-    def _get_jarvis_dynamic_qty(self, code: Optional[str] = None, top_k: int = 5) -> tuple:
+    def _get_jarvis_dynamic_qty(self, code: Optional[str] = None, top_k: int = 5,
+                                  cash_snapshot: Optional[int] = None) -> tuple:
         """★ 5/21 아이디어 #1 + 5/25 사장님 명령 확장 ★ 자비스 자율 수량 결정.
 
         ★ 5/25 신설 ★ budget_mode='split_cash' 시 금액 분배 모드 활성:
@@ -145,7 +146,7 @@ class AutoTrader:
             self.config.get("bot", {}).get("asset_pool", {}).get("budget_mode", "shares")
         )
         if budget_mode == "split_cash":
-            return self._calc_split_cash_qty(code, top_k)
+            return self._calc_split_cash_qty(code, top_k, cash_snapshot=cash_snapshot)
 
         qty = 1
         reason = "기본 1주 (시그널 미달)"
@@ -193,14 +194,17 @@ class AutoTrader:
 
         return qty, reason
 
-    def _calc_split_cash_qty(self, code: Optional[str], top_k: int) -> tuple:
-        """★ 5/25 사장님 명령 ★ budget_mode='split_cash' 금액 분배 qty 계산.
+    def _calc_split_cash_qty(self, code: Optional[str], top_k: int,
+                              cash_snapshot: Optional[int] = None) -> tuple:
+        """★ 5/25 사장님 명령 + HIGH #3 fix ★ budget_mode='split_cash' 금액 분배 qty 계산.
 
         공식: qty = int( (가용현금 × (1 - min_cash_ratio)) / top_k / current_price )
 
         Args:
             code: 종목코드 (fetch_price 호출용)
             top_k: 매수 종목수 (분배 분모)
+            cash_snapshot: ★ HIGH #3 fix ★ 매수 루프 시작 시점 cash 1회 캡쳐값
+                           (각 종목 매수 후 cash 감소 → 점진적 축소 매수 방지)
 
         Returns:
             (qty, reason)
@@ -216,13 +220,16 @@ class AutoTrader:
             return 1, "1주 (split_cash: code 누락)"
 
         try:
-            # 가용현금 + min_cash_ratio (5/25 사장님 명령 0.30)
-            kis_bal = self.trader.fetch_balance()
-            if not kis_bal or not kis_bal.get("success"):
-                logger.warning("[split_cash] KIS 잔고 조회 실패 → 1주 fallback")
-                return 1, "1주 (split_cash: 잔고 조회 실패)"
-
-            cash = kis_bal.get("cash", 0)
+            # ★ HIGH #3 fix (5/25 검수) ★ snapshot 우선 사용 (race condition 회피)
+            if cash_snapshot is not None and cash_snapshot > 0:
+                cash = cash_snapshot
+            else:
+                # snapshot 미제공 시 fallback (개별 호출 / 단위 테스트용)
+                kis_bal = self.trader.fetch_balance()
+                if not kis_bal or not kis_bal.get("success"):
+                    logger.warning("[split_cash] KIS 잔고 조회 실패 → 1주 fallback")
+                    return 1, "1주 (split_cash: 잔고 조회 실패)"
+                cash = kis_bal.get("cash", 0)
             min_cash_ratio = self.config.get("risk", {}).get("min_cash_ratio", 0.30)
             scalper_budget = self.config.get("bot", {}).get("scalper_budget", 0)
 
@@ -2313,16 +2320,31 @@ class AutoTrader:
                 f"시가 대비 {target_pullback}% 도달 시만 매수 (사장님 5/23 토 결정)"
             )
 
+        # ★ HIGH #3 fix (5/25 검수) ★ cash snapshot 1회 캡쳐 (race condition 회피)
+        # 각 종목 매수 후 cash 감소 → 다음 종목 budget 점진 축소 방지
+        # 5종 균등 분배 보장 (1번째 = 516만 / 5번째 = 516만 동일)
+        _cash_snapshot = None
+        if budget_mode == "split_cash":
+            try:
+                _snap_bal = await asyncio.to_thread(self.trader.fetch_balance)
+                if _snap_bal and _snap_bal.get("success"):
+                    _cash_snapshot = int(_snap_bal.get("cash", 0))
+                    logger.info(f"[split_cash] ★ cash snapshot 캡쳐: {_cash_snapshot:,}원 (5종 균등 분배 보장)")
+            except Exception as _se:
+                logger.warning(f"[split_cash] snapshot 실패 (fallback fetch_balance): {_se}")
+
         bought, failed, gate_blocked, pullback_skipped = [], [], [], []
         for c in filtered:
             code = c["code"]
             name = c["name"] or code
             sources_tag = ",".join(c["sources"])
 
-            # ★ 5/25 사장님 명령 ★ budget_mode='split_cash' 시 종목별 fetch_price 후 qty 계산
-            # 공식: qty = int(가용현금 × 0.70 / top_k / current_price)
+            # ★ 5/25 사장님 명령 + HIGH #3 fix ★ budget_mode='split_cash' 종목별 qty 계산
+            # cash_snapshot 사용 → 5종 균등 분배 (race condition 회피)
             if budget_mode == "split_cash":
-                dyn_qty_s, dyn_reason_s = self._get_jarvis_dynamic_qty(code=code, top_k=top_k)
+                dyn_qty_s, dyn_reason_s = self._get_jarvis_dynamic_qty(
+                    code=code, top_k=top_k, cash_snapshot=_cash_snapshot,
+                )
                 if dyn_qty_s > 0:
                     qty_per_stock = dyn_qty_s
                     logger.info(f"[split_cash] {name}({code}) {dyn_reason_s}")
@@ -2477,6 +2499,7 @@ class AutoTrader:
                         # 신규: DAY_TRADE → mode="day" 명확히 부여
                         "mode": "day" if style_name == "DAY_TRADE" else "swing",
                         "source": "asset_pool",
+                        "timing_mode": timing_mode,   # ★ CRITICAL #1 fix (5/25) ★ 룰 B/C 정책 분기 영속화 (open=09:15/previous_close=14:50)
                         "entry_date": datetime.now().strftime("%Y-%m-%d"),
                         # ★ A3 fix (5/21) — 사장님 보호 토글 ★
                         # 어제 -293만 사고 재발 방지 + 70억 미션 자동 익절 충돌 해결
@@ -4561,10 +4584,16 @@ class AutoTrader:
                 if not decision.should_split:
                     continue
 
-                # 절반 시장가 매도 (smart_buy 인접 — smart_sell 또는 직접 시장가 매도)
+                # ★ CRITICAL #3 fix (5/25 검수) ★ 사장님 보호 종목 매도 우회 차단
+                # sl_disabled / manual_sync / sync_auto / 메모리 미등록 → 보호 (5/20 -293만 사고 재발 방지)
+                if self._is_sell_protected(code, "eod_split_rule_B"):
+                    continue
+
+                # ★ CRITICAL #2 fix (5/25 검수) ★ split=1 명시 (장 마감 직전 즉시 1회 시장가)
+                # default split=3 시 0.6초 지연 + 부분 체결 위험 (룰 B 의도 = 즉시 락인)
                 try:
                     sell_resp = await asyncio.to_thread(
-                        self.trader.sell_market, code, decision.sell_qty,
+                        self.trader.sell_market, code, decision.sell_qty, 1,
                     )
                     if sell_resp and sell_resp.get("success"):
                         # 절반 보유 → pending_next_day 마커
@@ -4644,10 +4673,15 @@ class AutoTrader:
                     logger.info(f"[d1_gap] {code} {reason}")
                     continue
 
+                # ★ CRITICAL #3 fix (5/25 검수) ★ 사장님 보호 종목 매도 우회 차단
+                if self._is_sell_protected(code, "d1_gap_rule_C"):
+                    continue
+
+                # ★ CRITICAL #2 fix (5/25 검수) ★ 룰 C 즉시 매도 — split=1 명시 (보호망 의도 = 즉시 1회 시장가)
                 # 룰 C 발동 → 시초가 즉시 매도 (전량)
                 qty = int(kp.get("qty", 0))
                 try:
-                    sell_resp = await asyncio.to_thread(self.trader.sell_market, code, qty)
+                    sell_resp = await asyncio.to_thread(self.trader.sell_market, code, qty, 1)
                     if sell_resp and sell_resp.get("success"):
                         pos.pop("pending_next_day", None)
                         self._positions.pop(code, None)
