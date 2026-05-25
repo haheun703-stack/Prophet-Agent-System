@@ -44,9 +44,11 @@ logger = logging.getLogger(__name__)
 
 
 # ── 상한가 트리거 임계값 ─────────────────────────────
-LIMIT_UP_TRIGGER_PCT = 25.0  # +25% 이상 = 상한가 임박 → 분할 매도 발동
-SPLIT_RATIO = 0.5             # 절반(50%) 즉시 매도 / 절반(50%) NXT 이월
-D1_TRAIL_PCT = 3.0            # D+1 트레일링 폭 (-3% 사장님 룰 일관)
+LIMIT_UP_TRIGGER_PCT = 25.0       # 룰 3: +25% 이상 = 상한가 임박 → 분할 매도 발동
+EOD_SPLIT_TRIGGER_PCT = 10.0      # ★ 룰 B (5/25 신규) ★ 15:25 통합 청산 시 +10%+ → 장 마감 분할 매도
+SPLIT_RATIO = 0.5                 # 절반(50%) 즉시 매도 / 절반(50%) D+1 이월
+D1_TRAIL_PCT = 3.0                # D+1 트레일링 폭 (-3% 사장님 룰 일관)
+D1_GAP_DOWN_PROTECTION_PCT = -7.0 # ★ 룰 C (5/25 신규) ★ D+1 시초가 -7% 이상 갭다운 → 즉시 매도 보호망
 
 
 @dataclass
@@ -108,6 +110,105 @@ def should_trigger_split(pnl_pct: float, qty: int, already_split: bool = False) 
         hold_qty=hold_qty,
         reason=f"★ 상한가 도달 (+{pnl_pct:.2f}%) → 절반 {sell_qty}주 즉시 매도 / 절반 {hold_qty}주 D+1 이월 ★",
         next_day_marker=True,
+    )
+
+
+def should_trigger_eod_split(
+    pnl_pct: float, qty: int, already_split: bool = False, timing_mode: str = "open"
+) -> SplitSellDecision:
+    """★ 룰 B (5/25 신규) ★ 장 마감 (15:25 통합 청산) 시 분할 매도 발동 여부.
+
+    사장님 5/25 시나리오:
+      "매수 → +12% 도달 → 장 마감 → 그러면?"
+      → 절반 익절 + 절반 D+1 이월 (룰 3과 동일 철학)
+
+    Args:
+        pnl_pct: 현재 평가손익 % (15:25 시점)
+        qty: 보유 수량
+        already_split: 이미 룰 3 (+25%) 분할된 종목인지 (중복 방지)
+        timing_mode: 'open' (09:15 매수 — 룰 B 적용 대상)
+                     'previous_close' (14:50 매수 — 자동 다음날 매도, 룰 B 미적용)
+
+    Returns:
+        SplitSellDecision
+
+    발동 조건 (모두 충족):
+        1. pnl_pct >= +10% (룰 B 트리거)
+        2. pnl_pct < +25% (룰 3 영역 X — 룰 3 우선)
+        3. qty >= 2 (분할 가능 수량)
+        4. already_split == False (룰 3 중복 방지)
+        5. timing_mode == 'open' (09:15 매수만 — 14:50은 자동 D+1 매도)
+
+    시뮬:
+        +12% × 50% 락인 + 50% D+1 이월 → 갭다운 -5% 시 +3.5% (룰 1 단독 -5% 손실 회피)
+        +18% × 50% + 50% D+1 +25% 갱신 = 평균 +21.5% (룰 1 단독 +15% 대비 +6.5%p)
+    """
+    if already_split:
+        return SplitSellDecision(should_split=False, reason="이미 분할됨 (룰 3 우선)")
+
+    if timing_mode == "previous_close":
+        return SplitSellDecision(
+            should_split=False,
+            reason="14:50 매수 (timing_mode=previous_close) → 자동 D+1 매도 정책, 룰 B 미적용",
+        )
+
+    if pnl_pct < EOD_SPLIT_TRIGGER_PCT:
+        return SplitSellDecision(
+            should_split=False,
+            reason=f"+{pnl_pct:.2f}% < {EOD_SPLIT_TRIGGER_PCT:.0f}% (룰 B 트리거 미달, 트레일링 -3% 계속)",
+        )
+
+    if pnl_pct >= LIMIT_UP_TRIGGER_PCT:
+        return SplitSellDecision(
+            should_split=False,
+            reason=f"+{pnl_pct:.2f}% >= {LIMIT_UP_TRIGGER_PCT:.0f}% (룰 3 영역 — 룰 3 처리)",
+        )
+
+    if qty < 2:
+        return SplitSellDecision(
+            should_split=False,
+            reason=f"보유 {qty}주 < 2주 (분할 불가)",
+        )
+
+    sell_qty = max(1, int(qty * SPLIT_RATIO))
+    hold_qty = qty - sell_qty
+
+    return SplitSellDecision(
+        should_split=True,
+        sell_qty=sell_qty,
+        hold_qty=hold_qty,
+        reason=f"★ 룰 B 발동 (+{pnl_pct:.2f}% 장 마감) → 절반 {sell_qty}주 익절 + 절반 {hold_qty}주 D+1 이월 ★",
+        next_day_marker=True,
+    )
+
+
+def should_force_sell_on_gap_down(d1_open_pnl_pct: float) -> tuple:
+    """★ 룰 C (5/25 신규) ★ D+1 시초가 갭다운 보호망.
+
+    사장님 룰 3 ("갭다운 인내 보유") + 5/19 학습 보호망:
+      - 갭다운 -7% 미만 = 사장님 룰 (인내 보유 + 트레일링 -3%)
+      - 갭다운 -7% 이상 = ★ 즉시 매도 ★ (5/19 강세 종목 갭하락 -10~-15% 학습)
+
+    Args:
+        d1_open_pnl_pct: D+1 시초가 시점 평가손익 % (룰 B 이월 종목)
+                         예: 전일 +12% 도달 → 분할 매도 후 절반 이월 → D+1 -5% = pnl_pct=-5%
+
+    Returns:
+        (force_sell: bool, reason: str)
+
+    동작:
+        d1_open_pnl_pct <= -7.0 → 시초가 즉시 매도 (보호망)
+        d1_open_pnl_pct > -7.0  → 트레일링 -3% 계속 (사장님 룰 3)
+    """
+    if d1_open_pnl_pct <= D1_GAP_DOWN_PROTECTION_PCT:
+        return (
+            True,
+            f"★ 룰 C 보호망 발동 (D+1 갭다운 {d1_open_pnl_pct:+.2f}% <= {D1_GAP_DOWN_PROTECTION_PCT}%) → 즉시 매도 (5/19 학습)",
+        )
+
+    return (
+        False,
+        f"D+1 갭다운 {d1_open_pnl_pct:+.2f}% > {D1_GAP_DOWN_PROTECTION_PCT}% (사장님 룰 3 인내 보유 + 트레일링 -3%)",
     )
 
 

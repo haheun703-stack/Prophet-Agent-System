@@ -15,7 +15,9 @@ sys.path.insert(0, str(_ROOT))
 
 from bot.limit_up_split_sell import (
     should_trigger_split, is_next_day_position, get_trail_activation,
-    LIMIT_UP_TRIGGER_PCT, SPLIT_RATIO, D1_TRAIL_PCT,
+    should_trigger_eod_split, should_force_sell_on_gap_down,
+    LIMIT_UP_TRIGGER_PCT, EOD_SPLIT_TRIGGER_PCT, SPLIT_RATIO, D1_TRAIL_PCT,
+    D1_GAP_DOWN_PROTECTION_PCT,
 )
 
 
@@ -128,7 +130,118 @@ def test_constants_consistency():
     assert LIMIT_UP_TRIGGER_PCT == 25.0, "트리거 +25%"
     assert SPLIT_RATIO == 0.5, "50/50 분할"
     assert D1_TRAIL_PCT == 3.0, "D+1 -3% 일관"
-    print("[PASS] 상수 (25% trigger / 50% split / -3% trail) — 사장님 룰 정확")
+    assert EOD_SPLIT_TRIGGER_PCT == 10.0, "룰 B 트리거 +10%"
+    assert D1_GAP_DOWN_PROTECTION_PCT == -7.0, "룰 C 보호망 -7%"
+    print("[PASS] 상수 5건 (25% / 50% / -3% / 10% / -7%) — 사장님 룰 정확")
+
+
+# ──────────────────────────────────────────────
+# ★ 룰 B (5/25 신규) — 장 마감 분할 매도 ★
+# ──────────────────────────────────────────────
+
+def test_rule_b_below_10pct():
+    """+8% (룰 B 트리거 미달) → 분할 X."""
+    d = should_trigger_eod_split(pnl_pct=8.0, qty=100)
+    assert not d.should_split
+    assert "10%" in d.reason
+    print("[PASS] 룰 B: +8% < 10% → 분할 X (트레일링 -3% 계속)")
+
+
+def test_rule_b_at_10pct():
+    """+10% 경계 → 룰 B 분할 발동."""
+    d = should_trigger_eod_split(pnl_pct=10.0, qty=100)
+    assert d.should_split, "+10% 경계 발동"
+    assert d.sell_qty == 50 and d.hold_qty == 50
+    print("[PASS] 룰 B: +10% 경계 → 50/50 분할")
+
+
+def test_rule_b_12pct_president_scenario():
+    """★ 사장님 시나리오 ★: +12% 장 마감 / 100주 → 50주 매도 + 50주 D+1 이월."""
+    d = should_trigger_eod_split(pnl_pct=12.0, qty=100)
+    assert d.should_split
+    assert d.sell_qty == 50 and d.hold_qty == 50
+    assert d.next_day_marker
+    assert "룰 B 발동" in d.reason
+    print("[PASS] ★ 사장님 시나리오 ★ +12% 장 마감 → 절반 익절 + 절반 D+1 이월")
+
+
+def test_rule_b_18pct():
+    """+18% 장 마감 (룰 3 미달, 룰 B 적용)."""
+    d = should_trigger_eod_split(pnl_pct=18.0, qty=100)
+    assert d.should_split
+    print("[PASS] 룰 B: +18% → 분할 발동 (룰 3 +25% 미달)")
+
+
+def test_rule_b_priority_to_rule_3():
+    """+25%+ 도달 시 룰 3 우선 (룰 B 발동 X)."""
+    d = should_trigger_eod_split(pnl_pct=27.0, qty=100)
+    assert not d.should_split, "+25%+ 시 룰 3 우선"
+    assert "룰 3" in d.reason
+    print("[PASS] 룰 B: +27% → 룰 3 우선 (룰 B 발동 X)")
+
+
+def test_rule_b_already_split():
+    """already_split=True (이미 룰 3 분할됨) → 룰 B 발동 X."""
+    d = should_trigger_eod_split(pnl_pct=15.0, qty=50, already_split=True)
+    assert not d.should_split
+    print("[PASS] 룰 B: already_split=True → 중복 방지 (룰 3 우선)")
+
+
+def test_rule_b_previous_close_skip():
+    """timing_mode='previous_close' (14:50 매수) → 룰 B 미적용 (자동 D+1 매도)."""
+    d = should_trigger_eod_split(pnl_pct=15.0, qty=100, timing_mode="previous_close")
+    assert not d.should_split
+    assert "previous_close" in d.reason
+    print("[PASS] 룰 B: 14:50 매수 → 자동 D+1 매도 정책 (룰 B skip)")
+
+
+def test_rule_b_single_share():
+    """+12% / 1주 → 분할 불가."""
+    d = should_trigger_eod_split(pnl_pct=12.0, qty=1)
+    assert not d.should_split
+    assert "분할 불가" in d.reason
+    print("[PASS] 룰 B: 1주 → 분할 불가 (호출자가 전량 매도/이월 결정)")
+
+
+# ──────────────────────────────────────────────
+# ★ 룰 C (5/25 신규) — D+1 갭다운 보호망 ★
+# ──────────────────────────────────────────────
+
+def test_rule_c_no_gap_down():
+    """D+1 시초가 +5% (갭상승) → 보호망 발동 X."""
+    force, reason = should_force_sell_on_gap_down(d1_open_pnl_pct=5.0)
+    assert not force
+    print("[PASS] 룰 C: D+1 +5% (갭상승) → 보호망 X (트레일링 계속)")
+
+
+def test_rule_c_minor_gap_down():
+    """D+1 -3% (가벼운 갭다운) → 사장님 룰 인내 보유."""
+    force, reason = should_force_sell_on_gap_down(d1_open_pnl_pct=-3.0)
+    assert not force
+    assert "인내 보유" in reason
+    print("[PASS] 룰 C: D+1 -3% → 사장님 룰 인내 보유")
+
+
+def test_rule_c_boundary_minus7():
+    """D+1 정확 -7% 경계 → 보호망 발동."""
+    force, reason = should_force_sell_on_gap_down(d1_open_pnl_pct=-7.0)
+    assert force, "-7% 경계 정확 발동"
+    print("[PASS] 룰 C: D+1 -7% 경계 → 보호망 발동 (즉시 매도)")
+
+
+def test_rule_c_severe_gap_down():
+    """D+1 -10% 갭다운 → 보호망 발동 (즉시 매도)."""
+    force, reason = should_force_sell_on_gap_down(d1_open_pnl_pct=-10.0)
+    assert force
+    assert "보호망 발동" in reason
+    print("[PASS] 룰 C: D+1 -10% → 보호망 발동 (5/19 학습)")
+
+
+def test_rule_c_minus6_safe():
+    """D+1 -6.99% (보호망 미달) → 인내 보유."""
+    force, reason = should_force_sell_on_gap_down(d1_open_pnl_pct=-6.99)
+    assert not force
+    print("[PASS] 룰 C: D+1 -6.99% (-7% 미달) → 사장님 룰 인내 보유")
 
 
 if __name__ == "__main__":
@@ -136,6 +249,7 @@ if __name__ == "__main__":
     print("★ 5/25 사장님 룰 3 — 상한가 분할 매도 + NXT 이월 검증 ★")
     print("=" * 70)
     tests = [
+        # 룰 3 (상한가 +25%+ 분할) — 14건
         test_below_trigger,
         test_at_trigger_threshold,
         test_limit_up_29pct,
@@ -150,6 +264,21 @@ if __name__ == "__main__":
         test_normal_below_3pct,
         test_normal_at_3pct,
         test_constants_consistency,
+        # ★ 룰 B (5/25 신규) — 8건 ★
+        test_rule_b_below_10pct,
+        test_rule_b_at_10pct,
+        test_rule_b_12pct_president_scenario,
+        test_rule_b_18pct,
+        test_rule_b_priority_to_rule_3,
+        test_rule_b_already_split,
+        test_rule_b_previous_close_skip,
+        test_rule_b_single_share,
+        # ★ 룰 C (5/25 신규) — 5건 ★
+        test_rule_c_no_gap_down,
+        test_rule_c_minor_gap_down,
+        test_rule_c_boundary_minus7,
+        test_rule_c_severe_gap_down,
+        test_rule_c_minus6_safe,
     ]
     passed, failed = 0, 0
     for t in tests:
