@@ -2008,6 +2008,15 @@ class AutoTrader:
         """
         from data import verification_mode as _vm
 
+        # ★ 5/25 휴장일 사고 fix ★ _send 정의를 최상단으로 이동 (이전: kis_bal 보고 호출 후 정의 → UnboundLocalError)
+        # 사고 commit 7fa90b5에서 await _send(KIS 잔고 보고) 추가했으나 _send 정의가 뒤에 있어 09:15/14:50 매수 모두 실패
+        async def _send(text):
+            if self._send_alert:
+                try:
+                    await self._send_alert(text)
+                except Exception:
+                    pass
+
         # ★★ 5/21 09:35 절대 원칙 — 매매 전 KIS 실제 계좌 강제 조회 ★★
         # 사장님 분노 사건 후 영구 룰: positions.json (메모리) ≠ KIS 실제 잔고
         # 매수 결정 전 반드시 (1) 실제 보유 종목 (2) 현금 (3) 평가손익 확인 → 텔레그램 보고
@@ -2051,13 +2060,6 @@ class AutoTrader:
                 logger.info(f"[dynamic_qty] {dyn_reason}")
         else:
             logger.info(f"[dynamic_qty] budget_mode=split_cash → 매수 루프에서 종목별 fetch_price 후 qty 계산 (사장님 5/25 룰)")
-
-        async def _send(text):
-            if self._send_alert:
-                try:
-                    await self._send_alert(text)
-                except Exception:
-                    pass
 
         if not _vm.is_active():
             return
