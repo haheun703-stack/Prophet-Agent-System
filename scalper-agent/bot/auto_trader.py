@@ -2303,13 +2303,15 @@ class AutoTrader:
         )
 
         # ★★★ 5/23 토 사장님 결정 — 눌림 매수 -3% 룰 ★★★
+        # 5/26 fix: Rule Registry SAJANG.ENTRY_MODE_DEFAULT = 'pullback_3pct' (default on 강제)
         # 백테스트 결과 (surge_elliott_correlation raw 30건):
         #   - 시가 매수 후 평균 -6.95% 빠짐 (87% 종목)
         #   - 저점 매수 시 평균 +15.44% (시가의 2.17배)
         #   - -3% 눌림 매수 = 진입 80% + 평균 +9.19% (시가 +7.11% 대비 +2.08%p 우세)
         # 사장님 직관 100% 데이터 검증 완료
-        entry_mode = str(ap_cfg.get("entry_mode", "open")).lower()
-        target_pullback = float(ap_cfg.get("pullback_target_pct", -3.0))
+        from data.sajang_rules import SAJANG
+        entry_mode = str(ap_cfg.get("entry_mode", SAJANG.ENTRY_MODE_DEFAULT)).lower()  # default 'pullback_3pct'
+        target_pullback = float(ap_cfg.get("pullback_target_pct", -SAJANG.PULLBACK_ENTRY_PCT))
 
         # pullback 모드 시 시가 정보 수집
         open_prices_for_pullback = {}
@@ -2554,13 +2556,16 @@ class AutoTrader:
                         "trailing_activated": False,
                         "trailing_sl": 0,
                         "stop_loss": int(buy_price * (1 + style_sl_pct / 100)),
-                        "take_profit": int(buy_price * (1 + style_tp_pct / 100)),
+                        # ★ 5/26 사장님 영구 룰 fix ★ Rule Registry SAJANG.FIXED_TP_DISABLED=True
+                        # 옛 코드: int(buy_price * (1 + style_tp_pct / 100)) — TP+style% 자동 매도
+                        # 사장님 [feedback_trailing_only_tp] 영구 룰: "트레일링만 / 고정 TP 폐기"
+                        "take_profit": 0,
                         "regime": "NORMAL",
-                        # ★ A2 fix (5/21) — mode 판정을 style_name 기준으로 변경 ★
-                        # 이전 버그: style_max_hold == 0 체크 → DAY_TRADE(max_hold=1)도 mode="swing"
-                        # 결과: 어제 만든 trailing TP fix (L3329 self.mode=="day") 무력화
-                        # 신규: DAY_TRADE → mode="day" 명확히 부여
-                        "mode": "day" if style_name == "DAY_TRADE" else "swing",
+                        # ★ 5/26 사장님 영구 룰 fix ★ mode='day' 폐기 (D+0 강제 청산 X)
+                        # 옛 코드: "day" if style_name == "DAY_TRADE" else "swing"
+                        # 사장님 영구 룰: 트레일링 -3% + 룰 B/C로 자동 매도 → mode='swing' 통일
+                        # 5/26 사고: SYNC mode='day' + TP+5% = 사장님 매수 자동 매도 사고
+                        "mode": "swing",
                         "source": "asset_pool",
                         "timing_mode": timing_mode,   # ★ CRITICAL #1 fix (5/25) ★ 룰 B/C 정책 분기 영속화 (open=09:15/previous_close=14:50)
                         "entry_date": datetime.now().strftime("%Y-%m-%d"),
@@ -3345,7 +3350,10 @@ class AutoTrader:
             sl_pct = get_adjusted_sl(sl_pct)
         except Exception:
             pass
-        tp_pct = risk_conf.get("take_profit_pct", 0.05)
+        # ★ 5/26 사장님 영구 룰 fix ★ Rule Registry SAJANG.FIXED_TP_DISABLED=True
+        # 옛 default 0.05 (+5% TP) = 사장님 [feedback_trailing_only_tp] 영구 룰 위반
+        # tp_pct = 0 강제 (트레일링만 / 5/26 commit 후)
+        tp_pct = 0.0  # 사장님 영구 룰 (Rule Registry)
 
         for f in candidates[:slots]:
             code = f.score.code
@@ -3364,7 +3372,7 @@ class AutoTrader:
                 self._positions[code] = {
                     "entry_price": cp,
                     "stop_loss": int(cp * (1 - sl_pct)),
-                    "take_profit": int(cp * (1 + tp_pct)),
+                    "take_profit": 0,  # ★ 5/26 사장님 영구 룰 ★ Rule Registry SAJANG.FIXED_TP_FORCE_ZERO
                     "high_watermark": cp,
                     "trailing_activated": False,
                     "trailing_sl": 0,
@@ -4080,15 +4088,20 @@ class AutoTrader:
                             f"진입:{entry:,} -> 현재:{cp:,} ({pnl:+,})"
                         )
 
-                elif pos.get("mode") == "day" and cp >= pos["take_profit"] and not pos.get("trailing_activated", False):
-                    # ★ 5/21 A1 fix: self.mode (봇 전역=swing) → pos.get("mode") (개별 종목) ★
-                    # 어제 fix 버그: self.mode == "day"는 항상 False (config trade_mode=swing)
-                    # → 모든 종목 elif 분기 진입 실패 → trailing TP fix 실효성 0
-                    # 신규: pos.get("mode")로 개별 종목 모드 체크 → DAY_TRADE 종목 정상 진입
-                    # 트레일링 활성 시 고정 TP +5% 매도 비활성화 (5/20 전력주 +10% 놓침 재발 방지)
-                    # +3% 도달 → 트레일링 활성 → TP 무력화, 고점 -3% 추적
-                    # 안전망: +3% 미달 시 (트레일링 비활성) TP +5% 도달하면 익절 (이론상 미발생)
-                    # TP 분기 진입 시 actual_qty 보장 (if 분기에서 미정의일 수 있음)
+                elif False and pos.get("mode") == "day" and cp >= pos.get("take_profit", 0) and pos.get("take_profit", 0) > 0 and not pos.get("trailing_activated", False):
+                    # ★★★ 5/26 사장님 영구 룰 fix ★★★
+                    # 5/26 사고: 사장님 삼화콘덴서 47주 @122,500 → TP=128,625 (매수가 +5%) 자동 매도
+                    #            → +30% 상한가 못 먹음 = -296,100원 손실
+                    # 사장님 [feedback_trailing_only_tp] 영구 룰: "고정 +5% TP 폐기 / 트레일링만"
+                    # → ★ elif False ★ 영구 차단 (Rule Registry SAJANG.FIXED_TP_DISABLED=True)
+                    # → 추가 안전: pos["take_profit"] > 0 체크 (TP=0이면 매도 X)
+                    # → 트레일링 -3% 회귀 시에만 매도 (사장님 5/25 룰)
+                    # ※ 옛 코드 보존 (참조용) — 향후 사장님 명령 시 직접 해제만 가능
+                    #
+                    # 옛 주석 (5/20~5/21):
+                    #   - 트레일링 활성 시 고정 TP +5% 매도 비활성화
+                    #   - 안전망: +3% 미달 시 (트레일링 비활성) TP +5% 도달하면 익절 (이론상 미발생)
+                    #   - 5/26 진실: "이론상 미발생" = 거짓말 / 실제로 사장님 매수 종목 자동 매도 사고
                     tp_pre_bal = self.trader.fetch_balance()
                     tp_actual_qty = pos.get("qty", 1)
                     if tp_pre_bal and tp_pre_bal.get("success"):

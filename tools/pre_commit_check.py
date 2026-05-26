@@ -78,6 +78,47 @@ RULES = [
         "severity": "LOW",   # 5/26 강등: AST 미분석 단순 패턴 → false positive 5건 차단 사고
         "exclude_files": [],
     },
+    # ★★★ 5/26 사장님 분노 후 신설 — 사장님 영구 룰 위반 패턴 영구 차단 ★★★
+    {
+        "id": "RULE-005",
+        "name": "사장님 5/21 영구 룰 위반 — 고정 TP +5% 자동 설정",
+        "pattern": r'take_profit.*=.*\*.*1\.0[3-9]|take_profit.*int.*\*.*1\.[0-9]+',
+        "msg": (
+            "★ 사장님 [feedback_trailing_only_tp] 영구 룰 정면 위반 ★\n"
+            "         → take_profit = buy_price * 1.05 (또는 비슷) = +5% TP 자동 매도 사고\n"
+            "         → 5/26 사장님 삼화콘덴서 47주 자동 매도 사고 (-296,100원 손실)\n"
+            "         → 사장님 룰: 트레일링만 / 고정 TP 폐기 영구\n"
+            "         → 강제: take_profit = 0 (Rule Registry SAJANG.FIXED_TP_FORCE_ZERO)"
+        ),
+        "severity": "CRITICAL",
+        "exclude_files": ["sajang_rules.py", "test_"],
+    },
+    {
+        "id": "RULE-006",
+        "name": "사장님 5/26 영구 룰 위반 — mode='day' default (D+0 강제 청산)",
+        "pattern": r'["\']mode["\']\s*:\s*["\']day["\']',
+        "msg": (
+            "★ 사장님 5/26 영구 룰 위반 ★ mode='day' = D+0 강제 청산 = 사장님 매수 보호 위반\n"
+            "         → 5/26 사고: SYNC mode='day' + TP+5% = 삼화콘덴서 자동 매도\n"
+            "         → 사장님 룰: 트레일링 + 룰 B/C 동적 매도 → mode='swing' 통일\n"
+            "         → 강제: mode='swing' (Rule Registry SAJANG.SYNC_AUTO_MODE)"
+        ),
+        "severity": "CRITICAL",
+        "exclude_files": ["sajang_rules.py", "test_", "trading_cfo.py"],
+    },
+    {
+        "id": "RULE-007",
+        "name": "사장님 5/23 영구 룰 위반 — entry_mode='open' default (시가 매수)",
+        "pattern": r'entry_mode.*=.*["\']open["\']|entry_mode.*get\(.*["\']open["\']',
+        "msg": (
+            "★ 사장님 [project_pullback_entry_5_23] 영구 룰 위반 ★ 시가 매수 = -6.95% 빠짐 (백테스트)\n"
+            "         → 사장님 룰: -3% 눌림 매수 +9.19% / 차이 +15.14%p\n"
+            "         → 5/26 단타봇 자율 검증: 추가 +3.7%p 우세\n"
+            "         → 강제: entry_mode='pullback_3pct' default on (Rule Registry SAJANG.ENTRY_MODE_DEFAULT)"
+        ),
+        "severity": "HIGH",
+        "exclude_files": ["sajang_rules.py", "test_"],
+    },
 ]
 
 

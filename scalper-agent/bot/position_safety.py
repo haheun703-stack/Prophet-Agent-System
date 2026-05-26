@@ -183,6 +183,10 @@ def sync_positions(self):
             #       → +30% 상한가 못 먹음 = -26.9%p 손실
             # Fix: TP=0 (트레일링만 / 사장님 영구 룰) + mode='swing' (D+0 청산 X)
 
+            # ★ 5/26 사장님 영구 룰 ★ Rule Registry SAJANG 적용 (사장님 매수 보호)
+            # 사장님 명령 (5/26 13:00): "보호 ㅋㅋ 니가 핸들링" → source='manual_president'
+            # = 단타봇 트레일링 -3% / 룰 C / 룰 3 자동 작동 OK
+            # = TP+5% 자동 매도 X (사장님 영구 룰)
             self._positions[code] = {
                 "name": kp["name"],
                 "qty": kp["qty"],
@@ -191,21 +195,21 @@ def sync_positions(self):
                 "high_watermark": float(buy_price),
                 "trailing_activated": False,
                 "trailing_sl": 0,
-                "stop_loss": default_sl,   # 매수가 -3% NORMAL SL (위급 시 안전망)
-                "take_profit": 0,          # ★ 5/26 fix ★ 사장님 영구 룰 — 트레일링만
+                "stop_loss": default_sl,         # 매수가 -3% NORMAL SL (위급 안전망)
+                "take_profit": 0,                # ★ 사장님 [feedback_trailing_only_tp] 영구 룰
                 "regime": "NORMAL",
-                "mode": "swing",           # ★ 5/26 fix ★ 사장님 직접 매수 보호 — D+0 청산 X
-                "source": "sync_auto",
+                "mode": "swing",                 # ★ D+0 청산 X (사장님 매수 보호)
+                "source": "manual_president",    # ★ 5/26 사장님 명령: 단타봇 트레일링 핸들링 OK
                 "entry_date": datetime.now().strftime("%Y-%m-%d"),
-                "sync_note": "KIS 발견 → 메모리 누락 자동등록 (사장님 직접 매수 가능성)",
+                "sync_note": "KIS 발견 → 메모리 누락 자동등록 (사장님 직접 매수 — 단타봇 트레일링 핸들링)",
                 "synced_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             }
             synced["added"].append(
-                f"{kp['name']}({code}) qty={kp['qty']} SL={default_sl} TP=0(트레일링만)"
+                f"{kp['name']}({code}) qty={kp['qty']} SL={default_sl} TP=0 mode=swing src=manual_president"
             )
             logger.warning(
-                f"[SYNC] 🆕 메모리 누락 자동등록: {kp['name']}({code}) "
-                f"qty={kp['qty']} buy={buy_price} SL={default_sl} TP=0(사장님 영구 룰 — 트레일링만)"
+                f"[SYNC] 🆕 사장님 매수 자동등록: {kp['name']}({code}) "
+                f"qty={kp['qty']} buy={buy_price} SL={default_sl} TP=0 (★ 단타봇 트레일링 핸들링 ★)"
             )
 
         # ── 케이스 B: 메모리에만 있음 → 매도 완료 처리 ──
