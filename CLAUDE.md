@@ -64,20 +64,39 @@
 
 ---
 
-## ★ 영구 매매 원칙 (사장님 5/21~5/25) ★
+## ★ 영구 매매 원칙 (사장님 5/21~5/26) ★
+
+### ★★★ Rule Registry 단일 진실 (5/26 사고 후 제정) ★★★
+**모든 매수/매도 코드는 `from data.sajang_rules import SAJANG` 의무.**
+- TP/SL/mode/source 등 = SAJANG 헬퍼 호출 (직접 하드코딩 X)
+- `data/sajang_rules.py` = 13대 영구 룰 단일 진실
+- 위반 시 pre-commit RULE-005/006/007 자동 차단
+- 자세히: `memory/feedback_rule_registry_single_truth.md`
 
 ### 매매 룰
 1. **트레일링 only** — 고정 +5% TP 폐기 (`feedback_trailing_only_tp`)
-2. **고점 -3% 일관** (5/25 사장님 룰 1) — 옛 -7/-10/-12/-15% 폐기 영구
-3. **상한가 +25%+** — `limit_up_split_sell` 모듈 분리 (절반 +29% + 절반 D+1 이월)
-4. **룰 B 15:26** — +10%+ asset_pool 종목 절반 익절 + 절반 D+1 이월
-5. **룰 C 09:01** — D+1 갭다운 -7%+ 즉시 시장가 매도 (보호망)
+   - `SAJANG.FIXED_TP_DISABLED = True` / `SAJANG.get_take_profit() = 0`
+2. **-3% 눌림 매수** (5/23) — `SAJANG.ENTRY_MODE_DEFAULT = 'pullback_3pct'`
+3. **고점 -3% 일관** (5/25 사장님 룰 1) — `SAJANG.TRAILING_PCT = 3.0`
+4. **상한가 +25%+** — `SAJANG.LIMIT_UP_SPLIT_THRESHOLD = 25.0` (절반 +29% + 절반 D+1)
+5. **룰 B 15:26** — `SAJANG.RULE_B_THRESHOLD = 10.0` (asset_pool +10%+ 절반 익절)
+6. **룰 C 09:01** — `SAJANG.D1_GAP_SELL_THRESHOLD = -7.0` (D+1 갭다운 -7%+ 즉시 매도)
+7. **룰 D 14:50** (5/26 신설) — `SAJANG.RULE_D_*` (오늘 +10%+ 강세 + 눌림 D+0 종가 매수)
+
+### 자금 룰 (5/26 영구 fix)
+8. **★ 30% 현금 보유 ★** — `SAJANG.CASH_RESERVE_PCT = 0.30` (5/26 사장님 영구 룰)
+   - `SAJANG.calc_budget_per_stock(cash, total_eval, top_k)` 의무 호출
+   - max_buy = max(0, cash - total_eval × 0.30) — 항상 30% 보유
+9. **split_cash 70% 분배** — `SAJANG.BUDGET_MODE = 'split_cash'`
+10. **사장님 매수 보호** — `SAJANG.SYNC_AUTO_SOURCE = 'manual_president'`
+    - source='manual_president' = TP=0 / mode=swing / 단타봇 트레일링 핸들링 OK
 
 ### 안전 룰
 - **매매 전 KIS 실제 계좌 조회 의무** (`feedback_account_first_principle`)
 - **종목 선정 80%** (`feedback_stock_selection_80_percent`)
 - **사장님 백업 매도자** — 단타봇 판단미스 시 사장님 수동 매도 (`feedback_president_manual_sell_backup`)
 - **자기 모니터링** — 매매 즉시 텔레그램 + KIS 1분 이내 재확인 (`feedback_self_monitoring_realtime_5_22`)
+- **사장님 영구 룰 default off 금지** (5/26 사고 후) — 모든 룰 default 활성 강제
 
 ---
 
