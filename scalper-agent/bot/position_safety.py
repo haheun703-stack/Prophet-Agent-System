@@ -178,7 +178,10 @@ def sync_positions(self):
                     continue
 
             default_sl = int(round(buy_price * (1 - DEFAULT_SL_PCT)))
-            default_tp = int(round(buy_price * (1 + DEFAULT_TP_PCT)))
+            # ★ 5/26 사장님 분노 fix ★ TP=+5% 자동 설정 = 사장님 [feedback_trailing_only_tp] 영구 룰 위반
+            # 사고: 사장님 삼화콘덴서 47주 매수 → TP=128,625 자동 설정 → 10:09 자동 매도 +3.18%
+            #       → +30% 상한가 못 먹음 = -26.9%p 손실
+            # Fix: TP=0 (트레일링만 / 사장님 영구 룰) + mode='swing' (D+0 청산 X)
 
             self._positions[code] = {
                 "name": kp["name"],
@@ -188,21 +191,21 @@ def sync_positions(self):
                 "high_watermark": float(buy_price),
                 "trailing_activated": False,
                 "trailing_sl": 0,
-                "stop_loss": default_sl,
-                "take_profit": default_tp,
+                "stop_loss": default_sl,   # 매수가 -3% NORMAL SL (위급 시 안전망)
+                "take_profit": 0,          # ★ 5/26 fix ★ 사장님 영구 룰 — 트레일링만
                 "regime": "NORMAL",
-                "mode": "day",
+                "mode": "swing",           # ★ 5/26 fix ★ 사장님 직접 매수 보호 — D+0 청산 X
                 "source": "sync_auto",
                 "entry_date": datetime.now().strftime("%Y-%m-%d"),
-                "sync_note": "KIS 발견 → 메모리 누락 자동등록",
+                "sync_note": "KIS 발견 → 메모리 누락 자동등록 (사장님 직접 매수 가능성)",
                 "synced_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             }
             synced["added"].append(
-                f"{kp['name']}({code}) qty={kp['qty']} SL={default_sl} TP={default_tp}"
+                f"{kp['name']}({code}) qty={kp['qty']} SL={default_sl} TP=0(트레일링만)"
             )
             logger.warning(
                 f"[SYNC] 🆕 메모리 누락 자동등록: {kp['name']}({code}) "
-                f"qty={kp['qty']} buy={buy_price} SL={default_sl} TP={default_tp}"
+                f"qty={kp['qty']} buy={buy_price} SL={default_sl} TP=0(사장님 영구 룰 — 트레일링만)"
             )
 
         # ── 케이스 B: 메모리에만 있음 → 매도 완료 처리 ──
