@@ -4587,6 +4587,29 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[COO] [Verifier] Reporter 실패: {e}")
 
+    async def _job_daily_self_audit(self, context=None) -> None:
+        """★ 5/26 사고 후 신설 ★ 매일 15:45 단타봇 Daily Self-Audit.
+
+        사장님 영구 룰 13건 자동 검증:
+          1. 보유 종목 TP=0 / mode=swing (사장님 [feedback_trailing_only_tp])
+          2. config.yaml entry_mode='pullback_3pct' (사장님 5/23)
+          3. 현금 30% 보유 (사장님 영구 룰)
+          4. Rule Registry SAJANG import 사용 (5/26 사고 후)
+
+        위반 시 텔레그램 즉시 알림 + state 저장.
+        5/26 사고 5건 모두 이 검증으로 자동 검출됐어야 함.
+        """
+        if not is_trading_day():
+            return
+        try:
+            from verifiers.daily_self_audit import run as run_audit
+            result = await asyncio.to_thread(run_audit)
+            ok = result.get('ok', False)
+            summary = result.get('summary', '')
+            logger.info(f"[COO] [Daily Self-Audit] {summary}")
+        except Exception as e:
+            logger.error(f"[COO] Daily Self-Audit 예외: {e}", exc_info=True)
+
     async def _job_verification_settlement(self, context=None) -> None:
         """15:35 검증모드 정산 리포트 — 시그널별 적중률 텔레그램 발송."""
         try:
@@ -4778,6 +4801,13 @@ class TradingCOO:
         # 5/21+ 자비스가 이 데이터 보고 자율 진화
         jq.run_daily(self._job_jarvis_learning, time=kst_time(15, 40))
         logger.info("[COO] 자비스 일일 회고 등록: 15:40 KST (섹터 학습)")
+
+        # ── ★ 단타봇 Daily Self-Audit (5/26 사고 후 신설) ★ ──
+        # 매일 15:45 — 사장님 영구 룰 13건 자동 검증
+        # 위반 시 텔레그램 즉시 알림 (단타봇 자기 모니터링 시스템)
+        # 5/26 사고 5건 모두 "사장님 영구 룰 default off / 옛 코드 잔존" 패턴 → 자동 검출
+        jq.run_daily(self._job_daily_self_audit, time=kst_time(15, 45))
+        logger.info("[COO] ★ Daily Self-Audit 등록: 15:45 KST (사장님 영구 룰 13건 자동 검증) ★")
 
         # ── 검증모드 v2: 장중 멀티시그널 진입 (5분 반복, 09:05~14:00) ──
         # 사장님 결정 2026-05-17: 추천 외 종목도 체결강도+거래량+tipping 3개 동시 충족 시 자동 진입

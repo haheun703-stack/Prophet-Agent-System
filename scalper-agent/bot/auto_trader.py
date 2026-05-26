@@ -321,6 +321,39 @@ class AutoTrader:
             return True
         return False
 
+    async def _pre_sell_alert(self, code: str, name: str, qty: int,
+                                sell_price: int, reason: str, wait_sec: int = 5) -> None:
+        """★ 5/26 사고 후 신설 ★ 매도 직전 사장님 알림 + N초 대기 윈도우.
+
+        사장님 매도 사고 (5/26 삼화콘덴서 47주 자동 매도 / +30% 상한가 못 먹음) 재발 방지.
+        매도 발동 시점에 사장님께 인지 시간 부여:
+          - 5초 알림 → 사장님이 인지
+          - cancel: VPS 봇 즉시 stop 또는 KIS HTS 직접 대응
+          - 5초 후 매도 진행
+
+        모든 자동 매도 함수에서 매도 실행 직전 이 함수 호출 권장 (점진 통합).
+
+        Args:
+            code: 종목 코드
+            name: 종목명
+            qty: 매도 수량
+            sell_price: 매도 예정 가격
+            reason: 매도 사유 (트레일링 / 룰 C / 룰 3 / NORMAL SL 등)
+            wait_sec: 사장님 cancel 대기 시간 (default 5초)
+        """
+        msg = (
+            f"⚠️ [매도 예정 — {wait_sec}초 후]\n"
+            f"  {name}({code}) {qty}주 @{sell_price:,}원\n"
+            f"  사유: {reason}\n"
+            f"  cancel: VPS 봇 즉시 stop (사장님 결정)"
+        )
+        if self._send_alert:
+            try:
+                await self._send_alert(msg)
+            except Exception:
+                pass
+        await asyncio.sleep(wait_sec)
+
         # AI 실시간 모니터
         self._rt_monitor = None
 

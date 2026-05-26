@@ -12,6 +12,7 @@
 
 종료코드: 0=통과, 1=위반 발견(커밋 차단)
 """
+import ast
 import re
 import subprocess
 import sys
@@ -66,18 +67,8 @@ RULES = [
         "severity": "CRITICAL",
         "exclude_files": ["dynamic_trailing.py", "test_compute_trailing_real_5_25.py"],
     },
-    {
-        "id": "RULE-003",
-        "name": "_send 호출 패턴 (정보용 — AST 검증으로 정확 판별)",
-        "pattern": r'^\s*await\s+_send\s*\(',
-        "msg": (
-            "ℹ️ await _send(...) 호출 정보 (5/26 LOW 강등 — AST 검증 결과 false positive 다발)\n"
-            "         → 함수 안 'async def _send' 정의가 호출보다 뒤에 있으면 UnboundLocalError\n"
-            "         → 별도 AST 검사 도구 (5/26 저녁 추가 예정)로 정확 판별"
-        ),
-        "severity": "LOW",   # 5/26 강등: AST 미분석 단순 패턴 → false positive 5건 차단 사고
-        "exclude_files": [],
-    },
+    # ★ RULE-003 단순 패턴 매칭 제거 (5/26 false positive 사고) ★
+    # AST 분석은 check_unbound_local() 함수에서 처리 (실제 UnboundLocalError만 검출)
     # ★★★ 5/26 사장님 분노 후 신설 — 사장님 영구 룰 위반 패턴 영구 차단 ★★★
     {
         "id": "RULE-005",
@@ -139,6 +130,65 @@ def get_staged_py_files() -> list[str]:
         return files
     except Exception:
         return []
+
+
+def check_unbound_local(filepath: str, content: str) -> list[dict]:
+    """★ RULE-003 AST 정밀화 (5/26 false positive 사고 후 신설) ★
+
+    UnboundLocalError 패턴 검출 — 함수 안에서 `await name()` 또는 `name()` 호출이
+    같은 함수 안의 `async def name` / `def name` 정의보다 앞에 있는 경우.
+
+    단순 정규식 매칭 (모든 await _send 패턴)으로는 false positive 다발.
+    AST로 함수별 nested def + 호출 위치 비교 → 진짜 위반만 검출.
+    """
+    issues = []
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return issues   # syntax 에러는 별도
+
+    def check_func(node, parent_name=""):
+        """함수 안에서 nested def 정의 위치 vs 호출 위치 비교."""
+        if not isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef)):
+            return
+        # 1. 이 함수 안에 정의된 nested def 이름 + 첫 정의 라인
+        nested_defs = {}
+        for n in ast.walk(node):
+            if isinstance(n, (ast.AsyncFunctionDef, ast.FunctionDef)) and n is not node:
+                if n.name not in nested_defs:
+                    nested_defs[n.name] = n.lineno
+        # 2. 이 함수 안에서 await name() / name() 호출 (Name 노드)
+        for n in ast.walk(node):
+            if isinstance(n, (ast.Call,)) and isinstance(n.func, ast.Name):
+                call_name = n.func.id
+                if call_name in nested_defs:
+                    def_line = nested_defs[call_name]
+                    use_line = n.lineno
+                    # 호출이 정의보다 앞 → UnboundLocalError
+                    if use_line < def_line:
+                        issues.append({
+                            "file": filepath,
+                            "line": use_line,
+                            "rule": "RULE-003",
+                            "severity": "CRITICAL",
+                            "msg": (
+                                f"★ UnboundLocalError 위험 ★ {node.name}() 안 {call_name}() 호출 "
+                                f"L{use_line} but 정의 L{def_line}\n"
+                                f"         → 5/25 1차 사고 패턴 (_send UnboundLocalError)\n"
+                                f"         → fix: nested def를 호출보다 앞으로 이동"
+                            ),
+                        })
+        # 3. 재귀 (nested def 안에 또 nested 있을 수 있음)
+        for sub in ast.iter_child_nodes(node):
+            check_func(sub, node.name)
+
+    for node in ast.iter_child_nodes(tree):
+        if isinstance(node, ast.ClassDef):
+            for m in node.body:
+                check_func(m, node.name)
+        else:
+            check_func(node)
+    return issues
 
 
 def check_unused_imports(filepath: str, content: str) -> list[dict]:
@@ -209,6 +259,9 @@ def run_checks() -> list[dict]:
 
         # 미사용 import 검사
         all_issues.extend(check_unused_imports(filepath, content))
+
+        # ★ RULE-003 AST 정밀 검사 (5/26 false positive 사고 후 신설) ★
+        all_issues.extend(check_unbound_local(filepath, content))
 
     return all_issues
 
