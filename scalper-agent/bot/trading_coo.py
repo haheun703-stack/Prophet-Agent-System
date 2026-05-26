@@ -4421,9 +4421,10 @@ class TradingCOO:
         verification 모드 OFF / 후보 없음 / 게이트 차단 → 노옵.
         """
         try:
-            from data import verification_mode as _vm
-            if not _vm.is_active():
-                logger.info("[COO] [asset_pool] verification 모드 OFF — 스킵")
+            # ★ 5/27 CRITICAL #1 fix ★ verification_mode 의존성 제거 (사장님 5/26 D-Day 정상화)
+            # 옛: if not _vm.is_active(): return  — 검증모드 OFF 시 09:15 매수 차단 사고
+            # 신규: is_trading_day() 가드만 (14:50 _job_asset_pool_previous_close와 동일 표준)
+            if not is_trading_day():
                 return
             if not self.auto_trader:
                 return

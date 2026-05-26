@@ -115,7 +115,10 @@ async def execute_vwap_split_buy(
         resp_1 = await asyncio.to_thread(trader.chase_buy, code, qty_1, CHASE_WAIT_1)
         if resp_1 and resp_1.get("success"):
             result.leg1_bought = qty_1
-            buy_price_1 = float(resp_1.get("avg_price", open_price) or open_price)
+            # ★ HIGH #6 fix — chase_buy 반환 키 final_price 우선 (avg_price 키 없음) ★
+            buy_price_1 = float(
+                resp_1.get("final_price") or resp_1.get("avg_price") or open_price
+            )
             total_spent += buy_price_1 * qty_1
             total_filled += qty_1
             result.success = True
@@ -123,11 +126,19 @@ async def execute_vwap_split_buy(
         else:
             # ★ 사장님 5/26 통찰 — 1차 미체결 시 시장가 폴백 ★
             logger.warning(f"[vwap_split] {code} 1차 chase 미체결 → ★ 시장가 폴백 ★")
-            resp_mkt = await asyncio.to_thread(trader.buy_market, code, qty_1)
+            # ★ HIGH #7 fix — split=1 명시 (사장님 5/25 룰, 즉시 1회 시장가) ★
+            resp_mkt = await asyncio.to_thread(trader.buy_market, code, qty_1, 1)
             if resp_mkt and resp_mkt.get("success"):
                 result.leg1_bought = qty_1
                 result.leg1_market_fallback = True
-                buy_price_1 = float(resp_mkt.get("avg_price", open_price) or open_price)
+                # buy_market 반환에 가격 키 없음 → fetch_price로 정확 가격 재조회
+                buy_price_1 = open_price
+                try:
+                    p = await asyncio.to_thread(trader.fetch_price, code)
+                    if p and p.get("current_price"):
+                        buy_price_1 = float(p["current_price"])
+                except Exception:
+                    pass
                 total_spent += buy_price_1 * qty_1
                 total_filled += qty_1
                 result.success = True
@@ -172,7 +183,10 @@ async def execute_vwap_split_buy(
                 resp_2 = await asyncio.to_thread(trader.chase_buy, code, qty_2, 30)
                 if resp_2 and resp_2.get("success"):
                     result.leg2_bought = qty_2
-                    buy_price_2 = float(resp_2.get("avg_price", target_2) or target_2)
+                    # ★ HIGH #6 fix — final_price 키 우선 ★
+                    buy_price_2 = float(
+                        resp_2.get("final_price") or resp_2.get("avg_price") or target_2
+                    )
                     total_spent += buy_price_2 * qty_2
                     total_filled += qty_2
                     logger.info(f"[vwap_split] {code} 2차 chase 성공 — {qty_2}주 @{buy_price_2:,.0f}")
@@ -207,7 +221,10 @@ async def execute_vwap_split_buy(
                 resp_3 = await asyncio.to_thread(trader.chase_buy, code, qty_3, 60)
                 if resp_3 and resp_3.get("success"):
                     result.leg3_bought = qty_3
-                    buy_price_3 = float(resp_3.get("avg_price", target_3) or target_3)
+                    # ★ HIGH #6 fix — final_price 키 우선 ★
+                    buy_price_3 = float(
+                        resp_3.get("final_price") or resp_3.get("avg_price") or target_3
+                    )
                     total_spent += buy_price_3 * qty_3
                     total_filled += qty_3
                     logger.info(f"[vwap_split] {code} 3차 chase 성공 — {qty_3}주 @{buy_price_3:,.0f} (깊은 눌림)")
