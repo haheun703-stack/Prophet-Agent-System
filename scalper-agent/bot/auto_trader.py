@@ -2392,6 +2392,63 @@ class AutoTrader:
                 price_info = gate.get("price_info", {})
                 pre_buy_price = float(price_info.get("current_price", 0))
 
+                # ── ★ 사장님 5/22 풀세트 D 통합 (5/26 단타봇 박사 미달 fix) ★ ──
+                # VWAP + 호가 매수 게이트 — 사장님 영구 룰 "갭업 추격 X / 눌림 매수"
+                # 사장님 5/26 09:30 명령 "VWAP/호가/동시호가/체결강도 보면서 사라"
+                # 동시호가/체결강도는 이미 적용 / VWAP/호가 신규 통합
+                vwap_blocked_reason = None
+                try:
+                    from data.intraday_eye import IntradayEye
+                    eye = IntradayEye(trader=self.trader)
+                    eye.set_name(code, name)
+                    verdict = eye.evaluate(code, entry_price=int(pre_buy_price), price_data=price_info)
+                    if verdict:
+                        vwap_detail = verdict.details.get("vwap_position", {}) if verdict.details else {}
+                        vwap_pos = vwap_detail.get("position", "UNKNOWN")
+                        vwap_score = vwap_detail.get("score", 50)
+                        logger.info(
+                            f"[VWAP] {code} {name} pos={vwap_pos} score={vwap_score} "
+                            f"verdict={verdict.verdict}"
+                        )
+                        # 사장님 5/23 룰: STRONG_ABOVE (+1σ 초과 강갭업) = 추격 차단
+                        if vwap_pos == "STRONG_ABOVE":
+                            vwap_blocked_reason = f"VWAP_STRONG_ABOVE (+1σ 초과 갭업 추격)"
+                        # 사장님 5/24 룰: DYING (5-Layer 종합 죽음) = 차단
+                        elif verdict.verdict == "DYING":
+                            vwap_blocked_reason = f"VERDICT_DYING ({verdict.summary[:30]})"
+                except Exception as _ve:
+                    logger.warning(f"[VWAP] {code} 검증 실패 (continue): {type(_ve).__name__}: {_ve}")
+
+                if vwap_blocked_reason:
+                    gate_blocked.append(f"{name}({vwap_blocked_reason})")
+                    logger.info(f"[asset_pool] VWAP 차단 {code}: {vwap_blocked_reason}")
+                    continue
+
+                # 호가 게이트 — 매도벽/매도 압력 차단
+                ob_blocked_reason = None
+                try:
+                    from data.orderbook_collector import get_orderbook_snapshot_kis, analyze_orderbook
+                    ob = await asyncio.to_thread(get_orderbook_snapshot_kis, code)
+                    if ob:
+                        ob_analysis = analyze_orderbook(ob)
+                        logger.info(
+                            f"[호가] {code} {name} bid/ask={ob_analysis.bid_ask_ratio:.2f} "
+                            f"score={ob_analysis.score:.1f} buy_wall={ob_analysis.buy_wall} "
+                            f"sell_wall={ob_analysis.sell_wall} spread={ob_analysis.spread_pct:.2f}%"
+                        )
+                        # 매도벽 또는 강한 매도 압력 (bid_ask_ratio < 0.5) → 차단
+                        if ob_analysis.sell_wall:
+                            ob_blocked_reason = f"SELL_WALL (top3_ask={ob_analysis.top3_ask_concentration:.0f}%)"
+                        elif ob_analysis.bid_ask_ratio < 0.5:
+                            ob_blocked_reason = f"매도압력 강함 (bid/ask={ob_analysis.bid_ask_ratio:.2f})"
+                except Exception as _oe:
+                    logger.warning(f"[호가] {code} 조회 실패 (continue): {type(_oe).__name__}: {_oe}")
+
+                if ob_blocked_reason:
+                    gate_blocked.append(f"{name}({ob_blocked_reason})")
+                    logger.info(f"[asset_pool] 호가 차단 {code}: {ob_blocked_reason}")
+                    continue
+
                 # ── smart_buy (지정가 -0.5% → -0.2% → 시장가 폴백) ──
                 # 사장님 원칙: "왠만하면 지정가, 정 안되면 시장가"
                 # ★ 5/21 23:00 사장님 명령 — 지정가 추격 매수 (chase_buy) 사용 ★

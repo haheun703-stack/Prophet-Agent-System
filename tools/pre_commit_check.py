@@ -68,14 +68,14 @@ RULES = [
     },
     {
         "id": "RULE-003",
-        "name": "_send UnboundLocalError 패턴 (정의 전 사용)",
+        "name": "_send 호출 패턴 (정보용 — AST 검증으로 정확 판별)",
         "pattern": r'^\s*await\s+_send\s*\(',
         "msg": (
-            "⚠️ await _send(...) 사용 시 같은 함수 안에 'async def _send' 정의 위치 확인 필수\n"
-            "         → 정의가 호출보다 뒤에 있으면 UnboundLocalError (5/25 1차 사고)\n"
-            "         → 함수 진입 직후 _send 정의 표준"
+            "ℹ️ await _send(...) 호출 정보 (5/26 LOW 강등 — AST 검증 결과 false positive 다발)\n"
+            "         → 함수 안 'async def _send' 정의가 호출보다 뒤에 있으면 UnboundLocalError\n"
+            "         → 별도 AST 검사 도구 (5/26 저녁 추가 예정)로 정확 판별"
         ),
-        "severity": "HIGH",   # AST 검증 필요 — 패턴만으로는 false positive 있음 → HIGH로 경고만
+        "severity": "LOW",   # 5/26 강등: AST 미분석 단순 패턴 → false positive 5건 차단 사고
         "exclude_files": [],
     },
 ]
