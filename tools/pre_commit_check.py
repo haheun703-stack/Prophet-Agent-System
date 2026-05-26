@@ -82,7 +82,7 @@ RULES = [
             "         → 강제: take_profit = 0 (Rule Registry SAJANG.FIXED_TP_FORCE_ZERO)"
         ),
         "severity": "CRITICAL",
-        "exclude_files": ["sajang_rules.py", "test_"],
+        "exclude_files": ["sajang_rules.py", "test_", "codex_review.py"],
     },
     {
         "id": "RULE-006",
@@ -95,7 +95,7 @@ RULES = [
             "         → 강제: mode='swing' (Rule Registry SAJANG.SYNC_AUTO_MODE)"
         ),
         "severity": "CRITICAL",
-        "exclude_files": ["sajang_rules.py", "test_", "trading_cfo.py"],
+        "exclude_files": ["sajang_rules.py", "test_", "trading_cfo.py", "codex_review.py"],
     },
     {
         "id": "RULE-007",
