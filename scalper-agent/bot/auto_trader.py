@@ -3557,6 +3557,9 @@ class AutoTrader:
                     if pos.get("partial_sold"):
                         logger.info(f"AI 부분매도 이미 완료: {code} — 스킵")
                     else:
+                        # ★ 5/26 사고 후 가드 추가 ★ AI 자율 부분 매도도 사장님 보호 검증
+                        if self._is_sell_protected(code, "ai_partial_sell"):
+                            continue
                         logger.info(f"AI 부분매도: {code} @ {snap.price:,} ({snap.decision_reason})")
                         bal = self.trader.fetch_balance()
                         for p in bal.get("positions", []):
@@ -4550,6 +4553,9 @@ class AutoTrader:
                                 )
                                 break
                     else:
+                        # ★ 5/26 사고 후 가드 추가 ★ 동적 전량 매도도 사장님 보호 검증
+                        if self._is_sell_protected(code, "dynamic_full_sell"):
+                            continue
                         # 매도 전 수량 확인 (PnL 계산용)
                         pre_bal_fs = self.trader.fetch_balance()
                         actual_qty_fs = 1
@@ -4694,6 +4700,9 @@ class AutoTrader:
                         )
 
                 elif action == ACTION_PARTIAL_SELL:
+                    # ★ 5/26 사고 후 가드 추가 ★ jarvis 자율 부분매도도 사장님 보호 검증
+                    if self._is_sell_protected(code, "jarvis_partial_sell"):
+                        continue
                     # 부분매도: 보유수량의 50% (스마트 지정가)
                     bal = self.trader.fetch_balance()
                     for p in bal.get("positions", []):
