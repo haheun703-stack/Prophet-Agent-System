@@ -2507,20 +2507,37 @@ class AutoTrader:
                     logger.info(f"[asset_pool] 호가 차단 {code}: {ob_blocked_reason}")
                     continue
 
-                # ── smart_buy (지정가 -0.5% → -0.2% → 시장가 폴백) ──
-                # 사장님 원칙: "왠만하면 지정가, 정 안되면 시장가"
-                # ★ 5/21 23:00 사장님 명령 — 지정가 추격 매수 (chase_buy) 사용 ★
-                # config.bot.asset_pool.use_chase_buy=true (기본) → 시장가 폴백 X
-                # false 시 기존 smart_buy (3단계 폴백 포함)
+                # ── ★ 사장님 5/26 통찰 — VWAP 3분할 매수 (50/30/20 + 1차 시장가 폴백) ★ ──
+                # 옛 단일 chase_buy → vwap_split_buy.execute_vwap_split_buy 교체
+                # 시나리오 A 강한 추세 = 1차 50% 진입 보장 (시장가 폴백)
+                # 시나리오 B 평이 = 1차+2차 80%
+                # 시나리오 C 깊은 눌림 (사장님 5/23 룰) = 100% 진입
+                from bot.vwap_split_buy import execute_vwap_split_buy
                 ap_buy_cfg = (self.config.get("bot", {}) or {}).get("asset_pool", {}) or {}
-                use_chase = bool(ap_buy_cfg.get("use_chase_buy", True))
-                if use_chase:
+                split_buy_enabled = bool(ap_buy_cfg.get("vwap_split_buy_enabled", True))
+
+                if split_buy_enabled:
+                    # ★ 5/27부터 사장님 5/26 통찰 VWAP 3분할 매수 적용 ★
+                    split_result = await execute_vwap_split_buy(
+                        trader=self.trader,
+                        code=code, name=name,
+                        open_price=int(pre_buy_price),
+                        total_qty=qty_per_stock,
+                        send_alert=self._send_alert,
+                    )
+                    resp = {
+                        "success": split_result.success,
+                        "qty": split_result.total_bought_qty,
+                        "avg_price": split_result.avg_price,
+                    }
+                    if split_result.success:
+                        qty_per_stock = split_result.total_bought_qty   # 실제 매수 수량으로 갱신
+                else:
+                    # 옛 단일 chase_buy (사장님 5/27 비활성 명령 시 폴백)
                     chase_wait = int(ap_buy_cfg.get("chase_max_wait_sec", 180))
                     resp = await asyncio.to_thread(
                         self.trader.chase_buy, code, qty_per_stock, chase_wait,
                     )
-                else:
-                    resp = await asyncio.to_thread(self.trader.smart_buy, code, qty_per_stock)
                 if resp.get("success"):
                     # 체결 후 실제 가격 재조회 (smart_buy는 saved_pct 반환하지만 체결가 미반환)
                     buy_price = pre_buy_price
@@ -2828,14 +2845,30 @@ class AutoTrader:
             code = t['code']; name = t['name']; curr = t['curr']
             qty = max(1, budget_per // curr) if budget_per else qty_per_stock
             try:
-                resp = await asyncio.to_thread(self.trader.chase_buy, code, qty, 180)
-                if resp and resp.get("success"):
+                # ★ 사장님 5/26 통찰 — VWAP 3분할 매수 (50/30/20 + 1차 시장가 폴백) ★
+                from bot.vwap_split_buy import execute_vwap_split_buy
+                split_result = await execute_vwap_split_buy(
+                    trader=self.trader,
+                    code=code, name=name,
+                    open_price=int(curr),
+                    total_qty=qty,
+                    send_alert=self._send_alert,
+                )
+                resp = {
+                    "success": split_result.success,
+                    "qty": split_result.total_bought_qty,
+                    "avg_price": split_result.avg_price,
+                }
+                if resp.get("success"):
+                    # 실제 매수 수량 + 평균가 사용 (3분할 결과)
+                    actual_qty = split_result.total_bought_qty
+                    actual_buy_price = split_result.avg_price if split_result.avg_price > 0 else float(curr)
                     pos = {
-                        'name': name, 'qty': qty,
-                        'buy_price': float(curr), 'entry_price': float(curr),
-                        'high_watermark': float(curr),
+                        'name': name, 'qty': actual_qty,
+                        'buy_price': actual_buy_price, 'entry_price': actual_buy_price,
+                        'high_watermark': actual_buy_price,
                         'trailing_activated': False, 'trailing_sl': 0,
-                        'stop_loss': int(curr * 0.97),   # 매수가 -3% NORMAL SL
+                        'stop_loss': int(actual_buy_price * 0.97),   # 매수가 -3% NORMAL SL
                         'take_profit': 0,   # 사장님 영구 룰 (트레일링 only)
                         'regime': 'NORMAL', 'mode': 'swing',   # 다음날 매도 정책
                         'source': 'pre_close_d',
@@ -2843,8 +2876,14 @@ class AutoTrader:
                         'entry_date': datetime.now().date().isoformat(),
                         'src_count': t['src_count'],
                         'vwap_pos': t['vwap_pos'],
-                        'note_5_26': '★ 사장님 5/26 새 룰 D 첫 적용 ★',
+                        'split_leg1': split_result.leg1_bought,
+                        'split_leg2': split_result.leg2_bought,
+                        'split_leg3': split_result.leg3_bought,
+                        'split_market_fallback': split_result.leg1_market_fallback,
+                        'note_5_26': '★ 사장님 5/26 룰 D + VWAP 3분할 (50/30/20) ★',
                     }
+                    qty = actual_qty   # 후속 코드 호환
+                    curr = int(actual_buy_price)
                     self._positions[code] = pos
                     bought.append(t)
                     msg_lines.append(f"  ✅ {name}({code}) {qty}주 @{curr:,} +{t['chg']:.1f}% 눌림{t['pullback_pct']:.1f}% 소스{t['src_count']}")
