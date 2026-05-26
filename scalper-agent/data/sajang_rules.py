@@ -107,6 +107,15 @@ class SajangRules:
     BUDGET_MODE: str = "split_cash"            # 가용현금 × 0.70 / top_k
     BUDGET_CASH_RATIO: float = 0.70            # 가용현금의 70%
 
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # ★★★ 사장님 영구 룰 — 30% 현금 보유 (5/26 사고 후 영구 fix) ★★★
+    # 사장님 명령 여러 번 "30% 현금 보유 + 70% 분배"
+    # 단타봇 사고: budget_mode='split_cash' × 0.70 / N회 매수 누적 = 결과 100% 사용
+    # 5/26 마감 현금 = 6.0% (사장님 30% 룰 위반)
+    # 영구 fix: 매수 전 can_buy() 호출 의무 / 매수 후 현금 ≥ 총평가 × 30% 보장
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    CASH_RESERVE_PCT: float = 0.30             # ★ 항상 총평가 × 30% 현금 보유 강제 ★
+
     @classmethod
     def get_take_profit(cls, buy_price: float) -> int:
         """사장님 영구 룰 — 모든 매수 시 TP=0 강제 (트레일링만)."""
@@ -162,6 +171,55 @@ class SajangRules:
         }
 
     @classmethod
+    def can_buy(cls, cash: float, total_eval: float, buy_amount: float) -> bool:
+        """★ 사장님 30% 현금 보유 영구 룰 ★ 매수 후 현금 ≥ 총평가 × 30% 보장.
+
+        Args:
+            cash: 현재 가용 현금
+            total_eval: 총평가액 (현금 + 보유 종목 평가)
+            buy_amount: 매수 시도 금액
+
+        Returns:
+            True = 매수 가능 / False = 30% 룰 위반 (매수 차단)
+        """
+        if total_eval <= 0:
+            # 평가액 0 (초기 상태) = 단순 cash 체크 (30% 룰 미적용)
+            return cash >= buy_amount
+        cash_after = cash - buy_amount
+        min_cash = total_eval * cls.CASH_RESERVE_PCT
+        return cash_after >= min_cash
+
+    @classmethod
+    def max_buy_amount(cls, cash: float, total_eval: float) -> int:
+        """★ 사장님 30% 현금 보유 영구 룰 ★ 매수 가능 최대 금액.
+
+        Returns:
+            max(0, cash - total_eval × 0.30) = 30% 보유 후 사용 가능 현금
+        """
+        if total_eval <= 0:
+            return int(cash)
+        min_cash = total_eval * cls.CASH_RESERVE_PCT
+        return max(0, int(cash - min_cash))
+
+    @classmethod
+    def calc_budget_per_stock(cls, cash: float, total_eval: float, top_k: int) -> int:
+        """★ 사장님 30% 현금 보유 + 70% 분배 통합 룰 ★
+
+        매수 가능 금액 = 가용현금 - 총평가 × 30%
+        종목당 분배 = 매수 가능 금액 / top_k
+
+        예시 (오늘 5/26 사고 시나리오):
+          cash=37,087,184 / total=37,442,684 / top_k=3
+          → max_buy = 37,087,184 - 37,442,684 × 0.30 = 25,854,378원
+          → 종목당 = 25,854,378 / 3 = 8,618,126원
+          → 매수 후 현금 = 37,087,184 - 25,854,378 = 11,232,806원 (30% 정확 보유 ✅)
+        """
+        max_buy = cls.max_buy_amount(cash, total_eval)
+        if top_k <= 0:
+            return 0
+        return max_buy // top_k
+
+    @classmethod
     def list_all_rules(cls) -> List[str]:
         """모든 룰 리스트 (단타봇 self-audit 용)."""
         return [
@@ -177,6 +235,7 @@ class SajangRules:
             f"SYNC_AUTO_MODE='{cls.SYNC_AUTO_MODE}'",
             f"NORMAL_SL_PCT={cls.NORMAL_SL_PCT}",
             f"BUDGET_CASH_RATIO={cls.BUDGET_CASH_RATIO}",
+            f"CASH_RESERVE_PCT={cls.CASH_RESERVE_PCT}  ★ 30% 현금 보유 영구 룰 ★",
         ]
 
 

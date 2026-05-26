@@ -118,6 +118,61 @@ def test_budget_mode_split_cash():
     print("[PASS] BUDGET split_cash × 0.70 (5/25 영구 룰)")
 
 
+def test_cash_reserve_30pct():
+    """★ 사장님 영구 룰 ★ 30% 현금 보유 (5/26 사고 후 영구 fix)."""
+    from data.sajang_rules import SAJANG
+    assert SAJANG.CASH_RESERVE_PCT == 0.30
+    print("[PASS] CASH_RESERVE_PCT = 0.30 (사장님 영구 룰)")
+
+
+def test_can_buy_30pct_rule():
+    """can_buy 헬퍼 — 매수 후 현금 ≥ 총평가 × 30% 보장."""
+    from data.sajang_rules import SAJANG
+    # 5/26 사고 시나리오: 현금 37,087,184 / 총평가 37,442,684
+    cash = 37087184
+    total = 37442684
+    # 매수 가능 최대 = cash - total × 0.30 = 25,854,378
+    assert SAJANG.can_buy(cash, total, 25_000_000) is True   # OK (25백만 매수)
+    assert SAJANG.can_buy(cash, total, 26_000_000) is False  # 30% 룰 위반 (26백만)
+    assert SAJANG.max_buy_amount(cash, total) == 25854378.4 or SAJANG.max_buy_amount(cash, total) == 25854378
+    print(f"[PASS] can_buy 30% 룰: max={SAJANG.max_buy_amount(cash, total):,} (5/26 시나리오)")
+
+
+def test_calc_budget_per_stock_30pct():
+    """calc_budget_per_stock — 30% 보유 + 70% / top_k 분배."""
+    from data.sajang_rules import SAJANG
+    # 5/26 시나리오
+    cash = 37087184
+    total = 37442684
+    top_k = 3
+    budget = SAJANG.calc_budget_per_stock(cash, total, top_k)
+    # max_buy = 25,854,378 / 3 = 8,618,126
+    assert 8_600_000 <= budget <= 8_620_000, f"종목당 8.6백만 기대: got {budget:,}"
+    # 옛 코드 (사고): cash × 0.70 / 3 = 8,653,676 (30% 룰 위반)
+    print(f"[PASS] calc_budget_per_stock: {budget:,}/종 (옛 사고: 8,653,676 / 차이 -{8653676 - budget:,})")
+
+
+def test_cash_reserve_zero_total_eval():
+    """초기 상태 (총평가 0) 시 30% 룰 미적용."""
+    from data.sajang_rules import SAJANG
+    assert SAJANG.can_buy(10_000_000, 0, 5_000_000) is True   # 단순 cash 체크
+    assert SAJANG.max_buy_amount(10_000_000, 0) == 10_000_000
+    print("[PASS] 초기 상태 (총평가 0) 30% 룰 미적용 (단순 cash 체크)")
+
+
+def test_cash_reserve_violation_blocks_buy():
+    """30% 룰 위반 시 매수 차단 (max_buy=0)."""
+    from data.sajang_rules import SAJANG
+    # 5/26 마감 상태: 현금 2,214,935 / 총평가 37,145,645
+    # min_cash = 37,145,645 × 0.30 = 11,143,693
+    # cash 2,214,935 < min_cash → max_buy = 0
+    cash = 2214935
+    total = 37145645
+    assert SAJANG.max_buy_amount(cash, total) == 0  # 매수 차단
+    assert SAJANG.can_buy(cash, total, 1_000_000) is False  # 100만 매수도 차단
+    print(f"[PASS] 30% 룰 위반 시 매수 차단 (cash={cash:,} < min={int(total*0.3):,})")
+
+
 def test_position_safety_uses_manual_president():
     """position_safety.py SYNC 자동등록이 manual_president 사용 확인."""
     p = ROOT / "bot" / "position_safety.py"
@@ -171,6 +226,11 @@ if __name__ == "__main__":
         test_sync_auto_president_protection,
         test_normal_sl_3pct,
         test_budget_mode_split_cash,
+        test_cash_reserve_30pct,
+        test_can_buy_30pct_rule,
+        test_calc_budget_per_stock_30pct,
+        test_cash_reserve_zero_total_eval,
+        test_cash_reserve_violation_blocks_buy,
         test_position_safety_uses_manual_president,
         test_pre_commit_has_rule_005_006_007,
         test_auto_trader_l4083_disabled,

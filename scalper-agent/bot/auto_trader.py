@@ -221,21 +221,35 @@ class AutoTrader:
 
         try:
             # ★ HIGH #3 fix (5/25 검수) ★ snapshot 우선 사용 (race condition 회피)
+            # ★★★ 5/26 사장님 30% 현금 보유 영구 룰 fix ★★★
+            # 옛 코드: cash × 0.70 (= 가용현금 70%) → 누적 매수 시 결과 100% 사용
+            # 신규: max(0, cash - total_eval × 0.30) = 항상 총평가 30% 현금 보유
+            from data.sajang_rules import SAJANG
+
+            kis_bal = self.trader.fetch_balance()
+            if not kis_bal or not kis_bal.get("success"):
+                logger.warning("[split_cash] KIS 잔고 조회 실패 → 1주 fallback")
+                return 1, "1주 (split_cash: 잔고 조회 실패)"
+
             if cash_snapshot is not None and cash_snapshot > 0:
                 cash = cash_snapshot
             else:
-                # snapshot 미제공 시 fallback (개별 호출 / 단위 테스트용)
-                kis_bal = self.trader.fetch_balance()
-                if not kis_bal or not kis_bal.get("success"):
-                    logger.warning("[split_cash] KIS 잔고 조회 실패 → 1주 fallback")
-                    return 1, "1주 (split_cash: 잔고 조회 실패)"
                 cash = kis_bal.get("cash", 0)
-            min_cash_ratio = self.config.get("risk", {}).get("min_cash_ratio", 0.30)
+            total_eval = kis_bal.get("total_eval", 0)
             scalper_budget = self.config.get("bot", {}).get("scalper_budget", 0)
 
             # 단타봇 할당 자금 제한 (퀀트봇과 분리, 5/19 신규)
             available = min(cash, scalper_budget) if scalper_budget > 0 else cash
-            budget_total = int(available * (1.0 - min_cash_ratio))
+
+            # ★ 사장님 30% 현금 보유 영구 룰 적용 ★
+            # max_buy_amount = max(0, cash - total_eval × CASH_RESERVE_PCT)
+            budget_total = SAJANG.max_buy_amount(available, total_eval)
+            if budget_total <= 0:
+                logger.warning(
+                    f"[split_cash] ★ 30% 현금 보유 룰 ★ 매수 차단 "
+                    f"(cash={cash:,} / total={total_eval:,} / 최소보유={int(total_eval * SAJANG.CASH_RESERVE_PCT):,})"
+                )
+                return 0, f"0주 (★ 30% 현금 보유 룰 ★ 이미 70% 이상 사용 중)"
             budget_per_stock = budget_total // max(1, top_k)
 
             # 현재가 조회 (qty 계산용)
@@ -2347,15 +2361,20 @@ class AutoTrader:
             name = c["name"] or code
             sources_tag = ",".join(c["sources"])
 
-            # ★ 5/25 사장님 명령 + HIGH #3 fix ★ budget_mode='split_cash' 종목별 qty 계산
-            # cash_snapshot 사용 → 5종 균등 분배 (race condition 회피)
+            # ★ 5/25 사장님 명령 + HIGH #3 fix + 5/26 30% 현금 보유 룰 ★
+            # split_cash → max_buy_amount = max(0, cash - total×0.30)
+            # 30% 룰 위반 시 dyn_qty=0 반환 → 매수 차단
             if budget_mode == "split_cash":
                 dyn_qty_s, dyn_reason_s = self._get_jarvis_dynamic_qty(
                     code=code, top_k=top_k, cash_snapshot=_cash_snapshot,
                 )
-                if dyn_qty_s > 0:
-                    qty_per_stock = dyn_qty_s
-                    logger.info(f"[split_cash] {name}({code}) {dyn_reason_s}")
+                if dyn_qty_s <= 0:
+                    # ★ 사장님 30% 현금 보유 영구 룰 ★ 매수 차단
+                    logger.warning(f"[asset_pool] {name}({code}) ★ 30% 현금 보유 룰 ★ 매수 차단: {dyn_reason_s}")
+                    gate_blocked.append(f"{name}(30% 현금 보유 룰)")
+                    continue
+                qty_per_stock = dyn_qty_s
+                logger.info(f"[split_cash] {name}({code}) {dyn_reason_s}")
 
             try:
                 # ★ 5/23 토 룰 — pullback_3pct 모드: 시가 대비 -3% 미달 종목 skip ★
@@ -2744,9 +2763,33 @@ class AutoTrader:
         ap_cfg = (self.config.get("bot", {}) or {}).get("asset_pool", {}) or {}
         budget_mode = str(ap_cfg.get("budget_mode", "shares"))
         cash_avail = kis_bal.get("cash", 0) if kis_bal else 0
-        budget_per = int(cash_avail * 0.70 / top_k) if budget_mode == "split_cash" else None
+        total_eval = kis_bal.get("total_eval", 0) if kis_bal else 0
 
-        msg_lines = [f"🎯 [룰 D 14:50 D+0 종가 매수 — 사장님 5/26 명령]", f"  자금: {cash_avail:,}원 × 0.70 / {top_k} = {budget_per:,}원/종" if budget_per else "  자금: 1주 모드"]
+        # ★★★ 5/26 사장님 30% 현금 보유 영구 룰 적용 ★★★
+        # Rule Registry SAJANG.calc_budget_per_stock = max(0, cash - total×0.30) / top_k
+        # 옛 코드: cash × 0.70 / top_k → 매수 후 현금 30% 미만 (5/26 결과 6%)
+        # 신규: 매수 후 현금 ≥ 총평가 × 30% 강제 (사장님 영구 룰)
+        from data.sajang_rules import SAJANG
+        budget_per_old = int(cash_avail * 0.70 / top_k)
+        budget_per_new = SAJANG.calc_budget_per_stock(cash_avail, total_eval, top_k)
+        budget_per = budget_per_new if budget_mode == "split_cash" else None
+
+        # 30% 룰 적용 후 매수 가능 금액 0이면 매수 차단
+        if budget_per is not None and budget_per <= 0:
+            await _send(
+                f"⛔ [룰 D 14:50] 30% 현금 보유 룰 — 매수 차단\n"
+                f"  현재 현금: {cash_avail:,}원 / 총평가: {total_eval:,}원\n"
+                f"  최소 보유 (30%): {int(total_eval * 0.30):,}원\n"
+                f"  매수 가능: 0원 (이미 70% 이상 사용 중)"
+            )
+            return
+
+        msg_lines = [
+            f"🎯 [룰 D 14:50 D+0 종가 매수 — 사장님 5/26 명령]",
+            f"  ★ 30% 현금 보유 룰 적용 ★",
+            f"  현금 {cash_avail:,} / 총평가 {total_eval:,} / 최소보유 {int(total_eval * 0.30):,}",
+            f"  매수 가능 {int(cash_avail - total_eval * 0.30):,} / {top_k}종 분배 = {budget_per:,}원/종 (옛 코드 {budget_per_old:,})" if budget_per else "  자금: 1주 모드"
+        ]
         bought = []
         for t in targets:
             code = t['code']; name = t['name']; curr = t['curr']
