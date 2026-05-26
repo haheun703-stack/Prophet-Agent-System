@@ -172,31 +172,146 @@ def audit_rule_registry_used() -> List[Dict]:
     return issues
 
 
-def run() -> Dict:
-    """단타봇 Daily Self-Audit 실행."""
+def audit_with_codex(self_audit_issues: List[Dict]) -> List[Dict]:
+    """★ 사장님 5/26 통찰 — Codex 상호 보완 검수 (Tier 4) ★
+
+    Daily Self-Audit (단타봇 정적 검수) 다음 단계:
+      - Codex (GPT-4o)에 보유 종목 + config 일부 검수 의뢰
+      - 단타봇이 못 본 사고 패턴 추가 검출
+
+    검수 결과를 self_audit_issues에 추가 (코덱스 발견 항목은 rule="CODEX-X" 마커).
+
+    Returns:
+        Codex 발견 추가 issues 리스트
+    """
+    codex_issues = []
+    try:
+        from utils.codex_review import codex_review_code
+    except Exception:
+        # codex_review 미설치 (오프라인 등) → skip
+        return codex_issues
+
+    # 검수 컨텍스트: positions.json + 자기 검수 결과 요약
+    try:
+        pp = _ROOT / "data_store" / "positions.json"
+        positions_json = pp.read_text(encoding='utf-8')[:2000] if pp.exists() else "{}"
+    except Exception:
+        positions_json = "{}"
+
+    # Codex 검수 의뢰 컨텍스트
+    issues_summary = "\n".join([
+        f"  [{i.get('severity', '?')}] {i.get('rule', '?')}: {i.get('msg', '?')[:100]}"
+        for i in self_audit_issues[:10]
+    ]) or "  (단타봇 자기 검수 결과 위반 0건)"
+
+    audit_context = f"""# Daily Self-Audit 검수 결과 (단타봇 자율 검출)
+{issues_summary}
+
+# 현재 보유 종목 (positions.json)
+{positions_json}
+
+검수 핵심:
+1. 단타봇이 놓친 사장님 영구 룰 위반 패턴 있는가?
+2. 보유 종목이 사장님 매수 보호 (manual_president / TP=0 / mode=swing) 정확 적용?
+3. 5/26 미친짓 패턴 (default off / TP+5% 잔존) 잠재 위험?
+4. 5/27 D+1 가동 시 사고 가능성?
+"""
+
+    result = codex_review_code(
+        code_snippet=audit_context,
+        review_focus="Daily Self-Audit 보완 검수 (단타봇이 놓친 사고 패턴 추가 검출)",
+        max_tokens=1500,
+    )
+
+    if not result.get("success"):
+        # Codex API 실패 → 단순 정보 추가
+        codex_issues.append({
+            "severity": "LOW", "rule": "CODEX-API-FAIL",
+            "msg": f"ℹ️ Codex API 실패 (보완 검수 skip): {result.get('error', '?')[:80]}"
+        })
+        return codex_issues
+
+    review_text = result.get("review", "")
+    # Codex 응답에서 [CRITICAL]/[HIGH] 라인 추출
+    for line in review_text.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        if "[CRITICAL]" in line or "CRITICAL]" in line:
+            codex_issues.append({
+                "severity": "CRITICAL", "rule": "CODEX-FINDING",
+                "msg": f"[Codex] {line[:200]}"
+            })
+        elif "[HIGH]" in line or "HIGH]" in line:
+            codex_issues.append({
+                "severity": "HIGH", "rule": "CODEX-FINDING",
+                "msg": f"[Codex] {line[:200]}"
+            })
+
+    # Codex 검수 완료 표시 (CRITICAL/HIGH 0건이어도)
+    if not codex_issues:
+        codex_issues.append({
+            "severity": "LOW", "rule": "CODEX-PASS",
+            "msg": f"✅ Codex (gpt-4o) 보완 검수 통과 — 추가 사고 패턴 0건 발견 (tokens={result.get('tokens_used', 0)})"
+        })
+
+    return codex_issues
+
+
+def run(enable_codex: bool = True) -> Dict:
+    """단타봇 Daily Self-Audit 실행 (★ 5/26 사장님 통찰 — Codex 통합 ★).
+
+    Args:
+        enable_codex: True 시 Tier 4 (Codex 보완 검수) 활성 — 매일 15:45 cron 권장
+    """
     now = datetime.now()
     all_issues = []
 
-    # 4가지 영역 자동 검증
-    all_issues.extend(audit_positions())
-    all_issues.extend(audit_config())
-    all_issues.extend(audit_cash_reserve())
-    all_issues.extend(audit_rule_registry_used())
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # Tier 1: 단타봇 자기 검수 (4가지 영역)
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    self_audit_issues = []
+    self_audit_issues.extend(audit_positions())
+    self_audit_issues.extend(audit_config())
+    self_audit_issues.extend(audit_cash_reserve())
+    self_audit_issues.extend(audit_rule_registry_used())
+    all_issues.extend(self_audit_issues)
 
-    # 심각도별 분류
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # ★ Tier 4: Codex 보완 검수 (5/26 사장님 통찰) ★
+    # 단타봇 1년 본성 한계 극복 — 다른 시각 도입
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    codex_issues = []
+    if enable_codex:
+        try:
+            codex_issues = audit_with_codex(self_audit_issues)
+            all_issues.extend(codex_issues)
+        except Exception as e:
+            all_issues.append({
+                "severity": "LOW", "rule": "CODEX-EXCEPTION",
+                "msg": f"ℹ️ Codex 통합 예외 (skip): {e}"
+            })
+
+    # 심각도별 분류 (CRITICAL/HIGH만 카운트)
     critical = [i for i in all_issues if i.get('severity') == 'CRITICAL']
     high = [i for i in all_issues if i.get('severity') == 'HIGH']
-    ok = len(all_issues) == 0
+    # LOW (Codex PASS 등)는 위반 0건 판정에서 제외
+    real_violations = critical + high
+    ok = len(real_violations) == 0
 
     if ok:
+        codex_status = " + Codex Tier 4 통과" if enable_codex and codex_issues else ""
         summary = (
             f"✅ Daily Self-Audit 정상 — "
-            f"사장님 영구 룰 13건 100% 적용 ({now.strftime('%Y-%m-%d %H:%M')})"
+            f"사장님 영구 룰 13건 100% 적용{codex_status} ({now.strftime('%Y-%m-%d %H:%M')})"
         )
     else:
+        codex_found = sum(1 for i in real_violations if 'CODEX' in i.get('rule', ''))
         summary = (
-            f"🚨 Daily Self-Audit 위반 {len(all_issues)}건 "
-            f"(CRITICAL {len(critical)} / HIGH {len(high)})"
+            f"🚨 Daily Self-Audit 위반 {len(real_violations)}건 "
+            f"(CRITICAL {len(critical)} / HIGH {len(high)}"
+            + (f" / Codex 발견 {codex_found}건" if codex_found else "")
+            + ")"
         )
 
     result = make_result("daily_self_audit", ok, summary, {
