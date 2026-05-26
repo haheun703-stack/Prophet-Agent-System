@@ -173,6 +173,9 @@ def upload_nxt_performance(report: dict) -> bool:
             "monthly_days": cum.get("monthly_days", 0),
             "monthly_wins": cum.get("monthly_wins", 0),
             "items": items_json,
+            # ★ 5/27 catch-up fix ★ NXT 관망일 마커 (웹봇 STALE 알람 사고 후 추가)
+            "is_observation_day": bool(report.get("is_observation_day", False)),
+            "observation_reason": report.get("observation_reason", None),
         }
 
         client.table("intelligence_nxt_performance") \
@@ -188,6 +191,89 @@ def upload_nxt_performance(report: dict) -> bool:
     except Exception as e:
         logger.error(f"NXT 성적표 업로드 실패: {e}")
         return False
+
+
+def upload_observation_day(pick_date, reason: str) -> bool:
+    """★ 5/27 catch-up fix ★ NXT 관망일 마커 row 적재 (웹봇 STALE 알람 차단).
+
+    휴장일/관망일 (NXT 픽 없음)에 row 자동 적재하여 웹봇이 stale 알람 안 띄움.
+    is_observation_day=True 마커로 UI에서 "관망일" 명시.
+
+    Args:
+        pick_date: 관망일 date (예: date(2026, 5, 23))
+        reason: 관망 사유 (예: "KRX 휴장 (토요일)")
+
+    Returns:
+        True 성공 / False 실패
+    """
+    try:
+        from data.upload_swing import _get_client
+        client = _get_client()
+        if not client:
+            return False
+
+        row = {
+            "pick_date": pick_date.isoformat() if hasattr(pick_date, 'isoformat') else str(pick_date),
+            "result_date": pick_date.isoformat() if hasattr(pick_date, 'isoformat') else str(pick_date),
+            "avg_return": 0.0,
+            "items": [],
+            "is_observation_day": True,
+            "observation_reason": reason,
+        }
+        client.table("intelligence_nxt_performance") \
+            .upsert(row, on_conflict="pick_date") \
+            .execute()
+        logger.info(f"NXT 관망일 마커 적재: {pick_date} ({reason})")
+        return True
+    except Exception as e:
+        logger.error(f"NXT 관망일 마커 적재 실패: {e}")
+        return False
+
+
+def auto_catchup_observation_days(check_days: int = 7) -> int:
+    """★ 5/27 cron 자율 ★ 최근 N일 누락 row 자동 catch-up (관망일 마커).
+
+    매일 17:30 cron에서 호출 → 누락된 휴장일/관망일 row 자동 채움.
+    웹봇 STALE 알람 영구 차단.
+
+    Args:
+        check_days: 검사 일수 (default 7일)
+
+    Returns:
+        적재된 row 수
+    """
+    from datetime import date, timedelta
+    from data.trading_calendar import is_trading_day
+    from utils.supabase_sql import query
+
+    today = date.today()
+    added = 0
+
+    # 최근 N일 검사
+    for offset in range(1, check_days + 1):
+        check_date = today - timedelta(days=offset)
+        # 이미 row 있는지 확인
+        rows = query(
+            "SELECT 1 FROM intelligence_nxt_performance WHERE pick_date = %s",
+            (check_date,)
+        )
+        if rows:
+            continue   # 이미 존재
+        # 휴장일 확인 → 관망일 마커 적재
+        if not is_trading_day(check_date):
+            weekday = check_date.weekday()
+            if weekday == 5:
+                reason = "KRX 휴장 (토요일)"
+            elif weekday == 6:
+                reason = "KRX 휴장 (일요일)"
+            else:
+                reason = "KRX 공휴일 휴장"
+            if upload_observation_day(check_date, reason):
+                added += 1
+
+    if added > 0:
+        logger.info(f"[NXT catch-up] {added}일 관망일 마커 적재 완료")
+    return added
 
 
 def upload_oneshot_stealth(scan_data: dict) -> bool:

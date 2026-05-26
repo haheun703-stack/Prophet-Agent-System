@@ -4587,6 +4587,23 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[COO] [Verifier] Reporter 실패: {e}")
 
+    async def _job_nxt_observation_catchup(self, context=None) -> None:
+        """★ 5/27 신설 ★ 매일 17:30 NXT 관망일 마커 자동 catch-up.
+
+        웹봇 STALE 알람 영구 차단:
+          - 휴장일/관망일 (NXT 픽 없음) → row 자동 적재
+          - is_observation_day=True 마커
+          - 최근 7일 누락 row 검사 + 채움
+
+        5/22 단타봇 자율 약속 + 5/27 SQL ALTER + catch-up 완료 후 영구 자동화.
+        """
+        try:
+            from data.upload_nxt_performance import auto_catchup_observation_days
+            added = await asyncio.to_thread(auto_catchup_observation_days, 7)
+            logger.info(f"[COO] [NXT catch-up] {added}일 관망일 마커 적재 완료")
+        except Exception as e:
+            logger.error(f"[COO] NXT 관망일 catch-up 예외: {e}", exc_info=True)
+
     async def _job_daily_self_audit(self, context=None) -> None:
         """★ 5/26 사고 후 신설 ★ 매일 15:45 단타봇 Daily Self-Audit.
 
@@ -4808,6 +4825,12 @@ class TradingCOO:
         # 5/26 사고 5건 모두 "사장님 영구 룰 default off / 옛 코드 잔존" 패턴 → 자동 검출
         jq.run_daily(self._job_daily_self_audit, time=kst_time(15, 45))
         logger.info("[COO] ★ Daily Self-Audit 등록: 15:45 KST (사장님 영구 룰 13건 자동 검증) ★")
+
+        # ── ★ NXT 관망일 마커 catch-up (5/27 신설, 웹봇 STALE 알람 차단) ★ ──
+        # 매일 17:30 — 최근 7일 누락 휴장일/관망일 row 자동 적재
+        # 5/22 단타봇 자율 약속 + 5/27 catch-up 완료 후 영구 자동화
+        jq.run_daily(self._job_nxt_observation_catchup, time=kst_time(17, 30))
+        logger.info("[COO] ★ NXT 관망일 catch-up 등록: 17:30 KST (휴장일 자동 마커 적재) ★")
 
         # ── 검증모드 v2: 장중 멀티시그널 진입 (5분 반복, 09:05~14:00) ──
         # 사장님 결정 2026-05-17: 추천 외 종목도 체결강도+거래량+tipping 3개 동시 충족 시 자동 진입
