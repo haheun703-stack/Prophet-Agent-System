@@ -2061,7 +2061,11 @@ class AutoTrader:
         else:
             logger.info(f"[dynamic_qty] budget_mode=split_cash → 매수 루프에서 종목별 fetch_price 후 qty 계산 (사장님 5/25 룰)")
 
-        if not _vm.is_active():
+        # ★ 5/26 사장님 D-Day 정상화 fix ★ verification_mode 의존성 제거
+        # 5/26 검증모드 OFF 후 09:15/14:50 매수 모두 차단되는 사고 발견
+        # → 휴장일 체크 (다른 11개 job 표준) + verification_mode와 분리
+        if not is_trading_day():
+            logger.info("[asset_pool] 휴장일 — 매수 skip")
             return
 
         # ── 큰형(퀀트봇) advisory 게이트 ──
@@ -2596,6 +2600,183 @@ class AutoTrader:
         if failed:
             msg.append(f"  ❌ 매수 실패: " + ", ".join(failed[:3]))
         await _send("\n".join(msg))
+
+    async def pre_close_d_scan_and_buy(self, top_k: int = 2, qty_per_stock: int = 1):
+        """★ 사장님 5/26 새 룰 D ★ 14:50 D+0 종가 매수 (다음날 갭업 노림).
+
+        사장님 통찰 (5/26 09:30):
+          "후보군이 도달 못했거나 눌려있으면 15시에 미리 사놔야 된다 →
+           오픈마켓에서 갭업으로 시작한다 (삼화콘덴서 +17.4% 패턴)"
+
+        사장님 명령 (5/26 10:10):
+          "섹터 로테이션 중 +10%+ 상한가 친 종목 중 눌렸을 때 / 안 올랐을 때 진입 → 갭 먹기"
+
+        백테스트 검증 (5/26 단타봇 자율 분석):
+          - 진입 ② 시초가-3% 눌림 매수 + 매도 ⑤ 트레일링-3% = 평균 +15.67% / 승률 100%
+          - D+0 종가 매수 = 평균 +22.29% (시초가 +19.32% 대비 +2.97%p 우세)
+
+        선정 알고리즘:
+          1. asset_pool 30종 (3개+ 소스 일치 고신뢰)
+          2. 오늘 +10% 이상 강세 (KIS 실시간 등락률)
+          3. 현재가 / 고가 = ★ 눌림 종목 (고점 -3% 이상 회귀) ★
+          4. VWAP STRONG_ABOVE 차단 (추격 X) + 호가 매도벽 차단
+          5. 5개 소스 일치 우선 → 4개 → 3개
+          6. top_k=2 선정
+
+        매수:
+          - chase_buy (지정가 추격, 현재가 -0.3% 시작)
+          - 트레일링 -3% 즉시 활성
+          - 룰 C 보호망 자동 적용 (D+1 -7% 갭다운 즉시 매도)
+          - 사장님 룰 3 자동 적용 (+25% 도달 시 limit_up_split_sell)
+        """
+        from data.trading_calendar import is_trading_day
+        if not is_trading_day():
+            logger.info("[pre_close_d] 휴장일 — skip")
+            return
+
+        async def _send(text):
+            if self._send_alert:
+                try:
+                    await self._send_alert(text)
+                except Exception:
+                    pass
+
+        try:
+            from utils.asset_pool_loader import collect_all_candidates, get_candidate_source_map
+            from data.intraday_eye import IntradayEye
+            from data.orderbook_collector import get_orderbook_snapshot_kis, analyze_orderbook
+        except Exception as e:
+            logger.error(f"[pre_close_d] 모듈 import 실패: {e}")
+            return
+
+        # 1. asset_pool 고신뢰 종목 (3개+ 소스 일치)
+        candidates = collect_all_candidates()
+        code_to_name = {}
+        for src, items in candidates.items():
+            if isinstance(items, list):
+                for it in items:
+                    if isinstance(it, dict):
+                        c = it.get('code', it.get('종목코드', ''))
+                        n = it.get('name', it.get('종목명', ''))
+                        if c and n and c not in code_to_name:
+                            code_to_name[c] = n
+
+        src_map = get_candidate_source_map()
+        # 5개+ 소스 일치 우선, 4개, 3개 순
+        candidates_sorted = sorted(
+            [(c, len(s)) for c, s in src_map.items() if len(s) >= 3],
+            key=lambda x: -x[1]
+        )
+
+        # 2. KIS 실시간 등락률 + 눌림 검증
+        eye = IntradayEye(trader=self.trader)
+        eligible = []
+        kis_bal = await asyncio.to_thread(self.trader.fetch_balance)
+        actual_codes = set()
+        if kis_bal and kis_bal.get("success"):
+            actual_codes = {p.get("code") for p in kis_bal.get("positions", [])}
+
+        for code, _src_count in candidates_sorted[:50]:   # 상위 50 검사 (성능)
+            if code in actual_codes:
+                continue   # 이미 보유 종목 skip
+            try:
+                price_info = await asyncio.to_thread(self.trader.fetch_price, code)
+                if not price_info:
+                    continue
+                curr = int(price_info.get('current_price', 0))
+                hi = int(price_info.get('high', 0))
+                chg = float(price_info.get('change_rate', 0))
+                if curr <= 0 or hi <= 0:
+                    continue
+                # 조건 1: 오늘 +10% 이상 강세
+                if chg < 10.0:
+                    continue
+                # 조건 2: 현재가가 고가 대비 -3% 이상 눌림 (사장님 룰)
+                pullback_pct = (hi - curr) / hi * 100
+                if pullback_pct < 3.0:
+                    continue   # 고점 부근 (추격 위험)
+
+                # 조건 3: VWAP 추격 차단
+                verdict = eye.evaluate(code, entry_price=curr, price_data=price_info)
+                vwap_pos = "UNKNOWN"
+                if verdict and verdict.details:
+                    vwap_pos = verdict.details.get("vwap_position", {}).get("position", "UNKNOWN")
+                if vwap_pos == "STRONG_ABOVE":
+                    logger.info(f"[pre_close_d] {code} VWAP STRONG_ABOVE 차단")
+                    continue
+                if verdict and verdict.verdict == "DYING":
+                    logger.info(f"[pre_close_d] {code} DYING 차단")
+                    continue
+
+                # 조건 4: 호가 매도벽 차단
+                ob = await asyncio.to_thread(get_orderbook_snapshot_kis, code)
+                if ob:
+                    ob_a = analyze_orderbook(ob)
+                    if ob_a.sell_wall or ob_a.bid_ask_ratio < 0.5:
+                        logger.info(f"[pre_close_d] {code} 매도벽/매도압력 차단")
+                        continue
+
+                name = code_to_name.get(code, '?')
+                eligible.append({
+                    'code': code, 'name': name, 'curr': curr, 'hi': hi,
+                    'chg': chg, 'pullback_pct': pullback_pct,
+                    'src_count': _src_count, 'vwap_pos': vwap_pos,
+                })
+                if len(eligible) >= top_k * 3:   # 후보 충분
+                    break
+            except Exception as _ee:
+                logger.warning(f"[pre_close_d] {code} 검증 예외: {_ee}")
+
+        # 3. 정렬: 소스 수 우선 → 강세 우선 → 눌림 깊이
+        eligible.sort(key=lambda x: (-x['src_count'], -x['chg'], -x['pullback_pct']))
+        targets = eligible[:top_k]
+
+        if not targets:
+            await _send(f"⏳ [룰 D 14:50 D+0 종가 매수] 후보 0건 — 오늘 +10%+ 눌림 종목 없음")
+            return
+
+        # 4. 매수 실행 (chase_buy + 자금 분배)
+        ap_cfg = (self.config.get("bot", {}) or {}).get("asset_pool", {}) or {}
+        budget_mode = str(ap_cfg.get("budget_mode", "shares"))
+        cash_avail = kis_bal.get("cash", 0) if kis_bal else 0
+        budget_per = int(cash_avail * 0.70 / top_k) if budget_mode == "split_cash" else None
+
+        msg_lines = [f"🎯 [룰 D 14:50 D+0 종가 매수 — 사장님 5/26 명령]", f"  자금: {cash_avail:,}원 × 0.70 / {top_k} = {budget_per:,}원/종" if budget_per else "  자금: 1주 모드"]
+        bought = []
+        for t in targets:
+            code = t['code']; name = t['name']; curr = t['curr']
+            qty = max(1, budget_per // curr) if budget_per else qty_per_stock
+            try:
+                resp = await asyncio.to_thread(self.trader.chase_buy, code, qty, 180)
+                if resp and resp.get("success"):
+                    pos = {
+                        'name': name, 'qty': qty,
+                        'buy_price': float(curr), 'entry_price': float(curr),
+                        'high_watermark': float(curr),
+                        'trailing_activated': False, 'trailing_sl': 0,
+                        'stop_loss': int(curr * 0.97),   # 매수가 -3% NORMAL SL
+                        'take_profit': 0,   # 사장님 영구 룰 (트레일링 only)
+                        'regime': 'NORMAL', 'mode': 'swing',   # 다음날 매도 정책
+                        'source': 'pre_close_d',
+                        'timing_mode': 'previous_close',
+                        'entry_date': datetime.now().date().isoformat(),
+                        'src_count': t['src_count'],
+                        'vwap_pos': t['vwap_pos'],
+                        'note_5_26': '★ 사장님 5/26 새 룰 D 첫 적용 ★',
+                    }
+                    self._positions[code] = pos
+                    bought.append(t)
+                    msg_lines.append(f"  ✅ {name}({code}) {qty}주 @{curr:,} +{t['chg']:.1f}% 눌림{t['pullback_pct']:.1f}% 소스{t['src_count']}")
+                else:
+                    msg_lines.append(f"  ❌ {name}({code}) 매수 실패: {resp.get('message','') if resp else ''}")
+            except Exception as e:
+                msg_lines.append(f"  ❌ {name}({code}) 예외: {e}")
+
+        if bought:
+            self._save_positions()
+        msg_lines.append(f"\n  D+1 (5/27 09:01) 룰 C 보호망 활성 / 트레일링 -3% 자동")
+        await _send("\n".join(msg_lines))
+        logger.info(f"[pre_close_d] 매수 완료 {len(bought)}/{len(targets)}")
 
     async def close_verification_positions(self):
         """15:25 강제 청산 (trading_coo에서 호출). verification 보유 전체 시장가 매도."""

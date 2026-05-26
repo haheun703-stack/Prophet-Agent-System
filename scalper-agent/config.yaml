@@ -238,6 +238,10 @@ bot:
   asset_pool:
     dynamic_qty: true           # ★ 5/25 사장님 명령 ★ false→true (5/26 D-Day 실전 다주 모드 ON)
     budget_mode: split_cash     # ★ 5/25 신설 ★ 'shares' (1/2/3주) | 'split_cash' (가용현금×0.70/top_k 금액 분배)
+    entry_mode: pullback_3pct   # ★ 사장님 5/23 영구 룰 (5/26 default 'open'→'pullback_3pct') ★
+                                # 백테스트 검증: 시가 매수 -6.95% / -3% 눌림 +9.19% (차이 +15.14%p)
+                                # 5/26 단타봇 박사 미달 fix — 사장님 룰 default off 상태였음
+                                # ※ use_chase_buy 설정은 L262 (사장님 5/25 false 결정 그대로 유지)
     exclude_codes:              # ★ 5/25 신설 ★ asset_pool 매수에서 제외할 종목 (사장님 보유 유지분)
       - "005930"                # 삼성전자 1주 — 사장님 보유 유지 결정 (5/25 11:51 HTS 확인)
 

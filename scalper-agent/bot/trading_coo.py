@@ -4436,35 +4436,28 @@ class TradingCOO:
             logger.warning(f"[COO] 자산풀 매수 실패 (무시): {e}")
 
     async def _job_asset_pool_previous_close(self, context=None) -> None:
-        """★ 5/23 토 사장님 결정 — 신규 14:50 cron ★ 전일 종가 매수 (다음날 매도).
+        """★ 사장님 5/26 새 룰 D 첫 적용 ★ 14:50 D+0 종가 매수 (다음날 갭업 노림).
 
-        백테스트 결과 (surge_elliott_correlation 73건):
-          - 전일 종가 매수 평균 +8.54% / 승률 84.8% / 최대 +29.87% / 최소 -7.48%
-          - vs 당일 09:15 시가 +8.10% — +0.44%p 우세
+        사장님 통찰 (5/26 09:30):
+          "후보군이 도달 못했거나 눌려있으면 15시에 미리 사놔야 → 오픈마켓 갭업"
 
-        사장님 직관 (5/23 토):
-          "그날 9시 매수 X / 전날 눌렸을 때 매수가 맞다"
+        사장님 명령 (5/26 10:10):
+          "섹터 로테이션 중 +10%+ 상한가 친 종목 중 눌렸을 때 진입"
 
-        호출 시점: 14:50 (정규장 마감 10분 전 — 종가 베팅)
-        매수 종목: top_k=2 (사장님 1주 모드, 09:15 3종 + 14:50 2종 = 총 5종)
+        ★ 5/26 변경 ★:
+          - 기존 asset_pool_scan_and_buy(top_k=2, timing_mode='previous_close') 폐기
+          - → 신규 pre_close_d_scan_and_buy(top_k=2) 사용
+          - 알고리즘 차이: 5개 소스 일치 자동 X → 오늘 +10%+ 강세 + 눌림 종목 우선
 
-        주의:
-          - 금요일 14:50 매수 = 토/일 갭 risk (향후 회피 룰 추가 검토)
-          - 매도는 다음날 트레일링 자동 (mode='day' 유지)
+        ★ 5/26 사고 fix ★ verification_mode 의존성 제거 (검증모드 OFF → 14:50 매수 차단 사고)
         """
         try:
-            from data import verification_mode as _vm
-            if not _vm.is_active():
-                logger.info("[COO] [asset_pool_pc] verification 모드 OFF — 스킵")
-                return
             if not self.auto_trader:
                 return
-            # ★ 5/23 토 신규: timing_mode='previous_close' + top_k=2 ★
-            await self.auto_trader.asset_pool_scan_and_buy(
-                top_k=2, qty_per_stock=1, timing_mode="previous_close"
-            )
+            # ★ 사장님 5/26 새 룰 D ★
+            await self.auto_trader.pre_close_d_scan_and_buy(top_k=2)
         except Exception as e:
-            logger.warning(f"[COO] 14:50 전일종가 매수 실패 (무시): {e}")
+            logger.warning(f"[COO] 14:50 새 룰 D 매수 실패 (무시): {e}")
 
     async def _job_sector_concurrent_alert(self, context=None) -> None:
         """09:30 / 11:00 / 13:00 — 알고리즘 A 섹터 동조 카운터 텔레그램 알림.

@@ -77,13 +77,9 @@ def is_active() -> bool:
     today = _today()
     start = _parse_env_date("VERIFICATION_START", _DEFAULT_START)
     end = _parse_env_date("VERIFICATION_END", _DEFAULT_END)
-    # 안전망: 과거 END가 박혀있으면 default로 자동 갱신
-    if end < today:
-        logger.warning(
-            f"[verification] .env VERIFICATION_END={end} 가 과거 — "
-            f"코드 default({_DEFAULT_END})로 자동 연장 (사장님 5/20 안전망)"
-        )
-        end = _DEFAULT_END
+    # ★ 5/26 사장님 분노 후 영구 제거 ★ 5/20 단타봇 자율 "default 5/30 자동 연장" 안전망
+    # → 5/22~5/26 매일 47만 사장님 인지 X 매매 사고 → 영구 차단
+    # 향후 검증모드 연장은 사장님 직접 .env 수정만 가능 (단타봇 자율 X)
     return start <= today <= end
 
 
