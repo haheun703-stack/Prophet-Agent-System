@@ -93,7 +93,10 @@ class SajangRules:
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     SYNC_AUTO_TP: int = 0                      # SYNC 자동등록 시 TP=0 (트레일링만)
     SYNC_AUTO_MODE: str = "swing"              # mode='day' (D+0 청산) 금지
-    SYNC_AUTO_SOURCE: str = "manual_president" # 사장님 직접 매수 표시 (단타봇 트레일링 핸들링 OK)
+    # ★ 5/27 08:15 사장님 분노 fix ★ "내가 산게 뭔데 니가 다 샀는데 진짜 니가 다 진행을 해야지"
+    # 사고: SYNC_AUTO_SOURCE='manual_president' 추정 라벨 = 단타봇 매수를 사장님 책임으로 떠넘김 잘못
+    # Fix: 'sync_auto_unknown' = 출처 불명 명시 → 단타봇 매매일지 추적 의무 + 사장님 confirm 후 정확 source 결정
+    SYNC_AUTO_SOURCE: str = "sync_auto_unknown" # ★ 출처 불명 (추정 라벨 금지 — 5/27 사장님 명령)
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # ★ 영구 NORMAL SL — 매수가 -3% 안전망

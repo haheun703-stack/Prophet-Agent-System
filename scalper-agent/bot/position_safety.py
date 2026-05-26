@@ -42,6 +42,10 @@ import logging
 from datetime import datetime, time as dtime
 from pathlib import Path
 
+# ★ 5/26 사장님 영구 룰 — Rule Registry 단일 진실 ★
+# 모든 매수/매도 코드는 SAJANG 헬퍼 호출 의무 (직접 하드코딩 X)
+from data.sajang_rules import SAJANG
+
 logger = logging.getLogger("BH.Safety")
 
 # ============================================================
@@ -183,8 +187,14 @@ def sync_positions(self):
             #       → +30% 상한가 못 먹음 = -26.9%p 손실
             # Fix: TP=0 (트레일링만 / 사장님 영구 룰) + mode='swing' (D+0 청산 X)
 
-            # ★ 5/26 사장님 영구 룰 ★ Rule Registry SAJANG 적용 (사장님 매수 보호)
-            # 사장님 명령 (5/26 13:00): "보호 ㅋㅋ 니가 핸들링" → source='manual_president'
+            # ★ 5/27 08:15 사장님 분노 fix ★ 잘못된 추정 라벨 영구 제거
+            # 사장님 5/27 confirm: "내가 산게 뭔데 니가 다 샀는데 진짜 니가 다 진행을 해야지"
+            # 사고: sync_auto가 "사장님 직접 매수" 추정 → 단타봇 매수를 사장님 책임으로 떠넘김 잘못
+            # Fix: source="sync_auto_unknown" (출처 불명 — 단타봇 매수 미기록 추정 우선)
+            #      sync_note에 "단타봇 매수 추적 의무" 명시 (단타봇 책임 인정)
+            #
+            # ★ 5/26 사장님 영구 룰 유지 ★ (TP=0 / mode=swing / 트레일링 -3% 핸들링)
+            # 사장님 명령 (5/26 13:00): "보호 ㅋㅋ 니가 핸들링"
             # = 단타봇 트레일링 -3% / 룰 C / 룰 3 자동 작동 OK
             # = TP+5% 자동 매도 X (사장님 영구 룰)
             self._positions[code] = {
@@ -196,20 +206,22 @@ def sync_positions(self):
                 "trailing_activated": False,
                 "trailing_sl": 0,
                 "stop_loss": default_sl,         # 매수가 -3% NORMAL SL (위급 안전망)
-                "take_profit": 0,                # ★ 사장님 [feedback_trailing_only_tp] 영구 룰
+                "take_profit": SAJANG.SYNC_AUTO_TP,    # ★ Rule Registry — 0 (트레일링만)
                 "regime": "NORMAL",
-                "mode": "swing",                 # ★ D+0 청산 X (사장님 매수 보호)
-                "source": "manual_president",    # ★ 5/26 사장님 명령: 단타봇 트레일링 핸들링 OK
+                "mode": SAJANG.SYNC_AUTO_MODE,         # ★ Rule Registry — swing (D+0 청산 X)
+                "source": SAJANG.SYNC_AUTO_SOURCE,     # ★ Rule Registry — sync_auto_unknown (5/27 fix)
                 "entry_date": datetime.now().strftime("%Y-%m-%d"),
-                "sync_note": "KIS 발견 → 메모리 누락 자동등록 (사장님 직접 매수 — 단타봇 트레일링 핸들링)",
+                "sync_note": "★ KIS 발견 → 출처 불명 (단타봇 매수 미기록 추정 우선 — 매매일지 추적 의무) ★",
                 "synced_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "scalper_bot_responsibility": "★ 단타봇이 매매일지 누락 추적 + 사장님 confirm 후 정확 source 결정 의무 ★",
             }
             synced["added"].append(
-                f"{kp['name']}({code}) qty={kp['qty']} SL={default_sl} TP=0 mode=swing src=manual_president"
+                f"{kp['name']}({code}) qty={kp['qty']} SL={default_sl} TP=0 mode=swing src=sync_auto_unknown"
             )
             logger.warning(
-                f"[SYNC] 🆕 사장님 매수 자동등록: {kp['name']}({code}) "
-                f"qty={kp['qty']} buy={buy_price} SL={default_sl} TP=0 (★ 단타봇 트레일링 핸들링 ★)"
+                f"[SYNC] 🆕 KIS 발견 — 출처 불명 자동등록: {kp['name']}({code}) "
+                f"qty={kp['qty']} buy={buy_price} SL={default_sl} TP=0 "
+                f"(★ 단타봇 매수 미기록 추정 — 매매일지 추적 의무 ★)"
             )
 
         # ── 케이스 B: 메모리에만 있음 → 매도 완료 처리 ──

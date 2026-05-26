@@ -87,18 +87,19 @@ def test_rule_d_pre_close():
     print("[PASS] 룰 D 14:50 D+0 종가 매수 (5/26 영구 룰)")
 
 
-def test_sync_auto_president_protection():
-    """사장님 5/26 — SYNC 자동등록 = 사장님 매수 보호."""
+def test_sync_auto_unknown_source():
+    """★ 5/27 사장님 fix ★ — SYNC 자동등록 = 출처 불명 명시 (추정 라벨 금지)."""
     from data.sajang_rules import SAJANG
     assert SAJANG.SYNC_AUTO_TP == 0
     assert SAJANG.SYNC_AUTO_MODE == "swing"
-    assert SAJANG.SYNC_AUTO_SOURCE == "manual_president"
-    pos = SAJANG.get_sync_auto_position(122500)   # 사장님 삼화 사례
-    assert pos["take_profit"] == 0   # ★ 5/26 사고 차단 ★
-    assert pos["mode"] == "swing"
-    assert pos["source"] == "manual_president"
+    # ★ 5/27 사장님 명령: "내가 산게 뭔데 니가 다 샀는데" → 추정 라벨 금지 ★
+    assert SAJANG.SYNC_AUTO_SOURCE == "sync_auto_unknown"
+    pos = SAJANG.get_sync_auto_position(122500)
+    assert pos["take_profit"] == 0   # ★ TP=0 트레일링만 유지 ★
+    assert pos["mode"] == "swing"     # ★ D+0 청산 X 유지 ★
+    assert pos["source"] == "sync_auto_unknown"   # ★ 5/27 fix: 출처 불명 ★
     assert pos["stop_loss"] == 118825   # 122,500 × 0.97
-    print("[PASS] SYNC 자동등록 사장님 매수 보호 (5/26 사고 영구 차단)")
+    print("[PASS] SYNC 자동등록 출처 불명 (5/27 사장님 분노 fix)")
 
 
 def test_normal_sl_3pct():
