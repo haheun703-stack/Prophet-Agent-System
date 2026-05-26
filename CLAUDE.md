@@ -22,19 +22,38 @@
 
 ---
 
-## ★★★ 3-Tier 검수 의무 (5/25 제정) ★★★
+## ★★★ 4-Tier 검수 의무 (5/26 사장님 Codex 통찰 후 갱신) ★★★
 
-> "검수 통과" / "보장합니다" 보고 전 **반드시** 3-Tier 통과.
+> "검수 통과" / "보장합니다" 보고 전 **반드시** 4-Tier 통과.
 > 위반 시 = 박사 미달 + 사장님 영구 룰 위반.
 
 **메인 문서**: `scalper-agent/docs/checklist/REVIEW_3TIER_RULE.md` (필독)
 
-### 의무 흐름
+### 의무 흐름 (★ 5/26 Tier 4 Codex 추가 ★)
 
 ```
 [코드 변경] → [Tier 1: code-analyzer agent] → [Tier 2: 호출 site grep + AST]
-            → [Tier 3: 단위 + 실제 매매 경로 회귀 + VPS 실증] → [git commit]
+            → [Tier 3: 단위 + 실제 매매 회귀 + VPS 실증]
+            → [★ Tier 4: Codex 상호 검수 (GPT-4o) ★] → [git commit]
 ```
+
+### ★ Codex 활용 5가지 패턴 (5/26 사장님 통찰) ★
+
+단타봇 1년 본성 한계 = 단타봇 단독 검수 X / Codex 상호 보완 의무.
+
+| 상황 | Codex 활용 | 도구 | 빈도 |
+|---|---|---|---|
+| A. 새 코드 작성 | 사전 검수 | `tools/codex_pre_commit.py` | commit 마다 (자동) |
+| B. 사장님 영구 룰 변경 | 영향 분석 | `utils/codex_review.py` | 사장님 명령 시 |
+| C. 사고 발생 | 진단 의뢰 | `utils/codex_review.py` | 사고 즉시 |
+| D. Daily Self-Audit 보완 | 추가 검수 | `verifiers/daily_self_audit.py + Codex` | 매일 15:45 |
+| E. 매매 패턴 학습 | 자율 학습 | 향후 추가 | 매일 마감 후 |
+
+### Codex 결과 해석 의무 (단타봇 박사 책임)
+
+- Codex 100% 정답 X — 모듈 문맥 (매수 vs 매도) 혼동 가능
+- ★ 단타봇이 ★ 정직 해석 ★ 의무 — Codex 잘못 해석 인정
+- 진짜 valuable 발견만 fix / 잘못 해석은 사장님 보고
 
 ### "검수 통과" 보고 조건 (6개 모두 ✅)
 

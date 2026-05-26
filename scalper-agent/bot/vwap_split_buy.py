@@ -131,25 +131,33 @@ async def execute_vwap_split_buy(
             if resp_mkt and resp_mkt.get("success"):
                 result.leg1_bought = qty_1
                 result.leg1_market_fallback = True
-                # buy_market 반환에 가격 키 없음 → fetch_price로 정확 가격 재조회
+                # ★ Codex 발견 fix — fetch_price fallback 강화 (3회 재시도) ★
                 buy_price_1 = open_price
-                try:
-                    p = await asyncio.to_thread(trader.fetch_price, code)
-                    if p and p.get("current_price"):
-                        buy_price_1 = float(p["current_price"])
-                except Exception:
-                    pass
+                fetch_success = False
+                for attempt in range(3):
+                    try:
+                        p = await asyncio.to_thread(trader.fetch_price, code)
+                        if p and p.get("current_price"):
+                            buy_price_1 = float(p["current_price"])
+                            fetch_success = True
+                            break
+                    except Exception as _fe:
+                        logger.warning(f"[vwap_split] {code} fetch_price 시도 {attempt+1}/3 실패: {_fe}")
+                        await asyncio.sleep(0.5)
+                if not fetch_success:
+                    logger.warning(f"[vwap_split] {code} fetch_price 3회 실패 → open_price {open_price} fallback")
                 total_spent += buy_price_1 * qty_1
                 total_filled += qty_1
                 result.success = True
+                # ★ Codex 발견 fix — send_alert 실패 시 로그 추가 ★
                 if send_alert:
                     try:
                         await send_alert(
                             f"⚠️ [VWAP 분할 1차 — 시장가 폴백] {name}({code}) {qty_1}주 @{buy_price_1:,.0f}\n"
                             f"  사유: chase 60초 미체결 → 시장가 진입 (강한 추세 추정)"
                         )
-                    except Exception:
-                        pass
+                    except Exception as _alert_e:
+                        logger.error(f"[vwap_split] {code} send_alert 실패: {_alert_e} (텔레그램 다운 가능성)")
             else:
                 logger.error(f"[vwap_split] {code} 1차 시장가 폴백도 실패 — 전체 매수 중단")
                 return result  # 1차 실패 시 2/3차 진행 X
@@ -253,7 +261,8 @@ async def execute_vwap_split_buy(
                 f"  1차 {result.leg1_bought}주 / 2차 {result.leg2_bought}주 / 3차 {result.leg3_bought}주\n"
                 f"  시나리오: {scenario} {'(시장가 폴백)' if result.leg1_market_fallback else ''}"
             )
-        except Exception:
-            pass
+        except Exception as _final_alert_e:
+            # ★ Codex 발견 fix — 텔레그램 실패 로그 + 결과 보존 ★
+            logger.error(f"[vwap_split] {code} 최종 알림 실패: {_final_alert_e} (매수 결과는 보존)")
 
     return result
