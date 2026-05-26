@@ -111,6 +111,47 @@ class AutoTrader:
         except Exception as _cb_e:
             logger.warning(f"[auto_trader] callback 등록 실패: {_cb_e}")
 
+        # ★★★ 5/26 23:00 CRITICAL #1 fix ★★★
+        # commit d18c3bd에서 _pre_sell_alert 함수 추가 시 init 코드가 잘못 함수 본문에 포함됨
+        # 5/27 09:15 가동 시 self._risk_state AttributeError 즉시 봇 크래시 위험
+        # → 진짜 __init__ 위치로 복원
+
+        # AI 실시간 모니터
+        self._rt_monitor = None
+
+        # positions.json에서 복원된 종목을 RealtimeMonitor에도 등록 (재시작 후 SL/TP 자동 청산 작동)
+        # source 필드를 함께 전달하여 _decide()에서 manual_sync 가드 분기 가능
+        self._restore_positions_to_rt_monitor()
+
+        # Intraday AI Eye (5분 주기 흐름 분석)
+        self._eye = None
+        self._eye_counter = 0  # 30초 카운터 (10 = 5분)
+
+        # 정보봇 CRISIS 인버스 ETF 알림 (1일 1회 송출 제한)
+        self._inverse_alert_date = ""  # ISO 날짜 문자열 (예: "2026-05-16")
+
+        # ── 리스크 게이트 (일일손실한도 + MDD) ──
+        risk = self.config.get("risk", {})   # ★ 5/26 23:00 fix ★ config → self.config
+        self._daily_loss_limit = risk.get("daily_loss_limit", 500000)
+        self._mdd_limit_pct = risk.get("mdd_limit_pct", 4.5)
+        self._risk_state = self._load_risk_state()
+        self._risk_blocked = False  # True면 신규 매수 차단
+        self._feed_alert_sent = False  # 피드 중단 알림 1회만  # SILENT: MSG-REDUX
+
+        # ── 자동매수 확인 대기열 ──
+        self._confirm_auto = self.config.get("bot", {}).get("confirm_real_order", True)
+        self._pending_auto_buys = []  # [{code, name, amount, sl, tp, tp1_quick, score}]
+
+        # ── NIGHTWATCH NXT ──
+        self._nxt_positions = {}
+        self._nightwatch_report = None
+
+        # ── 시간외 선취매 (Pre-Dawn) ──
+        self._predawn_positions = {}  # {code: {name, entry_price, sl, tp, score, ...}}
+
+        # ── CFO 파사드 (set_cfo로 연결) ──
+        self._cfo = None
+
     def _get_jarvis_dynamic_qty(self, code: Optional[str] = None, top_k: int = 5,
                                   cash_snapshot: Optional[int] = None) -> tuple:
         """★ 5/21 아이디어 #1 + 5/25 사장님 명령 확장 ★ 자비스 자율 수량 결정.
@@ -353,42 +394,8 @@ class AutoTrader:
             except Exception:
                 pass
         await asyncio.sleep(wait_sec)
-
-        # AI 실시간 모니터
-        self._rt_monitor = None
-
-        # positions.json에서 복원된 종목을 RealtimeMonitor에도 등록 (재시작 후 SL/TP 자동 청산 작동)
-        # source 필드를 함께 전달하여 _decide()에서 manual_sync 가드 분기 가능
-        self._restore_positions_to_rt_monitor()
-
-        # Intraday AI Eye (5분 주기 흐름 분석)
-        self._eye = None
-        self._eye_counter = 0  # 30초 카운터 (10 = 5분)
-
-        # 정보봇 CRISIS 인버스 ETF 알림 (1일 1회 송출 제한)
-        self._inverse_alert_date = ""  # ISO 날짜 문자열 (예: "2026-05-16")
-
-        # ── 리스크 게이트 (일일손실한도 + MDD) ──
-        risk = config.get("risk", {})
-        self._daily_loss_limit = risk.get("daily_loss_limit", 500000)
-        self._mdd_limit_pct = risk.get("mdd_limit_pct", 4.5)
-        self._risk_state = self._load_risk_state()
-        self._risk_blocked = False  # True면 신규 매수 차단
-        self._feed_alert_sent = False  # 피드 중단 알림 1회만  # SILENT: MSG-REDUX
-
-        # ── 자동매수 확인 대기열 ──
-        self._confirm_auto = config.get("bot", {}).get("confirm_real_order", True)
-        self._pending_auto_buys = []  # [{code, name, amount, sl, tp, tp1_quick, score}]
-
-        # ── NIGHTWATCH NXT ──
-        self._nxt_positions = {}
-        self._nightwatch_report = None
-
-        # ── 시간외 선취매 (Pre-Dawn) ──
-        self._predawn_positions = {}  # {code: {name, entry_price, sl, tp, score, ...}}
-
-        # ── CFO 파사드 (set_cfo로 연결) ──
-        self._cfo = None
+        # ★ 5/26 23:00 CRITICAL #1 fix ★ — 이 함수 안에 잘못 들어가 있던 init 코드는
+        # __init__ (L112 이후)으로 이동했음. _pre_sell_alert는 여기서 정상 종료.
 
     def set_cfo(self, cfo):
         """CFO 파사드 연결 (telegram_bot에서 호출)"""
@@ -1327,12 +1334,24 @@ class AutoTrader:
                 pass
 
         num_targets = min(len(candidates), slots)
-        cash_reserve_ratio = self.config.get("risk", {}).get("min_cash_ratio", 0.10)
+        # ★ 5/26 23:00 CRITICAL #3 fix ★ 사장님 30% 현금 보유 영구 룰 정확 적용
+        # 옛: min_cash_ratio: 0.10 (현금 90%까지 사용 가능 = 30% 룰 위반)
+        # 신규: SAJANG.CASH_RESERVE_PCT = 0.30 (Rule Registry 단일 진실)
+        from data.sajang_rules import SAJANG
         capital_use = regime_rules.get("capital_use", 1.0)
         if is_yearend:
             capital_use *= 0.5  # 연말 시즌: 50% 축소
             await _send("연말 계절성 필터: 사이즈 50% 축소 (12/15~1/5)")
-        usable_cash = int(available_cash * (1 - cash_reserve_ratio) * capital_use)
+        # 사장님 30% 현금 보유 룰 강제 적용 (총평가액 기준)
+        kis_total_eval = 0
+        try:
+            _bal = await asyncio.to_thread(self.trader.fetch_balance)
+            if _bal and _bal.get("success"):
+                kis_total_eval = _bal.get("total_eval", 0)
+        except Exception:
+            pass
+        max_buy = SAJANG.max_buy_amount(available_cash, kis_total_eval)
+        usable_cash = int(max_buy * capital_use)
 
         # FIX-02: BRAIN 비중 캡 — pct 기반 자금 조절
         if brain_pct < 100 and brain_alloc:
@@ -5127,8 +5146,10 @@ class AutoTrader:
                     f"  {len(triggered)}종목 시초가 즉시 매도 (-7%+ 갭다운):",
                 ]
                 for t in triggered:
+                    # ★ 5/26 23:00 CRITICAL #2 fix ★ t['qty'] → t['sell_qty'] (KeyError 사고)
                     msg_lines.append(
-                        f"  - {t['name']}({t['code']}) D+1 {t['d1_pnl']:+.2f}% / {t['qty']}주 매도"
+                        f"  - {t['name']}({t['code']}) D+1 {t['d1_pnl']:+.2f}% / "
+                        f"{t.get('sell_qty', 0)}주 매도 (잔량 {t.get('remaining', 0)})"
                     )
                 await self._alert("\n".join(msg_lines))
             else:
