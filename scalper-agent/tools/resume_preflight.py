@@ -46,6 +46,18 @@ def _service_state_hint() -> str:
     return "Check VPS services separately: bodyhunter-bot, quantum-scheduler, jgis-scheduler must stay inactive until launch."
 
 
+def _is_runtime_worktree_line(line: str) -> bool:
+    path = line[3:] if len(line) > 3 else line
+    path = path.replace("\\", "/")
+    runtime_prefixes = (
+        "scalper-agent/data_store/",
+        "scalper-agent/logs/",
+        "scalper-agent/results/",
+        "logs/",
+    )
+    return path.startswith(runtime_prefixes)
+
+
 def collect_preflight(expect: str, live_kis: bool, test_code: str) -> dict[str, Any]:
     from bot.kis_trader import KISTrader
     from bot.manual_position_protection import audit_kis_vs_memory, auto_sell_block_reason
@@ -60,7 +72,7 @@ def collect_preflight(expect: str, live_kis: bool, test_code: str) -> dict[str, 
     rc, status = _run(["git", "status", "--short"])
     dirty_tracked = [
         line for line in status.splitlines()
-        if line and not line.startswith("??")
+        if line and not line.startswith("??") and not _is_runtime_worktree_line(line)
     ]
     checks.append(
         _check(
