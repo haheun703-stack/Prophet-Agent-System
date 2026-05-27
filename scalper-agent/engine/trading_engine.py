@@ -44,6 +44,7 @@ from output.telegram_alert import TelegramAlert
 from output.daily_report import DailyReport
 
 from backtest.paper_trader import PaperTrader
+from bot.trade_kill_switch import is_auto_trade_disabled
 
 logger = logging.getLogger('Scalper.Engine')
 
@@ -282,6 +283,9 @@ class TradingEngine:
                 pos.stop_loss = stop_loss
                 pos.take_profit = take_profit
         elif self.kiwoom_order:
+            if is_auto_trade_disabled():
+                logger.warning("AUTO_TRADE_DISABLED active - block Kiwoom BUY %s", signal.code)
+                return
             ret = self.kiwoom_order.buy_market(signal.code, qty)
             self.order_manager.register(str(ret), signal.code, 'buy', qty, price)
 
@@ -301,6 +305,9 @@ class TradingEngine:
         if self.mode == 'paper':
             self.paper_trader.sell_market(signal.code, qty, price)
         elif self.kiwoom_order:
+            if is_auto_trade_disabled():
+                logger.warning("AUTO_TRADE_DISABLED active - block Kiwoom SELL %s", signal.code)
+                return
             ret = self.kiwoom_order.sell_market(signal.code, qty)
             self.order_manager.register(str(ret), signal.code, 'sell', qty, price)
 

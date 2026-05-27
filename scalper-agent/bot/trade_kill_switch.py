@@ -28,7 +28,7 @@ def file_auto_trade_disabled() -> bool:
     try:
         data = json.loads(KILL_SWITCH_PATH.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        return False
+        return True
     except Exception:
         return True
     return _truthy(data.get("AUTO_TRADE_DISABLED"))
