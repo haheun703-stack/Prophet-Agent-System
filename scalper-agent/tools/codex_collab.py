@@ -68,12 +68,24 @@ def run_git(args: list[str]) -> str:
         )
     except Exception as exc:
         return f"git error: {exc}"
-    output = (result.stdout or result.stderr or "").strip()
+    output = (result.stdout if result.returncode == 0 else result.stderr or "").strip()
     return output
 
 
 def split_lines(text: str) -> list[str]:
     return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def normalize_project_path(path: str) -> str:
+    prefix = f"{PROJECT_ROOT.name}/"
+    normalized = path.replace("\\", "/")
+    if normalized.startswith(prefix):
+        return normalized[len(prefix):]
+    return path
+
+
+def normalize_git_text(text: str) -> str:
+    return text.replace(f"{PROJECT_ROOT.name}/", "")
 
 
 def emit(text: str = "") -> None:
@@ -84,11 +96,12 @@ def emit(text: str = "") -> None:
 
 
 def git_changed_files() -> list[str]:
-    tracked = split_lines(run_git(["diff", "--name-only", "HEAD"]))
-    untracked = split_lines(run_git(["ls-files", "--others", "--exclude-standard"]))
+    tracked = split_lines(run_git(["diff", "--name-only", "HEAD", "--", "."]))
+    untracked = split_lines(run_git(["ls-files", "--others", "--exclude-standard", "--", "."]))
     seen: set[str] = set()
     files: list[str] = []
     for item in tracked + untracked:
+        item = normalize_project_path(item)
         if item not in seen:
             seen.add(item)
             files.append(item)
@@ -96,7 +109,7 @@ def git_changed_files() -> list[str]:
 
 
 def repo_state() -> dict[str, Any]:
-    root = run_git(["rev-parse", "--show-toplevel"]) or str(PROJECT_ROOT)
+    root = str(PROJECT_ROOT)
     return {
         "name": Path(root).name,
         "root": root,
@@ -104,9 +117,9 @@ def repo_state() -> dict[str, Any]:
         "head": run_git(["rev-parse", "HEAD"]),
         "head_short": run_git(["rev-parse", "--short", "HEAD"]),
         "last_commit": run_git(["log", "-1", "--oneline"]),
-        "status": run_git(["status", "-sb"]),
+        "status": normalize_git_text(run_git(["status", "-sb", "--", "."])),
         "changed_files": git_changed_files(),
-        "diff_stat": run_git(["diff", "--stat", "HEAD"]),
+        "diff_stat": normalize_git_text(run_git(["diff", "--stat", "HEAD", "--", "."])),
     }
 
 
