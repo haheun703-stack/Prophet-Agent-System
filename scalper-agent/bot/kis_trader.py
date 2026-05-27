@@ -17,7 +17,7 @@ import logging
 import threading
 from pathlib import Path
 from datetime import datetime, date
-from typing import Dict, List, Optional
+from typing import Optional
 
 logger = logging.getLogger("BH.KISTrader")
 
@@ -97,22 +97,204 @@ class KISTrader:
         except Exception:
             return bool(getattr(SAJANG, "AUTO_TRADE_DISABLED", False))
 
+    def _estimate_order_amount(self, side: str, code: str, qty: int) -> Optional[int]:
+        if str(side or "").upper() != "BUY" or int(qty or 0) <= 0:
+            return None
+        try:
+            price_info = self.fetch_price(code)
+            current = int(price_info.get("current_price", 0) or 0) if price_info else 0
+            if current <= 0:
+                return None
+            return current * int(qty)
+        except Exception:
+            return None
+
+    def _record_order_intent_or_block(
+        self,
+        *,
+        side: str,
+        code: str,
+        qty: int,
+        manual: bool,
+        source: str,
+        allowed: bool,
+        reason: str = "",
+        message: str = "",
+        strategy: str = "",
+        estimate_amount_krw: Optional[int] = None,
+    ) -> Optional[dict]:
+        try:
+            from bot.order_intent import record_order_intent
+
+            record_order_intent(
+                side=side,
+                code=code,
+                qty=qty,
+                manual=manual,
+                source=source,
+                allowed=allowed,
+                reason=reason,
+                message=message,
+                strategy=strategy,
+                estimate_amount_krw=estimate_amount_krw,
+            )
+            return None
+        except Exception as exc:
+            msg = f"ORDER_INTENT_RECORD_FAILED - blocked {side} order: {code} x {qty} ({exc})"
+            logger.error("[ORDER BLOCKED] %s source=%s", msg, source)
+            return {
+                "success": False,
+                "blocked": True,
+                "reason": "ORDER_INTENT_RECORD_FAILED",
+                "message": msg,
+            }
+
     def _order_gate(self, side: str, code: str, qty: int, *, manual: bool = False,
                     source: str = "") -> Optional[dict]:
-        """Block automated real orders when SAJANG.AUTO_TRADE_DISABLED is on.
+        """Central real-order gate.
 
-        Manual Telegram/CLI orders must pass manual=True explicitly.
+        All order paths must write an order intent before a KIS network order.
+        Manual Telegram/CLI orders pass manual=True explicitly and are still
+        recorded, but automated orders must also pass kill switch, strategy
+        switch, daily limit, and manual-position protection checks.
         """
+        side_u = str(side or "").upper()
+        source_s = str(source or "")
+        strategy = ""
+        estimate_amount = None
+
         if manual:
+            blocked = self._record_order_intent_or_block(
+                side=side_u,
+                code=code,
+                qty=qty,
+                manual=True,
+                source=source_s,
+                allowed=True,
+                reason="MANUAL_ORDER",
+                message="manual order allowed",
+            )
+            if blocked:
+                return blocked
             return None
+
         if not self._is_auto_trade_disabled():
+            try:
+                from bot.trade_runtime_config import evaluate_auto_order, resolve_strategy
+
+                strategy = resolve_strategy(side_u, source_s)
+                runtime_block = evaluate_auto_order(side_u, code, qty, source_s)
+                if runtime_block is None:
+                    estimate_amount = self._estimate_order_amount(side_u, code, qty)
+                    runtime_block = evaluate_auto_order(
+                        side_u,
+                        code,
+                        qty,
+                        source_s,
+                        estimate_amount_krw=estimate_amount,
+                    )
+                if runtime_block:
+                    msg = f"{runtime_block['reason']} - blocked auto {side_u} order: {code} x {qty}"
+                    self._record_order_intent_or_block(
+                        side=side_u,
+                        code=code,
+                        qty=qty,
+                        manual=False,
+                        source=source_s,
+                        allowed=False,
+                        reason=str(runtime_block.get("reason", "")),
+                        message=str(runtime_block.get("message", msg)),
+                        strategy=strategy,
+                        estimate_amount_krw=estimate_amount,
+                    )
+                    logger.warning("[ORDER BLOCKED] %s source=%s", msg, source_s)
+                    return {
+                        "success": False,
+                        "blocked": True,
+                        "reason": runtime_block["reason"],
+                        "message": msg,
+                    }
+            except Exception as exc:
+                msg = f"RUNTIME_CONFIG_ERROR - blocked auto {side_u} order: {code} x {qty} ({exc})"
+                self._record_order_intent_or_block(
+                    side=side_u,
+                    code=code,
+                    qty=qty,
+                    manual=False,
+                    source=source_s,
+                    allowed=False,
+                    reason="RUNTIME_CONFIG_ERROR",
+                    message=msg,
+                    strategy=strategy,
+                )
+                logger.error("[ORDER BLOCKED] %s source=%s", msg, source_s)
+                return {
+                    "success": False,
+                    "blocked": True,
+                    "reason": "RUNTIME_CONFIG_ERROR",
+                    "message": msg,
+                }
+
+            if side_u == "SELL":
+                try:
+                    from bot.manual_position_protection import auto_sell_block_reason
+
+                    protect_reason = auto_sell_block_reason(code)
+                except Exception as exc:
+                    protect_reason = f"manual_protection_error:{exc}"
+                if protect_reason:
+                    msg = f"MANUAL_POSITION_PROTECTED - blocked auto SELL order: {code} x {qty}"
+                    self._record_order_intent_or_block(
+                        side=side_u,
+                        code=code,
+                        qty=qty,
+                        manual=False,
+                        source=source_s,
+                        allowed=False,
+                        reason="MANUAL_POSITION_PROTECTED",
+                        message=f"{msg} ({protect_reason})",
+                        strategy=strategy,
+                    )
+                    logger.warning("[ORDER BLOCKED] %s reason=%s source=%s", msg, protect_reason, source_s)
+                    return {
+                        "success": False,
+                        "blocked": True,
+                        "reason": "MANUAL_POSITION_PROTECTED",
+                        "message": f"{msg} ({protect_reason})",
+                    }
+
+            blocked = self._record_order_intent_or_block(
+                side=side_u,
+                code=code,
+                qty=qty,
+                manual=False,
+                source=source_s,
+                allowed=True,
+                reason="AUTO_ORDER_ALLOWED",
+                message="automated order passed runtime gates",
+                strategy=strategy,
+                estimate_amount_krw=estimate_amount,
+            )
+            if blocked:
+                return blocked
             return None
 
         msg = (
-            f"AUTO_TRADE_DISABLED=True - blocked auto {side} order: "
+            f"AUTO_TRADE_DISABLED=True - blocked auto {side_u} order: "
             f"{code} x {qty}"
         )
-        logger.warning("[ORDER BLOCKED] %s source=%s", msg, source)
+        self._record_order_intent_or_block(
+            side=side_u,
+            code=code,
+            qty=qty,
+            manual=False,
+            source=source_s,
+            allowed=False,
+            reason="AUTO_TRADE_DISABLED",
+            message=msg,
+            strategy=strategy,
+        )
+        logger.warning("[ORDER BLOCKED] %s source=%s", msg, source_s)
         return {
             "success": False,
             "blocked": True,

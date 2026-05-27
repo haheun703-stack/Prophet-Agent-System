@@ -1,0 +1,19 @@
+{
+  "PAPER_ONLY": true,
+  "runtime_mode": "paper_rehearsal",
+  "strategy_switches": {
+    "AUTO_BUY_ENABLED": false,
+    "AUTO_SELL_ENABLED": false,
+    "VWAP_SPLIT_BUY_ENABLED": false,
+    "ENTRY_WATCH_ENABLED": false,
+    "ASSET_POOL_ENABLED": false,
+    "NXT_BUY_ENABLED": false,
+    "QUANT_ENABLED": false
+  },
+  "live_limits": {
+    "max_auto_buy_orders_per_day": 1,
+    "max_order_amount_krw": 300000,
+    "max_total_auto_buy_amount_krw": 300000,
+    "block_new_entry_after": "14:40"
+  }
+}
