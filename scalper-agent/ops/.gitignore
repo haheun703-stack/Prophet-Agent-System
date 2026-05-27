@@ -1,0 +1,6 @@
+codex_inbox/*
+!codex_inbox/.gitkeep
+codex_outbox/*
+!codex_outbox/.gitkeep
+approval_required/*
+!approval_required/.gitkeep
