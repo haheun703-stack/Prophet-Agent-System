@@ -573,8 +573,34 @@ class AutoTrader:
         """대기 중인 자동매수 전부 실행 → 결과 리스트 반환
 
         분할매수 시: split_done 카운터 여기서 올림 + 포지션 최초 1회만 생성
+
+        ★ 5/27 사장님 영구 룰 ★ SAJANG.MORNING_AUTO_BUY_DISABLED=True 시 모두 SKIP
+        사고: 5/27 08:57 _check_entry_watch 30초 루프 → safe_buy 자동 매수 (HD한국조선/한화오션/HL만도)
+        사장님 명령: "9시 장시작하자 마자 매수를 했잖아" → 모닝 자동 매수 영구 차단
         """
         results = []
+
+        # ★ 5/27 사장님 영구 룰 — 모닝 자동 매수 영구 차단 (Rule Registry 단일 진실) ★
+        from data.sajang_rules import SAJANG
+        if SAJANG.MORNING_AUTO_BUY_DISABLED:
+            if self._pending_auto_buys:
+                codes = [item.get('code', '?') for item in self._pending_auto_buys]
+                logger.warning(
+                    f"[자동매수] ★★★ 사장님 영구 룰 차단 ★★★ "
+                    f"MORNING_AUTO_BUY_DISABLED=True (5/27 사장님 명령) / "
+                    f"대기 {len(self._pending_auto_buys)}건 모두 SKIP / 종목: {codes}"
+                )
+                # 대기 큐 비우기 (사고 재발 차단)
+                for item in self._pending_auto_buys:
+                    results.append({
+                        "code": item.get("code", "?"),
+                        "name": item.get("name", "?"),
+                        "success": False,
+                        "reason": "★ 사장님 영구 룰 차단 (MORNING_AUTO_BUY_DISABLED) ★",
+                    })
+                self._pending_auto_buys.clear()
+            return results
+
         for item in self._pending_auto_buys:
             code, name = item["code"], item["name"]
             amount = item["amount"]

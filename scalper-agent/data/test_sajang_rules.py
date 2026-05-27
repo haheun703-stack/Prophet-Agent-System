@@ -126,6 +126,18 @@ def test_cash_reserve_30pct():
     print("[PASS] CASH_RESERVE_PCT = 0.30 (사장님 영구 룰)")
 
 
+def test_morning_auto_buy_disabled():
+    """★ 5/27 사장님 영구 룰 ★ 모닝 자동 매수 영구 차단.
+
+    사고: 5/27 08:57 _check_entry_watch 30초 루프 → HD한국조선/한화오션/HL만도 자동 매수
+    사장님 명령: "9시 장시작하자 마자 매수를 했잖아 진짜 코드를 제대로 짜라고"
+    Fix: execute_pending_auto_buys() 시작에서 MORNING_AUTO_BUY_DISABLED=True 시 모두 SKIP
+    """
+    from data.sajang_rules import SAJANG
+    assert SAJANG.MORNING_AUTO_BUY_DISABLED == True   # ★ 영구 차단 ★
+    print("[PASS] MORNING_AUTO_BUY_DISABLED = True (5/27 사장님 영구 룰)")
+
+
 def test_can_buy_30pct_rule():
     """can_buy 헬퍼 — 매수 후 현금 ≥ 총평가 × 30% 보장."""
     from data.sajang_rules import SAJANG

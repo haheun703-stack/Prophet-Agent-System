@@ -99,6 +99,17 @@ class SajangRules:
     SYNC_AUTO_SOURCE: str = "sync_auto_unknown" # ★ 출처 불명 (추정 라벨 금지 — 5/27 사장님 명령)
 
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    # ★★★ 5/27 사장님 영구 룰 — 모닝 자동 매수 영구 차단 ★★★
+    # 사장님 5/27 09:50 분노 명령: "9시 장시작하자 마자 매수를 했잖아"
+    # 사고: _morning_swing() (08:55) + _check_entry_watch() (30초 루프) →
+    #       08:57 진입 조건 충족 → execute_pending_auto_buys() → safe_buy() KIS 매수
+    #       HD한국조선해양/한화오션/HL만도 각 1주 시장가 매수
+    # Fix: execute_pending_auto_buys() 시작에서 영구 차단 (MORNING_AUTO_BUY_DISABLED=True)
+    # 영향: 모든 _pending_auto_buys 큐 자동 SKIP / 사장님 명령 없이 매수 X
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+    MORNING_AUTO_BUY_DISABLED: bool = True     # ★ 모닝 자동 매수 영구 차단 (5/27 사장님 명령) ★
+
+    # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # ★ 영구 NORMAL SL — 매수가 -3% 안전망
     # 영구 메모리: feedback_account_first_principle (5/21)
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
