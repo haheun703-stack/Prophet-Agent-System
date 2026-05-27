@@ -71,6 +71,22 @@ The command writes a Markdown response under `ops/codex_outbox/`.
 python tools/codex_collab.py status
 ```
 
+## Automatic Review Request
+
+Bots can call the auto wrapper after their local checks:
+
+```bash
+python tools/codex_auto_request.py --agent scalper-agent --staged --from-hook
+```
+
+The wrapper inspects staged files, classifies risk, runs available local checks
+such as `codex_lite.py`, `self_review_checklist.py`, and
+`quant_preflight.py`, then writes a review request into `ops/codex_inbox/`.
+Duplicate request fingerprints are suppressed.
+
+Use `--dry-run` to preview the request and `--always` to force request
+creation. The wrapper never changes live trading gates.
+
 ## Minimal Flow
 
 1. A bot changes code or prepares an operational action.
