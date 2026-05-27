@@ -5,7 +5,6 @@ Kiwoom Order - 주문 실행
 """
 
 import logging
-from typing import Dict, Optional
 from datetime import datetime
 
 from api.kiwoom_core import KiwoomCore
@@ -18,6 +17,7 @@ from api.kiwoom_constants import (
     FID_ORDER_TYPE, FID_REMAIN_QTY,
     ERR_NONE,
 )
+from bot.trade_kill_switch import is_auto_trade_disabled
 
 logger = logging.getLogger('Scalper.Order')
 
@@ -37,10 +37,18 @@ class KiwoomOrder:
         """체잔(체결/잔고) 콜백 등록"""
         self._chejan_callbacks.append(callback)
 
+    def _runtime_guard(self, side: str, code: str, qty: int) -> bool:
+        if is_auto_trade_disabled():
+            logger.warning("AUTO_TRADE_DISABLED active - block Kiwoom %s %s x %s", side, code, qty)
+            return False
+        return True
+
     # === 매수 ===
 
     def buy_market(self, code: str, qty: int) -> int:
         """시장가 매수"""
+        if not self._runtime_guard("BUY", code, qty):
+            return -1
         logger.info(f"시장가 매수: {code} x {qty}")
         return self.core.send_order(
             "매수주문", self._screen_no, self.account,
@@ -49,6 +57,8 @@ class KiwoomOrder:
 
     def buy_limit(self, code: str, qty: int, price: int) -> int:
         """지정가 매수"""
+        if not self._runtime_guard("BUY", code, qty):
+            return -1
         logger.info(f"지정가 매수: {code} x {qty} @ {price}")
         return self.core.send_order(
             "매수주문", self._screen_no, self.account,
@@ -57,6 +67,8 @@ class KiwoomOrder:
 
     def buy_best(self, code: str, qty: int) -> int:
         """최유리지정가 매수"""
+        if not self._runtime_guard("BUY", code, qty):
+            return -1
         logger.info(f"최유리 매수: {code} x {qty}")
         return self.core.send_order(
             "매수주문", self._screen_no, self.account,
@@ -67,6 +79,8 @@ class KiwoomOrder:
 
     def sell_market(self, code: str, qty: int) -> int:
         """시장가 매도"""
+        if not self._runtime_guard("SELL", code, qty):
+            return -1
         logger.info(f"시장가 매도: {code} x {qty}")
         return self.core.send_order(
             "매도주문", self._screen_no, self.account,
@@ -75,6 +89,8 @@ class KiwoomOrder:
 
     def sell_limit(self, code: str, qty: int, price: int) -> int:
         """지정가 매도"""
+        if not self._runtime_guard("SELL", code, qty):
+            return -1
         logger.info(f"지정가 매도: {code} x {qty} @ {price}")
         return self.core.send_order(
             "매도주문", self._screen_no, self.account,

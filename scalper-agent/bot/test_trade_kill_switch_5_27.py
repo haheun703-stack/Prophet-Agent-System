@@ -6,7 +6,9 @@ paths before any KIS network order can be attempted.
 """
 
 import asyncio
+import importlib
 import sys
+import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -31,6 +33,21 @@ class _ApprovedRiskManager:
 class _TradeLogStub:
     def log_signal(self, *args, **kwargs):
         return None
+
+
+class _SignalStub:
+    def connect(self, callback):
+        return None
+
+
+class _KiwoomCoreStub:
+    sig_chejan = _SignalStub()
+
+    def __init__(self):
+        self.send_order = MagicMock(return_value=0)
+
+    def get_next_screen(self):
+        return "9000"
 
 
 def _live_engine_with_kiwoom_order():
@@ -119,3 +136,23 @@ def test_kiwoom_order_kill_switch_guard():
     engine.kiwoom_order.buy_market.assert_not_called()
     engine.kiwoom_order.sell_market.assert_not_called()
     engine.order_manager.register.assert_not_called()
+
+
+def test_kiwoom_order_class_kill_switch_guard():
+    kiwoom_core_stub = types.ModuleType("api.kiwoom_core")
+    kiwoom_core_stub.KiwoomCore = object
+
+    with patch.dict(sys.modules, {"api.kiwoom_core": kiwoom_core_stub}):
+        kiwoom_order_mod = importlib.import_module("api.kiwoom_order")
+
+    core = _KiwoomCoreStub()
+    order = kiwoom_order_mod.KiwoomOrder(core, "12345678")
+
+    with patch.object(kiwoom_order_mod, "is_auto_trade_disabled", return_value=True):
+        assert order.buy_market("005930", 1) == -1
+        assert order.buy_limit("005930", 1, 70000) == -1
+        assert order.buy_best("005930", 1) == -1
+        assert order.sell_market("005930", 1) == -1
+        assert order.sell_limit("005930", 1, 70000) == -1
+
+    core.send_order.assert_not_called()
