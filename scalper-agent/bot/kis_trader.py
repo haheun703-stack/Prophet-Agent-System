@@ -90,7 +90,12 @@ class KISTrader:
         self._last_balance_at: float = 0.0     # 캐시 저장 시각 (epoch)
 
     def _is_auto_trade_disabled(self) -> bool:
-        return bool(getattr(SAJANG, "AUTO_TRADE_DISABLED", False))
+        try:
+            from bot.trade_kill_switch import is_auto_trade_disabled
+
+            return bool(is_auto_trade_disabled())
+        except Exception:
+            return bool(getattr(SAJANG, "AUTO_TRADE_DISABLED", False))
 
     def _order_gate(self, side: str, code: str, qty: int, *, manual: bool = False,
                     source: str = "") -> Optional[dict]:

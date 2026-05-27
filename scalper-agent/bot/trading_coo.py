@@ -142,10 +142,16 @@ class TradingCOO:
 
     def _auto_trade_disabled(self, job_name: str = "") -> bool:
         try:
-            from data.sajang_rules import SAJANG
-            disabled = bool(getattr(SAJANG, "AUTO_TRADE_DISABLED", False))
+            from bot.trade_kill_switch import is_auto_trade_disabled
+
+            disabled = bool(is_auto_trade_disabled())
         except Exception:
-            disabled = False
+            try:
+                from data.sajang_rules import SAJANG
+
+                disabled = bool(getattr(SAJANG, "AUTO_TRADE_DISABLED", False))
+            except Exception:
+                disabled = False
         if disabled:
             logger.info("[COO] AUTO_TRADE_DISABLED — skip %s", job_name or "auto job")
         return disabled

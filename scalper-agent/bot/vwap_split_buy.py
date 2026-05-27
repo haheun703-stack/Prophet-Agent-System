@@ -30,9 +30,20 @@
 import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+try:
+    from bot.trade_kill_switch import is_auto_trade_disabled
+except Exception:
+    def is_auto_trade_disabled() -> bool:
+        try:
+            from data.sajang_rules import SAJANG
+
+            return bool(getattr(SAJANG, "AUTO_TRADE_DISABLED", False))
+        except Exception:
+            return False
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -93,6 +104,14 @@ async def execute_vwap_split_buy(
         total_bought_qty=0,
         avg_price=0.0,
     )
+    if is_auto_trade_disabled():
+        logger.warning(
+            "[vwap_split] AUTO_TRADE_DISABLED - blocked split buy %s(%s) qty=%s",
+            name,
+            code,
+            total_qty,
+        )
+        return result
 
     if total_qty < 3:
         # 너무 적으면 단일 매수

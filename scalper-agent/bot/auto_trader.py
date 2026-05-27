@@ -571,10 +571,16 @@ class AutoTrader:
 
     def _auto_trade_disabled(self) -> bool:
         try:
-            from data.sajang_rules import SAJANG
-            return bool(getattr(SAJANG, "AUTO_TRADE_DISABLED", False))
+            from bot.trade_kill_switch import is_auto_trade_disabled
+
+            return bool(is_auto_trade_disabled())
         except Exception:
-            return False
+            try:
+                from data.sajang_rules import SAJANG
+
+                return bool(getattr(SAJANG, "AUTO_TRADE_DISABLED", False))
+            except Exception:
+                return False
 
     def execute_pending_auto_buys(self) -> list[dict]:
         """대기 중인 자동매수 전부 실행 → 결과 리스트 반환
@@ -1582,6 +1588,9 @@ class AutoTrader:
         받으면 캐시에 즉시 저장. _check_entry_watch가 캐시 5초 이내면 REST 호출
         대신 캐시 사용 → 빠른 평가 + KIS API 호출 절감.
         """
+        if self._auto_trade_disabled():
+            logger.info("[WS-Auto] AUTO_TRADE_DISABLED - skip websocket monitor")
+            return
         if not self._ws_enabled:
             logger.info("[WS-Auto] auto_trade=false → WebSocket 비활성")
             return
@@ -1625,6 +1634,9 @@ class AutoTrader:
 
     async def _subscribe_entry_watch(self, code):
         """진입감시 등록 시 WebSocket 자동 구독."""
+        if self._auto_trade_disabled():
+            logger.info("[WS-Auto] AUTO_TRADE_DISABLED - skip entry watch subscribe %s", code)
+            return
         if not (self._ws_client and self._ws_enabled):
             return
         try:
@@ -3078,6 +3090,15 @@ class AutoTrader:
         6. MACD 0선 크로스 상태 (일봉 기반)
         → 6개 중 3개 이상 충족 시 매수 실행
         """
+        if self._auto_trade_disabled():
+            if self._entry_watch:
+                logger.warning(
+                    "[entry_watch] AUTO_TRADE_DISABLED - clearing %d pending entry watches",
+                    len(self._entry_watch),
+                )
+                self._entry_watch.clear()
+            return
+
         if not self._entry_watch:
             return
 

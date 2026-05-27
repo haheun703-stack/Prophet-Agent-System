@@ -1387,11 +1387,12 @@ class BodyHunterBot:
                 log_event(cat, text[:200])
 
         try:
-            from data.sajang_rules import SAJANG
-            if getattr(SAJANG, "AUTO_TRADE_DISABLED", False):
+            from bot.trade_kill_switch import is_auto_trade_disabled
+
+            if is_auto_trade_disabled():
                 await update.message.reply_text(
                     "🔒 자동매매 전체 OFF 상태입니다.\n"
-                    "SAJANG.AUTO_TRADE_DISABLED=True라서 자동 시작하지 않습니다.\n"
+                    "AUTO_TRADE_DISABLED=True라서 자동 시작하지 않습니다.\n"
                     "수동 매수/매도 명령만 허용됩니다."
                 )
                 return
@@ -2812,8 +2813,9 @@ class BodyHunterBot:
 
         auto_trade_locked = False
         try:
-            from data.sajang_rules import SAJANG
-            auto_trade_locked = bool(getattr(SAJANG, "AUTO_TRADE_DISABLED", False))
+            from bot.trade_kill_switch import is_auto_trade_disabled
+
+            auto_trade_locked = bool(is_auto_trade_disabled())
         except Exception:
             auto_trade_locked = False
 

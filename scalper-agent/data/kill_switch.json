@@ -1,0 +1,5 @@
+{
+  "AUTO_TRADE_DISABLED": true,
+  "reason": "2026-05-27 hard kill after unexpected VWAP split buys",
+  "manual_orders_allowed": true
+}

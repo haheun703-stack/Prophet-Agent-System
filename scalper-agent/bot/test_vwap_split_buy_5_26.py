@@ -3,7 +3,7 @@
 import asyncio
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import MagicMock, patch
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -19,6 +19,11 @@ from bot.vwap_split_buy import (
 vwap_split_buy.CHASE_WAIT_1 = 2
 vwap_split_buy.CHASE_WAIT_2 = 2
 vwap_split_buy.CHASE_WAIT_3 = 2
+
+
+def _run_auto_enabled(coro):
+    with patch("bot.vwap_split_buy.is_auto_trade_disabled", return_value=False):
+        return asyncio.run(coro)
 
 
 def test_split_ratios():
@@ -83,7 +88,7 @@ def test_async_scenario_A_strong_trend():
         # ★ chase_buy max_wait_sec를 짧게 만들지 않아 실제 호출에서 3분/5분 대기하므로 mock에서는 X
         return result.leg1_bought
 
-    bought_1 = asyncio.run(run())
+    bought_1 = _run_auto_enabled(run())
     print(f"[PASS] 시나리오 A (강한 추세): 1차 {bought_1}주만 진입 ({bought_1/44*100:.0f}%)")
 
 
@@ -106,7 +111,7 @@ def test_async_scenario_C_deep_pullback():
         assert result.total_bought_qty == 44   # 100%
         return result.total_bought_qty
 
-    bought_total = asyncio.run(run())
+    bought_total = _run_auto_enabled(run())
     print(f"[PASS] 시나리오 C (깊은 눌림): {bought_total}/44주 100% 진입")
 
 
@@ -130,7 +135,7 @@ def test_async_scenario_market_fallback():
         trader.buy_market.assert_called_once()
         return result
 
-    result = asyncio.run(run())
+    result = _run_auto_enabled(run())
     print(f"[PASS] 시장가 폴백: 1차 chase 미체결 → 시장가 진입 보장 (사장님 5/26 통찰)")
 
 
