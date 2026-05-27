@@ -94,6 +94,28 @@ def load_limit_up_watchlist() -> List[Dict]:
     return [item for item in items if item.get("status") == "monitoring"]
 
 
+def load_limit_up_pullback_candidates() -> List[Dict]:
+    """LimitUpEngine watchlist with Rule D metadata preserved.
+
+    Includes monitoring/triggered/entered rows so the 14:50 Rule D job can see
+    D+0/D+1 candidates even when they have only one upstream source.
+    """
+    data = _load_json("limit_up/watchlist.json")
+    if not data:
+        return []
+    items = data if isinstance(data, list) else data.get("items", [])
+    result = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if item.get("status") not in ("monitoring", "triggered", "entered"):
+            continue
+        if "signal_close_price" not in item and item.get("signal_close") is not None:
+            item = {**item, "signal_close_price": item.get("signal_close")}
+        result.append(item)
+    return result
+
+
 # ─────────────────────────────────────────────────────
 # 카테고리 ② NXT 야간
 # ─────────────────────────────────────────────────────
@@ -192,6 +214,7 @@ def collect_all_candidates() -> Dict[str, List[Dict]]:
     result = {
         "limit_up_triggers": load_limit_up_triggers(),
         "limit_up_watchlist": load_limit_up_watchlist(),
+        "limit_up_pullback": load_limit_up_pullback_candidates(),
         "nxt_top5": load_nxt_top5_picks(),
         "nxt_eligible": load_nxt_eligible(),
         "massive_dual_buy": load_massive_dual_buy(),
@@ -237,6 +260,12 @@ def get_candidate_source_map() -> Dict[str, List[str]]:
 
     _add(load_limit_up_triggers(), "limit_up_trigger")
     _add(load_limit_up_watchlist(), "limit_up_watchlist")
+    for item in load_limit_up_pullback_candidates():
+        code = item.get("code") or item.get("ticker")
+        if not code:
+            continue
+        signal_date = item.get("signal_date") or "unknown"
+        source_map.setdefault(code, []).append(f"limit_up_pullback({signal_date})")
     _add(load_nxt_eligible(), "nxt_eligible")
     _add(load_massive_dual_buy(), "massive_dual_buy")
     _add(load_oneshot_stealth(), "oneshot_stealth")

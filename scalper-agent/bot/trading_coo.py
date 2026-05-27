@@ -2278,6 +2278,27 @@ class TradingCOO:
     # ─────────────────────────────────────────────
     # C7L: limit_up_engine 일일 스캔 (매일 G6에서 자동 실행)
     # ─────────────────────────────────────────────
+    async def _job_limit_up_realtime(self, context=None) -> dict:
+        """C7L-RT: 장중 LimitUpEngine 스캔.
+
+        주문은 내지 않고 watchlist/signals만 갱신한다. Rule D 14:50 job이
+        D+0 후보를 볼 수 있게 단일 scalper-agent 내부 JobQueue에서만 돈다.
+        """
+        try:
+            from data.limit_up_engine import run_realtime
+
+            result = await asyncio.to_thread(run_realtime, False)
+            if isinstance(result, dict) and not result.get("skipped"):
+                logger.info(
+                    "[C7L-RT] limit_up_engine realtime — 신규 %s, 트리거 %s",
+                    result.get("new_signals", 0),
+                    result.get("triggered", 0),
+                )
+            return result if isinstance(result, dict) else {"limit_up_realtime": result}
+        except Exception as e:
+            logger.warning(f"[C7L-RT] limit_up_engine realtime 실패 (무시): {e}")
+            return {"limit_up_realtime": f"ERROR: {e}"}
+
     async def _job_limit_up_engine(self, context=None) -> dict:
         """C7L: 상한가 눌림목 엔진 일일 스캔 + Supabase 업로드.
 
@@ -4866,6 +4887,10 @@ class TradingCOO:
         # ── 검증모드 v2: 장중 멀티시그널 진입 (5분 반복, 09:05~14:00) ──
         # 사장님 결정 2026-05-17: 추천 외 종목도 체결강도+거래량+tipping 3개 동시 충족 시 자동 진입
         # 검증 모드 OFF / 시간 외 / 후보 없음 → graceful skip
+        # ── Rule D D+0 후보 갱신: LimitUpEngine 장중 스캔 (주문 없음, 단일 봇 내부) ──
+        jq.run_repeating(self._job_limit_up_realtime, interval=300, first=1800)
+        logger.info("[COO] LimitUpEngine realtime 등록: 5분 반복 (09:30~14:45 내부 가드, 주문 없음)")
+
         jq.run_repeating(self._job_intraday_verification_scan, interval=300, first=540)
         logger.info("[COO] 검증모드 장중 스캔 등록: 5분 반복 (09:05~14:00 활성)")
 

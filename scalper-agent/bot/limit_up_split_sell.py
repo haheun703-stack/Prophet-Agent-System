@@ -146,10 +146,10 @@ def should_trigger_eod_split(
     if already_split:
         return SplitSellDecision(should_split=False, reason="이미 분할됨 (룰 3 우선)")
 
-    if timing_mode == "previous_close":
+    if timing_mode not in ("open", "previous_close", "rule_d_pre_close"):
         return SplitSellDecision(
             should_split=False,
-            reason="14:50 매수 (timing_mode=previous_close) → 자동 D+1 매도 정책, 룰 B 미적용",
+            reason=f"timing_mode={timing_mode} → 룰 B 미적용",
         )
 
     if pnl_pct < EOD_SPLIT_TRIGGER_PCT:

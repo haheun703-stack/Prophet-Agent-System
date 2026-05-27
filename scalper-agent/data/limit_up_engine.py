@@ -32,8 +32,6 @@ Usage:
   python -m data.limit_up_engine --check        # 감시풀 눌림목 체크만
   python -m data.limit_up_engine --status       # 현재 감시풀 상태 출력
 """
-from __future__ import annotations
-
 import json
 import logging
 import sys
@@ -552,6 +550,7 @@ class WatchItem:
     overheat_pct: float              # 과열도
     limit_count: int                 # 상한가 이력 횟수
     monitor_until: str               # 감시 만료일 (YYYY-MM-DD)
+    signal_close_price: float = 0.0   # Rule D canonical alias of signal_close
     entry_type: str = "next_day"     # next_day (3번째+ 상한가) / pullback (눌림목 대기)
     status: str = "monitoring"       # monitoring / triggered / expired / entered
     entry_price: float = 0.0         # 추천 진입가
@@ -586,6 +585,12 @@ class WatchItem:
     continuation_score: float = 0.0  # 연속성 점수 (0~100)
     split_plan: list = field(default_factory=list)  # 분할매수 계획
 
+    def __post_init__(self):
+        if not self.signal_close_price and self.signal_close:
+            self.signal_close_price = self.signal_close
+        elif not self.signal_close and self.signal_close_price:
+            self.signal_close = self.signal_close_price
+
 
 def load_watchlist() -> list[WatchItem]:
     """감시풀 로드"""
@@ -595,6 +600,10 @@ def load_watchlist() -> list[WatchItem]:
         data = json.loads(WATCHLIST_PATH.read_text(encoding="utf-8"))
         items = []
         for d in data.get("items", []):
+            if "signal_close_price" not in d and d.get("signal_close") is not None:
+                d["signal_close_price"] = d.get("signal_close")
+            if "signal_close" not in d and d.get("signal_close_price") is not None:
+                d["signal_close"] = d.get("signal_close_price")
             item = WatchItem(**{k: v for k, v in d.items()
                                 if k in WatchItem.__dataclass_fields__})
             items.append(item)
@@ -1354,6 +1363,84 @@ def run_daily(send_telegram: bool = True) -> dict:
     return result
 
 
+def is_realtime_window(now: datetime | None = None) -> bool:
+    """Return True during the 09:30-14:45 KST realtime scan window."""
+    from data.trading_calendar import is_trading_day
+
+    if now is None:
+        try:
+            from zoneinfo import ZoneInfo
+            now = datetime.now(ZoneInfo("Asia/Seoul"))
+        except Exception:
+            now = datetime.now()
+    if not is_trading_day(now.date()):
+        return False
+    minutes = now.hour * 60 + now.minute
+    return (9 * 60 + 30) <= minutes <= (14 * 60 + 45)
+
+
+def run_realtime(send_telegram: bool = False, now: datetime | None = None) -> dict:
+    """Intraday LimitUpEngine pass for the single scalper-agent service.
+
+    This does not place orders. It updates watchlist/signals so Rule D can see
+    D+0 candidates before the 14:50 entry job.
+    """
+    if now is None:
+        try:
+            from zoneinfo import ZoneInfo
+            now = datetime.now(ZoneInfo("Asia/Seoul"))
+        except Exception:
+            now = datetime.now()
+    if not is_realtime_window(now):
+        logger.info("[realtime] outside realtime window — skip")
+        return {
+            "mode": "realtime",
+            "skipped": True,
+            "reason": "outside_window",
+            "scan_date": now.isoformat(),
+        }
+
+    watchlist = load_watchlist()
+    pullback_triggered = check_pullback_entries(watchlist)
+
+    new_signals = scan_new_signals()
+    existing_codes = {w.code for w in watchlist}
+    new_unique = [s for s in new_signals if s.code not in existing_codes]
+
+    active_watchlist = [
+        w for w in watchlist
+        if w.status in ("monitoring", "triggered", "entered")
+    ]
+    active_watchlist.extend(new_unique)
+    save_watchlist(active_watchlist)
+
+    strategy1 = [s for s in new_unique if s.entry_type == "next_day" and s.status == "triggered"]
+    all_triggered = strategy1 + pullback_triggered
+    if all_triggered:
+        save_signals(all_triggered)
+        msg = format_telegram_alert(all_triggered)
+        if msg:
+            print(msg)
+            if send_telegram:
+                send_telegram_alert(msg)
+
+    result = {
+        "mode": "realtime",
+        "skipped": False,
+        "scan_date": now.isoformat(),
+        "watchlist_total": len(active_watchlist),
+        "new_signals": len(new_unique),
+        "triggered": len(all_triggered),
+        "strategy1_count": len(strategy1),
+        "pullback_count": len(pullback_triggered),
+    }
+    logger.info(
+        "[realtime] 완료: 신규 %s, 트리거 %s, 감시풀 %s",
+        len(new_unique), len(all_triggered), len(active_watchlist),
+    )
+    return result
+
+
 def print_status():
     """현재 감시풀 상태 출력"""
     watchlist = load_watchlist()
@@ -1404,6 +1491,8 @@ def main():
     parser = argparse.ArgumentParser(description="상한가 눌림목 엔진 v3.0 (6자수급+생존필터+로테이션)")
     parser.add_argument("--check", action="store_true",
                         help="감시풀 눌림목 체크만 (신규 스캔 없음)")
+    parser.add_argument("--realtime", action="store_true",
+                        help="장중 09:30~14:45 실시간 스캔 (주문 없음)")
     parser.add_argument("--status", action="store_true",
                         help="현재 감시풀 상태 출력")
     parser.add_argument("--no-telegram", action="store_true",
@@ -1412,6 +1501,11 @@ def main():
 
     if args.status:
         print_status()
+        return
+
+    if args.realtime:
+        result = run_realtime(send_telegram=not args.no_telegram)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
         return
 
     if args.check:

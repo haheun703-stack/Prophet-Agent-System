@@ -187,12 +187,13 @@ def test_rule_b_already_split():
     print("[PASS] 룰 B: already_split=True → 중복 방지 (룰 3 우선)")
 
 
-def test_rule_b_previous_close_skip():
-    """timing_mode='previous_close' (14:50 매수) → 룰 B 미적용 (자동 D+1 매도)."""
+def test_rule_b_previous_close_applies():
+    """timing_mode='previous_close' Rule D buy applies Rule B split."""
     d = should_trigger_eod_split(pnl_pct=15.0, qty=100, timing_mode="previous_close")
-    assert not d.should_split
-    assert "previous_close" in d.reason
-    print("[PASS] 룰 B: 14:50 매수 → 자동 D+1 매도 정책 (룰 B skip)")
+    assert d.should_split
+    assert d.sell_qty == 50
+    assert d.hold_qty == 50
+    print("[PASS] Rule B: previous_close Rule D buy -> split applies")
 
 
 def test_rule_b_single_share():
@@ -271,7 +272,7 @@ if __name__ == "__main__":
         test_rule_b_18pct,
         test_rule_b_priority_to_rule_3,
         test_rule_b_already_split,
-        test_rule_b_previous_close_skip,
+        test_rule_b_previous_close_applies,
         test_rule_b_single_share,
         # ★ 룰 C (5/25 신규) — 5건 ★
         test_rule_c_no_gap_down,

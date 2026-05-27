@@ -115,6 +115,10 @@ def test_pre_close_d_position_attributes():
     assert "'source': 'pre_close_d'" in func_src, "source 마커 누락"
     # timing_mode='previous_close'
     assert "'timing_mode': 'previous_close'" in func_src, "timing_mode 누락"
+    assert "'pending_next_day': True" in func_src, "룰 C pending_next_day 보호 마커 누락"
+    assert "'rule_b_watch': True" in func_src, "룰 B watch 마커 누락"
+    assert "'rule_c_protection': True" in func_src, "룰 C 보호 마커 누락"
+    assert "'limit_up_split_watch': True" in func_src, "상한가 분할매도 watch 마커 누락"
     print("[PASS] 매수 후 positions 속성 (mode=swing, TP=0, source, timing_mode) 정확")
 
 

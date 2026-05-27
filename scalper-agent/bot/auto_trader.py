@@ -2794,6 +2794,7 @@ class AutoTrader:
 
         try:
             from utils.asset_pool_loader import collect_all_candidates, get_candidate_source_map
+            from bot.rule_d_dday_guard import load_signal_map, evaluate_rule_d_signal
             from data.intraday_eye import IntradayEye
             from data.orderbook_collector import get_orderbook_snapshot_kis, analyze_orderbook
         except Exception as e:
@@ -2813,10 +2814,16 @@ class AutoTrader:
                             code_to_name[c] = n
 
         src_map = get_candidate_source_map()
-        # 5개+ 소스 일치 우선, 4개, 3개 순
+        limit_up_signal_map = load_signal_map()
+        candidate_codes = {c for c, s in src_map.items() if len(s) >= 3}
+        candidate_codes.update(limit_up_signal_map.keys())
+        for code, info in limit_up_signal_map.items():
+            if info.name and code not in code_to_name:
+                code_to_name[code] = info.name
+        # 5개+ 소스 일치 우선, 4개, 3개 순 + LimitUpEngine D-day candidates
         candidates_sorted = sorted(
-            [(c, len(s)) for c, s in src_map.items() if len(s) >= 3],
-            key=lambda x: -x[1]
+            [(c, len(src_map.get(c, []))) for c in candidate_codes],
+            key=lambda x: (0 if x[0] in limit_up_signal_map else 1, -x[1])
         )
 
         # 2. KIS 실시간 등락률 + 눌림 검증
@@ -2839,12 +2846,25 @@ class AutoTrader:
                 chg = float(price_info.get('change_rate', 0))
                 if curr <= 0 or hi <= 0:
                     continue
-                # 조건 1: 오늘 +10% 이상 강세
-                if chg < 10.0:
+                signal_info = limit_up_signal_map.get(code)
+                rule_d_decision = None
+                if signal_info:
+                    rule_d_decision = evaluate_rule_d_signal(
+                        signal_info, current_price=curr, today=date.today()
+                    )
+                    if not rule_d_decision.allowed:
+                        logger.info(
+                            "[pre_close_d] %s LimitUpEngine %s",
+                            code, rule_d_decision.reason,
+                        )
+                        continue
+                # 조건 1: 오늘 +10% 이상 강세. LimitUpEngine D+0/D+1 후보는
+                # signal_date/누적상승률 가드가 대신 추격을 차단한다.
+                if not signal_info and chg < 10.0:
                     continue
                 # 조건 2: 현재가가 고가 대비 -3% 이상 눌림 (사장님 룰)
                 pullback_pct = (hi - curr) / hi * 100
-                if pullback_pct < 3.0:
+                if pullback_pct < 3.0 and not signal_info:
                     continue   # 고점 부근 (추격 위험)
 
                 # 조건 3: VWAP 추격 차단
@@ -2872,14 +2892,32 @@ class AutoTrader:
                     'code': code, 'name': name, 'curr': curr, 'hi': hi,
                     'chg': chg, 'pullback_pct': pullback_pct,
                     'src_count': _src_count, 'vwap_pos': vwap_pos,
+                    'rule_d_d_plus': rule_d_decision.d_plus if rule_d_decision else None,
+                    'rule_d_cumulative_pct': (
+                        rule_d_decision.cumulative_pct if rule_d_decision else None
+                    ),
+                    'rule_d_priority_boost': (
+                        rule_d_decision.priority_boost if rule_d_decision else 0
+                    ),
+                    'limit_up_signal_date': (
+                        signal_info.signal_date.isoformat() if signal_info else ""
+                    ),
+                    'limit_up_signal_close_price': (
+                        signal_info.signal_close_price if signal_info else 0
+                    ),
                 })
                 if len(eligible) >= top_k * 3:   # 후보 충분
                     break
             except Exception as _ee:
                 logger.warning(f"[pre_close_d] {code} 검증 예외: {_ee}")
 
-        # 3. 정렬: 소스 수 우선 → 강세 우선 → 눌림 깊이
-        eligible.sort(key=lambda x: (-x['src_count'], -x['chg'], -x['pullback_pct']))
+        # 3. 정렬: LimitUpEngine D+0/D+1 우선 → 소스 수 → 강세 → 눌림 깊이
+        eligible.sort(key=lambda x: (
+            -x.get('rule_d_priority_boost', 0),
+            -x['src_count'],
+            -x['chg'],
+            -x['pullback_pct'],
+        ))
         targets = eligible[:top_k]
 
         if not targets:
@@ -2944,15 +2982,25 @@ class AutoTrader:
                         'name': name, 'qty': actual_qty,
                         'buy_price': actual_buy_price, 'entry_price': actual_buy_price,
                         'high_watermark': actual_buy_price,
-                        'trailing_activated': False, 'trailing_sl': 0,
-                        'stop_loss': int(actual_buy_price * 0.97),   # 매수가 -3% NORMAL SL
+                        'trailing_activated': True,
+                        'trailing_sl': SAJANG.get_trailing_sl(actual_buy_price),
+                        'stop_loss': SAJANG.get_normal_sl(actual_buy_price),
                         'take_profit': 0,   # 사장님 영구 룰 (트레일링 only)
                         'regime': 'NORMAL', 'mode': 'swing',   # 다음날 매도 정책
                         'source': 'pre_close_d',
                         'timing_mode': 'previous_close',
+                        'pending_next_day': True,
+                        'pending_next_day_source': 'rule_d_pre_close',
+                        'rule_b_watch': True,
+                        'rule_c_protection': True,
+                        'limit_up_split_watch': True,
                         'entry_date': datetime.now().date().isoformat(),
                         'src_count': t['src_count'],
                         'vwap_pos': t['vwap_pos'],
+                        'rule_d_d_plus': t.get('rule_d_d_plus'),
+                        'rule_d_cumulative_pct': t.get('rule_d_cumulative_pct'),
+                        'limit_up_signal_date': t.get('limit_up_signal_date', ''),
+                        'limit_up_signal_close_price': t.get('limit_up_signal_close_price', 0),
                         'split_leg1': split_result.leg1_bought,
                         'split_leg2': split_result.leg2_bought,
                         'split_leg3': split_result.leg3_bought,
