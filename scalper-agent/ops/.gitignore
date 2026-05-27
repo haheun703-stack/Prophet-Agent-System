@@ -4,3 +4,4 @@ codex_outbox/*
 !codex_outbox/.gitkeep
 approval_required/*
 !approval_required/.gitkeep
+.codex_auto_last.txt

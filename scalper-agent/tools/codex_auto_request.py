@@ -17,7 +17,7 @@ except Exception:  # pragma: no cover
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-STATE_PATH = PROJECT_ROOT / "ops" / "codex_inbox" / "_codex_auto_last.txt"
+STATE_PATH = PROJECT_ROOT / "ops" / ".codex_auto_last.txt"
 
 RISK_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
 
