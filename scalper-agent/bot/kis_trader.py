@@ -34,6 +34,11 @@ from data.kis_collector import UNIVERSE
 NAME_TO_CODE = {info[0]: code for code, info in UNIVERSE.items()}
 CODE_TO_NAME = {code: info[0] for code, info in UNIVERSE.items()}
 
+try:
+    from data.sajang_rules import SAJANG
+except Exception:
+    SAJANG = None
+
 
 def _safe_int(val, default=0) -> int:
     """KIS API가 빈 문자열/None 반환 시 안전하게 int 변환"""
@@ -83,6 +88,32 @@ class KISTrader:
         self._lock = threading.Lock()  # 스레드 안전: tracker+summary 동시 호출 방지
         self._last_balance = None              # tr_cont 에러 시 캐시 fallback
         self._last_balance_at: float = 0.0     # 캐시 저장 시각 (epoch)
+
+    def _is_auto_trade_disabled(self) -> bool:
+        return bool(getattr(SAJANG, "AUTO_TRADE_DISABLED", False))
+
+    def _order_gate(self, side: str, code: str, qty: int, *, manual: bool = False,
+                    source: str = "") -> Optional[dict]:
+        """Block automated real orders when SAJANG.AUTO_TRADE_DISABLED is on.
+
+        Manual Telegram/CLI orders must pass manual=True explicitly.
+        """
+        if manual:
+            return None
+        if not self._is_auto_trade_disabled():
+            return None
+
+        msg = (
+            f"AUTO_TRADE_DISABLED=True - blocked auto {side} order: "
+            f"{code} x {qty}"
+        )
+        logger.warning("[ORDER BLOCKED] %s source=%s", msg, source)
+        return {
+            "success": False,
+            "blocked": True,
+            "reason": "AUTO_TRADE_DISABLED",
+            "message": msg,
+        }
 
     def _get_broker(self, force_refresh=False):
         """브로커 (토큰 자동 갱신, 스레드 안전)
@@ -360,6 +391,8 @@ class KISTrader:
                         "high": _safe_int(output.get("stck_hgpr", 0)),
                         "low": _safe_int(output.get("stck_lwpr", 0)),
                         "open": _safe_int(output.get("stck_oprc", 0)),
+                        "vwap": _safe_int(output.get("wghn_avrg_stck_prc", 0)),
+                        "vwap_source": "KIS_WEIGHTED_AVG",
                         "strength": _safe_float(output.get("tday_rltv", 0) or 0),
                         "listed_shares": _safe_int(output.get("lstn_stcn", 0)),
                     }
@@ -519,7 +552,8 @@ class KISTrader:
     #  주문 (분할 매수/매도)
     # ═══════════════════════════════════════
 
-    def buy_market(self, code: str, qty: int, split: int = None) -> dict:
+    def buy_market(self, code: str, qty: int, split: int = None,
+                   manual: bool = False) -> dict:
         """시장가 매수 - 분할 주문 지원
 
         Args:
@@ -532,7 +566,7 @@ class KISTrader:
         name = CODE_TO_NAME.get(code, code)
 
         if split <= 1 or qty <= 1:
-            return self._execute_buy(code, qty, name)
+            return self._execute_buy(code, qty, name, manual=manual)
 
         # 분할 주문
         chunk = qty // split
@@ -544,7 +578,7 @@ class KISTrader:
             q = chunk + (1 if i < remainder else 0)
             if q <= 0:
                 continue
-            r = self._execute_buy(code, q, name)
+            r = self._execute_buy(code, q, name, manual=manual)
             results.append(r)
             if r.get("success"):
                 total_filled += q
@@ -564,8 +598,12 @@ class KISTrader:
             logger.warning(f"매매일지 기록 실패 (BUY {code}): {e}")
         return {"success": success, "message": msg}
 
-    def _execute_buy(self, code: str, qty: int, name: str) -> dict:
+    def _execute_buy(self, code: str, qty: int, name: str,
+                     manual: bool = False) -> dict:
         """단건 시장가 매수"""
+        blocked = self._order_gate("BUY", code, qty, manual=manual, source="market")
+        if blocked:
+            return blocked
         try:
             broker = self._get_broker()
             resp = broker.create_market_buy_order(symbol=code, quantity=qty)
@@ -582,7 +620,8 @@ class KISTrader:
             logger.error(f"매수 실패 {code}: {e}")
             return {"success": False, "message": f"매수 실패: {e}"}
 
-    def sell_market(self, code: str, qty: int, split: int = None) -> dict:
+    def sell_market(self, code: str, qty: int, split: int = None,
+                    manual: bool = False) -> dict:
         """시장가 매도 - 분할 주문 지원"""
         if split is None:
             split = self.config.get("risk", {}).get("split_count", 3)
@@ -591,7 +630,7 @@ class KISTrader:
         name = CODE_TO_NAME.get(code, code)
 
         if split <= 1 or qty <= 1:
-            return self._execute_sell(code, qty, name)
+            return self._execute_sell(code, qty, name, manual=manual)
 
         # 분할 주문
         chunk = qty // split
@@ -603,7 +642,7 @@ class KISTrader:
             q = chunk + (1 if i < remainder else 0)
             if q <= 0:
                 continue
-            r = self._execute_sell(code, q, name)
+            r = self._execute_sell(code, q, name, manual=manual)
             results.append(r)
             if r.get("success"):
                 total_filled += q
@@ -623,8 +662,12 @@ class KISTrader:
             logger.warning(f"매매일지 기록 실패 (SELL {code}): {e}")
         return {"success": success, "message": msg}
 
-    def _execute_sell(self, code: str, qty: int, name: str) -> dict:
+    def _execute_sell(self, code: str, qty: int, name: str,
+                      manual: bool = False) -> dict:
         """단건 시장가 매도"""
+        blocked = self._order_gate("SELL", code, qty, manual=manual, source="market")
+        if blocked:
+            return blocked
         try:
             broker = self._get_broker()
             resp = broker.create_market_sell_order(symbol=code, quantity=qty)
@@ -664,7 +707,8 @@ class KISTrader:
         else:
             return int(-(-price // tick)) * tick  # ceil
 
-    def smart_buy(self, code: str, qty: int, max_wait_sec: int = 90) -> dict:
+    def smart_buy(self, code: str, qty: int, max_wait_sec: int = 90,
+                  manual: bool = False) -> dict:
         """스마트 지정가 매수 - 3단계 에스컬레이션
 
         1단계: 현재가 -0.5% 지정가 → 30초 대기
@@ -674,6 +718,9 @@ class KISTrader:
         시장가 대비 평균 0.2~0.5% 절약 효과
         """
         name = CODE_TO_NAME.get(code, code)
+        blocked = self._order_gate("BUY", code, qty, manual=manual, source="smart_buy")
+        if blocked:
+            return blocked
 
         # 현재가 조회
         price_info = self.fetch_price(code)
@@ -694,14 +741,14 @@ class KISTrader:
             if not resp or resp.get("rt_cd") != "0":
                 msg = resp.get("msg1", "알 수 없는 오류") if resp else "응답 없음"
                 logger.warning(f"스마트매수 1단계 실패: {msg} → 시장가 폴백")
-                return self.buy_market(code, qty, split=1)
+                return self.buy_market(code, qty, split=1, manual=manual)
 
             order_no = resp.get("output", {}).get("ODNO", "")
             org_no = resp.get("output", {}).get("KRX_FWDG_ORD_ORGNO", "")
 
         except Exception as e:
             logger.error(f"스마트매수 주문 실패: {e} → 시장가 폴백")
-            return self.buy_market(code, qty, split=1)
+            return self.buy_market(code, qty, split=1, manual=manual)
 
         # ── 체결 대기 (1단계: 30초) ──
         wait_per_step = max_wait_sec // 3
@@ -753,7 +800,7 @@ class KISTrader:
         except Exception as e:
             logger.warning(f"주문 수정 실패: {e} → 취소 후 시장가")
             self.cancel_order(order_no, org_no=org_no, qty=qty)
-            return self.buy_market(code, qty, split=1)
+            return self.buy_market(code, qty, split=1, manual=manual)
 
         filled = self._wait_for_fill(order_no, wait_per_step, org_no=org_no, qty=qty)
 
@@ -772,7 +819,8 @@ class KISTrader:
 
     def chase_buy(self, code: str, qty: int, max_wait_sec: int = 180,
                   initial_discount_pct: float = -0.3,
-                  cycle_sec: int = 5) -> dict:
+                  cycle_sec: int = 5,
+                  manual: bool = False) -> dict:
         """지정가 추격 매수 — 시장가 폴백 X (사장님 5/21 23:00 명령).
 
         smart_buy 진화 버전:
@@ -796,6 +844,9 @@ class KISTrader:
             {success, order_no, message, chase_count, final_price}
         """
         name = CODE_TO_NAME.get(code, code)
+        blocked = self._order_gate("BUY", code, qty, manual=manual, source="chase_buy")
+        if blocked:
+            return blocked
 
         # 초기 가격 조회
         price_info = self.fetch_price(code)
@@ -896,7 +947,8 @@ class KISTrader:
             "chase_count": chase_count,
         }
 
-    def smart_sell(self, code: str, qty: int, max_wait_sec: int = 60) -> dict:
+    def smart_sell(self, code: str, qty: int, max_wait_sec: int = 60,
+                   manual: bool = False) -> dict:
         """스마트 지정가 매도 - 3단계 에스컬레이션
 
         1단계: 현재가 +0.5% 지정가 → 20초 대기
@@ -906,6 +958,9 @@ class KISTrader:
         긴급 매도(SL)에는 사용하지 않음 - 시장가 직행
         """
         name = CODE_TO_NAME.get(code, code)
+        blocked = self._order_gate("SELL", code, qty, manual=manual, source="smart_sell")
+        if blocked:
+            return blocked
 
         price_info = self.fetch_price(code)
         if not price_info.get("success"):
@@ -925,14 +980,14 @@ class KISTrader:
             if not resp or resp.get("rt_cd") != "0":
                 msg = resp.get("msg1", "알 수 없는 오류") if resp else "응답 없음"
                 logger.warning(f"스마트매도 1단계 실패: {msg} → 시장가 폴백")
-                return self.sell_market(code, qty, split=1)
+                return self.sell_market(code, qty, split=1, manual=manual)
 
             order_no = resp.get("output", {}).get("ODNO", "")
             org_no = resp.get("output", {}).get("KRX_FWDG_ORD_ORGNO", "")
 
         except Exception as e:
             logger.error(f"스마트매도 주문 실패: {e} → 시장가 폴백")
-            return self.sell_market(code, qty, split=1)
+            return self.sell_market(code, qty, split=1, manual=manual)
 
         # ── 체결 대기 ──
         wait_per_step = max_wait_sec // 3
@@ -984,7 +1039,7 @@ class KISTrader:
         except Exception as e:
             logger.warning(f"주문 수정 실패: {e} → 취소 후 시장가")
             self.cancel_order(order_no, org_no=org_no, qty=qty)
-            return self.sell_market(code, qty, split=1)
+            return self.sell_market(code, qty, split=1, manual=manual)
 
         filled = self._wait_for_fill(order_no, wait_per_step, org_no=org_no, qty=qty)
 
@@ -999,7 +1054,7 @@ class KISTrader:
         # 최종 → 시장가 폴백
         self.cancel_order(order_no, org_no=org_no, qty=qty)
         logger.warning(f"스마트매도 실패 → 시장가 매도 폴백")
-        return self.sell_market(code, qty, split=1)
+        return self.sell_market(code, qty, split=1, manual=manual)
 
     def _wait_for_fill(self, order_no: str, wait_sec: int,
                        org_no: str = "", qty: int = 0) -> bool:
@@ -1304,7 +1359,8 @@ class KISTrader:
     # 전략: NXT 먼저 시도 → 실패 시 KRX 시간외 폴백
 
     def _afterhours_order(self, code: str, qty: int, price: int,
-                          side: str, exchange: str) -> dict:
+                          side: str, exchange: str,
+                          manual: bool = False) -> dict:
         """시간외 주문 공통 로직.
 
         Args:
@@ -1312,6 +1368,11 @@ class KISTrader:
             exchange: "NXT" or "KRX"
         """
         name = CODE_TO_NAME.get(code, code)
+        blocked = self._order_gate(
+            side.upper(), code, qty, manual=manual, source=f"afterhours:{exchange}"
+        )
+        if blocked:
+            return blocked
         broker = self._get_broker()
         path = "/uapi/domestic-stock/v1/trading/order-cash"
         acc_clean = broker.acc_no.replace("-", "")
@@ -1368,7 +1429,7 @@ class KISTrader:
                     "message": f"{label} {side_kr} 실패: {err}"}
 
     def afterhours_buy(self, code: str, qty: int, price: int = 0,
-                       exchange: str = "auto") -> dict:
+                       exchange: str = "auto", manual: bool = False) -> dict:
         """시간외 매수 (NXT 대체거래소 우선 + KRX 폴백)
 
         exchange: "auto" → NXT 시도 후 실패 시 KRX 시간외
@@ -1385,21 +1446,27 @@ class KISTrader:
 
             if exchange == "auto":
                 # 1차: NXT 대체거래소 시도
-                result = self._afterhours_order(code, qty, price, "buy", "NXT")
+                result = self._afterhours_order(
+                    code, qty, price, "buy", "NXT", manual=manual
+                )
                 if result["success"]:
                     return result
                 logger.info(f"NXT 매수 실패 → KRX 시간외 폴백: {name}({code})")
                 # 2차: KRX 시간외 단일가 폴백
-                return self._afterhours_order(code, qty, price, "buy", "KRX")
+                return self._afterhours_order(
+                    code, qty, price, "buy", "KRX", manual=manual
+                )
             else:
-                return self._afterhours_order(code, qty, price, "buy", exchange)
+                return self._afterhours_order(
+                    code, qty, price, "buy", exchange, manual=manual
+                )
 
         except Exception as e:
             logger.error(f"시간외 매수 예외 {code}: {e}")
             return {"success": False, "message": f"시간외 매수 예외: {e}"}
 
     def afterhours_sell(self, code: str, qty: int, price: int = 0,
-                        exchange: str = "auto") -> dict:
+                        exchange: str = "auto", manual: bool = False) -> dict:
         """시간외 매도 (NXT 대체거래소 우선 + KRX 폴백)
 
         exchange: "auto" → NXT 시도 후 실패 시 KRX 시간외
@@ -1415,13 +1482,19 @@ class KISTrader:
                 price = pi["current_price"]
 
             if exchange == "auto":
-                result = self._afterhours_order(code, qty, price, "sell", "NXT")
+                result = self._afterhours_order(
+                    code, qty, price, "sell", "NXT", manual=manual
+                )
                 if result["success"]:
                     return result
                 logger.info(f"NXT 매도 실패 → KRX 시간외 폴백: {name}({code})")
-                return self._afterhours_order(code, qty, price, "sell", "KRX")
+                return self._afterhours_order(
+                    code, qty, price, "sell", "KRX", manual=manual
+                )
             else:
-                return self._afterhours_order(code, qty, price, "sell", exchange)
+                return self._afterhours_order(
+                    code, qty, price, "sell", exchange, manual=manual
+                )
 
         except Exception as e:
             logger.error(f"시간외 매도 예외 {code}: {e}")
@@ -1449,6 +1522,9 @@ class KISTrader:
     def nxt_safe_buy(self, code: str, amount: int) -> dict:
         """NXT 금액 기반 시간외 매수 (잔고 확인 포함)"""
         name = CODE_TO_NAME.get(code, code)
+        blocked = self._order_gate("BUY", code, 0, source="nxt_safe_buy")
+        if blocked:
+            return blocked
 
         pi = self.fetch_price(code)
         if not pi.get("success"):
@@ -1496,6 +1572,10 @@ class KISTrader:
         7. 거래량 대비 비중 확인 (10% 이하)
         8. 스마트 지정가 매수
         """
+        blocked = self._order_gate("BUY", code, 0, source="safe_buy")
+        if blocked:
+            return blocked
+
         # 1. 위험시간 체크
         danger_msg = self._check_danger_time()
         if danger_msg:
@@ -1586,7 +1666,8 @@ class KISTrader:
         # 7. 스마트 지정가 매수 (시장가 대비 0.2~0.5% 절약)
         return self.smart_buy(code, qty)
 
-    def liquidate_one(self, code: str, urgent: bool = False) -> dict:
+    def liquidate_one(self, code: str, urgent: bool = False,
+                      manual: bool = False) -> dict:
         """특정 종목 전량 청산.
 
         ★ 5/21 09:50 사장님 박사 명령: 호가창 보고 지정가 매매 ★
@@ -1604,8 +1685,8 @@ class KISTrader:
             if pos["code"] == code:
                 # 박사 자율: 긴급 SL은 시장가 / 일반 익절/리벨런싱은 smart_sell
                 if urgent:
-                    return self.sell_market(code, pos["qty"])
-                return self.smart_sell(code, pos["qty"])
+                    return self.sell_market(code, pos["qty"], manual=manual)
+                return self.smart_sell(code, pos["qty"], manual=manual)
 
         name = CODE_TO_NAME.get(code, code)
         return {"success": False, "message": f"{name}({code}) 보유 없음"}
@@ -2139,7 +2220,7 @@ class KISTrader:
             logger.warning(f"[NIGHT_FUT] 야간선물 조회 실패: {e}")
             return {"available": False, "reason": str(e)}
 
-    def liquidate_all(self) -> dict:
+    def liquidate_all(self, manual: bool = False) -> dict:
         """전종목 시장가 청산"""
         bal = self.fetch_balance()
         if not bal or not bal.get("success"):
@@ -2151,7 +2232,7 @@ class KISTrader:
         results = []
         failed_codes = []
         for pos in bal["positions"]:
-            r = self.sell_market(pos["code"], pos["qty"])
+            r = self.sell_market(pos["code"], pos["qty"], manual=manual)
             ok = r.get("success", False)
             results.append(f"{pos['name']}: {'성공' if ok else '실패'}")
             if not ok:

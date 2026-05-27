@@ -569,6 +569,13 @@ class AutoTrader:
         self._pending_auto_buys.clear()
         logger.info("자동매매 정지")
 
+    def _auto_trade_disabled(self) -> bool:
+        try:
+            from data.sajang_rules import SAJANG
+            return bool(getattr(SAJANG, "AUTO_TRADE_DISABLED", False))
+        except Exception:
+            return False
+
     def execute_pending_auto_buys(self) -> list[dict]:
         """대기 중인 자동매수 전부 실행 → 결과 리스트 반환
 
@@ -582,12 +589,13 @@ class AutoTrader:
 
         # ★ 5/27 사장님 영구 룰 — 모닝 자동 매수 영구 차단 (Rule Registry 단일 진실) ★
         from data.sajang_rules import SAJANG
-        if SAJANG.MORNING_AUTO_BUY_DISABLED:
+        if SAJANG.AUTO_TRADE_DISABLED or SAJANG.MORNING_AUTO_BUY_DISABLED:
             if self._pending_auto_buys:
                 codes = [item.get('code', '?') for item in self._pending_auto_buys]
                 logger.warning(
                     f"[자동매수] ★★★ 사장님 영구 룰 차단 ★★★ "
-                    f"MORNING_AUTO_BUY_DISABLED=True (5/27 사장님 명령) / "
+                    f"AUTO_TRADE_DISABLED={SAJANG.AUTO_TRADE_DISABLED} / "
+                    f"MORNING_AUTO_BUY_DISABLED={SAJANG.MORNING_AUTO_BUY_DISABLED} / "
                     f"대기 {len(self._pending_auto_buys)}건 모두 SKIP / 종목: {codes}"
                 )
                 # 대기 큐 비우기 (사고 재발 차단)
@@ -596,7 +604,7 @@ class AutoTrader:
                         "code": item.get("code", "?"),
                         "name": item.get("name", "?"),
                         "success": False,
-                        "reason": "★ 사장님 영구 룰 차단 (MORNING_AUTO_BUY_DISABLED) ★",
+                        "reason": "★ 사장님 영구 룰 차단 (AUTO_TRADE_DISABLED/MORNING_AUTO_BUY_DISABLED) ★",
                     })
                 self._pending_auto_buys.clear()
             return results
@@ -1671,6 +1679,9 @@ class AutoTrader:
                        [{code, name, total_score, entry, sources, ...}]
         """
         from data import verification_mode as _vm
+        if self._auto_trade_disabled():
+            logger.info("[verification_decide] AUTO_TRADE_DISABLED — skip")
+            return
 
         async def _send(text):
             if self._send_alert:
@@ -1848,6 +1859,9 @@ class AutoTrader:
         검증 모드 OFF / 시간 외 / 후보 없음 → 노옵.
         """
         from data import verification_mode as _vm
+        if self._auto_trade_disabled():
+            logger.info("[intraday_verification] AUTO_TRADE_DISABLED — skip")
+            return
 
         async def _send(text):
             if self._send_alert:
@@ -2099,6 +2113,9 @@ class AutoTrader:
                             ★ 5/21 아이디어 #1: dynamic_qty 토글 활성 시 자비스 자율 결정 ★
         """
         from data import verification_mode as _vm
+        if self._auto_trade_disabled():
+            logger.info("[asset_pool] AUTO_TRADE_DISABLED — skip")
+            return
 
         # ★ 5/25 휴장일 사고 fix ★ _send 정의를 최상단으로 이동 (이전: kis_bal 보고 호출 후 정의 → UnboundLocalError)
         # 사고 commit 7fa90b5에서 await _send(KIS 잔고 보고) 추가했으나 _send 정의가 뒤에 있어 09:15/14:50 매수 모두 실패
@@ -2752,6 +2769,9 @@ class AutoTrader:
         if not is_trading_day():
             logger.info("[pre_close_d] 휴장일 — skip")
             return
+        if self._auto_trade_disabled():
+            logger.info("[pre_close_d] AUTO_TRADE_DISABLED — skip")
+            return
 
         async def _send(text):
             if self._send_alert:
@@ -2946,6 +2966,9 @@ class AutoTrader:
     async def close_verification_positions(self):
         """15:25 강제 청산 (trading_coo에서 호출). verification 보유 전체 시장가 매도."""
         from data import verification_mode as _vm
+        if self._auto_trade_disabled():
+            logger.info("[verification_close] AUTO_TRADE_DISABLED — skip")
+            return
 
         async def _send(text):
             if self._send_alert:
@@ -3552,6 +3575,8 @@ class AutoTrader:
     async def job_monitor(self, context):
         """포지션 감시 - AI 4팩터 실시간 분석 (JobQueue 반복 호출)"""
         if not self._is_market_hours():
+            return
+        if self._auto_trade_disabled():
             return
 
         # ── 진입감시 대기열 체크 (장 시작 후 실시간 관찰 → 조건 충족 시 매수) ──
@@ -4381,6 +4406,9 @@ class AutoTrader:
         """
         if not self.is_running or self.mode != "swing":
             return
+        if self._auto_trade_disabled():
+            logger.info("[daily_reeval] AUTO_TRADE_DISABLED — skip (5/27 사장님 명령)")
+            return
         if not self._positions:
             return
 
@@ -4812,6 +4840,9 @@ class AutoTrader:
         """
         if not self.is_running:
             return
+        if self._auto_trade_disabled():
+            logger.info("[eod_close] AUTO_TRADE_DISABLED — skip (5/27 사장님 명령)")
+            return
 
         if self.mode == "day":
             # 데이 모드: 전량 청산 (preclose/predawn/pending_next_day 태그 포지션은 제외)
@@ -4956,6 +4987,9 @@ class AutoTrader:
         """
         if not self.is_running:
             return
+        if self._auto_trade_disabled():
+            logger.info("[eod_split_check] AUTO_TRADE_DISABLED — skip")
+            return
         # ★ CRITICAL #3 fix (5/25 재검수) ★ 휴장일 발동 차단 — 다른 모든 job과 동일 표준
         # 휴장일에 시장가 매도 시도 = 장 외 API 호출 + 텔레그램 의미 없는 알람
         if not is_trading_day():
@@ -5087,6 +5121,9 @@ class AutoTrader:
           4. 발동 X 시 트레일링 -3% 활성 유지 (별도 모듈에서 처리)
         """
         if not self.is_running:
+            return
+        if self._auto_trade_disabled():
+            logger.info("[d1_gap_check] AUTO_TRADE_DISABLED — skip")
             return
         # ★ CRITICAL #3 fix (5/25 재검수) ★ 휴장일 발동 차단 — 다른 모든 job과 동일 표준
         if not is_trading_day():
@@ -5686,6 +5723,9 @@ class AutoTrader:
         """16:35 - NIGHTWATCH 최종 판단 + NXT 매수 결정"""
         if not is_trading_day():
             return
+        if self._auto_trade_disabled():
+            logger.info("[nightwatch_decide] AUTO_TRADE_DISABLED — skip")
+            return
 
         nw_cfg = self.config.get("nightwatch", {})
         if not nw_cfg.get("enabled", False):
@@ -5810,6 +5850,9 @@ class AutoTrader:
     async def job_nxt_morning_sell(self, context):
         """08:00 - NXT 포지션 매도 (장전 시간외)"""
         if not is_trading_day():
+            return
+        if self._auto_trade_disabled():
+            logger.info("[nxt_morning_sell] AUTO_TRADE_DISABLED — skip")
             return
 
         nw_cfg = self.config.get("nightwatch", {})
@@ -5996,6 +6039,9 @@ class AutoTrader:
         - 선취매: 추천 엔진 기반, 정규 포지션으로 전환 (Eye+Guardian 관리)
         """
         if not is_trading_day():
+            return
+        if self._auto_trade_disabled():
+            logger.info("[predawn_buy] AUTO_TRADE_DISABLED — skip")
             return
 
         nw_cfg = self.config.get("nightwatch", {})

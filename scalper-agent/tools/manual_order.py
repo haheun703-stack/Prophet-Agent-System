@@ -110,7 +110,7 @@ def cmd_buy(args):
 
     # 실제 주문 (분할 없이 원샷)
     print(f"\n  주문 전송 중...")
-    result = trader.buy_market(code, qty, split=1)
+    result = trader.buy_market(code, qty, split=1, manual=True)
     if result.get("success"):
         print(f"  ✅ {result['message']}")
         return 0
@@ -170,7 +170,7 @@ def cmd_sell(args):
 
     # 실제 주문
     print(f"\n  주문 전송 중...")
-    result = trader.sell_market(code, qty, split=1)
+    result = trader.sell_market(code, qty, split=1, manual=True)
     if result.get("success"):
         print(f"  ✅ {result['message']}")
         return 0

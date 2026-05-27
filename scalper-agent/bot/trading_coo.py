@@ -140,6 +140,16 @@ class TradingCOO:
         self.load_state()
         logger.info("[COO] TradingCOO 초기화 완료")
 
+    def _auto_trade_disabled(self, job_name: str = "") -> bool:
+        try:
+            from data.sajang_rules import SAJANG
+            disabled = bool(getattr(SAJANG, "AUTO_TRADE_DISABLED", False))
+        except Exception:
+            disabled = False
+        if disabled:
+            logger.info("[COO] AUTO_TRADE_DISABLED — skip %s", job_name or "auto job")
+        return disabled
+
     # ─────────────────────────────────────────────
     # 백그라운드 태스크 예외 콜백
     # ─────────────────────────────────────────────
@@ -4177,6 +4187,8 @@ class TradingCOO:
         검증 모드 OFF / 날짜 범위 외 / 보유 종목 없음 → 노옵 (graceful skip).
         """
         try:
+            if self._auto_trade_disabled("verification_close"):
+                return
             from data import verification_mode as _vm
             if not _vm.is_active():
                 logger.info("[COO] 검증모드 청산 스킵 (verification_mode OFF/날짜 외)")
@@ -4196,6 +4208,8 @@ class TradingCOO:
         호출 자체는 5분마다 실행되지만 내부 가드로 graceful skip.
         """
         try:
+            if self._auto_trade_disabled("intraday_verification_scan"):
+                return
             from data import verification_mode as _vm
             if not _vm.is_active():
                 return
@@ -4213,6 +4227,8 @@ class TradingCOO:
         장외 시간에도 동기화 사이클은 작동 (메모리 ↔ KIS 일관성 유지).
         """
         try:
+            if self._auto_trade_disabled("safety_check"):
+                return
             if not self.auto_trader:
                 return
             # config 토글 체크 (전역 OFF 시 노옵)
@@ -4234,6 +4250,8 @@ class TradingCOO:
         config.bot.jarvis_decision.dry_run=false 시 자동 실행 (5/26 D-Day).
         """
         try:
+            if self._auto_trade_disabled("jarvis_decision"):
+                return
             if not self.auto_trader:
                 return
             cfg = (self.auto_trader.config.get("bot", {}) or {}).get("jarvis_decision", {}) or {}
@@ -4274,6 +4292,8 @@ class TradingCOO:
         시초가 1분 후 호출 = 호가 변동성 최소화 + 빠른 탈출.
         """
         try:
+            if self._auto_trade_disabled("process_pending_sells"):
+                return
             if not self.auto_trader:
                 return
             cfg = (self.auto_trader.config.get("bot", {}) or {}).get("safety", {}) or {}
@@ -4421,6 +4441,8 @@ class TradingCOO:
         verification 모드 OFF / 후보 없음 / 게이트 차단 → 노옵.
         """
         try:
+            if self._auto_trade_disabled("asset_pool_scan"):
+                return
             # ★ 5/27 CRITICAL #1 fix ★ verification_mode 의존성 제거 (사장님 5/26 D-Day 정상화)
             # 옛: if not _vm.is_active(): return  — 검증모드 OFF 시 09:15 매수 차단 사고
             # 신규: is_trading_day() 가드만 (14:50 _job_asset_pool_previous_close와 동일 표준)
@@ -4453,6 +4475,8 @@ class TradingCOO:
         ★ 5/26 사고 fix ★ verification_mode 의존성 제거 (검증모드 OFF → 14:50 매수 차단 사고)
         """
         try:
+            if self._auto_trade_disabled("asset_pool_previous_close"):
+                return
             if not self.auto_trader:
                 return
             # ★ 사장님 5/26 새 룰 D ★

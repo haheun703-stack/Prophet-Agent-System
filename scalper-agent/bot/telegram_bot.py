@@ -1008,7 +1008,7 @@ class BodyHunterBot:
             )
             return
 
-        result = await asyncio.to_thread(self.trader.buy_market, code, qty)
+        result = await asyncio.to_thread(self.trader.buy_market, code, qty, manual=True)
         await update.message.reply_text(
             f"{'✅' if result.get('success') else '❌'} {result.get('message')}"
         )
@@ -1046,9 +1046,9 @@ class BodyHunterBot:
             return
 
         if qty:
-            result = await asyncio.to_thread(self.trader.sell_market, code, qty)
+            result = await asyncio.to_thread(self.trader.sell_market, code, qty, manual=True)
         else:
-            result = await asyncio.to_thread(self.trader.liquidate_one, code)
+            result = await asyncio.to_thread(self.trader.liquidate_one, code, manual=True)
 
         await update.message.reply_text(
             f"{'✅' if result.get('success') else '❌'} {result.get('message')}"
@@ -1068,19 +1068,19 @@ class BodyHunterBot:
 
         if pending["type"] == "buy":
             result = await asyncio.to_thread(
-                self.trader.buy_market, pending["code"], pending["qty"]
+                self.trader.buy_market, pending["code"], pending["qty"], manual=True
             )
         elif pending["type"] == "sell":
             if pending["qty"]:
                 result = await asyncio.to_thread(
-                    self.trader.sell_market, pending["code"], pending["qty"]
+                    self.trader.sell_market, pending["code"], pending["qty"], manual=True
                 )
             else:
                 result = await asyncio.to_thread(
-                    self.trader.liquidate_one, pending["code"]
+                    self.trader.liquidate_one, pending["code"], manual=True
                 )
         elif pending["type"] == "liquidate_all":
-            result = await asyncio.to_thread(self.trader.liquidate_all)
+            result = await asyncio.to_thread(self.trader.liquidate_all, manual=True)
         else:
             result = {"success": False, "message": "알 수 없는 주문"}
 
@@ -1103,7 +1103,7 @@ class BodyHunterBot:
             )
             return
 
-        result = await asyncio.to_thread(self.trader.liquidate_all)
+        result = await asyncio.to_thread(self.trader.liquidate_all, manual=True)
         await update.message.reply_text(
             f"{'✅' if result.get('success') else '❌'} {result.get('message')}"
         )
@@ -1385,6 +1385,18 @@ class BodyHunterBot:
             else:
                 cat = "TRADE_BUY" if "매수" in text else "TRADE_SELL" if "매도" in text else "SYSTEM"
                 log_event(cat, text[:200])
+
+        try:
+            from data.sajang_rules import SAJANG
+            if getattr(SAJANG, "AUTO_TRADE_DISABLED", False):
+                await update.message.reply_text(
+                    "🔒 자동매매 전체 OFF 상태입니다.\n"
+                    "SAJANG.AUTO_TRADE_DISABLED=True라서 자동 시작하지 않습니다.\n"
+                    "수동 매수/매도 명령만 허용됩니다."
+                )
+                return
+        except Exception:
+            pass
 
         self.auto_trader.start(_send_alert)
         bot_conf = self.config.get("bot", {})
@@ -2798,8 +2810,15 @@ class BodyHunterBot:
             return
         chat_id = int(self.chat_id)
 
+        auto_trade_locked = False
+        try:
+            from data.sajang_rules import SAJANG
+            auto_trade_locked = bool(getattr(SAJANG, "AUTO_TRADE_DISABLED", False))
+        except Exception:
+            auto_trade_locked = False
+
         # 자동매매 자동 시작 (auto_trade: true일 때)
-        if self.config.get("bot", {}).get("auto_trade", False):
+        if self.config.get("bot", {}).get("auto_trade", False) and not auto_trade_locked:
             async def _send_alert(text):
                 # MSG-03/04: 체결/긴급만 텔레그램, 나머지 log_event
                 _TG_KEYWORDS = ("✅ 자동 매수", "❌ 매수 실패", "매도 체결", "청산",
@@ -2824,13 +2843,17 @@ class BodyHunterBot:
             self.auto_trader.start(_send_alert)
             now_str = datetime.now().strftime("%H:%M")
             startup_msg = f"🔮 Body Hunter v5 시작 ({now_str}) | 자동매매 ON"
+        elif auto_trade_locked:
+            now_str = datetime.now().strftime("%H:%M")
+            startup_msg = f"🔮 Body Hunter v5 시작 ({now_str}) | 자동매매 LOCKED"
         else:
             now_str = datetime.now().strftime("%H:%M")
             startup_msg = f"🔮 Body Hunter v5 시작 ({now_str}) | 자동매매 OFF"
 
         # ── Phase 3-B: WebSocket 실시간 시세 자동 시작 (auto_trade=true 시만) ──
         try:
-            await self.auto_trader.start_websocket_monitor()
+            if self.config.get("bot", {}).get("auto_trade", False) and not auto_trade_locked:
+                await self.auto_trader.start_websocket_monitor()
         except Exception as e:
             logger.warning(f"WebSocket 시작 실패 (REST polling만 사용): {e}")
 
