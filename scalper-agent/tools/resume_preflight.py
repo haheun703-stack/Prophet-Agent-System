@@ -47,7 +47,7 @@ def _service_state_hint() -> str:
 
 
 def _is_runtime_worktree_line(line: str) -> bool:
-    path = line[3:] if len(line) > 3 else line
+    path = line[2:].strip() if len(line) > 2 else line.strip()
     path = path.replace("\\", "/")
     runtime_prefixes = (
         "scalper-agent/data_store/",
