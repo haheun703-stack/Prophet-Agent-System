@@ -93,3 +93,8 @@ jarvis/tests/cot_2024_cache.json
 # Windows 빈 파일 (nul 리다이렉트 잔재)
 nul
 *.pem
+
+# ★ 사장님 계좌 접근 키 — 절대 커밋 금지 (P0-6 / 5/28) ★
+kis_token.json
+**/kis_token*.json
+scalper-agent/kis_token.json
