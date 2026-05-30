@@ -683,8 +683,9 @@ class AutoTrader:
                             logger.error(f"가격 fallback 전부 실패 {code} — 포지션 등록 불가")
                             continue
                     target_state = self._init_dynamic_target(code, name, cp)
-                    sl = target_state.dynamic_sl if target_state else item.get("sl", int(cp * 0.95))
-                    tp = target_state.dynamic_tp if target_state else item.get("tp", int(cp * 1.10))
+                    from data.sajang_rules import SAJANG
+                    sl = target_state.dynamic_sl if target_state else item.get("sl", SAJANG.get_normal_sl(cp))
+                    tp = target_state.dynamic_tp if target_state else item.get("tp", SAJANG.get_take_profit(cp))
 
                     self._positions[code] = {
                         "entry_price": cp,
@@ -868,18 +869,19 @@ class AutoTrader:
                                 entry = 0
                         if entry and not sl:
                             # 매크로 전략 기반 SL 조정
-                            _base_sl = 0.035
+                            from data.sajang_rules import SAJANG
                             try:
                                 from data.macro_strategy import get_adjusted_sl
-                                _base_sl = get_adjusted_sl(0.035)
+                                _base_sl = get_adjusted_sl(SAJANG.NORMAL_SL_PCT / 100)
                             except Exception as _ms_e:
                                 # macro_strategy 실패 시 고정 SL(3.5%) 적용 → 변동성 미반영
                                 logger.warning(
                                     f"[auto_trader] macro_strategy 실패 → 기본 SL 3.5% 적용: {_ms_e}"
                                 )
-                            sl = int(entry * (1 - _base_sl))
+                            sl = SAJANG.get_normal_sl(entry)
                         if entry and not tp:
-                            tp = int(entry * 1.05)   # 기본 +5%
+                            from data.sajang_rules import SAJANG
+                            tp = SAJANG.get_take_profit(entry)
 
                         candidates.append({
                             "code": code, "name": name,
@@ -2663,8 +2665,8 @@ class AutoTrader:
                     #   · entry_price/high_watermark: 트레일링 시스템 진입 키
                     # ★ 5/20 사장님 비전 — trade_style_decider 자율 결정 ★
                     # 종목 + 시장 보고 단타/스윙 자율 선택 (SL/TP/보유일 동적 설정)
-                    style_sl_pct = -3.0
-                    style_tp_pct = 5.0
+                    style_loss_percent = -3.0
+                    style_gain_percent = 0.0
                     style_max_hold = 0
                     style_name = "DAY_TRADE"
                     style_reason = "default"
@@ -2679,13 +2681,13 @@ class AutoTrader:
                             source_signals=c["sources"],
                         )
                         style_name = style.get("style", "DAY_TRADE")
-                        style_sl_pct = style.get("sl_pct") or -3.0
-                        style_tp_pct = style.get("tp_pct") or 5.0
+                        style_loss_percent = style.get("sl_pct") or -SAJANG.NORMAL_SL_PCT
+                        style_gain_percent = SAJANG.get_take_profit(buy_price)
                         style_max_hold = style.get("max_hold_days", 0)
                         style_reason = style.get("reason", "")
                         logger.info(
                             f"[style] {name}({code}) → {style_name} "
-                            f"SL{style_sl_pct}% TP{style_tp_pct}% {style_max_hold}d "
+                            f"SL{style_loss_percent}% TP{style_gain_percent}% {style_max_hold}d "
                             f"({style_reason})"
                         )
                     except Exception as _se:
@@ -2698,7 +2700,7 @@ class AutoTrader:
                         "high_watermark": buy_price,
                         "trailing_activated": False,
                         "trailing_sl": 0,
-                        "stop_loss": int(buy_price * (1 + style_sl_pct / 100)),
+                        "stop_loss": SAJANG.get_normal_sl(buy_price),
                         # ★ 5/26 사장님 영구 룰 fix ★ Rule Registry SAJANG.FIXED_TP_DISABLED=True
                         # 옛 코드: int(buy_price * (1 + style_tp_pct / 100)) — TP+style% 자동 매도
                         # 사장님 [feedback_trailing_only_tp] 영구 룰: "트레일링만 / 고정 TP 폐기"
@@ -3595,11 +3597,12 @@ class AutoTrader:
 
         bought = 0
         risk_conf = self.config.get("risk", {})
-        sl_pct = risk_conf.get("stop_loss_pct", 0.02)
+        from data.sajang_rules import SAJANG
+        loss_percent = risk_conf.get("stop_loss_pct", SAJANG.NORMAL_SL_PCT / 100)
         # 매크로 전략 기반 SL 조정 (타이트하면 더 좁은 값 사용)
         try:
             from data.macro_strategy import get_adjusted_sl
-            sl_pct = get_adjusted_sl(sl_pct)
+            loss_percent = get_adjusted_sl(loss_percent)
         except Exception:
             pass
         # ★ 5/26 사장님 영구 룰 fix ★ Rule Registry SAJANG.FIXED_TP_DISABLED=True
@@ -3623,7 +3626,7 @@ class AutoTrader:
                     logger.error(f"day mode 가격 조회 실패 {code} — 근사치 {cp:,}원 사용")
                 self._positions[code] = {
                     "entry_price": cp,
-                    "stop_loss": int(cp * (1 - sl_pct)),
+                    "stop_loss": SAJANG.get_normal_sl(cp),
                     "take_profit": 0,  # ★ 5/26 사장님 영구 룰 ★ Rule Registry SAJANG.FIXED_TP_FORCE_ZERO
                     "high_watermark": cp,
                     "trailing_activated": False,
@@ -4610,7 +4613,8 @@ class AutoTrader:
                                 f"     SL 강화: {old_sl:,} → {reversal_sl:,}"
                             )
                         # TP도 축소 (현재가 +3%로 제한)
-                        reversal_tp = int(cp * 1.03)
+                        from data.sajang_rules import SAJANG
+                        reversal_tp = SAJANG.get_take_profit(cp)
                         old_tp = pos["take_profit"]
                         if reversal_tp < old_tp:
                             pos["take_profit"] = reversal_tp

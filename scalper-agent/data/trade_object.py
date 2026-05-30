@@ -19,6 +19,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Tuple
 
+from data.sajang_rules import SAJANG
+
 logger = logging.getLogger("BH.TradeObject")
 
 _STORE = Path(__file__).resolve().parent.parent / "data_store"
@@ -28,7 +30,7 @@ TRADE_OBJECTS_PATH = _STORE / "trade_objects.json"
 #  상수
 # ═══════════════════════════════════════════════════════
 
-CASH_RESERVE = 0.10           # 현금 10% 유보 — auto_trader min_cash_ratio와 동일
+CASH_RESERVE = SAJANG.CASH_RESERVE_PCT
 MAX_RISK_PER_TRADE = 0.02     # 트레이드당 최대 리스크 = 총자산 2%
 MAX_POSITIONS = 2             # 최대 동시 포지션 수
 MAX_SINGLE_PCT = 0.15         # 단일 종목 최대 비중 15%
@@ -40,8 +42,8 @@ RR_PREFERRED = 2.0            # 선호 R:R
 RR_MOMENTUM_EXCEPTION = 1.2   # MOMENTUM+HIGH 예외 허용 최소값
 
 # 손절 캡
-STOP_MAX_PCT = 5.0            # 최대 손절 -5%
-STOP_MOMENTUM_PCT = 3.5       # MOMENTUM 손절 -3.5%
+STOP_MAX_PCT = SAJANG.NORMAL_SL_PCT
+STOP_MOMENTUM_PCT = SAJANG.NORMAL_SL_PCT
 
 # 컨센서스 할인율
 CONSENSUS_DISCOUNT = 0.35     # 단타: 컨센서스 업사이드의 35%
@@ -166,8 +168,7 @@ class StopPriceEngine:
             sl, source = ex_sl, "EXISTING"
         else:
             # Fallback: 고정 %
-            pct = STOP_MOMENTUM_PCT if regime == "MOMENTUM" else STOP_MAX_PCT
-            sl = int(entry * (1 - pct / 100))
+            sl = SAJANG.get_normal_sl(entry)
             source = "DEFAULT"
 
         # 캡: 최대 -5% (R:R 유지)
@@ -178,7 +179,7 @@ class StopPriceEngine:
 
         # 손절이 진입가보다 높으면 안 됨
         if sl >= entry:
-            sl = int(entry * 0.97)
+            sl = SAJANG.get_normal_sl(entry)
             source = "CAP_3%"
 
         return sl, source

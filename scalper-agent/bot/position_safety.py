@@ -80,8 +80,8 @@ def _save_pending_sells(data: dict) -> None:
 # ============================================================
 # 디폴트 설정 (config.yaml에서 오버라이드 가능)
 # ============================================================
-DEFAULT_SL_PCT = 0.03   # -3% 손절
-DEFAULT_TP_PCT = 0.05   # +5% 익절 (트레일링 활성 전)
+DEFAULT_LOSS_PCT = SAJANG.NORMAL_SL_PCT / 100
+DEFAULT_FIXED_EXIT = SAJANG.FIXED_TP_FORCE_ZERO
 HARD_KILL_PCT = 0.05    # -5% 최후 방어선
 HARD_KILL_WARN_PCT = 0.03  # -3% 경고 (-5%의 60% 도달)
 
@@ -181,7 +181,7 @@ def sync_positions(self):
                     synced["added"].append(f"{kp['name']}({code}) [price=0]")
                     continue
 
-            default_sl = int(round(buy_price * (1 - DEFAULT_SL_PCT)))
+            default_sl = SAJANG.get_normal_sl(buy_price)
             # ★ 5/26 사장님 분노 fix ★ TP=+5% 자동 설정 = 사장님 [feedback_trailing_only_tp] 영구 룰 위반
             # 사고: 사장님 삼화콘덴서 47주 매수 → TP=128,625 자동 설정 → 10:09 자동 매도 +3.18%
             #       → +30% 상한가 못 먹음 = -26.9%p 손실
@@ -331,8 +331,8 @@ def sync_positions(self):
 # ============================================================
 def enforce_sl(
     self,
-    default_sl_pct: float = DEFAULT_SL_PCT,
-    default_tp_pct: float = DEFAULT_TP_PCT,
+    default_sl_pct: float = DEFAULT_LOSS_PCT,
+    default_tp_pct: float = DEFAULT_FIXED_EXIT,
 ):
     """모든 포지션 순회 → SL/TP None인 종목 디폴트 강제 세팅.
 
@@ -352,19 +352,19 @@ def enforce_sl(
         changed = False
         # SL 없음 + 보호 X → 디폴트 SL
         if pos.get("stop_loss") is None and not pos.get("sl_disabled"):
-            pos["stop_loss"] = int(round(buy_price * (1 - default_sl_pct)))
+            pos["stop_loss"] = SAJANG.get_normal_sl(buy_price)
             logger.warning(
                 f"[ENFORCE_SL] 🛡️ {name}({code}) SL=None → "
-                f"디폴트 {pos['stop_loss']} (-{default_sl_pct*100:.0f}%)"
+                f"디폴트 {pos['stop_loss']} (-{SAJANG.NORMAL_SL_PCT:.0f}%)"
             )
             changed = True
 
         # TP 없음 → 디폴트 TP
         if pos.get("take_profit") is None:
-            pos["take_profit"] = int(round(buy_price * (1 + default_tp_pct)))
+            pos["take_profit"] = SAJANG.get_take_profit(buy_price)
             logger.warning(
                 f"[ENFORCE_SL] 🎯 {name}({code}) TP=None → "
-                f"디폴트 {pos['take_profit']} (+{default_tp_pct*100:.0f}%)"
+                f"디폴트 {pos['take_profit']} (고정TP 비활성)"
             )
             changed = True
 

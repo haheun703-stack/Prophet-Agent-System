@@ -2006,8 +2006,9 @@ def _step5_cross_validate(
         _fib_sl = _fib.get("sl_fib", 0) if _fib else 0
         _fib_tp = _fib.get("tp_fib", 0) if _fib else 0
         entry = int(p_info.get("entry") or m_info.get("entry") or close)
-        sl = int(_fib_sl or p_info.get("sl") or m_info.get("sl") or close * 0.95)
-        tp = int(_fib_tp or p_info.get("tp") or m_info.get("tp") or bargain_tp or close * 1.10)
+        from data.sajang_rules import SAJANG
+        sl = int(_fib_sl or p_info.get("sl") or m_info.get("sl") or SAJANG.get_normal_sl(close))
+        tp = SAJANG.get_take_profit(close)
         sl_source = "FIB" if _fib_sl else p_info.get("sl_source", "ATR")
 
         # 신뢰도 (교차수 + 기술점수 기반)
@@ -2140,8 +2141,9 @@ def _step6_kis_verify(stocks: list[RecommendedStock], market_chg: float = 0.0) -
             if s.close == 0 and kis_price > 0:
                 s.close = kis_price
                 s.entry = kis_price
-                s.sl = int(kis_price * 0.95)
-                s.tp = int(kis_price * 1.10)
+                from data.sajang_rules import SAJANG
+                s.sl = SAJANG.get_normal_sl(kis_price)
+                s.tp = SAJANG.get_take_profit(kis_price)
                 logger.info(
                     f"가격 보완: {s.name}({s.code}) close=0 "
                     f"→ KIS {kis_price:,}원 (SL {s.sl:,} / TP {s.tp:,})"
@@ -2157,8 +2159,9 @@ def _step6_kis_verify(stocks: list[RecommendedStock], market_chg: float = 0.0) -
                     )
                     s.close = kis_price
                     s.entry = kis_price
-                    s.sl = int(kis_price * 0.95)
-                    s.tp = int(kis_price * 1.10)
+                    from data.sajang_rules import SAJANG
+                    s.sl = SAJANG.get_normal_sl(kis_price)
+                    s.tp = SAJANG.get_take_profit(kis_price)
 
             # KIS 기준 상대강도 업데이트
             s.today_chg = round(kis_chg, 1)
@@ -4277,9 +4280,10 @@ def run_war_mode_recommendation() -> RecommendationReport:
             graduation_tag = "[졸업임박]"
             logger.debug(f"{name}: 회복률 {recovery_rate:.0f}% → 졸업 감점 -10")
 
-        # SL/TP 계산
-        sl = int(war_low * 0.97) if war_low > 0 else int(current * 0.90)
-        tp = consensus_target if consensus_target > current else pre_war
+        from data.sajang_rules import SAJANG
+        sl_base = war_low if war_low > 0 else current
+        sl = SAJANG.get_normal_sl(sl_base)
+        tp = SAJANG.get_take_profit(current)
 
         # 신뢰도
         if consensus_upside > 20 and recovery_upside > 15 and supply_sc >= -10:
@@ -4424,6 +4428,7 @@ def run_war_mode_recommendation() -> RecommendationReport:
             30 if tv_pat == "EXPLOSION" and tv_sc >= 80 else 20)
         cross_sc = 20  # tv_sc >= 75 → cross=2 → bonus 20
 
+        from data.sajang_rules import SAJANG
         injected_rec = RecommendedStock(
             code=tv_code,
             name=tv_nm,
@@ -4431,9 +4436,9 @@ def run_war_mode_recommendation() -> RecommendationReport:
             total_score=round(tv_direct_sc + cross_sc, 1),
             confidence="MED",
             entry=tv_close,
-            sl=int(tv_close * 0.95) if tv_close else 0,
-            tp=int(tv_close * 1.10) if tv_close else 0,
-            sl_source="5%",
+            sl=SAJANG.get_normal_sl(tv_close) if tv_close else 0,
+            tp=SAJANG.get_take_profit(tv_close) if tv_close else 0,
+            sl_source="SAJANG",
             sources=[f"tv_inject:{tv_pat}({tv_sc:.0f})"],
             tech_detail=f"TV{tv_sc:.0f}|ratio{tv_r:.1f}x",
             news_detail="TV_INJECT",

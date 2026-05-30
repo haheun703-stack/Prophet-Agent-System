@@ -186,13 +186,13 @@ def test_cash_reserve_violation_blocks_buy():
     print(f"[PASS] 30% 룰 위반 시 매수 차단 (cash={cash:,} < min={int(total*0.3):,})")
 
 
-def test_position_safety_uses_manual_president():
-    """position_safety.py SYNC 자동등록이 manual_president 사용 확인."""
+def test_position_safety_uses_sync_auto_unknown():
+    """position_safety.py SYNC 자동등록이 sync_auto_unknown을 사용하는지 확인."""
     p = ROOT / "bot" / "position_safety.py"
     src = p.read_text(encoding="utf-8")
-    assert "manual_president" in src, "position_safety가 manual_president 사용 X"
-    assert "'sync_auto'" not in src or 'sync_auto' in src.split('manual_president')[1], "옛 sync_auto 잔존"
-    print("[PASS] position_safety SYNC 자동등록 = manual_president")
+    assert "sync_auto_unknown" in src, "position_safety가 sync_auto_unknown 사용 X"
+    assert "manual_president" not in src, "옛 manual_president 추정 라벨 잔존"
+    print("[PASS] position_safety SYNC 자동등록 = sync_auto_unknown")
 
 
 def test_pre_commit_has_rule_005_006_007():
@@ -236,7 +236,7 @@ if __name__ == "__main__":
         test_rule_b_10pct,
         test_rule_c_d1_gap,
         test_rule_d_pre_close,
-        test_sync_auto_president_protection,
+        test_sync_auto_unknown_source,
         test_normal_sl_3pct,
         test_budget_mode_split_cash,
         test_cash_reserve_30pct,
@@ -244,7 +244,7 @@ if __name__ == "__main__":
         test_calc_budget_per_stock_30pct,
         test_cash_reserve_zero_total_eval,
         test_cash_reserve_violation_blocks_buy,
-        test_position_safety_uses_manual_president,
+        test_position_safety_uses_sync_auto_unknown,
         test_pre_commit_has_rule_005_006_007,
         test_auto_trader_l4083_disabled,
         test_asset_pool_tp_force_zero,

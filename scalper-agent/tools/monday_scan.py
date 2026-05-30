@@ -256,15 +256,19 @@ def scan():
         if f.get("nat", 0) > 0: factors_str += f"국적{s.get('nat_combined',0):.0f}% "
 
         # SL/TP 제안
-        sl = int(s["close"] * 0.965)  # -3.5%
-        tp = int(s["close"] * 1.10)   # +10%
+        from data.sajang_rules import SAJANG
+        sl = SAJANG.get_normal_sl(s["close"])
+        tp = SAJANG.get_take_profit(s["close"])
 
         print(f"  {i:>2}. {s['name']:>14}({s['code']}) {s['close']:>10,}원  "
               f"score={s['score']:.2f}  5일{s['ret_5d']:+.1f}% 금일{s['ret_1d']:+.1f}%  "
               f"기관5D={s['inst_5d']:+,.0f} 외인5D={s['frgn_5d']:+,.0f}  "
               f"[{factors_str.strip()}]")
         if i <= 15:
-            print(f"      SL={sl:,}원(-3.5%) TP={tp:,}원(+10%) | {s['sector']}")
+            print(
+                f"      SL={sl:,}원(-{SAJANG.NORMAL_SL_PCT:.0f}%) "
+                f"TP={tp:,}원(고정TP 비활성) | {s['sector']}"
+            )
 
     # 스코어별 분포
     print(f"\n  ── 스코어 분포 ──")

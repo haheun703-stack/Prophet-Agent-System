@@ -1912,7 +1912,7 @@ class KISTrader:
         # 3. 포지션 수 체크
         max_positions = self.risk.get("max_positions", 5)
         max_ratio = self.risk.get("max_position_ratio", 0.30)
-        min_cash = self.risk.get("min_cash_ratio", 0.10)
+        min_cash = SAJANG.CASH_RESERVE_PCT if SAJANG is not None else 0.30
 
         if len(positions) >= max_positions:
             return {"success": False, "message": f"최대 보유 종목({max_positions}개) 초과"}

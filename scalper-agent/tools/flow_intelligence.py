@@ -856,10 +856,11 @@ async def generate_bomb_buy_alert(kis_trader, top_n: int = 5) -> str:
 
     for i, p in enumerate(picks):
         close = p["close"]
-        tp = int(close * 1.03) if close else 0
-        sl = int(close * 0.98) if close else 0
-        tp_pct = "+3%"
-        sl_pct = "-2%"
+        from data.sajang_rules import SAJANG
+        tp = SAJANG.get_take_profit(close) if close else 0
+        sl = SAJANG.get_normal_sl(close) if close else 0
+        tp_pct = "고정TP 비활성"
+        sl_pct = f"-{SAJANG.NORMAL_SL_PCT:.0f}%"
 
         mt = _market_tag(p['code'])
         lines.append(f"")

@@ -53,6 +53,7 @@ import numpy as np
 import pandas as pd
 
 from data.limit_up_scanner import score_continuation, LimitUpStock
+from data.sajang_rules import SAJANG
 from utils.stock_utils import is_etf as _is_etf, load_daily
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -78,7 +79,7 @@ MAX_OVERHEAT_PCT = 300.0     # 원점 대비 최대 상승률 (과열 필터)
 MIN_PRICE = 1000             # 최소 주가 (원)
 PULLBACK_TRIGGER_PCT = -10.0 # 눌림목 진입 트리거 (고점 대비 %)
 MONITOR_DAYS = 5             # 눌림목 감시 기간 (영업일) — 10%급등→연속급등→눌림 패턴 대응
-TP_PCT = 10.0                # 익절 기준 (%)
+TP_PCT = SAJANG.FIXED_TP_FORCE_ZERO
 MAX_HOLD_DAYS = 20           # 최대 보유 기간 (영업일)
 
 
@@ -731,7 +732,7 @@ def scan_new_signals(universe: dict = None) -> list[WatchItem]:
 
         if change >= LIMIT_UP_PCT and history.is_qualified:
             entry_price = int(current_close * 0.97)  # 시가-3% 예상
-            tp_price = int(entry_price * (1 + TP_PCT / 100))
+            tp_price = SAJANG.get_take_profit(entry_price)
 
             # ★ 6자 수급 분석 (v3)
             flow = _analyze_flow_6(code)
@@ -1050,7 +1051,7 @@ def check_pullback_entries(watchlist: list[WatchItem]) -> list[WatchItem]:
                 item.entry_price = int(current_close)
                 item.entry_low = int(current_close * 0.97)
                 item.entry_high = int(current_close * 1.02)
-                item.tp_price = int(current_close * (1 + TP_PCT / 100))
+                item.tp_price = SAJANG.get_take_profit(current_close)
 
                 # 수급 필드 업데이트 (v3 전체)
                 item.flow_foreign_5d = flow["foreign_5d"]

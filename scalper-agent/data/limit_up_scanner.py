@@ -32,6 +32,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from data.sajang_rules import SAJANG
 from utils.stock_utils import is_etf as _is_etf, load_daily
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -921,14 +922,13 @@ def generate_split_buy_plan(code: str,
     )
     avg_price = total_cost // total_qty if total_qty > 0 else entry_price
 
-    # 익절/손절 시나리오
-    tp_5 = int(avg_price * 1.05)
-    tp_10 = int(avg_price * 1.10)
-    sl_15 = int(avg_price * 0.85)
+    fixed_take_profit = SAJANG.get_take_profit(avg_price)
+    trailing_stop_price = SAJANG.get_trailing_sl(avg_price)
+    normal_stop_price = SAJANG.get_normal_sl(avg_price)
 
-    profit_5 = int(total_qty * (tp_5 - avg_price))
-    profit_10 = int(total_qty * (tp_10 - avg_price))
-    loss_15 = int(total_qty * (sl_15 - avg_price))
+    profit_fixed = int(total_qty * (fixed_take_profit - avg_price))
+    profit_trailing = int(total_qty * (trailing_stop_price - avg_price))
+    loss_normal = int(total_qty * (normal_stop_price - avg_price))
 
     return {
         "code": code,
@@ -968,20 +968,18 @@ def generate_split_buy_plan(code: str,
             "avg_price": avg_price,
         },
         "exit_rules": {
-            "tp_5pct": {"price": tp_5, "profit": profit_5, "action": "절반 익절"},
-            "tp_10pct": {"price": tp_10, "profit": profit_10, "action": "전량 익절"},
-            "sl_15pct": {"price": sl_15, "loss": loss_15, "action": "전량 손절"},
-            "trailing_stop": "-3% (수익 +5% 이상 진입 시 본전 스탑 전환)",
+            "fixed_tp_disabled": {"price": fixed_take_profit, "profit": profit_fixed, "action": "고정TP 비활성"},
+            "trailing_stop": {"price": trailing_stop_price, "profit": profit_trailing, "action": "고점-3% 트레일링"},
+            "normal_stop": {"price": normal_stop_price, "loss": loss_normal, "action": "진입가-3% 손절"},
+            "trailing_note": "+3%부터 고점-3% 트레일링",
         },
         "risk_reward": {
-            "max_loss": loss_15,
+            "max_loss": loss_normal,
             "max_loss_pct_of_portfolio": round(
-                abs(loss_15) / portfolio_value * 100, 2
+                abs(loss_normal) / portfolio_value * 100, 2
             ),
-            "target_profit": profit_10,
-            "risk_reward_ratio": round(
-                abs(profit_10 / loss_15), 2
-            ) if loss_15 != 0 else 0,
+            "target_profit": 0,
+            "risk_reward_ratio": 0,
         },
     }
 
@@ -1164,8 +1162,8 @@ def main():
                     )
                 rr = plan["risk_reward"]
                 print(
-                    f"    TP +10%: +{plan['exit_rules']['tp_10pct']['profit']:,}원 | "
-                    f"SL -15%: {plan['exit_rules']['sl_15pct']['loss']:,}원 | "
+                    f"    고정TP 비활성 | "
+                    f"SL -3%: {plan['exit_rules']['normal_stop']['loss']:,}원 | "
                     f"R:R = {rr['risk_reward_ratio']:.1f}"
                 )
 

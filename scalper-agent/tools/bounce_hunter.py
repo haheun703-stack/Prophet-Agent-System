@@ -452,7 +452,8 @@ def main():
         shares = int(alloc / r["current_price"])
         actual = shares * r["current_price"]
         profit = int(shares * (r["target_bounce"] - r["current_price"]))
-        sl_price = int(r["current_price"] * 0.95)
+        from data.sajang_rules import SAJANG
+        sl_price = SAJANG.get_normal_sl(r["current_price"])
         loss = int(shares * (sl_price - r["current_price"]))
         total_profit += profit
 

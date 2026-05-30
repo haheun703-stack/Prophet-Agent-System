@@ -103,7 +103,8 @@ class TradingCFO:
 
         if mode == "swing":
             # cash x (1-reserve) x capital_use x brain% x event_mult / targets
-            reserve = self.config.get("risk", {}).get("min_cash_ratio", 0.10)
+            from data.sajang_rules import SAJANG
+            reserve = SAJANG.CASH_RESERVE_PCT
             total = int(
                 available_cash
                 * (1 - reserve)

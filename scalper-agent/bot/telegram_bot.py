@@ -4256,8 +4256,9 @@ class BodyHunterBot:
                         continue
 
                     shares = max(1, int(portfolio.cash * 0.25 / max(entry, 1)))
-                    tp = int(entry * 1.05)   # 단타 TOP픽: +5% 목표
-                    sl = int(entry * 0.97)   # -3% 손절
+                    from data.sajang_rules import SAJANG
+                    tp = SAJANG.get_take_profit(entry)
+                    sl = SAJANG.get_normal_sl(entry)
                     ok = portfolio.open_position(
                         code, name, entry, shares, "daytrading_pick",
                         tp, sl, time_stop_days=1,

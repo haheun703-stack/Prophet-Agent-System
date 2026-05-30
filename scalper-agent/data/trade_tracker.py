@@ -433,6 +433,7 @@ class TradeTracker:
             if isinstance(to, dict) and to.get("entry_price"):
                 if entry <= 0:
                     entry = to["entry_price"]
+                from data.sajang_rules import SAJANG
                 trade_data = {
                     "trade_id": to.get("trade_id", f"PC_{datetime.now():%Y%m%d}_{code}"),
                     "code": code,
@@ -478,8 +479,8 @@ class TradeTracker:
                     "name": name,
                     "status": "ACTIVE",
                     "entry_price": entry,
-                    "stop_loss": int(entry * 0.965),
-                    "target_price": int(entry * 1.05),
+                    "stop_loss": SAJANG.get_normal_sl(entry),
+                    "target_price": SAJANG.get_take_profit(entry),
                     "rr_ratio": 1.4,
                     "rr_verdict": "MARGINAL",
                     "expected_return": 5.0,

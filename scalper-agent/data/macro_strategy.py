@@ -39,6 +39,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
+from data.sajang_rules import SAJANG
+
 logger = logging.getLogger("BH.MacroStrategy")
 
 
@@ -56,7 +58,7 @@ class RegimeResponse:
     budget_multiplier: float = 1.0  # 예산 배수 (CFO에 전달)
 
     # 2. 손절/보유 조정
-    sl_pct: float = 0.035           # 손절 기준 (3.5% = 0.035)
+    sl_pct: float = SAJANG.NORMAL_SL_PCT / 100
     trailing_pct: float = 0.02      # 트레일링 스톱 (2%)
     max_hold_days: int = 5          # 최대 보유일
 

@@ -102,7 +102,8 @@ class PaperPortfolio:
         # SL 미설정 시 기본 -5% 자동 적용 (대형손실 방지)
         # sl=0은 "SL 없음(만기청산만)" 의미 — Strategy 1 등에서 의도적 사용
         if sl is None:
-            sl = int(entry_price * 0.95)
+            from data.sajang_rules import SAJANG
+            sl = SAJANG.get_normal_sl(entry_price)
 
         self.cash -= cost
         self.positions[code] = {

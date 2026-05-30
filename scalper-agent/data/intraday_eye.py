@@ -748,8 +748,9 @@ def synthesize(buf: IntradayBuffer, ma: dict, vwap_pos: dict,
 
     if composite >= 55 or weak_signals >= 2:
         summary = ", ".join(weak_reasons) if weak_reasons else f"약화 (점수 {composite:.0f})"
+        from data.sajang_rules import SAJANG
         today_high = sr.get("today_high", price)
-        trailing_sl = int(today_high * 0.975)
+        trailing_sl = SAJANG.get_trailing_sl(today_high)
         return "WEAKENING", 0.65, summary, "WATCH", {"trailing_sl": trailing_sl}
 
     # 최하위 → DYING

@@ -644,7 +644,26 @@ def _node_has_order_sink(node: ast.AST, names: set[str]) -> bool:
     return False
 
 
-def _classify_check6(source: SourceFile, func: ast.AST | None, names: set[str]) -> tuple[str, str]:
+def _is_entry_band_check6(source: SourceFile, func: ast.AST | None, names: set[str], line: int) -> bool:
+    func_name = getattr(func, "name", "") if func is not None else ""
+    if source.rel != "data/limit_up_engine.py":
+        return False
+    if func_name == "_make_split_plan" and names == {"price"}:
+        return True
+    if func_name == "scan_new_signals":
+        text = source.lines[line - 1].strip() if 1 <= line <= len(source.lines) else ""
+        if names == {"signal"} and "WatchItem(" in text:
+            return True
+        if names <= {"entry_price", "entry_low", "entry_high", "price"}:
+            return True
+    if func_name == "check_pullback_entries" and names <= {"entry_price", "entry_low", "entry_high"}:
+        return True
+    return False
+
+
+def _classify_check6(source: SourceFile, func: ast.AST | None, names: set[str], line: int) -> tuple[str, str]:
+    if _is_entry_band_check6(source, func, names, line):
+        return "ENTRY_BAND", "limit-up entry-band price planning, not TP/SL exit"
     if _path_is_sim_learning(source.rel):
         return "SIM_LEARNING", "module excluded as simulation/learning/backtest"
     if _path_is_dashboard_upload(source.rel):
@@ -686,7 +705,7 @@ class TpSlMatchVisitor(ast.NodeVisitor):
             return
         func = self.stack[-1] if self.stack else None
         name_set = set(names)
-        classification, classification_reason = _classify_check6(self.source, func, name_set)
+        classification, classification_reason = _classify_check6(self.source, func, name_set, line)
         site_key = f"{self.source.rel}:{line}:{','.join(sorted(name_set)) or kind}:{reason}"
         dedupe_key = (self.source.rel, line, ",".join(sorted(name_set)), reason)
         if dedupe_key in self._seen_sites:
@@ -757,6 +776,7 @@ def check_6_fixed_tp_sl(sources: list[SourceFile]) -> dict[str, Any]:
         visitor.visit(source.tree)
         matches.extend(visitor.matches)
     order_path_real = [row for row in matches if row["classification"] == "ORDER_PATH"]
+    entry_band = [row for row in matches if row["classification"] == "ENTRY_BAND"]
     sim_learning = [row for row in matches if row["classification"] == "SIM_LEARNING"]
     dashboard_upload = [row for row in matches if row["classification"] == "DASHBOARD_UPLOAD"]
     uncertain = [row for row in matches if row["classification"] == "UNCERTAIN"]
@@ -786,6 +806,7 @@ def check_6_fixed_tp_sl(sources: list[SourceFile]) -> dict[str, Any]:
             "site_count": len(unique_sites),
             "line_count": len(unique_lines),
             "order_path_real": order_path_real,
+            "entry_band_excluded": entry_band,
             "sim_learning_excluded": sim_learning,
             "dashboard_upload": dashboard_upload,
             "uncertain": uncertain,

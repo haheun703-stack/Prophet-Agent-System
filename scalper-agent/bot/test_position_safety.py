@@ -119,8 +119,8 @@ class TestSyncPositions(unittest.TestCase):
         expected_sl = int(round(61600 * 0.97))  # -3%
         self.assertEqual(rokit["stop_loss"], expected_sl,
                          f"디폴트 SL이 {expected_sl}이어야 함")
-        self.assertEqual(rokit["source"], "sync_auto",
-                         "자동등록 종목 source는 'sync_auto'")
+        self.assertEqual(rokit["source"], "sync_auto_unknown",
+                         "자동등록 종목 source는 'sync_auto_unknown'")
         self.assertTrue(trader._saved, "positions.json 저장 필요")
         print("✅ T01 PASS: KIS only → 자동 등록 + SL 세팅")
 

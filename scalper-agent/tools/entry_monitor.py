@@ -131,7 +131,8 @@ def load_bounce_targets(top_n: int = 0) -> list[dict]:
     for c in candidates:
         cp = c.get("current_price", 0)
         tp = c.get("target_bounce", 0)  # 바운스 목표가
-        sl = int(cp * 0.95) if cp > 0 else 0  # -5% 손절
+        from data.sajang_rules import SAJANG
+        sl = SAJANG.get_normal_sl(cp) if cp > 0 else 0
         grade = c.get("inst_grade", "?")
         score = c.get("score", 0)
 

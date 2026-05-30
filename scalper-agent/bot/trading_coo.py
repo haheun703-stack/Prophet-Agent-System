@@ -2661,8 +2661,9 @@ class TradingCOO:
                 shares = max(1, int(portfolio.cash * 0.3 * alloc_ratio / entry))
 
                 # TP/SL: NXT 기본값 (+3% / -2.5%)
-                tp = int(entry * 1.03)
-                sl = int(entry * 0.975)
+                from data.sajang_rules import SAJANG
+                tp = SAJANG.get_take_profit(entry)
+                sl = SAJANG.get_normal_sl(entry)
 
                 ok = portfolio.open_position(
                     code, name, entry, shares, "nxt", tp, sl, time_stop_days=1,

@@ -26,6 +26,8 @@ from datetime import datetime, date
 from pathlib import Path
 from typing import Optional
 
+from data.sajang_rules import SAJANG
+
 logger = logging.getLogger("BH.LimitUpPaper")
 
 # ─── 경로 ────────────────────────────────────────
@@ -39,9 +41,9 @@ PAPER_TRADE_LOG = LIMIT_UP_DIR / "paper_trade_log.json"
 
 # ─── 상수 ────────────────────────────────────────
 SOURCE = "limit_up"
-# 백테스트 확정: TP +10%, SL -7%, 만기 20영업일
-TP_PCT = 10.0
-SL_PCT = 7.0
+# Fixed TP is disabled by the owner rule; exits are handled by trailing/rule checks.
+FIXED_EXIT_DISABLED = SAJANG.FIXED_TP_FORCE_ZERO
+NORMAL_LOSS_PCT = SAJANG.NORMAL_SL_PCT
 TIME_STOP_DAYS = 20
 # 품질 필터 임계값
 MIN_CONTINUATION_SCORE = 40.0  # 연속성 점수 하한 (0~19: 승률 0%, 20~39: 21%, 40+: 75%+)
@@ -340,8 +342,8 @@ def _process_new_signals(pf, today: str) -> tuple[list, int]:
             continue
 
         # TP / SL 계산
-        tp_price = sig.get("tp_price", int(entry_price * (1 + TP_PCT / 100)))
-        sl_price = int(entry_price * (1 - SL_PCT / 100))
+        tp_price = SAJANG.get_take_profit(entry_price)
+        sl_price = SAJANG.get_normal_sl(entry_price)
 
         # 가상매수
         ok = pf.open_position(
@@ -447,8 +449,8 @@ def _check_pullback_entries(pf, today: str) -> tuple[list, int]:
             skipped += 1
             continue
 
-        tp_price = int(entry_price * (1 + TP_PCT / 100))
-        sl_price = int(entry_price * (1 - SL_PCT / 100))
+        tp_price = SAJANG.get_take_profit(entry_price)
+        sl_price = SAJANG.get_normal_sl(entry_price)
 
         ok = pf.open_position(
             code=code,
