@@ -2,7 +2,8 @@
 
 > 마스터 플랜([master_recovery_plan_5_30.md](../01-plan/master_recovery_plan_5_30.md)) Phase 1.
 > 단타봇 read-only 설계 → Codex 구현 → 단타봇 게이트 검증 → (신규 헬퍼 시) 사장님 승인.
-> **종료 조건(객관)**: `audit --json` 에서 CHECK-6 `order_path_real`=0 & `uncertain`=0, CHECK-8 `real_count`=0 → `--gate` PASS.
+> **Phase 1 종료 조건 (★ 전체 게이트 PASS 아님 ★)**: `audit --json` 에서 CHECK-6 verdict=PASS(`order_path_real`=0 & `uncertain`=0) + CHECK-8 verdict=PASS(`real_count`=0).
+> 전체 `audit --gate`는 CHECK-1/2/7 잔여로 **FAIL이 정상** (전체 PASS는 Phase 2/3 완료 후 최종 종료). ★ 게이트 조건/임계 변경이나 CHECK-1/2/7 침범으로 PASS 만들기 금지. ★
 
 ---
 
@@ -39,11 +40,12 @@
  (나) 매수 진입가 밴드 (TP/SL 아님 → 도구 오분류, v3에서 제외)
    limit_up_engine 416/420/429/431 (tranche price) · 733(entry_price) · 1051(entry_low)
 
- (다) print-only / 죽은 변수 (sink → v3 제외)
-   limit_up_scanner 925/926 (tp_5/tp_10 출력용) · auto_trader 2666(style_sl_pct, 2667과 쌍)
+ (다) print-only / sink (→ v3 제외) — ★ 사용처 추적 후만, blanket 금지 ★
+   limit_up_scanner 925/926 (tp_5/tp_10 display/log sink면 제외)
+   ※ auto_trader 2666 style_sl_pct는 sink 아님 → 2701 stop_loss 실사용 = (가) REAL 치환. 2667 style_tp_pct는 2705 take_profit:0 이미 적용(잔존 변수 정리).
 ```
 
-> ★ 정정: 도구가 (나)(다)를 ORDER_PATH(REAL)에 잘못 포함 중. 내가 직전 "도구가 OVER_MATCH 다 분류"라 한 건 부분 오류 — v3 정밀화 여전히 필요. ★
+> ★ 정정: 도구가 (나)와 (다)일부(scanner sink)를 ORDER_PATH(REAL)에 잘못 포함 → v3 정밀화 필요. 단 (다)는 **blanket 제외 금지** — 사용처 추적 후 sink만 제외, ledger 적재면 REAL(예: style_sl_pct는 stop_loss 실사용=REAL). ★
 
 ### 1-B. CHECK-6 UNCERTAIN 13 (REAL/제외 판정 필요)
 position_safety 83/84/184 · intraday_eye 752 · macro_strategy 59 · morning_recommendation 2143/2144/2160/2161 · bounce_hunter 455 · entry_monitor 134 · flow_intelligence 859 · monday_scan 260
