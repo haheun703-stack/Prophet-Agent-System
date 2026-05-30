@@ -34,6 +34,17 @@ from dataclasses import dataclass
 logger = logging.getLogger(__name__)
 
 
+def _resolve_order_gate(trader):
+    """Return a real KISTrader order gate, ignoring MagicMock auto-attrs."""
+    gate = getattr(type(trader), "_order_gate", None)
+    if callable(gate):
+        return getattr(trader, "_order_gate")
+    instance_gate = getattr(getattr(trader, "__dict__", {}), "get", lambda *_: None)("_order_gate")
+    if callable(instance_gate):
+        return instance_gate
+    return None
+
+
 try:
     from bot.trade_kill_switch import is_auto_trade_disabled
 except Exception:
@@ -75,6 +86,9 @@ class SplitBuyResult:
     leg3_bought: int = 0     # 3차 매수
     leg1_market_fallback: bool = False  # 1차 시장가 폴백 발동
     success: bool = False    # 1차 진입 성공 여부 (최소 진입 보장)
+    blocked: bool = False
+    block_reason: str = ""
+    block_message: str = ""
 
 
 async def execute_vwap_split_buy(
@@ -104,7 +118,45 @@ async def execute_vwap_split_buy(
         total_bought_qty=0,
         avg_price=0.0,
     )
-    if is_auto_trade_disabled():
+    result.blocked = False
+    result.block_reason = ""
+    result.block_message = ""
+
+    order_gate = _resolve_order_gate(trader)
+    if order_gate:
+        try:
+            blocked = await asyncio.to_thread(
+                order_gate,
+                "BUY",
+                code,
+                total_qty,
+                source="vwap_split_buy",
+                record_allowed=False,
+            )
+        except TypeError:
+            blocked = await asyncio.to_thread(
+                order_gate,
+                "BUY",
+                code,
+                total_qty,
+                source="vwap_split_buy",
+            )
+        if blocked:
+            result.blocked = True
+            result.block_reason = str(blocked.get("reason", "ORDER_GATE_BLOCKED"))
+            result.block_message = str(blocked.get("message", ""))
+            logger.warning(
+                "[vwap_split] %s - blocked split buy %s(%s) qty=%s",
+                result.block_reason,
+                name,
+                code,
+                total_qty,
+            )
+            return result
+    elif is_auto_trade_disabled():
+        result.blocked = True
+        result.block_reason = "AUTO_TRADE_DISABLED"
+        result.block_message = f"AUTO_TRADE_DISABLED - blocked split buy {code} x {total_qty}"
         logger.warning(
             "[vwap_split] AUTO_TRADE_DISABLED - blocked split buy %s(%s) qty=%s",
             name,

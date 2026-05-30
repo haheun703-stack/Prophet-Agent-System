@@ -352,7 +352,7 @@ bot:
   # ── 빠른 익절 모드 (Quick Exit, 차트 영웅식 단타 회전) ──
   # 모드별 익절 룰: 시장 상황/사장님 명령에 따라 유연하게 전환
   quick_exit:
-    enabled: true                 # 5/19 OFF→ON (자비스 정신 ④ +5% 부분익절 + 트레일링)
+    enabled: false                # SAJANG.FIXED_TP_DISABLED=True 이중 방어
     auto_switch: true             # 정보봇 위험등급에 따라 자동 전환
     mode: "balanced"              # 5/19 aggressive→balanced (+5% 도달 시 50% 부분익절 + 트레일링)
 

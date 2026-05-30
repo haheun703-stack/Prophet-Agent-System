@@ -4202,6 +4202,12 @@ class AutoTrader:
         qe_cfg = (self.config.get("bot", {}) or {}).get("quick_exit", {}) or {}
         if not qe_cfg.get("enabled", False):
             return None, None
+        try:
+            from data.sajang_rules import SAJANG
+            if bool(getattr(SAJANG, "FIXED_TP_DISABLED", False)):
+                return None, None
+        except Exception:
+            pass
 
         mode = qe_cfg.get("mode", "aggressive")
 

@@ -142,15 +142,42 @@ class KISTrader:
         except Exception as exc:
             msg = f"ORDER_INTENT_RECORD_FAILED - blocked {side} order: {code} x {qty} ({exc})"
             logger.error("[ORDER BLOCKED] %s source=%s", msg, source)
+            logger.critical("[ORDER INTENT AUDIT] %s", msg)
+            alert_sent = self._send_order_intent_audit_alert(msg)
             return {
                 "success": False,
                 "blocked": True,
                 "reason": "ORDER_INTENT_RECORD_FAILED",
                 "message": msg,
+                "intent_logged": False,
+                "audit_warning": msg,
+                "alert_sent": alert_sent,
             }
 
+    def _send_order_intent_audit_alert(self, message: str) -> bool:
+        token = os.getenv("TELEGRAM_BOT_TOKEN")
+        chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        if not token or not chat_id:
+            return False
+        try:
+            from urllib import parse, request
+
+            payload = parse.urlencode({
+                "chat_id": chat_id,
+                "text": f"[ORDER INTENT AUDIT]\n{message}",
+            }).encode("utf-8")
+            request.urlopen(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                data=payload,
+                timeout=3,
+            )
+            return True
+        except Exception as exc:
+            logger.warning("[ORDER INTENT AUDIT] telegram alert failed: %s", exc)
+            return False
+
     def _order_gate(self, side: str, code: str, qty: int, *, manual: bool = False,
-                    source: str = "") -> Optional[dict]:
+                    source: str = "", record_allowed: bool = True) -> Optional[dict]:
         """Central real-order gate.
 
         All order paths must write an order intent before a KIS network order.
@@ -164,6 +191,8 @@ class KISTrader:
         estimate_amount = None
 
         if manual:
+            if not record_allowed:
+                return None
             blocked = self._record_order_intent_or_block(
                 side=side_u,
                 code=code,
@@ -195,7 +224,7 @@ class KISTrader:
                     )
                 if runtime_block:
                     msg = f"{runtime_block['reason']} - blocked auto {side_u} order: {code} x {qty}"
-                    self._record_order_intent_or_block(
+                    blocked = self._record_order_intent_or_block(
                         side=side_u,
                         code=code,
                         qty=qty,
@@ -208,6 +237,8 @@ class KISTrader:
                         estimate_amount_krw=estimate_amount,
                     )
                     logger.warning("[ORDER BLOCKED] %s source=%s", msg, source_s)
+                    if blocked:
+                        return blocked
                     return {
                         "success": False,
                         "blocked": True,
@@ -216,7 +247,7 @@ class KISTrader:
                     }
             except Exception as exc:
                 msg = f"RUNTIME_CONFIG_ERROR - blocked auto {side_u} order: {code} x {qty} ({exc})"
-                self._record_order_intent_or_block(
+                blocked = self._record_order_intent_or_block(
                     side=side_u,
                     code=code,
                     qty=qty,
@@ -228,6 +259,8 @@ class KISTrader:
                     strategy=strategy,
                 )
                 logger.error("[ORDER BLOCKED] %s source=%s", msg, source_s)
+                if blocked:
+                    return blocked
                 return {
                     "success": False,
                     "blocked": True,
@@ -244,7 +277,7 @@ class KISTrader:
                     protect_reason = f"manual_protection_error:{exc}"
                 if protect_reason:
                     msg = f"MANUAL_POSITION_PROTECTED - blocked auto SELL order: {code} x {qty}"
-                    self._record_order_intent_or_block(
+                    blocked = self._record_order_intent_or_block(
                         side=side_u,
                         code=code,
                         qty=qty,
@@ -256,6 +289,8 @@ class KISTrader:
                         strategy=strategy,
                     )
                     logger.warning("[ORDER BLOCKED] %s reason=%s source=%s", msg, protect_reason, source_s)
+                    if blocked:
+                        return blocked
                     return {
                         "success": False,
                         "blocked": True,
@@ -263,27 +298,28 @@ class KISTrader:
                         "message": f"{msg} ({protect_reason})",
                     }
 
-            blocked = self._record_order_intent_or_block(
-                side=side_u,
-                code=code,
-                qty=qty,
-                manual=False,
-                source=source_s,
-                allowed=True,
-                reason="AUTO_ORDER_ALLOWED",
-                message="automated order passed runtime gates",
-                strategy=strategy,
-                estimate_amount_krw=estimate_amount,
-            )
-            if blocked:
-                return blocked
+            if record_allowed:
+                blocked = self._record_order_intent_or_block(
+                    side=side_u,
+                    code=code,
+                    qty=qty,
+                    manual=False,
+                    source=source_s,
+                    allowed=True,
+                    reason="AUTO_ORDER_ALLOWED",
+                    message="automated order passed runtime gates",
+                    strategy=strategy,
+                    estimate_amount_krw=estimate_amount,
+                )
+                if blocked:
+                    return blocked
             return None
 
         msg = (
             f"AUTO_TRADE_DISABLED=True - blocked auto {side_u} order: "
             f"{code} x {qty}"
         )
-        self._record_order_intent_or_block(
+        blocked = self._record_order_intent_or_block(
             side=side_u,
             code=code,
             qty=qty,
@@ -295,6 +331,8 @@ class KISTrader:
             strategy=strategy,
         )
         logger.warning("[ORDER BLOCKED] %s source=%s", msg, source_s)
+        if blocked:
+            return blocked
         return {
             "success": False,
             "blocked": True,
@@ -894,6 +932,63 @@ class KISTrader:
         else:
             return int(-(-price // tick)) * tick  # ceil
 
+    def _holding_qty_for_reconcile(self, code: str) -> Optional[int]:
+        """Read current account holding quantity for fill reconciliation."""
+        try:
+            bal = self.fetch_balance()
+            if not bal or not bal.get("success"):
+                return None
+            for pos in bal.get("positions", []) or bal.get("holdings", []) or []:
+                if str(pos.get("code", "")).zfill(6) == str(code).zfill(6):
+                    return int(pos.get("qty", 0) or 0)
+            return 0
+        except Exception as exc:
+            logger.warning("[fill_reconcile] balance read failed for %s: %s", code, exc)
+            return None
+
+    def _reconcile_fill(
+        self,
+        code: str,
+        qty_before: Optional[int],
+        side: str,
+        requested_qty: int,
+    ) -> dict:
+        """Infer actual filled quantity from account balance delta."""
+        if qty_before is None:
+            return {"filled_qty": int(requested_qty or 0), "reconciled": False}
+        qty_after = self._holding_qty_for_reconcile(code)
+        if qty_after is None:
+            return {"filled_qty": int(requested_qty or 0), "reconciled": False}
+        if str(side or "").upper() == "SELL":
+            delta = qty_before - qty_after
+        else:
+            delta = qty_after - qty_before
+        filled_qty = max(0, min(int(requested_qty or 0), int(delta)))
+        if filled_qty != int(requested_qty or 0):
+            logger.warning(
+                "[fill_reconcile] %s %s requested=%s actual=%s before=%s after=%s",
+                side,
+                code,
+                requested_qty,
+                filled_qty,
+                qty_before,
+                qty_after,
+            )
+        return {"filled_qty": filled_qty, "reconciled": True}
+
+    def _actual_fill_qty(
+        self,
+        code: str,
+        qty_before: Optional[int],
+        side: str,
+        requested_qty: int,
+    ) -> int:
+        reconciled = self._reconcile_fill(code, qty_before, side, requested_qty)
+        actual_qty = int(reconciled.get("filled_qty", 0) or 0)
+        if actual_qty <= 0 and not reconciled.get("reconciled"):
+            return int(requested_qty or 0)
+        return actual_qty
+
     def smart_buy(self, code: str, qty: int, max_wait_sec: int = 90,
                   manual: bool = False) -> dict:
         """스마트 지정가 매수 - 3단계 에스컬레이션
@@ -908,6 +1003,7 @@ class KISTrader:
         blocked = self._order_gate("BUY", code, qty, manual=manual, source="smart_buy")
         if blocked:
             return blocked
+        qty_before = self._holding_qty_for_reconcile(code)
 
         # 현재가 조회
         price_info = self.fetch_price(code)
@@ -942,10 +1038,12 @@ class KISTrader:
         filled = self._wait_for_fill(order_no, wait_per_step, org_no=org_no, qty=qty)
 
         if filled:
-            self._log_trade("SMART_BUY", code, name, qty, 1)
+            actual_qty = self._actual_fill_qty(code, qty_before, "BUY", qty)
+            self._log_trade("SMART_BUY", code, name, actual_qty, 1)
             return {
                 "success": True, "order_no": order_no,
                 "message": f"스마트매수 {name}({code}) {qty}주 @ {price_1:,}원 (-0.5%)",
+                "filled_qty": actual_qty,
                 "saved_pct": 0.5,
             }
 
@@ -966,10 +1064,12 @@ class KISTrader:
         filled = self._wait_for_fill(order_no, wait_per_step, org_no=org_no, qty=qty)
 
         if filled:
-            self._log_trade("SMART_BUY", code, name, qty, 2)
+            actual_qty = self._actual_fill_qty(code, qty_before, "BUY", qty)
+            self._log_trade("SMART_BUY", code, name, actual_qty, 2)
             return {
                 "success": True, "order_no": order_no,
                 "message": f"스마트매수 {name}({code}) {qty}주 @ {price_2:,}원 (-0.2%)",
+                "filled_qty": actual_qty,
                 "saved_pct": 0.2,
             }
 
@@ -992,10 +1092,12 @@ class KISTrader:
         filled = self._wait_for_fill(order_no, wait_per_step, org_no=org_no, qty=qty)
 
         if filled:
-            self._log_trade("SMART_BUY", code, name, qty, 3)
+            actual_qty = self._actual_fill_qty(code, qty_before, "BUY", qty)
+            self._log_trade("SMART_BUY", code, name, actual_qty, 3)
             return {
                 "success": True, "order_no": order_no,
                 "message": f"스마트매수 {name}({code}) {qty}주 @ {price_3:,}원 (3단계)",
+                "filled_qty": actual_qty,
                 "saved_pct": 0,
             }
 
@@ -1034,6 +1136,7 @@ class KISTrader:
         blocked = self._order_gate("BUY", code, qty, manual=manual, source="chase_buy")
         if blocked:
             return blocked
+        qty_before = self._holding_qty_for_reconcile(code)
 
         # 초기 가격 조회
         price_info = self.fetch_price(code)
@@ -1077,7 +1180,8 @@ class KISTrader:
             # 체결 체크 (짧은 timeout = 1초)
             filled = self._wait_for_fill(order_no, 1, org_no=org_no, qty=qty)
             if filled:
-                self._log_trade("CHASE_BUY", code, name, qty, chase_count + 1)
+                actual_qty = self._actual_fill_qty(code, qty_before, "BUY", qty)
+                self._log_trade("CHASE_BUY", code, name, actual_qty, chase_count + 1)
                 logger.info(
                     f"[chase_buy] ✅ {name}({code}) 체결 @ {our_price:,} "
                     f"({chase_count}회 추격, {int(time.time()-start_time)}초)"
@@ -1085,6 +1189,7 @@ class KISTrader:
                 return {
                     "success": True, "order_no": order_no,
                     "message": f"chase 매수 {name}({code}) {qty}주 @ {our_price:,}원 ({chase_count}회 추격)",
+                    "filled_qty": actual_qty,
                     "chase_count": chase_count,
                     "final_price": our_price,
                 }
@@ -1148,6 +1253,7 @@ class KISTrader:
         blocked = self._order_gate("SELL", code, qty, manual=manual, source="smart_sell")
         if blocked:
             return blocked
+        qty_before = self._holding_qty_for_reconcile(code)
 
         price_info = self.fetch_price(code)
         if not price_info.get("success"):
@@ -1181,9 +1287,11 @@ class KISTrader:
         filled = self._wait_for_fill(order_no, wait_per_step, org_no=org_no, qty=qty)
 
         if filled:
-            self._log_trade("SMART_SELL", code, name, qty, 1)
+            actual_qty = self._actual_fill_qty(code, qty_before, "SELL", qty)
+            self._log_trade("SMART_SELL", code, name, actual_qty, 1)
             return {
                 "success": True, "order_no": order_no,
+                "filled_qty": actual_qty,
                 "message": f"스마트매도 {name}({code}) {qty}주 @ {price_1:,}원 (+0.5%)",
                 "saved_pct": 0.5,
             }
@@ -1205,9 +1313,11 @@ class KISTrader:
         filled = self._wait_for_fill(order_no, wait_per_step, org_no=org_no, qty=qty)
 
         if filled:
-            self._log_trade("SMART_SELL", code, name, qty, 2)
+            actual_qty = self._actual_fill_qty(code, qty_before, "SELL", qty)
+            self._log_trade("SMART_SELL", code, name, actual_qty, 2)
             return {
                 "success": True, "order_no": order_no,
+                "filled_qty": actual_qty,
                 "message": f"스마트매도 {name}({code}) {qty}주 @ {price_2:,}원 (+0.2%)",
                 "saved_pct": 0.2,
             }
@@ -1231,9 +1341,11 @@ class KISTrader:
         filled = self._wait_for_fill(order_no, wait_per_step, org_no=org_no, qty=qty)
 
         if filled:
-            self._log_trade("SMART_SELL", code, name, qty, 3)
+            actual_qty = self._actual_fill_qty(code, qty_before, "SELL", qty)
+            self._log_trade("SMART_SELL", code, name, actual_qty, 3)
             return {
                 "success": True, "order_no": order_no,
+                "filled_qty": actual_qty,
                 "message": f"스마트매도 {name}({code}) {qty}주 @ {price_3:,}원 (3단계)",
                 "saved_pct": 0,
             }
@@ -2054,19 +2166,25 @@ class KISTrader:
                 break
         return results
 
-    def fetch_minute_chart(self, code: str, count: int = 30) -> list:
+    def fetch_minute_chart(self, code: str, count: int = 30,
+                           minutes: int = 1, n: int = None) -> list:
         """분봉 차트 (FHKST03010200) — 5/19 사장님 요청: 5분봉 보조 지표용.
 
         Args:
             code: 종목코드
             count: 분봉 개수 (KIS API 최대 30개, 1분 단위)
+            minutes: 분봉 단위 (5/28 P0 fix — 현재 1분봉만 지원, 5분봉 요청 시 1분봉 30개 반환)
+            n: count 별칭 (5/28 P0 fix — intraday_learning_v2.py 호환)
 
         Returns:
             [{"time","open","high","low","close","volume"}, ...] — 시간순(오래된 것 먼저)
 
         Note:
-            KIS는 1분봉만 직접 지원. 5분봉은 5개 묶어서 집계.
+            KIS는 1분봉만 직접 지원. 5분봉은 5개 묶어서 집계 (향후 구현).
+            5/28 P0 fix: intraday_learning_v2 5분봉 호출 호환 → 1분봉 30개 반환 (집계는 호출자가 처리)
         """
+        if n is not None:
+            count = n
         params = {
             "FID_ETC_CLS_CODE": "",
             "FID_COND_MRKT_DIV_CODE": "J",
