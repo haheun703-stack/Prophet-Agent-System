@@ -3634,6 +3634,15 @@ class BodyHunterBot:
         except Exception as e:
             logger.error(f"국적별 수급 실패: {e}")
 
+        # 3.5 시장 세부 11주체 수급 (KIS FHPTJ04040000 코스피+코스닥) — 5/31 신규
+        #     종목별(4주체)이 버리던 금융투자(세력)/투신/사모/보험/기타외국인 세부 줍기. 매매 무관·비차단.
+        try:
+            from data.market_investor_collector import collect_market_investor
+            mkt_out = await asyncio.to_thread(collect_market_investor, 1)
+            logger.info(f"시장 세부 수급(11주체): {list(mkt_out.keys())}")
+        except Exception as e:
+            logger.error(f"시장 세부 수급 실패: {e}")
+
         # 4. ETF OHLCV 수집 (21종목)
         etf_cnt = 0
         try:
