@@ -88,6 +88,22 @@ class TradeTracker:
             return False
 
         self._save()
+        # CHECK-2 (Phase3): PLANNED 등록 intent (미체결=filled_qty 0). 비차단.
+        try:
+            from bot.order_intent import record_order_intent
+            _t = self._active.get(code, {})
+            _sh = int(_t.get("shares", 0) or 0)
+            _en = int(_t.get("entry_price", 0) or 0)
+            record_order_intent(
+                side="BUY", code=code, qty=_sh, source="paper:tracker",
+                manual=False, allowed=True, reason="TRACKER_PLAN",
+                message=str(_t.get("name", code)),
+                estimate_amount_krw=_en * _sh,
+                order_no="PLANNED", rt_cd="PLANNED",
+                filled_qty=0, avg_fill_price=0, dedupe_daily=True,
+            )
+        except Exception:
+            pass
         return True
 
     def activate(self, code: str, filled_price: int, shares: int = 0) -> bool:
@@ -102,6 +118,21 @@ class TradeTracker:
             t["shares"] = shares
         t["hold_start"] = datetime.now().strftime("%Y-%m-%d")
         self._save()
+        # CHECK-2 (Phase3): 매수 체결 intent. activate=PAPER_OPEN (wrapper와 dedupe). 비차단.
+        try:
+            from bot.order_intent import record_order_intent
+            _sh = int(shares or t.get("shares", 0) or 0)
+            record_order_intent(
+                side="BUY", code=code, qty=_sh, source="paper:tracker",
+                manual=False, allowed=True, reason="PAPER_OPEN",
+                message=str(t.get("name", code)),
+                estimate_amount_krw=int(filled_price or 0) * _sh,
+                order_no="PAPER", rt_cd="PAPER",
+                filled_qty=_sh, avg_fill_price=int(filled_price or 0),
+                dedupe_daily=True,
+            )
+        except Exception:
+            pass
         logger.info(f"[TradeTracker] ACTIVE: {t.get('name', code)} @ {filled_price:,}")
         return True
 
@@ -152,6 +183,21 @@ class TradeTracker:
 
         logger.info(f"[TradeTracker] CLOSED: {t.get('name', code)} "
                      f"@ {exit_price:,} ({t['actual_pnl']:+.2f}%) [{reason}]")
+        # CHECK-2 (Phase3): 매도 체결 intent. pop 후 success 경로. wrapper와 dedupe. 비차단(매도 무손상).
+        try:
+            from bot.order_intent import record_order_intent
+            _sh = int(t.get("shares", 0) or 0)
+            record_order_intent(
+                side="SELL", code=code, qty=_sh, source="paper:tracker",
+                manual=False, allowed=True, reason=f"PAPER_CLOSE:{reason}",
+                message=str(t.get("name", code)),
+                estimate_amount_krw=int(exit_price or 0) * _sh,
+                order_no="PAPER", rt_cd="PAPER",
+                filled_qty=_sh, avg_fill_price=int(exit_price or 0),
+                dedupe_daily=True,
+            )
+        except Exception:
+            pass
         return t
 
     def get_active(self, code: str) -> Optional[dict]:
@@ -238,6 +284,21 @@ class TradeTracker:
                 except Exception:
                     pass
 
+            # CHECK-2 (Phase3): wrapper 매수 intent (leaf activate와 동일 PAPER_OPEN → dedupe). 비차단.
+            try:
+                from bot.order_intent import record_order_intent
+                _sh = int(getattr(to, "shares", 0) or 0)
+                record_order_intent(
+                    side="BUY", code=to.code, qty=_sh, source="paper:tracker",
+                    manual=False, allowed=True, reason="PAPER_OPEN",
+                    message=str(getattr(to, "name", to.code)),
+                    estimate_amount_krw=int(entry or 0) * _sh,
+                    order_no="PAPER", rt_cd="PAPER",
+                    filled_qty=_sh, avg_fill_price=int(entry or 0),
+                    dedupe_daily=True,
+                )
+            except Exception:
+                pass
             self.register(to)
             self.activate(to.code, entry)
             self._active[to.code]["paper"] = True
@@ -289,6 +350,22 @@ class TradeTracker:
                 logger.warning(f"PAPER 가격체크 실패 {code}: {e}")
 
         for code, price, reason in to_close:
+            # CHECK-2 (Phase3): wrapper 매도 intent (leaf close와 동일 키 → dedupe). 비차단(매도 무손상).
+            try:
+                from bot.order_intent import record_order_intent
+                _t = self._active.get(code, {})
+                _sh = int(_t.get("shares", 0) or 0)
+                record_order_intent(
+                    side="SELL", code=code, qty=_sh, source="paper:tracker",
+                    manual=False, allowed=True, reason=f"PAPER_CLOSE:{reason}",
+                    message=str(_t.get("name", code)),
+                    estimate_amount_krw=int(price or 0) * _sh,
+                    order_no="PAPER", rt_cd="PAPER",
+                    filled_qty=_sh, avg_fill_price=int(price or 0),
+                    dedupe_daily=True,
+                )
+            except Exception:
+                pass
             self.close(code, price, reason)
 
         return events
@@ -321,6 +398,21 @@ class TradeTracker:
             name = t.get("name", code)
             days = t.get("time_stop_days", 5)
 
+            # CHECK-2 (Phase3): wrapper 시간손절 매도 intent (leaf close와 동일 키 → dedupe). 비차단.
+            try:
+                from bot.order_intent import record_order_intent
+                _sh = int(t.get("shares", 0) or 0)
+                record_order_intent(
+                    side="SELL", code=code, qty=_sh, source="paper:tracker",
+                    manual=False, allowed=True, reason="PAPER_CLOSE:TIME_STOP",
+                    message=str(t.get("name", code)),
+                    estimate_amount_krw=int(close_price or 0) * _sh,
+                    order_no="PAPER", rt_cd="PAPER",
+                    filled_qty=_sh, avg_fill_price=int(close_price or 0),
+                    dedupe_daily=True,
+                )
+            except Exception:
+                pass
             result = self.close(code, close_price, "TIME_STOP")
             if result:
                 events.append(
@@ -503,6 +595,21 @@ class TradeTracker:
                 }
 
             self._active[code] = trade_data
+            # CHECK-2 (Phase3): 프리클로즈 매수 intent (leaf 미경유 = 독립 기록). 비차단.
+            try:
+                from bot.order_intent import record_order_intent
+                _sh = int(trade_data.get("shares", 0) or 0)
+                record_order_intent(
+                    side="BUY", code=code, qty=_sh, source="paper:tracker",
+                    manual=False, allowed=True, reason="PAPER_PRECLOSE_OPEN",
+                    message=str(name),
+                    estimate_amount_krw=int(entry or 0) * _sh,
+                    order_no="PAPER", rt_cd="PAPER",
+                    filled_qty=_sh, avg_fill_price=int(entry or 0),
+                    dedupe_daily=True,
+                )
+            except Exception:
+                pass
             registered.append(name)
             logger.info(f"[TradeTracker] PAPER-PRECLOSE: {name} @ {entry:,}")
 
