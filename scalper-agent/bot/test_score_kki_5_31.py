@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from data.limit_up_scanner import LimitUpStock, score_kki, count_surge_limit_days
+from data.limit_up_scanner import LimitUpStock, score_kki, count_surge_limit_days, compute_kki
 from data.sajang_rules import SAJANG
 
 P = F = 0
@@ -62,6 +62,22 @@ chk(nan_ok == 3.0, f"NaN atr → F1 3점 (={nan_ok})")
 closes = [1000, 1160, 1160, 900, 1170]  # +16%, 0%, -22%, +30%
 surge, limit = count_surge_limit_days(closes, lookback=60, surge_pct=15, limit_pct=29)
 chk(surge == 1 and limit == 1, f"급등1/상한가1 (={surge}/{limit})")
+
+# 8. compute_kki — 합성 df로 브릭2 빌드경로 (크래시 없이 점수·등급 산출)
+import pandas as _pd
+_n = 60
+_closes = [1000 + i * 5 for i in range(_n)]
+_closes[30] = round(_closes[29] * 1.20)   # +20% 급등일 1개
+_df = _pd.DataFrame({"high": [c * 1.03 for c in _closes], "low": [c * 0.97 for c in _closes],
+                     "close": _closes, "volume": [1000] * _n})
+_st = mk(close=int(_closes[-1]), turnover_pct=12, close_strength=0.9, volume_ratio=6, consecutive_limit=1)
+_sc, _gr = compute_kki(_st, _df, "high", "low", "close")
+chk(0 <= _sc <= 100 and _gr == SAJANG.kki_grade(_sc), f"compute_kki 동작 (score={_sc}, grade={_gr})")
+chk(_gr in ("EXPLOSIVE", "HUNTABLE", "MODERATE", "SLUGGISH"), "compute_kki 등급 유효")
+# 유동성 미달 종목은 compute_kki도 0
+_st_low = mk(close=1000, trading_value_억=5)
+_sc2, _gr2 = compute_kki(_st_low, _df, "high", "low", "close")
+chk(_sc2 == 0.0 and _gr2 == "SLUGGISH", f"compute_kki 유동성<50 → 0/SLUGGISH (={_sc2}/{_gr2})")
 
 print(f"\n결과: {P}/{P+F} PASS, {F} FAIL")
 sys.exit(0 if F == 0 else 1)

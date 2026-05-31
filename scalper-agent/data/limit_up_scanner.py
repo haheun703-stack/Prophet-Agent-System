@@ -76,6 +76,8 @@ class LimitUpStock:
     inst_net: float = 0.0             # 기관 순매수 (백만원)
     consecutive_limit: int = 0        # 연속 상한가 일수
     score: float = 0.0                # 연속성 점수 (0~100)
+    kki_score: float = 0.0            # 끼 점수 0~100 (4단 Stage1, shadow 관측 — 선정 미반영)
+    kki_grade: str = ""               # EXPLOSIVE/HUNTABLE/MODERATE/SLUGGISH
     pattern: str = ""                 # LIMIT_UP / NEAR_LIMIT / SEQUENTIAL_PUSH
     tags: list = field(default_factory=list)
 
@@ -394,6 +396,8 @@ def scan_limit_up(target_date: str = None,
             tags=tags,
         )
         stock._short_proxy = sp  # 내부 참조용
+        # ★ 4단 브릭2(shadow): 끼 점수 관측 — 아래 sort(-change_pct) 그대로 = 선정 미반영
+        stock.kki_score, stock.kki_grade = compute_kki(stock, df, high_col, low_col, close_col)
         results.append(stock)
         scanned += 1
 
@@ -402,6 +406,12 @@ def scan_limit_up(target_date: str = None,
 
     results.sort(key=lambda x: -x.change_pct)
     logger.info(f"상한가 스캔 완료: {scanned}종목 → {len(results)}건 감지")
+    # ★ 브릭2 shadow 관측: 끼 등급 분포 (선정 미반영, 로그만)
+    if results:
+        from collections import Counter as _Counter
+        _kd = dict(_Counter(s.kki_grade or "?" for s in results))
+        _hot = sum(1 for s in results if s.kki_grade in ("EXPLOSIVE", "HUNTABLE"))
+        logger.info(f"[끼 관측/shadow] 등급분포 {_kd} | EXPLOSIVE+HUNTABLE {_hot}건 (선정 미반영)")
     return results
 
 
@@ -1069,6 +1079,31 @@ def score_kki(stock: LimitUpStock, atr_pct: float,
     elif vr >= 2:
         s += 1.5
     return round(min(100.0, s), 1)
+
+
+def compute_kki(stock: LimitUpStock, df, high_col: str = "high",
+                low_col: str = "low", close_col: str = "close") -> tuple:
+    """LimitUpStock + 일봉 df → (kki_score, kki_grade). 4단 브릭2 shadow 헬퍼.
+
+    ATR%(14일)·급등일수(60일)를 df에서 산출 → score_kki. 실패해도 (0,'')로 비차단.
+    """
+    from data.sajang_rules import SAJANG
+    close = float(stock.close or 0)
+    atr_pct = 0.0
+    surge = limit = 0
+    try:
+        if len(df) >= 15 and close > 0:
+            hs = df[high_col].iloc[-14:].tolist()
+            ls = df[low_col].iloc[-14:].tolist()
+            pcs = df[close_col].iloc[-15:-1].tolist()
+            trs = [max(h - l, abs(h - pc), abs(l - pc)) for h, l, pc in zip(hs, ls, pcs)]
+            if trs:
+                atr_pct = (sum(trs) / len(trs)) / close * 100
+        surge, limit = count_surge_limit_days(df[close_col].tolist())
+    except Exception:
+        return 0.0, ""
+    sc = score_kki(stock, atr_pct, surge, limit)
+    return sc, SAJANG.kki_grade(sc)
 
 
 def score_continuation(stock: LimitUpStock,
