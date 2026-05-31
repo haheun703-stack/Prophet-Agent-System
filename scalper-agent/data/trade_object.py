@@ -104,6 +104,30 @@ class TradeObject:
     # 타임스탬프
     created_at: str = ""
 
+    # 시나리오 (4단 Stage3, 5/31) — 선언적 계획. 실제 매매는 기존 엔진(트레일/룰B/C/D)이 수행.
+    kki_score: float = 0.0
+    kki_grade: str = ""
+    thesis: str = ""               # 명분: 재료/수급/상한가연속/순환매
+    thesis_source: str = ""
+    tp1_trigger_pct: float = 0.0   # 1차 줄먹 발동선 = SAJANG.RULE_B_THRESHOLD
+    tp1_action: str = ""
+    trail_arm_pct: float = 0.0     # = SAJANG.TRAILING_ACTIVATION_PCT
+    invalidation_price: int = 0    # = stop_loss
+    invalidation_kind: str = ""    # STRUCTURE_BREAK/SUPPLY_EXIT/NEWS_DECAY/GAP_DOWN
+    hold_plan: str = ""            # "D+0~D+3"
+
+    def build_scenario(self) -> "TradeObject":
+        """Stage3 시나리오 선언 채우기 (SAJANG 경유, 리터럴 0). 매매 미변경 = 계획 기록."""
+        self.tp1_trigger_pct = SAJANG.RULE_B_THRESHOLD
+        self.tp1_action = "PARTIAL_SELL_50"
+        self.trail_arm_pct = SAJANG.TRAILING_ACTIVATION_PCT
+        self.invalidation_price = self.stop_loss
+        if not self.invalidation_kind:
+            self.invalidation_kind = "SUPPLY_EXIT" if self.stop_source == "INST_COST" else "STRUCTURE_BREAK"
+        if not self.hold_plan:
+            self.hold_plan = f"D+0~D+{self.expected_hold_days}"
+        return self
+
     def invalidation_narrative(self) -> str:
         """시나리오 무효화 조건 1줄"""
         parts = []
