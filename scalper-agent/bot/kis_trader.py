@@ -122,6 +122,10 @@ class KISTrader:
         message: str = "",
         strategy: str = "",
         estimate_amount_krw: Optional[int] = None,
+        order_no: str = "",
+        rt_cd: str = "",
+        filled_qty: int = 0,
+        avg_fill_price: int = 0,
     ) -> Optional[dict]:
         try:
             from bot.order_intent import record_order_intent
@@ -137,6 +141,10 @@ class KISTrader:
                 message=message,
                 strategy=strategy,
                 estimate_amount_krw=estimate_amount_krw,
+                order_no=order_no,
+                rt_cd=rt_cd,
+                filled_qty=filled_qty,
+                avg_fill_price=avg_fill_price,
             )
             return None
         except Exception as exc:

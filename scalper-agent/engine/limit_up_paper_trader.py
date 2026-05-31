@@ -17,8 +17,6 @@ Usage:
   python -m data.limit_up_paper_trader --status         # 상한가 포지션 현황
   python -m data.limit_up_paper_trader --no-telegram    # 텔레그램 미전송
 """
-from __future__ import annotations
-
 import json
 import logging
 import sys
@@ -26,6 +24,7 @@ from datetime import datetime, date
 from pathlib import Path
 from typing import Optional
 
+from bot.order_intent import record_order_intent
 from data.sajang_rules import SAJANG
 
 logger = logging.getLogger("BH.LimitUpPaper")
@@ -222,6 +221,19 @@ def _check_existing_positions(pf, today: str) -> list:
 
         # TP 도달 체크
         if tp > 0 and current >= tp:
+            shares = int(pos.get("shares", pos.get("qty", 0)) or 0)
+            try:
+                record_order_intent(
+                    side="SELL", code=code, qty=shares, source="paper:limit_up",
+                    manual=False, allowed=True, reason="PAPER_CLOSE:TARGET",
+                    message=pos.get("name", code),
+                    estimate_amount_krw=current * shares,
+                    order_no="PAPER", rt_cd="PAPER",
+                    filled_qty=shares, avg_fill_price=current,
+                    dedupe_daily=True,
+                )
+            except Exception as intent_exc:
+                logger.warning(f"[LimitUpPaper] intent 기록 실패(TARGET {code}): {intent_exc}")
             trade = pf.close_position(code, current, "TARGET")
             if trade:
                 actions.append({
@@ -243,6 +255,19 @@ def _check_existing_positions(pf, today: str) -> list:
         # SL 도달 체크
         sl = pos.get("sl", 0)
         if sl > 1 and current <= sl:
+            shares = int(pos.get("shares", pos.get("qty", 0)) or 0)
+            try:
+                record_order_intent(
+                    side="SELL", code=code, qty=shares, source="paper:limit_up",
+                    manual=False, allowed=True, reason="PAPER_CLOSE:STOP_LOSS",
+                    message=pos.get("name", code),
+                    estimate_amount_krw=current * shares,
+                    order_no="PAPER", rt_cd="PAPER",
+                    filled_qty=shares, avg_fill_price=current,
+                    dedupe_daily=True,
+                )
+            except Exception as intent_exc:
+                logger.warning(f"[LimitUpPaper] intent 기록 실패(STOP_LOSS {code}): {intent_exc}")
             trade = pf.close_position(code, current, "STOP_LOSS")
             if trade:
                 actions.append({
@@ -263,6 +288,19 @@ def _check_existing_positions(pf, today: str) -> list:
 
         # 만기(TIME_STOP) 체크
         if hold_days >= TIME_STOP_DAYS:
+            shares = int(pos.get("shares", pos.get("qty", 0)) or 0)
+            try:
+                record_order_intent(
+                    side="SELL", code=code, qty=shares, source="paper:limit_up",
+                    manual=False, allowed=True, reason="PAPER_CLOSE:TIME_STOP",
+                    message=pos.get("name", code),
+                    estimate_amount_krw=current * shares,
+                    order_no="PAPER", rt_cd="PAPER",
+                    filled_qty=shares, avg_fill_price=current,
+                    dedupe_daily=True,
+                )
+            except Exception as intent_exc:
+                logger.warning(f"[LimitUpPaper] intent 기록 실패(TIME_STOP {code}): {intent_exc}")
             trade = pf.close_position(code, current, "TIME_STOP")
             if trade:
                 actions.append({
@@ -307,12 +345,31 @@ def _process_new_signals(pf, today: str) -> tuple[list, int]:
         # 품질 필터 체크
         ok_quality, skip_reason = _quality_filter(sig)
         if not ok_quality:
+            try:
+                record_order_intent(
+                    side="BUY", code=code, qty=0, source="paper:limit_up",
+                    manual=False, allowed=False, reason="PAPER_SKIP_QUALITY",
+                    message=f"{name}: {skip_reason}",
+                    order_no="PAPER", rt_cd="PAPER", filled_qty=0,
+                    avg_fill_price=0, dedupe_daily=True,
+                )
+            except Exception as intent_exc:
+                logger.warning(f"[LimitUpPaper] intent 기록 실패(SKIP_QUALITY {code}): {intent_exc}")
             logger.info(f"[스킵] {name} — {skip_reason}")
             skipped += 1
             continue
 
         # 이미 보유 중이면 스킵
         if code in pf.positions:
+            try:
+                record_order_intent(
+                    side="BUY", code=code, qty=0, source="paper:limit_up",
+                    manual=False, allowed=False, reason="PAPER_SKIP_ALREADY_HELD",
+                    message=name, order_no="PAPER", rt_cd="PAPER",
+                    filled_qty=0, avg_fill_price=0, dedupe_daily=True,
+                )
+            except Exception as intent_exc:
+                logger.warning(f"[LimitUpPaper] intent 기록 실패(SKIP_HELD {code}): {intent_exc}")
             logger.info(f"[스킵] {name} 이미 보유 중")
             skipped += 1
             continue
@@ -323,6 +380,16 @@ def _process_new_signals(pf, today: str) -> tuple[list, int]:
             if pos.get("source") == SOURCE
         )
         if lu_count >= MAX_POSITIONS:
+            try:
+                record_order_intent(
+                    side="BUY", code=code, qty=0, source="paper:limit_up",
+                    manual=False, allowed=False, reason="PAPER_SKIP_SLOT_FULL",
+                    message=f"{name}: limit_up positions {lu_count}/{MAX_POSITIONS}",
+                    order_no="PAPER", rt_cd="PAPER", filled_qty=0,
+                    avg_fill_price=0, dedupe_daily=True,
+                )
+            except Exception as intent_exc:
+                logger.warning(f"[LimitUpPaper] intent 기록 실패(SLOT_FULL {code}): {intent_exc}")
             logger.info(f"[스킵] {name} — 상한가 보유 한도 {MAX_POSITIONS}건 도달")
             skipped += 1
             continue
@@ -330,6 +397,15 @@ def _process_new_signals(pf, today: str) -> tuple[list, int]:
         # 진입가: 추천 진입가(entry_price) 사용
         entry_price = sig.get("entry_price", 0)
         if entry_price <= 0:
+            try:
+                record_order_intent(
+                    side="BUY", code=code, qty=0, source="paper:limit_up",
+                    manual=False, allowed=False, reason="PAPER_SKIP_NO_PRICE",
+                    message=name, order_no="PAPER", rt_cd="PAPER",
+                    filled_qty=0, avg_fill_price=0, dedupe_daily=True,
+                )
+            except Exception as intent_exc:
+                logger.warning(f"[LimitUpPaper] intent 기록 실패(SKIP_PRICE {code}): {intent_exc}")
             skipped += 1
             continue
 
@@ -337,6 +413,16 @@ def _process_new_signals(pf, today: str) -> tuple[list, int]:
         max_cost = int(pf.cash * MAX_POSITION_PCT)
         shares = max_cost // entry_price
         if shares <= 0:
+            try:
+                record_order_intent(
+                    side="BUY", code=code, qty=0, source="paper:limit_up",
+                    manual=False, allowed=False, reason="PAPER_SKIP_CASH_SHORT",
+                    message=name, estimate_amount_krw=entry_price,
+                    order_no="PAPER", rt_cd="PAPER", filled_qty=0,
+                    avg_fill_price=entry_price, dedupe_daily=True,
+                )
+            except Exception as intent_exc:
+                logger.warning(f"[LimitUpPaper] intent 기록 실패(SKIP_CASH {code}): {intent_exc}")
             logger.info(f"[스킵] {name} 자금 부족")
             skipped += 1
             continue
@@ -346,6 +432,17 @@ def _process_new_signals(pf, today: str) -> tuple[list, int]:
         sl_price = SAJANG.get_normal_sl(entry_price)
 
         # 가상매수
+        try:
+            record_order_intent(
+                side="BUY", code=code, qty=shares, source="paper:limit_up",
+                manual=False, allowed=True, reason="PAPER_OPEN",
+                message=name, estimate_amount_krw=entry_price * shares,
+                order_no="PAPER", rt_cd="PAPER",
+                filled_qty=shares, avg_fill_price=entry_price,
+                dedupe_daily=True,
+            )
+        except Exception as intent_exc:
+            logger.warning(f"[LimitUpPaper] intent 기록 실패(OPEN {code}): {intent_exc}")
         ok = pf.open_position(
             code=code,
             name=name,
@@ -402,12 +499,31 @@ def _check_pullback_entries(pf, today: str) -> tuple[list, int]:
         # 품질 필터 체크
         ok_quality, skip_reason = _quality_filter(item)
         if not ok_quality:
+            try:
+                record_order_intent(
+                    side="BUY", code=code, qty=0, source="paper:limit_up",
+                    manual=False, allowed=False, reason="PAPER_SKIP_QUALITY",
+                    message=f"{name}: {skip_reason}",
+                    order_no="PAPER", rt_cd="PAPER", filled_qty=0,
+                    avg_fill_price=0, dedupe_daily=True,
+                )
+            except Exception as intent_exc:
+                logger.warning(f"[LimitUpPaper] intent 기록 실패(SKIP_QUALITY {code}): {intent_exc}")
             logger.info(f"[스킵-눌림] {name} — {skip_reason}")
             skipped += 1
             continue
 
         # 이미 보유 중이면 스킵
         if code in pf.positions:
+            try:
+                record_order_intent(
+                    side="BUY", code=code, qty=0, source="paper:limit_up",
+                    manual=False, allowed=False, reason="PAPER_SKIP_ALREADY_HELD",
+                    message=name, order_no="PAPER", rt_cd="PAPER",
+                    filled_qty=0, avg_fill_price=0, dedupe_daily=True,
+                )
+            except Exception as intent_exc:
+                logger.warning(f"[LimitUpPaper] intent 기록 실패(SKIP_HELD {code}): {intent_exc}")
             skipped += 1
             continue
 
@@ -417,18 +533,47 @@ def _check_pullback_entries(pf, today: str) -> tuple[list, int]:
             if pos.get("source") == SOURCE
         )
         if lu_count >= MAX_POSITIONS:
+            try:
+                record_order_intent(
+                    side="BUY", code=code, qty=0, source="paper:limit_up",
+                    manual=False, allowed=False, reason="PAPER_SKIP_SLOT_FULL",
+                    message=f"{name}: limit_up positions {lu_count}/{MAX_POSITIONS}",
+                    order_no="PAPER", rt_cd="PAPER", filled_qty=0,
+                    avg_fill_price=0, dedupe_daily=True,
+                )
+            except Exception as intent_exc:
+                logger.warning(f"[LimitUpPaper] intent 기록 실패(SLOT_FULL {code}): {intent_exc}")
             skipped += 1
             continue
 
         # 현재가 조회
         current = _fetch_close_price(code)
         if current is None:
+            try:
+                record_order_intent(
+                    side="BUY", code=code, qty=0, source="paper:limit_up",
+                    manual=False, allowed=False, reason="PAPER_SKIP_NO_PRICE",
+                    message=name, order_no="PAPER", rt_cd="PAPER",
+                    filled_qty=0, avg_fill_price=0, dedupe_daily=True,
+                )
+            except Exception as intent_exc:
+                logger.warning(f"[LimitUpPaper] intent 기록 실패(SKIP_PRICE {code}): {intent_exc}")
             skipped += 1
             continue
 
         # 눌림목 진입가 범위 확인
         signal_close = item.get("signal_close", 0)
         if signal_close <= 0:
+            try:
+                record_order_intent(
+                    side="BUY", code=code, qty=0, source="paper:limit_up",
+                    manual=False, allowed=False, reason="PAPER_SKIP_NO_PRICE",
+                    message=f"{name}: invalid signal_close",
+                    order_no="PAPER", rt_cd="PAPER", filled_qty=0,
+                    avg_fill_price=0, dedupe_daily=True,
+                )
+            except Exception as intent_exc:
+                logger.warning(f"[LimitUpPaper] intent 기록 실패(SKIP_SIGNAL {code}): {intent_exc}")
             skipped += 1
             continue
         pullback_trigger = int(signal_close * 0.90)  # -10% 눌림
@@ -437,6 +582,16 @@ def _check_pullback_entries(pf, today: str) -> tuple[list, int]:
         if current > pullback_trigger:
             continue  # 아직 눌림 안 옴
         if current < pullback_floor:
+            try:
+                record_order_intent(
+                    side="BUY", code=code, qty=0, source="paper:limit_up",
+                    manual=False, allowed=False, reason="PAPER_SKIP_QUALITY",
+                    message=f"{name}: over pullback {current} < {pullback_floor}",
+                    order_no="PAPER", rt_cd="PAPER", filled_qty=0,
+                    avg_fill_price=current, dedupe_daily=True,
+                )
+            except Exception as intent_exc:
+                logger.warning(f"[LimitUpPaper] intent 기록 실패(SKIP_FLOOR {code}): {intent_exc}")
             logger.info(f"[스킵] {name} 과대 하락 ({current:,} < {pullback_floor:,})")
             skipped += 1
             continue
@@ -446,12 +601,33 @@ def _check_pullback_entries(pf, today: str) -> tuple[list, int]:
         max_cost = int(pf.cash * MAX_POSITION_PCT)
         shares = max_cost // entry_price
         if shares <= 0:
+            try:
+                record_order_intent(
+                    side="BUY", code=code, qty=0, source="paper:limit_up",
+                    manual=False, allowed=False, reason="PAPER_SKIP_CASH_SHORT",
+                    message=name, estimate_amount_krw=entry_price,
+                    order_no="PAPER", rt_cd="PAPER", filled_qty=0,
+                    avg_fill_price=entry_price, dedupe_daily=True,
+                )
+            except Exception as intent_exc:
+                logger.warning(f"[LimitUpPaper] intent 기록 실패(SKIP_CASH {code}): {intent_exc}")
             skipped += 1
             continue
 
         tp_price = SAJANG.get_take_profit(entry_price)
         sl_price = SAJANG.get_normal_sl(entry_price)
 
+        try:
+            record_order_intent(
+                side="BUY", code=code, qty=shares, source="paper:limit_up",
+                manual=False, allowed=True, reason="PAPER_OPEN",
+                message=name, estimate_amount_krw=entry_price * shares,
+                order_no="PAPER", rt_cd="PAPER",
+                filled_qty=shares, avg_fill_price=entry_price,
+                dedupe_daily=True,
+            )
+        except Exception as intent_exc:
+            logger.warning(f"[LimitUpPaper] intent 기록 실패(OPEN {code}): {intent_exc}")
         ok = pf.open_position(
             code=code,
             name=name,

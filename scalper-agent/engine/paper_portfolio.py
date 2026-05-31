@@ -253,8 +253,24 @@ class PaperPortfolio:
         self._save()
         # time_stop 초과 포지션 자동 청산
         for code, price in time_stop_codes:
-            name = self.positions.get(code, {}).get("name", code)
+            pos = self.positions.get(code, {})
+            name = pos.get("name", code)
             logger.info(f"[PaperPortfolio] TIME_STOP 청산: {name} (보유일 초과)")
+            shares = int(pos.get("shares", pos.get("qty", 0)) or 0)
+            try:
+                from bot.order_intent import record_order_intent
+
+                record_order_intent(
+                    side="SELL", code=code, qty=shares,
+                    source=f"paper:{pos.get('source', 'paper_portfolio')}",
+                    manual=False, allowed=True, reason="PAPER_CLOSE:TIME_STOP",
+                    message=name, estimate_amount_krw=price * shares,
+                    order_no="PAPER", rt_cd="PAPER",
+                    filled_qty=shares, avg_fill_price=price,
+                    dedupe_daily=True,
+                )
+            except Exception as intent_exc:
+                logger.warning(f"[PaperPortfolio] intent 기록 실패(TIME_STOP {code}): {intent_exc}")
             self.close_position(code, price, "TIME_STOP")
 
     # ─── 일일 스냅샷 ──────────────────────────────

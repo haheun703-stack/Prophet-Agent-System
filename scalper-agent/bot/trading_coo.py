@@ -2450,6 +2450,7 @@ class TradingCOO:
         """NXT + 단타 TOP픽 paper 포지션 → 익일 시가 기준 청산."""
         try:
             from data.paper_portfolio import PaperPortfolio
+            from bot.order_intent import record_order_intent
             portfolio = PaperPortfolio()
             closed = []
             today = datetime.now().strftime("%Y-%m-%d")
@@ -2481,6 +2482,21 @@ class TradingCOO:
                         pass
 
                 sell_reason = "NXT_MORNING_SELL" if pos.get("source") == "nxt" else "TOP_MORNING_SELL"
+                shares = int(pos.get("shares", pos.get("qty", 0)) or 0)
+                try:
+                    record_order_intent(
+                        side="SELL", code=code, qty=shares,
+                        source=f"paper:{pos.get('source', 'nxt')}",
+                        manual=False, allowed=True,
+                        reason=f"PAPER_CLOSE:{sell_reason}",
+                        message=pos.get("name", code),
+                        estimate_amount_krw=open_price * shares,
+                        order_no="PAPER", rt_cd="PAPER",
+                        filled_qty=shares, avg_fill_price=open_price,
+                        dedupe_daily=True,
+                    )
+                except Exception as intent_exc:
+                    logger.warning(f"[A5P] paper intent 기록 실패({code}): {intent_exc}")
                 result = portfolio.close_position(code, open_price, sell_reason)
                 if result:
                     closed.append(f"{pos['name']} {result['pnl_pct']:+.1f}%")
@@ -2530,6 +2546,7 @@ class TradingCOO:
         """nightwatch_report.json에서 NXT 추천 → PaperPortfolio 등록."""
         try:
             from data.paper_portfolio import PaperPortfolio
+            from bot.order_intent import record_order_intent
             report_path = DATA_STORE / "nightwatch_report.json"
 
             today = datetime.now().strftime("%Y-%m-%d")
@@ -2599,6 +2616,16 @@ class TradingCOO:
             # BRAIN 레짐별 NXT Paper 최대 포지션 수
             if brain_regime == "관망" or brain_pct == 0:
                 logger.info("[C26] BRAIN 관망 → NXT Paper 매수 금지")
+                try:
+                    record_order_intent(
+                        side="BUY", code="000000", qty=0, source="paper:nxt",
+                        manual=False, allowed=False, reason="PAPER_SKIP_BRAIN_HOLD",
+                        message=f"brain_regime={brain_regime}, brain_pct={brain_pct}",
+                        order_no="PAPER", rt_cd="PAPER", filled_qty=0,
+                        avg_fill_price=0, dedupe_daily=True,
+                    )
+                except Exception as intent_exc:
+                    logger.warning(f"[C26] paper intent 기록 실패(BRAIN_HOLD): {intent_exc}")
                 return {"nxt_paper_register": "BRAIN_HOLD", "regime": brain_regime}
             elif brain_regime == "최소" or brain_pct <= 30:
                 max_nxt_positions = 2
@@ -2626,6 +2653,16 @@ class TradingCOO:
             remaining_slots = max(0, max_nxt_positions - existing_nxt)
             if remaining_slots <= 0:
                 logger.info(f"[C26] NXT 슬롯 소진 (기존 {existing_nxt}/{max_nxt_positions}) — 스킵")
+                try:
+                    record_order_intent(
+                        side="BUY", code="000000", qty=0, source="paper:nxt",
+                        manual=False, allowed=False, reason="PAPER_SKIP_SLOT_FULL",
+                        message=f"existing={existing_nxt}, max={max_nxt_positions}",
+                        order_no="PAPER", rt_cd="PAPER", filled_qty=0,
+                        avg_fill_price=0, dedupe_daily=True,
+                    )
+                except Exception as intent_exc:
+                    logger.warning(f"[C26] paper intent 기록 실패(SLOT_FULL): {intent_exc}")
                 return {"nxt_paper_register": 0, "reason": "SLOT_FULL",
                         "existing": existing_nxt, "max": max_nxt_positions}
 
@@ -2638,7 +2675,18 @@ class TradingCOO:
 
                 code = t.get("code", "")
                 name = t.get("name", code)
-                if not code or code in portfolio.positions:
+                if not code:
+                    continue
+                if code in portfolio.positions:
+                    try:
+                        record_order_intent(
+                            side="BUY", code=code, qty=0, source="paper:nxt",
+                            manual=False, allowed=False, reason="PAPER_SKIP_ALREADY_HELD",
+                            message=name, order_no="PAPER", rt_cd="PAPER",
+                            filled_qty=0, avg_fill_price=0, dedupe_daily=True,
+                        )
+                    except Exception as intent_exc:
+                        logger.warning(f"[C26] paper intent 기록 실패(SKIP_HELD {code}): {intent_exc}")
                     continue
 
                 # 현재가 (장마감 가격) 조회
@@ -2654,6 +2702,15 @@ class TradingCOO:
                         pass
 
                 if entry <= 0:
+                    try:
+                        record_order_intent(
+                            side="BUY", code=code, qty=0, source="paper:nxt",
+                            manual=False, allowed=False, reason="PAPER_SKIP_NO_PRICE",
+                            message=name, order_no="PAPER", rt_cd="PAPER",
+                            filled_qty=0, avg_fill_price=0, dedupe_daily=True,
+                        )
+                    except Exception as intent_exc:
+                        logger.warning(f"[C26] paper intent 기록 실패(SKIP_PRICE {code}): {intent_exc}")
                     continue
 
                 # 포지션 크기: BRAIN allocation 반영
@@ -2665,6 +2722,17 @@ class TradingCOO:
                 tp = SAJANG.get_take_profit(entry)
                 sl = SAJANG.get_normal_sl(entry)
 
+                try:
+                    record_order_intent(
+                        side="BUY", code=code, qty=shares, source="paper:nxt",
+                        manual=False, allowed=True, reason="PAPER_OPEN",
+                        message=name, estimate_amount_krw=entry * shares,
+                        order_no="PAPER", rt_cd="PAPER",
+                        filled_qty=shares, avg_fill_price=entry,
+                        dedupe_daily=True,
+                    )
+                except Exception as intent_exc:
+                    logger.warning(f"[C26] paper intent 기록 실패(OPEN {code}): {intent_exc}")
                 ok = portfolio.open_position(
                     code, name, entry, shares, "nxt", tp, sl, time_stop_days=1,
                 )

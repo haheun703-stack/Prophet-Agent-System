@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
-"""동적 트레일링 단위 테스트 (사장님 5/22 09:50 명령)."""
+"""동적 트레일링 단위 테스트.
+
+5/25 사장님 고점 -3% 일관 룰 반영: 옛 multi-zone 5/7/10% trail은 폐기.
+SAJANG.TRAILING_PCT=3.0 기준으로 trail/activation 모두 3.0을 기대한다.
+"""
 import sys
 import unittest
 from pathlib import Path
@@ -25,22 +29,25 @@ class TestDynamicTrailing(unittest.TestCase):
         self.assertTrue(d.disable_fixed_tp)
 
     def test_moderate_strength_5_to_10pct(self):
-        """+5~10% → moderate / trail -5% / activation +5%"""
+        """+5~10% → moderate / trail -3% / activation +3%"""
         d = decide_trailing(pnl_pct=7.0)
         self.assertEqual(d.strength, "moderate")
-        self.assertEqual(d.trail_pct, 5.0)
+        self.assertEqual(d.trail_pct, 3.0)
+        self.assertEqual(d.activation_pct, 3.0)
 
     def test_strong_strength_10pct_plus(self):
-        """+10%+ → strong / trail -7%"""
+        """+10%+ → strong / trail -3% / activation +3%"""
         d = decide_trailing(pnl_pct=12.0)
         self.assertEqual(d.strength, "strong")
-        self.assertEqual(d.trail_pct, 7.0)
+        self.assertEqual(d.trail_pct, 3.0)
+        self.assertEqual(d.activation_pct, 3.0)
 
     def test_limit_up_imminent_25pct_plus(self):
-        """+25%+ → limit_up_imminent / trail -10%"""
+        """+25%+ → limit_up_imminent / trail -3% / activation +3%"""
         d = decide_trailing(pnl_pct=27.0)
         self.assertEqual(d.strength, "limit_up_imminent")
-        self.assertEqual(d.trail_pct, 10.0)
+        self.assertEqual(d.trail_pct, 3.0)
+        self.assertEqual(d.activation_pct, 3.0)
 
     def test_moderate_upgrade_to_strong_with_signals(self):
         """+5~10% + 3연속 양봉 + 체결강도 100+ + VWAP 위 → strong 승격"""
@@ -58,10 +65,10 @@ class TestDynamicTrailing(unittest.TestCase):
         self.assertEqual(d.strength, "strong", "추세 강화 시그널 3종 통과 시 moderate → strong")
 
     def test_compute_trailing_sl(self):
-        """고점 1,418 / -5% 트레일링 → SL 1,347"""
+        """고점 1,418 / -3% 트레일링 → SL 1,375"""
         d = decide_trailing(pnl_pct=8.83)
         sl = compute_trailing_sl(1418, d)
-        self.assertEqual(sl, 1347, "trail -5% × 1418 = 1347 (정수)")
+        self.assertEqual(sl, 1375, "trail -3% × 1418 = 1375 (정수)")
 
     def test_should_activate_below_activation(self):
         """pnl 2% < activation 3% → 활성 X"""
@@ -69,7 +76,7 @@ class TestDynamicTrailing(unittest.TestCase):
         self.assertFalse(should_activate_trailing(2.0, d))
 
     def test_should_activate_above_activation(self):
-        """pnl 5% ≥ activation 5% → 활성 O"""
+        """pnl 5% ≥ activation 3% → 활성 O"""
         d = decide_trailing(pnl_pct=5.0)
         self.assertTrue(should_activate_trailing(5.0, d))
 

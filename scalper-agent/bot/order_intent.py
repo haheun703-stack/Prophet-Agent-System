@@ -45,6 +45,11 @@ def record_order_intent(
     message: str = "",
     strategy: str = "",
     estimate_amount_krw: int | None = None,
+    order_no: str = "",
+    rt_cd: str = "",
+    filled_qty: int = 0,
+    avg_fill_price: int = 0,
+    dedupe_daily: bool = False,
 ) -> dict[str, Any]:
     now = datetime.now()
     record = {
@@ -62,11 +67,50 @@ def record_order_intent(
         "reason": str(reason or ""),
         "message": str(message or ""),
         "estimate_amount_krw": _safe_int(estimate_amount_krw),
+        "order_no": str(order_no or ""),
+        "rt_cd": str(rt_cd or ""),
+        "filled_qty": _safe_int(filled_qty),
+        "avg_fill_price": _safe_int(avg_fill_price),
     }
     INTENT_DIR.mkdir(parents=True, exist_ok=True)
+    if dedupe_daily and _has_daily_dedupe(record):
+        record["deduped"] = True
+        return record
     with intent_path(record["date"]).open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
     return record
+
+
+def _has_daily_dedupe(record: dict[str, Any]) -> bool:
+    key = (
+        record.get("date", ""),
+        record.get("side", ""),
+        record.get("code", ""),
+        record.get("reason", ""),
+        record.get("source", ""),
+    )
+    path = intent_path(str(record.get("date") or ""))
+    if not path.exists():
+        return False
+    with path.open("r", encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            row_key = (
+                str(row.get("date", "")),
+                str(row.get("side", "")),
+                str(row.get("code", "")),
+                str(row.get("reason", "")),
+                str(row.get("source", "")),
+            )
+            if row_key == key:
+                return True
+    return False
 
 
 def iter_order_intents(date_key: str | None = None) -> list[dict[str, Any]]:

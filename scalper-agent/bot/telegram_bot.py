@@ -4212,6 +4212,7 @@ class BodyHunterBot:
             # PaperPortfolio 연동 — 단타 TOP픽 confirmed 등록 (morning → daytrading_pick)
             try:
                 from data.paper_portfolio import PaperPortfolio
+                from bot.order_intent import record_order_intent
                 portfolio = PaperPortfolio()
 
                 # daytrading_picks.json (confirmed 모드) 로드
@@ -4238,7 +4239,18 @@ class BodyHunterBot:
                 for p in picks[:5]:
                     code = p.get("code", "")
                     name = p.get("name", code)
-                    if not code or code in portfolio.positions:
+                    if not code:
+                        continue
+                    if code in portfolio.positions:
+                        try:
+                            record_order_intent(
+                                side="BUY", code=code, qty=0, source="paper:daytrading_pick",
+                                manual=False, allowed=False, reason="PAPER_SKIP_ALREADY_HELD",
+                                message=name, order_no="PAPER", rt_cd="PAPER",
+                                filled_qty=0, avg_fill_price=0, dedupe_daily=True,
+                            )
+                        except Exception as intent_exc:
+                            logger.warning(f"[PaperPortfolio] intent 기록 실패(SKIP_HELD {code}): {intent_exc}")
                         continue
 
                     # 현재가 조회 (시가 기준)
@@ -4253,12 +4265,43 @@ class BodyHunterBot:
                         except Exception:
                             pass
                     if entry <= 0:
+                        try:
+                            record_order_intent(
+                                side="BUY", code=code, qty=0, source="paper:daytrading_pick",
+                                manual=False, allowed=False, reason="PAPER_SKIP_NO_PRICE",
+                                message=name, order_no="PAPER", rt_cd="PAPER",
+                                filled_qty=0, avg_fill_price=0, dedupe_daily=True,
+                            )
+                        except Exception as intent_exc:
+                            logger.warning(f"[PaperPortfolio] intent 기록 실패(SKIP_PRICE {code}): {intent_exc}")
+                        continue
+                    if portfolio.cash < entry:
+                        try:
+                            record_order_intent(
+                                side="BUY", code=code, qty=0, source="paper:daytrading_pick",
+                                manual=False, allowed=False, reason="PAPER_SKIP_CASH_SHORT",
+                                message=name, estimate_amount_krw=entry,
+                                order_no="PAPER", rt_cd="PAPER", filled_qty=0,
+                                avg_fill_price=entry, dedupe_daily=True,
+                            )
+                        except Exception as intent_exc:
+                            logger.warning(f"[PaperPortfolio] intent 기록 실패(SKIP_CASH {code}): {intent_exc}")
                         continue
 
                     shares = max(1, int(portfolio.cash * 0.25 / max(entry, 1)))
                     from data.sajang_rules import SAJANG
                     tp = SAJANG.get_take_profit(entry)
                     sl = SAJANG.get_normal_sl(entry)
+                    try:
+                        record_order_intent(
+                            side="BUY", code=code, qty=shares, source="paper:daytrading_pick",
+                            manual=False, allowed=True, reason="PAPER_OPEN",
+                            message=name, estimate_amount_krw=entry * shares,
+                            order_no="PAPER", rt_cd="PAPER", filled_qty=shares,
+                            avg_fill_price=entry, dedupe_daily=True,
+                        )
+                    except Exception as intent_exc:
+                        logger.warning(f"[PaperPortfolio] intent 기록 실패(OPEN {code}): {intent_exc}")
                     ok = portfolio.open_position(
                         code, name, entry, shares, "daytrading_pick",
                         tp, sl, time_stop_days=1,
@@ -4292,6 +4335,7 @@ class BodyHunterBot:
             # PaperPortfolio TP/SL 체크
             try:
                 from data.paper_portfolio import PaperPortfolio
+                from bot.order_intent import record_order_intent
                 portfolio = PaperPortfolio()
                 pp_closed = []
                 for code in list(portfolio.positions.keys()):
@@ -4311,14 +4355,57 @@ class BodyHunterBot:
                         if entry > 0 and current > 0:
                             dd_pct = (current - entry) / entry * 100
                             if dd_pct <= -10:
+                                shares = int(pos.get("shares", pos.get("qty", 0)) or 0)
+                                try:
+                                    record_order_intent(
+                                        side="SELL", code=code, qty=shares,
+                                        source=f"paper:{pos.get('source', 'daytrading_pick')}",
+                                        manual=False, allowed=True,
+                                        reason="PAPER_CLOSE:CIRCUIT_BREAKER",
+                                        message=pos.get("name", code),
+                                        estimate_amount_krw=current * shares,
+                                        order_no="PAPER", rt_cd="PAPER",
+                                        filled_qty=shares, avg_fill_price=current,
+                                        dedupe_daily=True,
+                                    )
+                                except Exception as intent_exc:
+                                    logger.warning(f"[PaperPortfolio] intent 기록 실패(CIRCUIT {code}): {intent_exc}")
                                 portfolio.close_position(code, current, "CIRCUIT_BREAKER")
                                 pp_closed.append(f"{pos['name']} CIRCUIT(-{abs(dd_pct):.1f}%)")
                                 continue
 
                         if tp > 0 and high >= tp:
+                            shares = int(pos.get("shares", pos.get("qty", 0)) or 0)
+                            try:
+                                record_order_intent(
+                                    side="SELL", code=code, qty=shares,
+                                    source=f"paper:{pos.get('source', 'daytrading_pick')}",
+                                    manual=False, allowed=True, reason="PAPER_CLOSE:TARGET",
+                                    message=pos.get("name", code),
+                                    estimate_amount_krw=tp * shares,
+                                    order_no="PAPER", rt_cd="PAPER",
+                                    filled_qty=shares, avg_fill_price=tp,
+                                    dedupe_daily=True,
+                                )
+                            except Exception as intent_exc:
+                                logger.warning(f"[PaperPortfolio] intent 기록 실패(TARGET {code}): {intent_exc}")
                             portfolio.close_position(code, tp, "TARGET")
                             pp_closed.append(f"{pos['name']} TARGET")
                         elif sl > 0 and low <= sl:
+                            shares = int(pos.get("shares", pos.get("qty", 0)) or 0)
+                            try:
+                                record_order_intent(
+                                    side="SELL", code=code, qty=shares,
+                                    source=f"paper:{pos.get('source', 'daytrading_pick')}",
+                                    manual=False, allowed=True, reason="PAPER_CLOSE:STOP",
+                                    message=pos.get("name", code),
+                                    estimate_amount_krw=sl * shares,
+                                    order_no="PAPER", rt_cd="PAPER",
+                                    filled_qty=shares, avg_fill_price=sl,
+                                    dedupe_daily=True,
+                                )
+                            except Exception as intent_exc:
+                                logger.warning(f"[PaperPortfolio] intent 기록 실패(STOP {code}): {intent_exc}")
                             portfolio.close_position(code, sl, "STOP")
                             pp_closed.append(f"{pos['name']} STOP")
                     except Exception:
@@ -4347,6 +4434,7 @@ class BodyHunterBot:
             # PaperPortfolio 시간손절
             try:
                 from data.paper_portfolio import PaperPortfolio
+                from bot.order_intent import record_order_intent
                 portfolio = PaperPortfolio()
                 for code in list(portfolio.positions.keys()):
                     pos = portfolio.positions[code]
@@ -4359,6 +4447,20 @@ class BodyHunterBot:
                                 close_price = p["current_price"]
                         except Exception:
                             pass
+                        shares = int(pos.get("shares", pos.get("qty", 0)) or 0)
+                        try:
+                            record_order_intent(
+                                side="SELL", code=code, qty=shares,
+                                source=f"paper:{pos.get('source', 'daytrading_pick')}",
+                                manual=False, allowed=True, reason="PAPER_CLOSE:TIME_STOP",
+                                message=pos.get("name", code),
+                                estimate_amount_krw=close_price * shares,
+                                order_no="PAPER", rt_cd="PAPER",
+                                filled_qty=shares, avg_fill_price=close_price,
+                                dedupe_daily=True,
+                            )
+                        except Exception as intent_exc:
+                            logger.warning(f"[PaperPortfolio] intent 기록 실패(EOD {code}): {intent_exc}")
                         portfolio.close_position(code, close_price, "TIME_STOP")
             except Exception as e:
                 logger.warning(f"[PaperPortfolio] EOD 실패: {e}")
