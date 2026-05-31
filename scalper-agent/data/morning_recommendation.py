@@ -82,6 +82,43 @@ class RecommendedStock:
     fib_downside_pct: float = 0.0     # 하방 지지까지 (%)
     sl_fib: int = 0                   # 피보나치 기반 손절가
     tp_fib: int = 0                   # 피보나치 기반 목표가
+    # 명분 게이트 (4단 Stage0, 5/31) — shadow 관측: cutoff 미적용
+    thesis_buckets: dict = field(default_factory=dict)  # {재료·수급·기술위치·재무: 정규화}
+    thesis_strong: list = field(default_factory=list)   # 강 통과 버킷명
+    thesis_pass: bool = True                            # 기본 True = fail-open
+    kki_score: float = 0.0
+    kki_grade: str = ""
+
+
+def _aggregate_thesis_buckets(sig: dict) -> tuple:
+    """44신호 → 7요소 명분 버킷 정규화 + 통과판정 (4단 Stage0, 5/31 shadow).
+
+    {재료·수급·기술위치} 중 강(정규화≥THESIS_GATE_STRONG_NORM) ≥ THESIS_GATE_MIN_STRONG → pass.
+    재무는 modifier(자격박탈 아님). 버킷 = 내부 신호들의 최대 정규화값.
+    캡은 코드상 신호 상한(잠정 — backtest 보정 대상). 반환 (buckets, strong, thesis_pass).
+    """
+    from data.sajang_rules import SAJANG
+
+    def nrm(v, cap):
+        return min(1.0, max(0.0, float(v or 0)) / cap) if cap > 0 else 0.0
+
+    재료 = max(nrm(sig.get("tv_direct"), 30), nrm(sig.get("relay_sc"), 45),
+              nrm(sig.get("premove_sc"), 30), nrm(sig.get("surge_sc"), 10),
+              nrm(sig.get("us_relay_sc"), 10), nrm(sig.get("rotation_bonus"), 12))
+    수급 = max(nrm(sig.get("nat_sc"), 50), nrm(sig.get("nat_power_sc"), 30),
+              nrm(sig.get("doublebuy_sc"), 18), nrm(sig.get("largecap_sc"), 34),
+              nrm(sig.get("fi_sc"), 15), nrm(sig.get("bomb_sc"), 15),
+              nrm(sig.get("dual_buy_sc"), 12), nrm(sig.get("invflow_sc"), 15),
+              nrm(sig.get("stflow_sc"), 15), nrm(sig.get("etf_flow_sc"), 15))
+    기술위치 = max(nrm(sig.get("tech_sc"), 25), nrm(sig.get("trix_sc"), 25),
+                nrm(sig.get("fib_adj"), 20))
+    재무 = nrm(sig.get("pension_sc"), 15)
+    buckets = {"재료": round(재료, 3), "수급": round(수급, 3),
+               "기술위치": round(기술위치, 3), "재무": round(재무, 3)}
+    strong = [k for k in ("재료", "수급", "기술위치")
+              if buckets[k] >= SAJANG.THESIS_GATE_STRONG_NORM]
+    thesis_pass = len(strong) >= SAJANG.THESIS_GATE_MIN_STRONG
+    return buckets, strong, thesis_pass
 
 
 @dataclass
@@ -2019,6 +2056,20 @@ def _step5_cross_validate(
         else:
             confidence = "LOW"
 
+        # ★ 4단 브릭4(shadow): 명분 버킷 — cutoff(아래 total_score>0) 미적용, 관측·기록만. fail-open.
+        try:
+            _tb, _ts, _tp_pass = _aggregate_thesis_buckets({
+                "relay_sc": relay_sc, "premove_sc": premove_sc, "tech_sc": tech_sc,
+                "nat_sc": nat_sc, "nat_power_sc": nat_power_sc, "tv_direct": tv_direct,
+                "doublebuy_sc": doublebuy_sc, "largecap_sc": largecap_sc, "fi_sc": fi_sc,
+                "invflow_sc": invflow_sc, "stflow_sc": stflow_sc, "bomb_sc": bomb_sc,
+                "dual_buy_sc": dual_buy_sc, "etf_flow_sc": etf_flow_sc, "trix_sc": trix_sc,
+                "fib_adj": fib_adj, "surge_sc": surge_sc, "us_relay_sc": us_relay_sc,
+                "rotation_bonus": rotation_bonus, "pension_sc": pension_sc,
+            })
+        except Exception:
+            _tb, _ts, _tp_pass = {}, [], True  # fail-open (관측 실패해도 추천 무손상)
+
         rec = RecommendedStock(
             code=code,
             name=name,
@@ -2056,11 +2107,21 @@ def _step5_cross_validate(
             fib_downside_pct=_fib.get("downside_pct", 0) if _fib else 0,
             sl_fib=_fib_sl,
             tp_fib=_fib_tp,
+            thesis_buckets=_tb,
+            thesis_strong=_ts,
+            thesis_pass=_tp_pass,
         )
         candidates.append(rec)
 
     # 유일한 hard cutoff: 합산 > 0 (페널티가 모든 가산을 초과하면 제거)
     candidates = [c for c in candidates if c.total_score > 0]
+    # ★ 4단 브릭4 shadow: 명분 게이트 관측 — cutoff 미적용(위 total_score>0 그대로). 통과분포 로그만.
+    try:
+        _pass_n = sum(1 for c in candidates if getattr(c, "thesis_pass", True))
+        logger.info(f"[명분게이트/shadow] cutoff후 {len(candidates)}건 중 명분통과 {_pass_n}건 / "
+                    f"미통과 {len(candidates) - _pass_n}건(약신호더미 후보). cutoff 미적용=관측.")
+    except Exception:
+        pass
 
     # 정렬: total_score 내림차순
     candidates.sort(key=lambda x: x.total_score, reverse=True)
