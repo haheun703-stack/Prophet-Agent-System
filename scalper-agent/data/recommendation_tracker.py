@@ -80,6 +80,10 @@ def save_recommendation_snapshot(report=None) -> int:
             "tp": s.tp,
             "today_chg": getattr(s, "today_chg", 0),
             "relative_str": getattr(s, "relative_str", 0),
+            # 4단 shadow 관측 태그 (6/1~): 명분/끼별 forward 성과(T1~T3) 분석용
+            "thesis_pass": getattr(s, "thesis_pass", True),
+            "kki_score": getattr(s, "kki_score", 0.0),
+            "kki_grade": getattr(s, "kki_grade", ""),
             # 팩터별 점수 (나중에 기여도 분석용)
             "factors": {
                 "relay": s.relay_score,

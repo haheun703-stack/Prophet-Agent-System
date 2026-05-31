@@ -3821,6 +3821,12 @@ def save_recommendation(report: RecommendationReport):
             "fib_downside_pct": getattr(s, "fib_downside_pct", 0.0),
             "sl_fib": getattr(s, "sl_fib", 0),
             "tp_fib": getattr(s, "tp_fib", 0),
+            # 명분게이트·끼 (4단 shadow 관측 — 6/1~ recommendation.json에 저장)
+            "thesis_pass": getattr(s, "thesis_pass", True),
+            "thesis_strong": getattr(s, "thesis_strong", []),
+            "thesis_buckets": getattr(s, "thesis_buckets", {}),
+            "kki_score": getattr(s, "kki_score", 0.0),
+            "kki_grade": getattr(s, "kki_grade", ""),
         })
 
     data = {
