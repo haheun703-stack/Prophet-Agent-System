@@ -55,6 +55,7 @@ from bot.order_intent import record_order_intent
 
 ### 2.3 중복 방지 (dedupe로 파일 1건/논리액션/code/일)
 - dedupe 키 = `(date, side, code, reason, source)` (Phase 2 작업B, 파일 append만 dedupe·True 반환).
+- ★ 단타봇 ee9ce63 실측 보완: dedupe는 **opt-in** — `record_order_intent(dedupe_daily=True)` 전달해야 `_has_daily_dedupe`가 작동. 7메서드 호출 전부 `dedupe_daily=True` 필수(안 넘기면 wrapper+leaf 중복). ★
 - register_paper_from_objects 루프: wrapper가 `PAPER_OPEN` 기록(written) → self.register `TRACKER_PLAN`(written, 다른 reason=plan 기록) → self.activate `PAPER_OPEN`(skip, dedupe). ⇒ 종목당 파일 2건(PLAN+OPEN, forensic trail로 의도적).
 - check_paper_prices/paper_close_eod: wrapper가 `PAPER_CLOSE:{reason}` 기록(written) → self.close 동일 키(skip). ⇒ 청산당 파일 1건.
 - ★ register의 `TRACKER_PLAN` 별도기록 = "계획 intent"(미체결, filled_qty=0). 사장님이 파일 최소화 원하면 register도 `PAPER_OPEN` 통일 가능(이 경우 plan/fill 구분 소실) — 확인포인트.
