@@ -988,6 +988,89 @@ def generate_split_buy_plan(code: str,
 #  6. 종합 스코어링 - 연속성기대값
 # ═══════════════════════════════════════════════════════
 
+def count_surge_limit_days(closes: list, lookback: int = 60,
+                           surge_pct: float = 15.0, limit_pct: float = 29.0) -> tuple:
+    """최근 lookback일 일간변동에서 +surge_pct↑ 급등일수 / +limit_pct↑ 상한가급 일수 (끼 F2용)."""
+    surge = limit = 0
+    seq = list(closes)[-(lookback + 1):]
+    for i in range(1, len(seq)):
+        prev = seq[i - 1]
+        if prev and prev > 0:
+            chg = (seq[i] / prev - 1) * 100
+            if chg >= limit_pct:
+                limit += 1
+            elif chg >= surge_pct:
+                surge += 1
+    return surge, limit
+
+
+def score_kki(stock: LimitUpStock, atr_pct: float,
+              surge_days: int = 0, limit_days: int = 0) -> float:
+    """종목 '끼'(변동성·급등 기질) 점수 0~100 (4단 Stage1, 5/31).
+
+    단타 수익원 = 잘 튀는 끼. score_continuation(연속성)과 별개 축.
+    데이터 검증(docs/03-analysis/stop_and_selection_study_5_31): 끼↑ → 손절+재진입 수익 단조증가.
+    6팩터(합 100): F1 변동성35 / F2 급등빈도25 / F3 회전15 / F4 연속10 / F5 종가강도10 / F6 거래량5.
+    ★ 유동성(거래대금) 미달이면 끼=0 (못 사는 끼는 무효). atr NaN 가드.
+    ※ shadow 단계: 로그/관측용. cutoff·랭킹 미반영(브릭2 이후 배선).
+    """
+    from data.sajang_rules import SAJANG
+    if stock.trading_value_억 < SAJANG.KKI_MIN_LIQUIDITY_억:
+        return 0.0
+    s = 0.0
+    a = atr_pct if atr_pct == atr_pct else 0.0  # NaN 가드
+    # F1 변동성기질 (35)
+    if a > 6:
+        s += 35
+    elif a > 4.5:
+        s += 28
+    elif a > 3.5:
+        s += 20
+    elif a > 2:
+        s += 10
+    else:
+        s += 3
+    # F2 급등빈도 (25) — 최근60일 +15%일수×2 + 상한가일수×4
+    s += min(25.0, surge_days * 2 + limit_days * 4)
+    # F3 회전율 (15)
+    t = stock.turnover_pct
+    if t >= 20:
+        s += 15
+    elif t >= 10:
+        s += 12
+    elif t >= 5:
+        s += 8
+    elif t >= 2:
+        s += 4
+    # F4 연속 상한가 (10)
+    cl = stock.consecutive_limit
+    if cl >= 3:
+        s += 10
+    elif cl >= 2:
+        s += 7
+    elif cl >= 1:
+        s += 3
+    # F5 종가강도 (10)
+    cs = stock.close_strength
+    if cs >= 0.95:
+        s += 10
+    elif cs >= 0.8:
+        s += 7
+    elif cs >= 0.6:
+        s += 4
+    # F6 거래량배수 (5)
+    vr = stock.volume_ratio
+    if vr >= 10:
+        s += 5
+    elif vr >= 5:
+        s += 4
+    elif vr >= 3:
+        s += 2.5
+    elif vr >= 2:
+        s += 1.5
+    return round(min(100.0, s), 1)
+
+
 def score_continuation(stock: LimitUpStock,
                        history_stats: dict = None,
                        short_proxy: ShortProxy = None) -> float:

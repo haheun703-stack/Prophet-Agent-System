@@ -140,6 +140,15 @@ class SajangRules:
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     CASH_RESERVE_PCT: float = 0.30             # ★ 항상 총평가 × 30% 현금 보유 강제 ★
 
+    # ── 선정 스타일 파라미터 (4단 재배선, 5/31) — 주문룰 아님, backtest 보정 전 잠정 ──
+    THESIS_GATE_STRONG_NORM: float = 0.6   # 명분 버킷 강(强) 정규화 임계
+    THESIS_GATE_MIN_STRONG: int = 2        # {재료·수급·기술위치} 강 최소 개수
+    THESIS_MIN_CANDIDATES: int = 3         # 이하면 합산 degrade(안전밸브)
+    KKI_EXPLOSIVE: float = 70.0            # 끼 등급 컷 (score_kki 0~100) — 데이터 보정 대상
+    KKI_HUNTABLE: float = 50.0
+    KKI_MODERATE: float = 30.0
+    KKI_MIN_LIQUIDITY_억: float = 50.0     # 거래대금 미만 = 끼 무효(못 사는 끼)
+
     @classmethod
     def get_take_profit(cls, buy_price: float) -> int:
         """사장님 영구 룰 — 모든 매수 시 TP=0 강제 (트레일링만)."""
@@ -154,6 +163,17 @@ class SajangRules:
     def get_trailing_sl(cls, high_watermark: float) -> int:
         """사장님 영구 룰 — 고점 -3% 트레일링 SL."""
         return int(high_watermark * (1 - cls.TRAILING_PCT / 100))
+
+    @classmethod
+    def kki_grade(cls, kki_score: float) -> str:
+        """끼 점수(0~100) → 등급. 4단 Stage1 + 재진입 자격게이트 공용 단일진실."""
+        if kki_score >= cls.KKI_EXPLOSIVE:
+            return "EXPLOSIVE"
+        if kki_score >= cls.KKI_HUNTABLE:
+            return "HUNTABLE"
+        if kki_score >= cls.KKI_MODERATE:
+            return "MODERATE"
+        return "SLUGGISH"
 
     @classmethod
     def is_trailing_activated(cls, pnl_pct: float) -> bool:
