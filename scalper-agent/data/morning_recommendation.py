@@ -3222,6 +3222,14 @@ def run_evening_recommendation() -> RecommendationReport:
     except Exception as e:
         logger.debug(f"[CTO] 시그널 추적 실패 (무시): {e}")
 
+    # ── 워치리스트(휴면→첫급등 연속자) shadow 스캔 (6/1, read-only — report/picks 무관·비차단) ──
+    try:
+        from data.watchlist_continuation import scan_continuation_watchlist
+        _wl = scan_continuation_watchlist()
+        logger.info(f"[워치리스트] shadow 후보 {len(_wl)}건 (continuation_*.json)")
+    except Exception as e:
+        logger.debug(f"[워치리스트] shadow 스캔 실패 (무시): {e}")
+
     return report
 
 
