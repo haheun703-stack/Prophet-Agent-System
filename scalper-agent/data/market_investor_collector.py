@@ -63,6 +63,19 @@ def _to_int(v):
         return 0
 
 
+def _is_trading(ds: str) -> bool:
+    """YYYYMMDD 문자열이 거래일인지 (주말·공휴일 제외). 파싱 실패 시 보수적 통과.
+
+    ★ 5/31 단타봇 발견: KIS FHPTJ04040000은 휴일/주말에 빈응답이 아니라 직전 거래일
+      데이터를 그대로 복제 반환 → 휴일 행이 stale 복제로 쌓임. is_trading_day로 차단.
+    """
+    try:
+        from data.trading_calendar import is_trading_day
+        return is_trading_day(datetime.strptime(ds, "%Y%m%d").date())
+    except Exception:
+        return True
+
+
 def _fetch_market_day(base_url, headers, market_code, sub_code, date_str):
     """FHPTJ04040000 하루치 시장 세부 수급. 실패 시 None."""
     url = f"{base_url}/uapi/domestic-stock/v1/quotations/inquire-investor-daily-by-market"
@@ -113,6 +126,11 @@ def collect_market_investor(days: int = 1, session=None) -> dict:
 
     end = datetime.now()
     dates = sorted((end - timedelta(days=i)).strftime("%Y%m%d") for i in range(max(1, days)))
+    # ★ 거래일만 수집 (휴일/주말은 KIS가 직전거래일 stale 복제 반환 → 차단)
+    dates = [d for d in dates if _is_trading(d)]
+    if not dates:
+        logger.info("[MKT] 수집 대상 거래일 없음(휴장) — skip")
+        return {}
 
     out = {}
     for mkt, (mcode, scode) in MARKETS.items():
@@ -133,6 +151,8 @@ def collect_market_investor(days: int = 1, session=None) -> dict:
         if fp.exists():
             old = pd.read_csv(fp, index_col=0)
             old.index = old.index.astype(str)
+            # ★ 기존 stale(휴일 복제) 행 self-heal: 거래일 행만 유지
+            old = old[[_is_trading(str(ix)) for ix in old.index]]
             df = pd.concat([old, df_new])
             df = df[~df.index.duplicated(keep="last")].sort_index()
         else:
