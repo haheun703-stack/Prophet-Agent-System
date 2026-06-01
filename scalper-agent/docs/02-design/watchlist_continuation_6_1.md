@@ -69,7 +69,10 @@ WL_LIQ_FLOOR_억: float = 30.0
 3. py_compile + 단위테스트: 탐지 조건 경계값(종가강도 0.79/0.80, 거래량 4.9/5.0, 과열 29/31%) + is_trading_day 가드.
 4. shadow 실측: 6/1 스캔 → continuation_*.json 생성 + 피처 정확 + recommendation/picks 불변 확인.
 
-## 7. 순서 / 확인포인트
+## 7. 순서 / ★ 사장님 확정 (6/1) ★
 - **순서**: 생성기+forward추적 구현(shadow) → 6/1~ 누적 → ≥10거래일 검증 → (사장님 승인) reentry 실행 배선(paper) → live.
-- 확인포인트(사장님): ① 생성기 가동 시점(G6 15:40 _job_collect_daily에 연결 vs 16:45 evening vs 독립 job) ② 임계 튜닝(종가강도 0.8 vs 0.9 / 거래량 5x vs 10x — 리프트 vs 선택률) ③ 수급 hook 우선순위(시장 11주체 먼저 vs 키움 종목별 대기).
+- ★ **확정 (사장님 6/1, 전부 추천대로)**:
+  1. **가동 시점 = 16:45 evening** (run_evening_recommendation 라인, 4단 shadow와 같은 사이클에 비차단 연결). G6 15:40·독립 job 기각.
+  2. **임계 = 종가강도 0.80 · 거래량 5.0x · 과열회피 30%** (SAJANG WL_CS_MIN=0.80 / WL_VOL_MIN=5.0 / WL_OVERHEAT=0.30). 0.9/10x 더 빡센 건 forward shadow 본 뒤 튜닝.
+  3. **수급 hook = 시장 11주체(market_investor_collector) 병행 + 키움 종목별 대기**. 지금은 종목별 세력 None hook 유지, 시장 세력(금융투자) 라인은 별도 관측(flow_market) 병행.
 - ★ 정직: 백테스트 검증은 상대 리프트(+2%p)만 신뢰, 절대치 베타 과대. 수급 미반영. forward shadow가 진짜 검증.
