@@ -48,7 +48,7 @@ def _load(path):
     rows = []
     dates = []
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8-sig") as f:
             for r in csv.DictReader(f):
                 try:
                     o = float(r["open"]); h = float(r["high"])
@@ -57,7 +57,10 @@ def _load(path):
                     continue
                 if o > 0 and c > 0:
                     rows.append((o, h, l, c, v))
-                    dates.append(str(r.get("date", "")))
+                    # 날짜 컬럼명 파일마다 상이(날짜/date/Date/빈헤더) → 다중 키 + 첫 컬럼 폴백
+                    dval = (r.get("날짜") or r.get("date") or r.get("Date")
+                            or r.get("") or next(iter(r.values()), ""))
+                    dates.append(str(dval or ""))
     except Exception:
         return [], []
     return rows, dates
