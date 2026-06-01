@@ -5368,6 +5368,17 @@ class AutoTrader:
             logger.error(f"저녁 분석 실패: {e}")
             await _send(f"❌ 저녁 분석 실패: {e}")
 
+        # ── 워치리스트(휴면→첫급등 연속자) shadow 스캔 (6/1 fix, read-only) ──
+        # 추천 파이프라인 타임아웃·예외와 독립한 별도 비차단 스텝 (메인 try/except 바깥).
+        # scan_continuation_watchlist는 자기완결형(자체 universe/OHLCV, report 무관) →
+        # 폭등장 등 느린 날에도 항상 누적. 실패는 WARNING(가시성)으로만, 매매 무영향.
+        try:
+            from data.watchlist_continuation import scan_continuation_watchlist
+            _wl = await asyncio.to_thread(scan_continuation_watchlist)
+            logger.info(f"[워치리스트] shadow 후보 {len(_wl)}건 (continuation_*.json)")
+        except Exception as e_wl:
+            logger.warning(f"[워치리스트] shadow 스캔 실패 (무시): {e_wl}")
+
     async def _report_nationality_signal(self, _send):
         """국적별 수급 변화 보고 (저녁분석 후 자동 실행)
 

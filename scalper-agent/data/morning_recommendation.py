@@ -3222,14 +3222,8 @@ def run_evening_recommendation() -> RecommendationReport:
     except Exception as e:
         logger.debug(f"[CTO] 시그널 추적 실패 (무시): {e}")
 
-    # ── 워치리스트(휴면→첫급등 연속자) shadow 스캔 (6/1, read-only — report/picks 무관·비차단) ──
-    try:
-        from data.watchlist_continuation import scan_continuation_watchlist
-        _wl = scan_continuation_watchlist()
-        logger.info(f"[워치리스트] shadow 후보 {len(_wl)}건 (continuation_*.json)")
-    except Exception as e:
-        logger.debug(f"[워치리스트] shadow 스캔 실패 (무시): {e}")
-
+    # 워치리스트(연속자) shadow 스캔은 evening 스케줄 진입점(auto_trader.job_evening_analysis)으로
+    # 분리됨 (6/1 fix). 이 파이프라인 타임아웃에 묶여 폭등장 등 느린 날 스킵되던 결함 해소.
     return report
 
 
