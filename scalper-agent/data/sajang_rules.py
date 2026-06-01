@@ -149,6 +149,17 @@ class SajangRules:
     KKI_MODERATE: float = 30.0
     KKI_MIN_LIQUIDITY_억: float = 50.0     # 거래대금 미만 = 끼 무효(못 사는 끼)
 
+    # ── 워치리스트(휴면→첫급등 연속자) 선정 임계 (6/1 확정·검증값) — 주문룰 아님, shadow ──
+    # 근거: surge_filter_reentry_5_31(db5cd76) STOP_REENTER 리프트 +1.9~2.4%p 전regime / dormant_first_surge(20f89a7)
+    WL_PRE_DAYS: int = 20                  # 휴면 판정 lookback
+    WL_DORMANT_MAX: float = 0.10           # 직전 PRE일 최대 일간상승 < 10% = 휴면
+    WL_BASE_POS: float = 0.60              # 기지(20일 range 내 전일 위치) 상한
+    WL_SURGE_MIN: float = 0.15             # 첫급등 최소
+    WL_CS_MIN: float = 0.80                # 종가강도(끝까지 밀어) — 연속자 1번 신호
+    WL_VOL_MIN: float = 5.0                # 거래량 MA20 배수
+    WL_OVERHEAT: float = 0.30              # 과열회피(이상=blow-off 소진 차단)
+    WL_LIQ_FLOOR_억: float = 30.0          # 거래대금 하한(못 사는 끼 제외)
+
     @classmethod
     def get_take_profit(cls, buy_price: float) -> int:
         """사장님 영구 룰 — 모든 매수 시 TP=0 강제 (트레일링만)."""
