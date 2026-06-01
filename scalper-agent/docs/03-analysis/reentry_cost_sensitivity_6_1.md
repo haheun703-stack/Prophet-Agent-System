@@ -1,7 +1,7 @@
 # 재진입 비용 민감도 — paper go/no-go 게이트 (6/1 라이브 숙제 #1)
 
 > 사장님 6/1 결정: **"라이브 숙제 분석"**. paper 전 #1 치명 질문 해소용.
-> 도구: `tools/reentry_cost_sensitivity_6_1.py` (셀프테스트 7/7 PASS, 게이트 8/8 무손상).
+> 도구: `tools/reentry_cost_sensitivity_6_1.py` (셀프테스트 8/8 PASS, 게이트 8/8 무손상).
 > ★ 이 클라우드 세션엔 `stock_data_daily`가 없음(gitignore) → **로직만 검증 완료**, 실수치는 노트북/VPS 실행 필요.
 
 ## 왜 이게 #1 숙제인가
@@ -17,6 +17,8 @@
   - REENTER vs ONCE: `c* = (E[re_gross]−E[on_gross]) / (E[re_seg]−E[on_seg])`
   - REENTER vs HOLD: `c* = (E[re_gross]−E[hold_gross]) / (E[re_seg]−1)`
 - 끼 등급별로도 산출(高끼=엣지 큼 → 헤드룸 큰지 검증).
+- **OOS 기간분할**: 이벤트 발생일 중앙값으로 전/후반 분할 → 각 기간 헤드룸 산출.
+  양 기간 모두 ≥1배면 레짐 비의존(견고), 한쪽만이면 과적합 의심. (출력 [E])
 
 ## 실행
 ```bash
@@ -24,15 +26,15 @@
 python tools/reentry_cost_sensitivity_6_1.py
 
 # 로직 자기검증 (데이터 불필요, 어디서나)
-python tools/reentry_cost_sensitivity_6_1.py --selftest      # → 7/7 PASS
+python tools/reentry_cost_sensitivity_6_1.py --selftest      # → 8/8 PASS
 
 # 합성/임의 데이터 디렉토리 지정
 python tools/reentry_cost_sensitivity_6_1.py --data <DIR>
 ```
 
 ## 판정 기준 (사장님 룰 — "<2배 합격" 정신 계승)
-- **vs ONCE 헤드룸 ≥ 2배** (break-even ≥ 0.96%/leg): 재진입 엣지가 비용에 견고 → **paper 진행 신호**.
-- 헤드룸 1~2배: **주의** — 비용 추정 정밀화(분봉 슬리피지) 후 재판정.
+- **vs ONCE 헤드룸 ≥ 2배** (break-even ≥ 0.96%/leg) **AND [E] OOS 양 기간 ≥1배**: 비용·레짐에 강건 → **paper 진행 신호**.
+- 헤드룸 1~2배 또는 한 기간만 우위: **주의** — 비용 추정 정밀화(분봉 슬리피지) 후 재판정.
 - 헤드룸 < 1배 (현 0.48%서 이미 ONCE 열위): **재진입 라이브 보류** + 설계 재검(재진입 윈도우/조건 강화).
 
 ## 해석 주의 (정직 — 5_31 한계 계승)
@@ -41,12 +43,13 @@ python tools/reentry_cost_sensitivity_6_1.py --data <DIR>
 - 종가체결 가정: 실제 재진입은 종가 근처 슬리피지 추가 → 비용 그리드 상단(0.6~0.8%)으로 보수 판정 권장.
 
 ## 셀프테스트가 검증하는 것 (로직 신뢰 근거)
-합성 fixture 2종목으로 7개 불변식 확인:
+합성 fixture 2종목으로 8개 불변식 확인:
 1. 트레일 2 cycle 종목 → REENTER 3세그/ONCE 1세그 (세그먼트 카운트 정확)
 2. 회복 못한 종목 → 재진입 0 (re_seg=on_seg=1)
 3. HOLD 항상 1세그  4. 비용↑→net↓ 단조  5. BE 유한·양수
 6. 세그먼트차 0이면 BE=None(비용무관)  7. net 공식 정합(gross−seg×cost×100)
+8. OOS 날짜 파싱·전후반 분할 정확(A 2026-03=전반, B 2026-10=후반)
 
 ## 다음 (순서)
-이 도구로 vs ONCE 헤드룸 확인 → (≥2배면) 숙제 #2 분봉정밀·#3 생존편향보정·OOS →
+이 도구로 vs ONCE 헤드룸 + [E] OOS 양기간 확인 → (≥2배&양기간 견고면) 숙제 #2 분봉정밀·#3 생존편향보정 →
 재진입 SAJANG 단일통로 구현 → 게이트 회귀0 + 매도 무손상 → paper. **봇 OFF 유지.**

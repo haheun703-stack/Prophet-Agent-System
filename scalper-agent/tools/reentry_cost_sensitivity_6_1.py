@@ -41,7 +41,12 @@ COST_GRID = (0.0030, 0.0040, 0.0048, 0.0060, 0.0080, 0.0100, 0.0120)
 
 
 def _load(path):
+    """CSV → (rows, dates). rows=(o,h,l,c,v) 인덱스 동일, dates=parallel 날짜str.
+
+    날짜는 OOS(기간 분할) 전용 — OHLCV 계산엔 미사용(rows 구조 불변).
+    """
     rows = []
+    dates = []
     try:
         with open(path, encoding="utf-8") as f:
             for r in csv.DictReader(f):
@@ -52,9 +57,10 @@ def _load(path):
                     continue
                 if o > 0 and c > 0:
                     rows.append((o, h, l, c, v))
+                    dates.append(str(r.get("date", "")))
     except Exception:
-        return []
-    return rows
+        return [], []
+    return rows, dates
 
 
 def _events(rows):
@@ -158,8 +164,20 @@ def _breakeven(num, denom):
     return (num / 100) / denom        # num은 %p, denom은 세그먼트차 → fraction
 
 
+def _headroom_line(ev_subset, label):
+    """이벤트 부분집합 → vs ONCE break-even 헤드룸 한 줄. OOS 출력용."""
+    res = [r for r in (_sim_gross(rows, e, HOLD_K) for rows, e, *_ in ev_subset) if r]
+    if not res:
+        return f"  {label:>10}: 이벤트 0건"
+    s = _summarize(res)
+    be = _breakeven(s["re_g"] - s["on_g"], s["re_s"] - s["on_s"])
+    if be is None:
+        return f"  {label:>10}: {s['n']:>6,}건  BE vs ONCE=비용무관(∞ 헤드룸)"
+    return f"  {label:>10}: {s['n']:>6,}건  BE vs ONCE={be*100:.2f}%/leg ({be/LIVE_COST:.1f}배 헤드룸)"
+
+
 def _report(ev_all):
-    res = [r for r in (_sim_gross(rows, e, HOLD_K) for rows, e, _k in ev_all) if r]
+    res = [r for r in (_sim_gross(rows, e, HOLD_K) for rows, e, *_ in ev_all) if r]
     s = _summarize(res)
     print(f"돌파 이벤트 {s['n']:,}건 (종가상승≥{UP_THRESH*100:.0f}% & 거래량≥{VOL_X}×MA20, 보유{HOLD_K}일)\n")
 
@@ -196,7 +214,7 @@ def _report(ev_all):
     buckets = [("SLUGGISH 끼0", lambda k: k == 0), ("MODERATE 끼1~2", lambda k: 1 <= k <= 2),
                ("HUNTABLE 끼3~4", lambda k: 3 <= k <= 4), ("EXPLOSIVE 끼5+", lambda k: k >= 5)]
     for label, cond in buckets:
-        seg_res = [r for r in (_sim_gross(rows, e, HOLD_K) for rows, e, k in ev_all if cond(k)) if r]
+        seg_res = [r for r in (_sim_gross(rows, e, HOLD_K) for rows, e, k, *_ in ev_all if cond(k)) if r]
         if not seg_res:
             print(f'{label:>16}{0:>8}'); continue
         sb = _summarize(seg_res)
@@ -206,8 +224,28 @@ def _report(ev_all):
         else:
             print(f'{label:>16}{sb["n"]:>8,}{sb["re_s"]:>8.2f}{sb["on_s"]:>8.2f}{be*100:>11.2f}%{be/LIVE_COST:>8.1f}x')
     print()
-    print("해석: [C] vs ONCE 헤드룸 ≥2배면 재진입 엣지가 비용에 견고 → paper 진행 신호.")
-    print("      <1배면 현 비용서 이미 ONCE만 못함 → 재진입 라이브 보류(설계 재검).")
+
+    # [E] OOS — 이벤트 발생일 기준 전/후반 분할 (과적합·레짐의존 점검)
+    dated = [t for t in ev_all if len(t) >= 4 and t[3]]
+    print("[E] OOS 기간분할 (이벤트일 중앙값으로 전/후반) — 헤드룸이 양 기간 유지되나:")
+    if len(dated) < 2:
+        print("  날짜 정보 부족 → OOS 생략")
+    else:
+        ds = sorted(dated, key=lambda t: t[3])
+        mid = len(ds) // 2
+        cut = ds[mid][3]
+        early = [t for t in ds if t[3] < cut]
+        late = [t for t in ds if t[3] >= cut]
+        # 경계 동일날짜 쏠림 방지: 한쪽이 비면 인덱스 절반으로 강제 분할
+        if not early or not late:
+            early, late = ds[:mid], ds[mid:]
+        print(_headroom_line(early, f"전반(<{cut})"))
+        print(_headroom_line(late, f"후반(≥{cut})"))
+        print("  → 양 기간 모두 헤드룸 ≥1배면 레짐 비의존(견고). 한쪽만이면 과적합 의심.")
+    print()
+
+    print("해석: [C] vs ONCE 헤드룸 ≥2배 & [E] 양기간 견고면 재진입 엣지가 비용에 강건 → paper 신호.")
+    print("      <1배거나 한 기간만 우위면 재진입 라이브 보류(설계 재검·비용 정밀화).")
     print("★ 일봉·생존편향 한계 → 절대 BE보다 '0.48% 대비 배수'를 상대지표로만 신뢰.")
     return 0
 
@@ -221,15 +259,18 @@ def _make_fixture(dirpath: Path):
     dirpath.mkdir(parents=True, exist_ok=True)
     hdr = "date,open,high,low,close,volume\n"
 
+    # A는 전반(2026-03), B는 후반(2026-10) 날짜 → OOS 분할 검증 가능. (OHLCV 계산엔 날짜 미사용)
+    _date = {"v": "2026-03-01"}
+
     def line(o, h, l, c, v):
-        return f"2026-01-01,{o},{h},{l},{c},{v}\n"   # 날짜 컬럼 미파싱 → 상수 OK
+        return f"{_date['v']},{o},{h},{l},{c},{v}\n"
 
     # 62일 워밍업(평탄, 끼0) + 돌파 + 시나리오. 거래량 MA20=100, 돌파일 300(≥2x).
     # _events는 인덱스 60부터(끼 60일 산출) → 워밍업 ≥62 필요. 돌파일=인덱스62.
     def warmup():
         return [line(100, 101, 99, 100, 100) for _ in range(62)]
 
-    # 종목A: idx62 돌파(+12%, vol300) 종가112 → +1일 고점120후 저가 손절터치 → 종가회복 → 상승
+    # 종목A(전반): idx62 돌파(+12%, vol300) 종가112 → +1일 고점120후 저가 손절터치 → 종가회복 → 상승
     a = warmup()
     a.append(line(100, 112, 100, 112, 300))   # 돌파일(e): close 112 = +12%
     a.append(line(112, 120, 115, 118, 200))   # 고점120 trail=116.4, 저가115<=116.4 손절→ 종가118>=116.4 회복(재진입)
@@ -238,7 +279,8 @@ def _make_fixture(dirpath: Path):
     a.append(line(129, 133, 128, 132, 140))
     a.append(line(132, 135, 131, 134, 130))   # 보유끝(K=5) 종가청산
 
-    # 종목B: 돌파 후 손절만, 회복 못함(재진입 X)
+    # 종목B(후반): 돌파 후 손절만, 회복 못함(재진입 X)
+    _date["v"] = "2026-10-01"
     b = warmup()
     b.append(line(100, 112, 100, 112, 300))   # 돌파
     b.append(line(112, 115, 108, 109, 200))   # 고점115 trail=111.55, 저가108 손절 → 종가109<111.55 회복못함
@@ -257,12 +299,16 @@ def _selftest():
     tmp = Path(tempfile.mkdtemp(prefix="reentry_cost_"))
     try:
         _make_fixture(tmp)
-        loaded = [_load(f) for f in sorted(glob.glob(str(tmp / "*.csv")))]
-        loaded = [r for r in loaded if len(r) >= 30]
-        ev_all = [(rows, e, _kki_proxy(rows, e)) for rows in loaded for e in _events(rows)]
+        ev_all = []
+        for f in sorted(glob.glob(str(tmp / "*.csv"))):
+            rows, dates = _load(f)
+            if len(rows) < 30:
+                continue
+            for e in _events(rows):
+                ev_all.append((rows, e, _kki_proxy(rows, e), dates[e]))
         assert len(ev_all) == 2, f"이벤트 2건 기대(A,B), 실제 {len(ev_all)}"
 
-        results = [_sim_gross(rows, e, HOLD_K) for rows, e, k in ev_all]
+        results = [_sim_gross(rows, e, HOLD_K) for rows, e, k, d in ev_all]
         a = next(r for r in results if r["re_s"] > r["on_s"])   # 재진입 발생 = A
         b = next(r for r in results if r["re_s"] == r["on_s"])  # 재진입 없음 = B
 
@@ -286,6 +332,9 @@ def _selftest():
         # 7) net 공식 정합: gross에서 (실세그먼트수)×cost×100 정확히 차감
         manual = a["re_g"] - a["re_s"] * LIVE_COST * 100
         checks.append(("net 공식 정합", abs(_net(a["re_g"], a["re_s"], LIVE_COST) - manual) < 1e-9))
+        # 8) OOS 날짜 파싱·분할: A(2026-03)=전반, B(2026-10)=후반 정확 분리
+        dates_seen = sorted(t[3] for t in ev_all)
+        checks.append(("OOS 날짜 파싱(A전·B후)", dates_seen == ["2026-03-01", "2026-10-01"]))
 
         ok = sum(1 for _, c in checks if c)
         for name, c in checks:
@@ -312,8 +361,13 @@ def main() -> int:
               f"    실데이터는 노트북/VPS의 stock_data_daily 에 있음.\n"
               f"    로직 검증은 `--selftest` 로 가능(데이터 불필요).", file=sys.stderr)
         return 2
-    loaded = [r for r in (_load(f) for f in files) if len(r) >= 30]
-    ev_all = [(rows, e, _kki_proxy(rows, e)) for rows in loaded for e in _events(rows)]
+    ev_all = []
+    for f in files:
+        rows, dates = _load(f)
+        if len(rows) < 30:
+            continue
+        for e in _events(rows):
+            ev_all.append((rows, e, _kki_proxy(rows, e), dates[e]))
     if not ev_all:
         print("[!] 돌파 이벤트 0건", file=sys.stderr)
         return 2
