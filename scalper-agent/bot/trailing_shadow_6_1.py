@@ -46,16 +46,34 @@ def smoothed_high(prices: list, k: int = SMOOTH_K) -> list:
     return out
 
 
+def confirmed_high(prices: list, n: int = 3) -> list:
+    """시간확인 고점: '최근 n폴 동안 held된 레벨'(=윈도 min)만 고점으로 인정.
+
+    1폴 스파이크는 윈도 min을 못 올림(나머지 n-1폴이 낮음) → 고점 미갱신 → 손절선 안 끌림.
+    스무딩과 차이: 지속 추세는 n폴 후 '완전히' 따라잡음(평균으로 영구히 깎이지 않음) → 지연 페널티↓.
+    """
+    out = []
+    hw = prices[0]
+    for i in range(len(prices)):
+        window = prices[max(0, i - n + 1): i + 1]
+        level = min(window)        # n폴 연속 이 레벨 이상 유지됨 = 확인된 고점 후보
+        hw = max(hw, level)
+        out.append(hw)
+    return out
+
+
 def simulate_trail(path: list, entry: float, mode: str,
                    trail_pct: float = TRAIL_PCT, arm_pct: float = ARM_PCT,
                    k: int = SMOOTH_K, buffer_pct: float = BUFFER_PCT) -> dict:
-    """가격경로에 트레일 1회 시뮬. mode='tick'(현행) | 'smoothed'(대안).
+    """가격경로에 트레일 1회 시뮬. mode='tick'(현행) | 'smoothed' | 'confirmed'(시간확인).
 
     반환: exit_idx/exit_price/exited + max_after_exit(청산 후 최고가 — 휩쏘 판정용).
     트레일은 수익 arm_pct 도달 후에만 발동(라이브 동일). 손절선은 위로만 래칫.
     """
     if mode == "smoothed":
         highs = smoothed_high(path, k)
+    elif mode == "confirmed":
+        highs = confirmed_high(path, k)
     else:  # tick = 현행 라이브 (매 폴 raw max)
         highs = []
         hw = path[0]
@@ -123,6 +141,13 @@ def _selftest() -> int:
     cf = compare_modes(flat, entry)
     checks.append(("평탄=청산X 둘다", not cf["tick"]["exited"] and not cf["smoothed"]["exited"]))
 
+    # 6) 시간확인(confirmed): 단일스파이크(120) 거름 → 고점<120 & 휩쏘X 생존
+    ch = confirmed_high(path, 3)
+    conf = simulate_trail(path, entry, "confirmed", k=3)
+    conf_wh = conf["exited"] and conf["max_after_exit"] >= conf["exit_price"] * (1 + TRAIL_PCT / 100)
+    checks.append(("confirmed 스파이크 거름(고점<120)", max(ch) < 120))
+    checks.append(("confirmed 휩쏘X 생존", not conf_wh))
+
     ok = sum(1 for _, c in checks if c)
     for name, c in checks:
         print(f"  [{'PASS' if c else 'FAIL'}] {name}")
@@ -161,6 +186,8 @@ def _run_real() -> int:
     tick_pnls = []
     sm_wh = {k: 0 for k in K_GRID}
     sm_pnls = {k: [] for k in K_GRID}
+    cf_wh = {k: 0 for k in K_GRID}
+    cf_pnls = {k: [] for k in K_GRID}
     for f in glob.glob(str(daily_dir / "*.csv")):
         code = os.path.basename(f).replace(".csv", "").split("_")[-1]
         if code not in min_files:
@@ -193,23 +220,39 @@ def _run_real() -> int:
                 sm_pnls[k].append(s["exit_pnl"])
                 if s["exited"] and s["max_after_exit"] >= s["exit_price"] * (1 + TRAIL_PCT / 100):
                     sm_wh[k] += 1
+                cs = simulate_trail(path, entry, "confirmed", k=k)
+                cf_pnls[k].append(cs["exit_pnl"])
+                if cs["exited"] and cs["max_after_exit"] >= cs["exit_price"] * (1 + TRAIL_PCT / 100):
+                    cf_wh[k] += 1
     if n == 0:
         print("[!] 비교가능 이벤트 0건", file=_sys.stderr)
         return 2
     print(f"트레일 휩쏘 실측: {n} 이벤트 (봇 close 경로 근사, 분봉 ~6주)\n")
     print(f"  {'방식':<16}{'휩쏘율':>9}{'평균실현수익%':>14}")
-    print(f"  {'현행 tick고점':<14}{tick_wh / n * 100:>8.1f}%{statistics.mean(tick_pnls):>14.2f}")
+    tmean = statistics.mean(tick_pnls)
+    print(f"  {'현행 tick고점':<14}{tick_wh / n * 100:>8.1f}%{tmean:>14.2f}")
     for k in K_GRID:
         print(f"  {'스무딩 K=' + str(k):<14}{sm_wh[k] / n * 100:>8.1f}%"
               f"{statistics.mean(sm_pnls[k]):>14.2f}")
+    for k in K_GRID:
+        print(f"  {'시간확인 N=' + str(k):<13}{cf_wh[k] / n * 100:>8.1f}%"
+              f"{statistics.mean(cf_pnls[k]):>14.2f}")
     print()
-    best_k = min(K_GRID, key=lambda k: (sm_wh[k], -statistics.mean(sm_pnls[k])))
     twr = tick_wh / n * 100
-    swr = sm_wh[best_k] / n * 100
-    print(f"판정: 현행 휩쏘율 {twr:.1f}% → 스무딩 K={best_k} {swr:.1f}% "
-          f"({'↓개선' if swr < twr else '효과미미'}) / "
-          f"실현수익 현행 {statistics.mean(tick_pnls):+.2f}% vs K{best_k} {statistics.mean(sm_pnls[best_k]):+.2f}%")
-    print("  스무딩이 휩쏘↓ & 실현수익 유지/개선이면 → 트레일 flip 후보(사장님 결정+게이트+매도회귀).")
+    # 합격 = 휩쏘 줄이면서 실현수익 안 깎임(≥ 현행) — 데이터가 판정, 예측X
+    print("판정 (합격조건 = 휩쏘↓ AND 실현수익 ≥ 현행, 데이터가 판정):")
+    print(f"  현행 tick: 휩쏘 {twr:.1f}% / 수익 {tmean:+.2f}%")
+
+    def _judge(label, wh, pnls):
+        for k in K_GRID:
+            w = wh[k] / n * 100
+            p = statistics.mean(pnls[k])
+            ok = (w < twr) and (p >= tmean - 0.01)
+            print(f"  {label} {k}: 휩쏘 {w:.1f}% / 수익 {p:+.2f}% "
+                  f"→ {'합격(휩쏘↓·수익유지)' if ok else ('수익깎임' if w < twr else '휩쏘안줆')}")
+    _judge("스무딩", sm_wh, sm_pnls)
+    _judge("시간확인", cf_wh, cf_pnls)
+    print("  → 합격 mode 있으면 트레일 flip 후보(사장님 결정+게이트+매도회귀). 없으면 -3%/구조 재검(사장님).")
     print("★ thin(분봉 ~6주·단일regime) + close경로(봇 30초보다 거침=휩쏘 과소가능) → 방향성·상대비교만.")
     return 0
 
