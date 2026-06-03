@@ -50,6 +50,9 @@
 - STEADY 거래대금 ≥100억 필터가 자연히 대형/중형으로 수렴(데이터: S급 대형34/중형9).
 
 ## 3. SAJANG 단일진실 추가 (`sajang_rules.py`) — TRAILING_PCT 무침범
+> ★ 6/3 정정(사장님 "SAJANG 무변경"): shadow 단계엔 **SAJANG 상수 추가 보류**. '넓게 병행 기록'이라
+>   확정값이 없어 단일진실에 박을 게 없음. 아래 상수는 forward로 5개 확정 후 paper/live 진입 시 박는다.
+>   shadow 도구(`tools/sdart_shadow_record_6_3.py`)는 SAJANG 무변경·scheduler 무연결 순수 read-only.
 ```python
 # ── STEADY_S_DART_RIDE (6/2 데이터 검증, 신규 트랙·shadow 우선) ──
 SDART_ENABLED: bool = False              # shadow only, flip=사장님 승인+forward후
@@ -97,6 +100,9 @@ SDART_STOP_PCT: float = 8.0              # ★ 전용 손절(-3% 금지). forwar
 5. 단위테스트: sdart_grade_ok/exit 경계 + 리터럴 0 assert.
 
 ## 7. 확인포인트 (사장님 결정 영역)
+> ★★ 6/3 사장님 결정: **5개 전부 '넓게 병행 기록'(단일 확정 X)** — forward ≥10~20건으로 확정.
+>   진입 T0+T+1 / 손절 -8·-10·ATR / 청산 ma10·D+10·struct / 유니버스 cap_억 원값 / S급 ratio 원값 전부 기록.
+>   구현: `tools/sdart_shadow_record_6_3.py` (read-only, 게이트8/8·selftest12/12·Tier1 H-1수정).
 1. **진입 시점**: T0 종가 vs T+1 시가(공시 후 갭 회피).
 2. **손절 폭**: −8 / −10 / ATR (기본 −8 제안, forward 확정).
 3. **청산 우선순위**: ma10 vs D+10 캡 vs 구조이탈.
