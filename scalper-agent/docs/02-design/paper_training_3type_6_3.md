@@ -81,6 +81,7 @@ sector_rotation_score, group_rotation_score, capital_allocated, position_size_pc
 - 각 단계 게이트8/8 회귀0·주문0·SAJANG무변경·scheduler무접촉.
 
 ## 8. 확인포인트 (사장님 결정)
+> ★★ 6/3 **전부 승인 확정**: ①ledger=**PaperPortfolio**(가상체결·손익·MFE/MAE) ②B/C **넓게 병행**(B -3/-5/-7·C +5/+7·강한양봉) ③HOT임계=**sector_relay status(HOT+WARMING+RELAY) 넓게 기록→forward 판정**(새 임계 만들지 X, 기존 분류 신뢰) ④자본 **A30/B35/C35** ⑤NEWS_HOT **6/4부터 forward만**(백필불가). → 6/4 구현 착수(①ledger ②B ③C ④hook).
 1. **진입 파라미터**: B/C도 A처럼 '넓게 병행 기록'(권장) vs 단일 확정.
 2. **ledger 방식**: PaperPortfolio 재사용(가상체결·손익) vs shadow JSON(기록만, sdart방식).
 3. **"강한 섹터/그룹" 임계** (6/3 검증·제안): sector_relay 기본 HOT=`5D≥3 & vol≥1.5 & breadth≥0.6`는 6/2(약세장) 12섹터 중 **1개(IT +15%)만** 잡힘 = B/C 후보 너무 좁음. ★제안: 임계 재발명 X, **status(HOT+WARMING+RELAY) 다 기록(넓게)** → forward로 어느 status가 돈 되는지 판정★(A의 grade 일관). 단 하루(6/2) 데이터 대표성 없음 → 7거래일 누적 후 6/12 적정성 판정. 유니버스 제한(12섹터 ~70종목)은 "섹터 전체 확장" 여부 6/4 구현 시 결정.
