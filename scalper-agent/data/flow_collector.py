@@ -1,12 +1,12 @@
 """
 수급 데이터 수집기 - 외국인/기관/공매도/소진율
 
-데이터 소스: KIS API (투자자수급, 외국인소진율) + 캐시 (공매도)
+데이터 소스: KIS API (투자자수급) + 네이버 일별 frgn (외국인소진율) + 캐시 (공매도)
 pykrx 수급 API 전면 깨짐 → KIS API로 대체 (2026-03-04)
 
 수집 항목:
   1순위: 외국인/기관 순매수 (금액+수량) - KIS API FHKST01010900
-  1순위: 외국인 소진율 - KIS 현재가 API hts_frgn_ehrt
+  1순위: 외국인 소진율 - 네이버 frgn 거래일별 보유율/보유주수
   2순위: 공매도 잔고/거래량 - 캐시 반환 (pykrx 깨짐)
 
 사용법:
@@ -19,6 +19,7 @@ import time
 import logging
 from pathlib import Path
 from datetime import datetime, timedelta, time as dt_time, timezone
+from io import StringIO
 from typing import Dict, List, Optional, Tuple
 
 # VPS UTC 대응 KST
@@ -34,6 +35,14 @@ DATA_DIR = Path(__file__).resolve().parent.parent / "data_store"
 FLOW_DIR = DATA_DIR / "flow"          # 수급 데이터
 SHORT_DIR = DATA_DIR / "short"        # 공매도 데이터
 NAT_DIR = DATA_DIR / "nationality"    # 외국인 국적별 데이터
+NAVER_FRGN_URL = "https://finance.naver.com/item/frgn.naver"
+NAVER_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
+    ),
+    "Referer": "https://finance.naver.com/",
+}
 
 
 def _ensure_dirs():
@@ -360,8 +369,137 @@ def _fetch_investor_api(base_url: str, headers: dict, code: str) -> Optional[pd.
 
 
 # ============================================================
-#  1순위: 외국인 소진율 (KIS 현재가 API)
+#  1순위: 외국인 소진율 (네이버 frgn 일별)
 # ============================================================
+
+def _safe_int(value, default: int = 0) -> int:
+    if value is None:
+        return default
+    text = str(value).strip()
+    if not text or text.lower() == "nan":
+        return default
+    cleaned = (
+        text.replace(",", "")
+        .replace("%", "")
+        .replace("+", "")
+        .replace("−", "-")
+        .replace(" ", "")
+    )
+    try:
+        return int(float(cleaned))
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_float(value, default: float = 0.0) -> float:
+    if value is None:
+        return default
+    text = str(value).strip()
+    if not text or text.lower() == "nan":
+        return default
+    cleaned = (
+        text.replace(",", "")
+        .replace("%", "")
+        .replace("+", "")
+        .replace("−", "-")
+        .replace(" ", "")
+    )
+    try:
+        return float(cleaned)
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalize_frgn_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """네이버 read_html 결과의 MultiIndex 컬럼을 검색 가능한 문자열로 정리."""
+    out = df.copy()
+    columns = []
+    for col in out.columns:
+        if isinstance(col, tuple):
+            parts = [str(p).strip() for p in col if str(p).strip() and not str(p).startswith("Unnamed")]
+            uniq = []
+            for part in parts:
+                if part not in uniq:
+                    uniq.append(part)
+            columns.append(" ".join(uniq) if uniq else "")
+        else:
+            columns.append(str(col).strip())
+    out.columns = columns
+    return out
+
+
+def _find_col(columns: List[str], *keywords: str) -> Optional[str]:
+    for col in columns:
+        if all(keyword in col for keyword in keywords):
+            return col
+    return None
+
+
+def _parse_naver_date(value) -> Optional[str]:
+    try:
+        return datetime.strptime(str(value).strip(), "%Y.%m.%d").strftime("%Y-%m-%d")
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_naver_frgn_html(code: str, html: str) -> List[dict]:
+    """네이버 frgn HTML에서 거래일별 소진율 행을 추출."""
+    try:
+        tables = pd.read_html(StringIO(html))
+    except (ImportError, ValueError) as e:
+        logger.debug("네이버 frgn HTML 파싱 실패 %s: %s", code, e)
+        return []
+
+    rows = []
+    for table in tables:
+        df = _normalize_frgn_columns(table).dropna(how="all")
+        columns = [str(c).strip() for c in df.columns]
+        date_col = _find_col(columns, "날짜")
+        close_col = _find_col(columns, "종가")
+        holding_col = _find_col(columns, "보유주식수") or _find_col(columns, "보유주수")
+        ratio_col = _find_col(columns, "보유율")
+        if not all([date_col, close_col, holding_col, ratio_col]):
+            continue
+
+        for _, row in df.iterrows():
+            date_str = _parse_naver_date(row.get(date_col))
+            if not date_str:
+                continue
+            rate = _safe_float(row.get(ratio_col))
+            holding = _safe_int(row.get(holding_col))
+            close = _safe_int(row.get(close_col))
+            if rate <= 0 and holding <= 0:
+                continue
+            rows.append({
+                "date": date_str,
+                "소진율": rate,
+                "보유수량": holding,
+                "종가": close,
+            })
+
+    dedup = {row["date"]: row for row in rows}
+    return sorted(dedup.values(), key=lambda x: x["date"], reverse=True)
+
+
+def _fetch_foreign_rate_naver(code: str, http_session: Optional[_requests.Session] = None) -> Optional[dict]:
+    """네이버 frgn 일별 페이지에서 최신 거래일 외국인 보유율 조회."""
+    sess = http_session or _requests.Session()
+    try:
+        resp = sess.get(
+            NAVER_FRGN_URL,
+            params={"code": code, "page": 1},
+            headers=NAVER_HEADERS,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        if not resp.encoding:
+            resp.encoding = "euc-kr"
+        rows = _parse_naver_frgn_html(code, resp.text)
+        return rows[0] if rows else None
+    except Exception as e:
+        logger.warning(f"네이버 외국인 보유비율 조회 실패 {code}: {e}")
+        return None
+
 
 def collect_foreign_exhaustion(
     codes: List[str],
@@ -369,61 +507,51 @@ def collect_foreign_exhaustion(
     force: bool = False,
     session: Optional[Tuple[str, dict]] = None,
 ) -> Dict[str, pd.DataFrame]:
-    """외국인 보유비율(소진율) 수집 - KIS 현재가 API
+    """외국인 보유비율(소진율) 수집 - 네이버 frgn 거래일별 페이지
 
-    pykrx get_exhaustion_rates 깨짐 → KIS 현재가에서 hts_frgn_ehrt 필드 사용
-    일별 추이 대신 현재 보유비율 + 투자자수급 외국인_수량으로 추이 보완
+    KIS 현재가 스냅샷은 장전/휴장일에 today ghost를 만들 수 있어 사용하지 않는다.
+    네이버 frgn은 거래일 행만 제공하므로 휴장 ghost가 원천 차단된다.
 
     컬럼: 소진율(%), 보유수량, 종가
 
     Args:
-        session: H2 — 외부에서 전달받은 (base_url, headers). None이면 내부 생성.
+        session: 하위호환 인자. 네이버 수집에서는 사용하지 않는다.
 
     Returns: {code: DataFrame(date index)}
     """
     _ensure_dirs()
 
-    # 캐시: 오늘 날짜 데이터 있으면 스킵, 없으면 재수집
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    # 네이버 frgn의 최신 거래일 행을 매번 확인한다. 기존 KIS 스냅샷 캐시에 today ghost가
+    # 남아 있을 수 있으므로 "오늘 날짜가 있으면 스킵"하지 않는다.
     results = {}
     need_fetch = []
+    existing_cache_count = 0
     for code in codes:
         cache_file = FLOW_DIR / f"{code}_foreign_exh.csv"
-        if not force and cache_file.exists():
+        if cache_file.exists():
             if cache_file.stat().st_size == 0:
                 cache_file.unlink()
             else:
                 try:
-                    cached = pd.read_csv(cache_file, index_col=0, parse_dates=True)
+                    pd.read_csv(cache_file, index_col=0, parse_dates=True)
+                    existing_cache_count += 1
                 except Exception:
                     cache_file.unlink()
-                    need_fetch.append(code)
-                    continue
-                if len(cached) > 0:
-                    last_date = cached.index[-1].strftime("%Y-%m-%d")
-                    if last_date == today_str:
-                        results[code] = cached
-                        continue
         need_fetch.append(code)
 
-    cache_count = len(results)
     if not need_fetch:
-        print(f"  외국인 소진율: 전체 캐시 히트 ({cache_count}종목, 오늘 수집 완료)")
+        print("  외국인 소진율: 수집 대상 없음")
         return results
 
-    # H2: 외부 세션 우선 사용, 없으면 내부 생성
-    print(f"  외국인 소진율: {len(need_fetch)}종목 KIS API 수집 시작 (캐시{cache_count})...")
-    if session is None:
-        session = _get_kis_session()
-    if session is None:
-        logger.error("[FLOW] KIS 세션 없음 — 외국인 소진율 수집 스킵")
-        return results
-    base_url, headers = session[0], session[1].copy()
-    headers["tr_id"] = "FHKST01010100"
+    print(
+        f"  외국인 소진율: {len(need_fetch)}종목 네이버 frgn 일별 수집 시작 "
+        f"(기존캐시{existing_cache_count}, 거래일 재확인)..."
+    )
 
     fetched = 0
     failed = 0
-    today = pd.Timestamp(datetime.now().strftime("%Y-%m-%d"))
+    stale_skipped = 0
+    http_session = _requests.Session()
 
     for i, code in enumerate(need_fetch):
         cache_file = FLOW_DIR / f"{code}_foreign_exh.csv"
@@ -432,12 +560,13 @@ def collect_foreign_exhaustion(
             print(f"    [{i+1}/{len(need_fetch)}] 수집중... (성공{fetched} 실패{failed})")
 
         try:
-            row = _fetch_foreign_rate_api(base_url, headers, code)
+            row = _fetch_foreign_rate_naver(code, http_session=http_session)
             if row is None:
                 failed += 1
                 continue
 
-            new_row = pd.DataFrame([row], index=pd.DatetimeIndex([today], name="date"))
+            row_date = pd.Timestamp(row.pop("date"))
+            new_row = pd.DataFrame([row], index=pd.DatetimeIndex([row_date], name="date"))
 
             # 기존 캐시에 병합
             if cache_file.exists():
@@ -447,6 +576,15 @@ def collect_foreign_exhaustion(
                 df = df.sort_index()
             else:
                 df = new_row
+
+            # 네이버가 준 최신 거래일 이후의 행은 장전/휴장일 KIS 스냅샷 ghost로 간주해 제거한다.
+            df = df[df.index <= row_date]
+
+            # 빈/오염 행 방어: 소진율 또는 보유수량이 있는 거래일만 보존
+            if "소진율" in df.columns and "보유수량" in df.columns:
+                before = len(df)
+                df = df[(df["소진율"].fillna(0) > 0) | (df["보유수량"].fillna(0) > 0)]
+                stale_skipped += before - len(df)
 
             df.to_csv(cache_file)
             results[code] = df
@@ -461,13 +599,22 @@ def collect_foreign_exhaustion(
 
     total = len(results)
     coverage = total / len(codes) * 100 if codes else 0
-    print(f"  외국인 소진율 완료: 신규{fetched} + 캐시{cache_count} = "
-          f"{total}종목/{len(codes)} ({coverage:.1f}%) 실패{failed}")
+    print(f"  외국인 소진율 완료: 수집{fetched}, 기존캐시{existing_cache_count}, 저장"
+          f"{total}종목/{len(codes)} ({coverage:.1f}%) 실패{failed} 정리{stale_skipped}")
     return results
 
 
 def _fetch_foreign_rate_api(base_url: str, headers: dict, code: str) -> Optional[dict]:
-    """KIS 현재가 API에서 외국인 보유비율 조회 (세션 재사용)"""
+    """하위호환 wrapper: 외인소진율은 네이버 거래일별 페이지를 사용."""
+    row = _fetch_foreign_rate_naver(code)
+    if row:
+        row = dict(row)
+        row.pop("date", None)
+    return row
+
+
+def _fetch_foreign_rate_kis_snapshot(base_url: str, headers: dict, code: str) -> Optional[dict]:
+    """KIS 현재가 API에서 외국인 보유비율 조회 (legacy snapshot fallback only)."""
     try:
         params = {
             "FID_COND_MRKT_DIV_CODE": "J",
@@ -596,21 +743,20 @@ def collect_all_flow(
         codes = list(UNIVERSE.keys())
 
     print("=" * 60)
-    print("  수급 데이터 수집기 (KIS API + 캐시)")
+    print("  수급 데이터 수집기 (KIS 투자자 + 네이버 frgn 소진율 + 캐시)")
     print(f"  종목: {len(codes)}개 | 기간: {months}개월")
     print("=" * 60)
 
-    # H2: 세션 2개를 진입 시 한 번에 생성 (각 스레드가 독립 headers 사용)
+    # KIS는 투자자 수급에만 사용한다. 외국인 소진율은 네이버 거래일별 frgn을 사용한다.
     print(f"\n[0/4] KIS 세션 사전 생성...")
     session1 = _get_kis_session()
-    session2 = _get_kis_session() if session1 else None
     if session1:
-        logger.info(f"[H2] KIS 세션 2개 사전 생성 완료")
+        logger.info(f"[H2] KIS 세션 사전 생성 완료")
     else:
         logger.warning(f"[H2] KIS 세션 생성 실패 — 수급 수집 제한적")
 
     # 1+2. 투자자별 순매수 + 외국인 소진율 (동시 실행)
-    # 서로 다른 KIS API tr_id 사용 → 독립적 headers.copy()로 병렬 안전
+    # 투자자 수급은 KIS, 외국인 소진율은 네이버 frgn이므로 병렬 안전
     print(f"\n[1+2/4] 투자자 수급 + 외국인 소진율 (병렬)...")
     t0 = time.time()
     investor = {}
@@ -618,7 +764,7 @@ def collect_all_flow(
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         f_inv = executor.submit(collect_investor_flow, codes, months, force, session=session1)
-        f_fex = executor.submit(collect_foreign_exhaustion, codes, months, force, session=session2)
+        f_fex = executor.submit(collect_foreign_exhaustion, codes, months, force)
         # C3: 개별 try/except — 한쪽 실패해도 다른 쪽 결과 보존
         try:
             investor = f_inv.result()
