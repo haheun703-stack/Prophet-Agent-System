@@ -303,10 +303,12 @@ def record_bc_into(led, cands):
 
 
 def record_to_ledger(asof, cands):
-    """B/C 단독 실행: 새 ledger 생성 → record → save. 반환 (ledger, path)."""
+    """B/C 단독 실행: 새 ledger 생성 → record → save(별도 파일 'bc_only').
+    ★ S-2: 통합러너의 ledger_{date}.json(A/B/C)를 덮어쓰지 않게 분리 — 통합 ledger 무손상 ★.
+    반환 (ledger, path)."""
     led = new_ledger(asof)
     record_bc_into(led, cands)
-    path = led.save()
+    path = led.save(suffix="bc_only")
     return led, path
 
 
@@ -373,6 +375,22 @@ def selftest():
     if _classify_status:
         ok.append(("T9 _classify_status HOT", _classify_status(5.0, 2.0, 0.8, 1.0) == "HOT"))
         ok.append(("T10 _classify_status COLD", _classify_status(0.0, 1.0, 0.3, 0.0) == "COLD"))
+    # S-2: rotation 단독 save(bc_only)가 통합 ledger(A 포함)를 덮어쓰지 않음 (날짜 2099=실관측 무간섭)
+    import json as _json
+    integ = new_ledger("2099-01-01")
+    integ.record("A", ticker="000001", name="A합성", virtual_entry_price=100.0)
+    integ.record("B", ticker="000002", name="B합성", virtual_entry_price=200.0)
+    integ_path = integ.save()                     # ledger_2099-01-01.json (통합)
+    bc = new_ledger("2099-01-01")
+    bc.record("B", ticker="000003", name="B단독", virtual_entry_price=300.0)
+    bc_path = bc.save(suffix="bc_only")           # ledger_2099-01-01_bc_only.json (단독)
+    integ_after = _json.loads(integ_path.read_text(encoding="utf-8"))
+    ok.append(("T11 S-2 단독save=별도파일(통합 무손상)",
+               bc_path != integ_path and bc_path.name.endswith("_bc_only.json")))
+    ok.append(("T12 S-2 통합 ledger A·B records 보존",
+               integ_after["summary"]["A"] == 1 and integ_after["summary"]["B"] == 1))
+    integ_path.unlink(missing_ok=True)
+    bc_path.unlink(missing_ok=True)
     print("rotation_paper_scan 셀프테스트:")
     for nme, p in ok:
         print(f"  [{'PASS' if p else 'FAIL'}] {nme}")
@@ -388,7 +406,9 @@ def _print_summary(asof, sectors, cands, path):
     print(f"섹터소스: {_SECTOR_SRC} / 모멘텀: stock_data_daily(KIS 일봉, pykrx 우회)")
     print(f"★ 증빙: SAJANG.AUTO_TRADE_DISABLED={SAJANG.AUTO_TRADE_DISABLED} / 실주문 0 / 주문함수 0 "
           f"/ picks·asset_pool 불변 / SAJANG·scheduler·systemd 무변경")
-    print(f"스캔 섹터 {len(sectors)} / 강한(HOT·WARMING·RELAY) {len(strong)} → B {nb}건 · C {nc}건 → {path}")
+    print(f"스캔 섹터 {len(sectors)} / 강한(HOT·WARMING·RELAY) {len(strong)} → B {nb}건 · C {nc}건")
+    print(f"★ 단독 ledger(B/C only): {path}")
+    print("  ※ A/B/C 통합 ledger는 paper_3type_daily_run_6_6.py 사용(이 단독 실행은 통합 ledger 무손상)")
     print("=" * 100)
     for s in sorted(sectors, key=lambda x: (x["status"] not in STRONG, -x["momentum_5d"])):
         mark = "★" if s["status"] in STRONG else " "

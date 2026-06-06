@@ -77,10 +77,14 @@ class Paper3TypeLedger:
             "rejects": {k: len(v) for k, v in self.rejects.items()},
         }
 
-    def save(self) -> Path:
-        """ledger_{date}.json 원자적 저장. 후보 0건이어도 파일 생성."""
+    def save(self, suffix: str = "") -> Path:
+        """ledger_{date}.json 원자적 저장. 후보 0건이어도 파일 생성.
+        suffix 지정 시 ledger_{date}_{suffix}.json — 단독 실행이 통합 ledger를
+        덮어쓰지 않게 분리(S-2 사고 방지). 통합러너는 suffix 없이 정식 ledger 사용.
+        suffix는 영숫자·언더스코어만(파일명 직접 삽입 — 경로문자 '/','\\','..','.' 금지)."""
         LEDGER_DIR.mkdir(parents=True, exist_ok=True)
-        path = LEDGER_DIR / f"ledger_{self.date}.json"
+        fname = f"ledger_{self.date}_{suffix}.json" if suffix else f"ledger_{self.date}.json"
+        path = LEDGER_DIR / fname
         data = {
             "date": self.date,
             "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
