@@ -285,22 +285,27 @@ def collect_candidates(sectors):
     return cands
 
 
-def record_to_ledger(asof, cands):
-    """후보 → Paper3TypeLedger. capital 균등배분(2-pass). 반환 (ledger, path)."""
-    led = new_ledger(asof)
+def record_bc_into(led, cands):
+    """cands(B/C)를 기존 ledger 인스턴스에 record (save 안 함 — 통합러너가 A와 함께 저장).
+    capital 균등배분(2-pass): type별 시드(B35/C35)를 후보 수로 나눔."""
     by_type = {"B": [], "C": []}
     for t, kw, key in cands:
         by_type[t].append((key, kw))
     for t, lst in by_type.items():
         lst.sort(key=lambda x: x[0], reverse=True)
         n = len(lst)
-        seed = TYPE_SEED[t]
-        per = round(seed / n, 2) if n else 0.0
+        per = round(TYPE_SEED[t] / n, 2) if n else 0.0
         pct = round(100.0 / n, 1) if n else 0.0
         for _, kw in lst:
             kw["capital_allocated"] = per
             kw["position_size_pct"] = pct
             led.record(t, **kw)
+
+
+def record_to_ledger(asof, cands):
+    """B/C 단독 실행: 새 ledger 생성 → record → save. 반환 (ledger, path)."""
+    led = new_ledger(asof)
+    record_bc_into(led, cands)
     path = led.save()
     return led, path
 

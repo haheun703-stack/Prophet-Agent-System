@@ -49,8 +49,9 @@ class Paper3TypeLedger:
         rec["date"] = self.date
         rec["type"] = type_
         rec["signal_source"] = fields.get("signal_source") or TYPE_SOURCE.get(type_)
-        # 넓게 병행 기록 보존: FIELDS 외 키(forward 부품 등)는 extra로 (후방호환 — 없으면 미생성)
-        extra = {k: v for k, v in fields.items() if k not in FIELDS and v is not None}
+        # 넓게 병행 기록 보존: FIELDS 외 키(forward 부품 등)는 extra로 (후방호환 — 없으면 미생성).
+        # None도 보존 — "키 존재=계산 시도 / 값 None=미도달·미계산" 구분(6/12 forward 판정 무결성).
+        extra = {k: v for k, v in fields.items() if k not in FIELDS}
         if extra:
             rec["extra"] = extra
         return rec
