@@ -39,12 +39,15 @@ A_SEED = 30.0   # 설계 5장 A30/B35/C35 (B/C 시드는 rotation_paper_scan.TYP
 
 
 # ── A(sdart) 어댑터: sdart build_record dict → paper_3type ledger "A" record ──
-def record_sdart_into(led, records):
+def record_sdart_into(led, records, event_snapshot=None):
     """sdart_shadow_record.scan_asof 의 records → led.record("A", ...).
-    명분(grade)은 signal_source(fact layer)로 기록만 — hard gate 아님."""
+    명분(grade)은 signal_source(fact layer)로 기록만 — hard gate 아님.
+    event_snapshot 있으면 EVENT hook으로 A1/A2 variant + event_layer 태그(진입권한 0, 비교용)."""
     n = len(records)
     per = round(A_SEED / n, 2) if n else 0.0
     pct = round(100.0 / n, 1) if n else 0.0
+    if event_snapshot is not None:
+        from event_signal_hook_6_6 import event_layer_for, variant_and_source  # noqa: E402
     for r in records:
         cat = r.get("catalyst", {}) or {}
         grade = cat.get("grade")
@@ -53,6 +56,12 @@ def record_sdart_into(led, records):
         val = (f"매출대비{cat.get('sales_ratio_pct')}%" if cat.get("sales_ratio_pct") is not None
                else (f"자사주{cat.get('buyback_amt_억')}억" if cat.get("buyback_amt_억") is not None
                      else cat.get("detail")))
+        # EVENT hook: A2(보강) 판정 + event_layer 태그. NEWS=forward 태그일뿐, 매매 확정권 0.
+        a_variant = "A1"
+        event_layer = None
+        if event_snapshot is not None:
+            event_layer = event_layer_for(r.get("code"), event_snapshot)
+            a_variant, sig = variant_and_source(sig, event_layer if event_layer.get("matched") else None)
         led.record(
             "A",
             ticker=r.get("code"), name=r.get("name"), sector=r.get("sector"),
@@ -63,7 +72,8 @@ def record_sdart_into(led, records):
             MFE=r.get("mfe_pct_hold40"), MAE=r.get("mae_pct_hold40"),
             holding_days=0, supply=None, market_regime=None,
             capital_allocated=per, position_size_pct=pct,
-            # extra (넓게 병행 — sdart forward 부품 전체 보존)
+            # extra (넓게 병행 — sdart forward 부품 전체 보존 + EVENT hook 태그)
+            a_variant=a_variant, event_layer=event_layer,
             catalyst=cat, entry=r.get("entry"),
             raw_fwd_from_t0close=r.get("raw_fwd_from_t0close"),
             raw_fwd_from_t1open=r.get("raw_fwd_from_t1open"),
@@ -76,16 +86,33 @@ def record_sdart_into(led, records):
     return n
 
 
-def run(asof, skip_a=False):
-    """A/B/C를 한 ledger에 기록 → save. 반환 dict(요약)."""
+def run(asof, skip_a=False, scan_events=False):
+    """A/B/C를 한 ledger에 기록 → save. 반환 dict(요약).
+    scan_events=True면 event_detector 실시간 스캔(네트워크)으로 events.json 갱신 후 A2 판정."""
     led = new_ledger(asof)
-    # A — sdart (네트워크: DART 조회)
+    # A — sdart (네트워크: DART 조회) + EVENT hook(A1/A2)
     a_n = 0
     n_steady = 0
+    event_note = None
+    a1 = a2 = 0
     if not skip_a:
+        from event_signal_hook_6_6 import load_event_snapshot  # noqa: E402
+        if scan_events:
+            try:
+                from data.event_detector import run_event_scan  # noqa: E402 (네트워크 — 옵션)
+                run_event_scan(scan_dart=True, scan_news=True)   # events.json 갱신
+            except Exception as e:                               # noqa: BLE001
+                print(f"[event_scan 실패(무시 — A1만 기록): {e}]")
+        snapshot = load_event_snapshot(asof)
+        event_note = (f"events.json scanned={snapshot['scanned_date']} "
+                      f"fresh={snapshot['fresh']} ({snapshot['reason']})")
         from sdart_shadow_record_6_3 import scan_asof  # noqa: E402 (무거운 의존 — 필요시만)
         records, n_steady = scan_asof(asof)
-        a_n = record_sdart_into(led, records)
+        a_n = record_sdart_into(led, records, event_snapshot=snapshot)
+        for r in led.candidates["A"]:
+            v = (r.get("extra") or {}).get("a_variant")
+            a1 += (v == "A1")
+            a2 += (v == "A2")
     # B/C — rotation (네트워크 0)
     c2p = _code_to_path()
     sectors = scan_sectors(c2p, asof)
@@ -95,7 +122,8 @@ def run(asof, skip_a=False):
     nb = sum(1 for t, _, _ in cands if t == "B")
     nc = sum(1 for t, _, _ in cands if t == "C")
     return {"asof": asof, "path": path, "sectors": sectors,
-            "a_n": a_n, "n_steady": n_steady, "b_n": nb, "c_n": nc,
+            "a_n": a_n, "a1_n": a1, "a2_n": a2, "n_steady": n_steady,
+            "b_n": nb, "c_n": nc, "event_note": event_note,
             "summary": led.summary(), "skip_a": skip_a}
 
 
@@ -144,6 +172,22 @@ def selftest():
     # 빈 records → A 0건 (정상)
     led4 = new_ledger("2026-06-04")
     ok.append(("T8 빈 records → A 0건", record_sdart_into(led4, []) == 0))
+    # EVENT hook: fresh snapshot 매칭 → A2 variant + event_layer (진입권한 0, 태그만)
+    snap = {"fresh": True, "scanned_date": "2026-06-04", "reason": "ok",
+            "index": {"999999": {"ticker": "999999", "name": "합성S종목", "total_score": 150.0,
+                                  "direction": "POSITIVE", "events": ["BIG_CONTRACT"], "metric": "x"}}}
+    led5 = new_ledger("2026-06-04")
+    record_sdart_into(led5, [rec], event_snapshot=snap)
+    row5 = led5.candidates["A"][0]
+    ok.append(("T9 EVENT hook 매칭 → A2 / DART_S+NEWS / event_layer",
+               row5["extra"]["a_variant"] == "A2" and row5["signal_source"] == "DART_S+NEWS"
+               and row5["extra"]["event_layer"]["matched"] is True))
+    # snapshot 없음(기본) → A1, event_layer None (DART_S primary 유지)
+    led6 = new_ledger("2026-06-04")
+    record_sdart_into(led6, [rec])
+    row6 = led6.candidates["A"][0]
+    ok.append(("T10 snapshot없음 → A1 / DART_S primary",
+               row6["extra"]["a_variant"] == "A1" and row6["signal_source"] == "DART_S"))
     print("paper_3type_daily_run 셀프테스트:")
     for nme, p in ok:
         print(f"  [{'PASS' if p else 'FAIL'}] {nme}")
@@ -159,12 +203,16 @@ def _print_summary(res):
     if res["skip_a"]:
         print("  A: [skip] (--skip-a)")
     else:
-        print(f"  A(STEADY_S_DART): STEADY {res['n_steady']}건 중 호재공시 {res['a_n']}건")
+        print(f"  A(STEADY_S_DART): STEADY {res['n_steady']}건 중 호재공시 {res['a_n']}건 "
+              f"→ A1(DART단독) {res['a1_n']} · A2(DART+NEWS) {res['a2_n']}")
+        if res.get("event_note"):
+            print(f"     EVENT hook: {res['event_note']}")
     print(f"  B/C: 강한섹터 {len(strong)}/{len(sectors)} → B {res['b_n']}건 · C {res['c_n']}건")
     print(f"  summary: {res['summary']}")
     print("=" * 100)
     print("★★ shadow=기록만. 6/4~6/12 forward 누적 → 6/12 타입별 1차 판정(영구룰 확정 아님).")
     print("★★ 명분(DART/NEWS/수급)=fact layer 기록, hard gate 아님. B/C 결과로 실전 flip 금지.")
+    print("★★ A2(NEWS 보강)=forward 비교 태그일뿐 진입권한 0. NEWS 백필불가→fresh(당일 스캔)만 A2.")
 
 
 def main():
@@ -175,6 +223,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--asof", default=date.today().isoformat())
     ap.add_argument("--skip-a", action="store_true", help="A(sdart, 네트워크) 건너뛰고 B/C만")
+    ap.add_argument("--scan-events", action="store_true",
+                    help="event_detector 실시간 스캔(네트워크: DART+네이버)으로 events.json 갱신 → A2 판정")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
     if a.selftest:
@@ -184,7 +234,7 @@ def main():
     except ValueError:
         print(f"[중단] --asof 형식 오류: {a.asof} (YYYY-MM-DD 필요)")
         sys.exit(2)
-    res = run(asof, skip_a=a.skip_a)
+    res = run(asof, skip_a=a.skip_a, scan_events=a.scan_events)
     _print_summary(res)
 
 
