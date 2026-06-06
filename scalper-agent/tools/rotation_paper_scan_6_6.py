@@ -37,6 +37,9 @@ sys.path.insert(0, str(TOOLS))
 from data.sajang_rules import SAJANG  # noqa: E402
 from data.paper_3type_ledger import new_ledger  # noqa: E402
 from leader_prospective_scan_6_2 import load_daily, _ma, _is_excluded  # noqa: E402
+# 6/8 관측 레이어(가격구조 feature/label) — 진입 조건 변경 아님, 기록·태그만(hard gate 0).
+from price_structure_features_6_8 import (  # noqa: E402
+    price_structure_labels, half_pullback, breakout, sector_peer_sync)
 
 # SECTORS·status 분류 = sector_relay 단일진실 재사용.
 # (sector_relay가 `from pykrx import stock`을 모듈로드 시 실행하나, 우리는 데이터조회 함수는 호출 X.
@@ -238,6 +241,7 @@ def collect_candidates(sectors):
             d, i = s["d"], s["i"]
             entry = d[i][4]
             mfe, mae = mfe_mae(d, i, entry)
+            ps = price_structure_labels(d, i)              # 6/8: 주봉/월/반기 시가·첫봉투봉·연간과열
             base = dict(
                 ticker=s["code"], name=s["name"], sector=sec["name"], group=s["tier"],
                 virtual_entry_price=round(entry, 2), market_regime=sec["status"],
@@ -248,6 +252,8 @@ def collect_candidates(sectors):
                                "vol_ratio": sec["vol_ratio"], "breadth": sec["breadth"],
                                "relay_gap": sec["relay_gap"], "tier": s["tier"]},
             )
+            base.update(ps)                                # 가격구조 라벨(flat, hard gate 0)
+            base.update(sector_peer_sync(sec["stocks"], s["code"]))   # 섹터 동조화(12-섹터 근사)
             # B: 눌림 (-3% 이상 도달 = 후보)
             pf = pullback_features(d, i)
             if pf["pullback_3"]:
@@ -258,6 +264,8 @@ def collect_candidates(sectors):
                                       f"ma10지지:{pf['ma10_support']} ma20지지:{pf['ma20_support']} "
                                       f"거래대금:{pf['turnover_억']}억")
                 kw["features"] = pf
+                kw.update(half_pullback(d, i, ps["weekly_open_state"],
+                                        ps["half_year_open_state"]))   # 6/8: 하프 눌림(B 핵심)
                 kw["would_stop"] = {"trail3": trail_stop(d, i, entry, 3.0),
                                     "trail5": trail_stop(d, i, entry, 5.0),
                                     "trail7": trail_stop(d, i, entry, 7.0)}
@@ -276,6 +284,7 @@ def collect_candidates(sectors):
                                       f"양봉:{rf['body_pct']}% 거래량:{rf['vol_ratio']}x "
                                       f"거래대금:{rf['turnover_억']}억")
                 kw["features"] = rf
+                kw.update(breakout(d, i, sec["status"]))               # 6/8: 돌파(C 핵심)
                 kw["would_stop"] = {"trail3": trail_stop(d, i, entry, 3.0),
                                     "trail5": trail_stop(d, i, entry, 5.0),
                                     "trail10": trail_stop(d, i, entry, 10.0)}

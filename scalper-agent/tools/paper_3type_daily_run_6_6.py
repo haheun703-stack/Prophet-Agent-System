@@ -39,15 +39,20 @@ A_SEED = 30.0   # 설계 5장 A30/B35/C35 (B/C 시드는 rotation_paper_scan.TYP
 
 
 # ── A(sdart) 어댑터: sdart build_record dict → paper_3type ledger "A" record ──
-def record_sdart_into(led, records, event_snapshot=None):
+def record_sdart_into(led, records, event_snapshot=None, c2p=None, asof=None):
     """sdart_shadow_record.scan_asof 의 records → led.record("A", ...).
     명분(grade)은 signal_source(fact layer)로 기록만 — hard gate 아님.
-    event_snapshot 있으면 EVENT hook으로 A1/A2 variant + event_layer 태그(진입권한 0, 비교용)."""
+    event_snapshot 있으면 EVENT hook으로 A1/A2 variant + event_layer 태그(진입권한 0, 비교용).
+    c2p(code→일봉경로)·asof 있으면 6/8 가격구조 라벨(주봉/월/반기 시가·첫봉투봉·연간과열)을
+    A1/A2에도 동일 부착(지시서 9장) — hard gate 0, 계산 불가 시 전 키 None(키 보존)."""
+    from price_structure_features_6_8 import price_structure_labels, find_index_asof  # noqa: E402
     n = len(records)
     per = round(A_SEED / n, 2) if n else 0.0
     pct = round(100.0 / n, 1) if n else 0.0
     if event_snapshot is not None:
         from event_signal_hook_6_6 import event_layer_for, variant_and_source  # noqa: E402
+    if c2p is not None:
+        from leader_prospective_scan_6_2 import load_daily  # noqa: E402
     for r in records:
         cat = r.get("catalyst", {}) or {}
         grade = cat.get("grade")
@@ -62,6 +67,17 @@ def record_sdart_into(led, records, event_snapshot=None):
         if event_snapshot is not None:
             event_layer = event_layer_for(r.get("code"), event_snapshot)
             a_variant, sig = variant_and_source(sig, event_layer if event_layer.get("matched") else None)
+        # 6/8 가격구조 라벨 — 일봉 로드 가능 시만 계산, 불가/미전달 시 전 키 None(키 보존).
+        ps = price_structure_labels(None, None)
+        if c2p is not None:
+            code = r.get("code")
+            p = c2p.get(code) or c2p.get(str(code).zfill(6))
+            if p:
+                dd = load_daily(p)
+                ref = asof or r.get("t0_date")
+                j = find_index_asof(dd, ref) if ref else None
+                if j is not None:
+                    ps = price_structure_labels(dd, j)
         led.record(
             "A",
             ticker=r.get("code"), name=r.get("name"), sector=r.get("sector"),
@@ -72,7 +88,7 @@ def record_sdart_into(led, records, event_snapshot=None):
             MFE=r.get("mfe_pct_hold40"), MAE=r.get("mae_pct_hold40"),
             holding_days=0, supply=None, market_regime=None,
             capital_allocated=per, position_size_pct=pct,
-            # extra (넓게 병행 — sdart forward 부품 전체 보존 + EVENT hook 태그)
+            # extra (넓게 병행 — sdart forward 부품 전체 보존 + EVENT hook 태그 + 가격구조 라벨)
             a_variant=a_variant, event_layer=event_layer,
             catalyst=cat, entry=r.get("entry"),
             raw_fwd_from_t0close=r.get("raw_fwd_from_t0close"),
@@ -82,6 +98,7 @@ def record_sdart_into(led, records, event_snapshot=None):
             surge_pct=r.get("surge_pct"), turnover_억=r.get("turnover_억"),
             high_120d=r.get("high_120d"), t0_date=r.get("t0_date"),
             sdart_status=r.get("status"),
+            **ps,
         )
     return n
 
@@ -90,6 +107,7 @@ def run(asof, skip_a=False, scan_events=False):
     """A/B/C를 한 ledger에 기록 → save. 반환 dict(요약).
     scan_events=True면 event_detector 실시간 스캔(네트워크)으로 events.json 갱신 후 A2 판정."""
     led = new_ledger(asof)
+    c2p = _code_to_path()        # A(가격구조 라벨)·B/C 공용 — 네트워크 0
     # A — sdart (네트워크: DART 조회) + EVENT hook(A1/A2)
     a_n = 0
     n_steady = 0
@@ -108,13 +126,12 @@ def run(asof, skip_a=False, scan_events=False):
                       f"fresh={snapshot['fresh']} ({snapshot['reason']})")
         from sdart_shadow_record_6_3 import scan_asof  # noqa: E402 (무거운 의존 — 필요시만)
         records, n_steady = scan_asof(asof)
-        a_n = record_sdart_into(led, records, event_snapshot=snapshot)
+        a_n = record_sdart_into(led, records, event_snapshot=snapshot, c2p=c2p, asof=asof)
         for r in led.candidates["A"]:
             v = (r.get("extra") or {}).get("a_variant")
             a1 += (v == "A1")
             a2 += (v == "A2")
     # B/C — rotation (네트워크 0)
-    c2p = _code_to_path()
     sectors = scan_sectors(c2p, asof)
     cands = collect_candidates(sectors)
     record_bc_into(led, cands)
@@ -188,6 +205,13 @@ def selftest():
     row6 = led6.candidates["A"][0]
     ok.append(("T10 snapshot없음 → A1 / DART_S primary",
                row6["extra"]["a_variant"] == "A1" and row6["signal_source"] == "DART_S"))
+    # 6/8 가격구조 라벨 — c2p 미전달 시 전 키 None(키 보존, 0/거짓 채우기 금지)
+    led7 = new_ledger("2026-06-04")
+    record_sdart_into(led7, [rec])
+    e7 = led7.candidates["A"][0]["extra"]
+    ok.append(("T11 A 가격구조 키 보존(c2p없음 → None)",
+               "weekly_open_state" in e7 and e7["weekly_open_state"] is None
+               and "float_candle_state" in e7 and e7["overheat_grade"] is None))
     print("paper_3type_daily_run 셀프테스트:")
     for nme, p in ok:
         print(f"  [{'PASS' if p else 'FAIL'}] {nme}")
