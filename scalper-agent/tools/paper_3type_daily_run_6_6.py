@@ -33,7 +33,7 @@ sys.path.insert(0, str(TOOLS))
 
 from data.paper_3type_ledger import new_ledger  # noqa: E402
 from rotation_paper_scan_6_6 import (  # noqa: E402
-    _code_to_path, scan_sectors, collect_candidates, record_bc_into, STRONG)
+    _code_to_path, scan_sectors, collect_candidates, record_bc_into, STRONG, tp_touch)
 
 A_SEED = 30.0   # 설계 5장 A30/B35/C35 (B/C 시드는 rotation_paper_scan.TYPE_SEED)
 
@@ -67,33 +67,42 @@ def record_sdart_into(led, records, event_snapshot=None, c2p=None, asof=None):
         if event_snapshot is not None:
             event_layer = event_layer_for(r.get("code"), event_snapshot)
             a_variant, sig = variant_and_source(sig, event_layer if event_layer.get("matched") else None)
-        # 6/8 가격구조 라벨 — 일봉 로드 가능 시만 계산, 불가/미전달 시 전 키 None(키 보존).
+        # 6/8 가격구조 라벨(asof 기준) + tp_touch 관측(t0_date 기준=sdart forward와 일관).
+        # 일봉 로드 가능 시만 계산, 불가/미전달 시 ps 전 키 None·tp_obs None(키 보존).
         ps = price_structure_labels(None, None)
+        tp_obs = None
         if c2p is not None:
             code = r.get("code")
             p = c2p.get(code) or c2p.get(str(code).zfill(6))
             if p:
                 dd = load_daily(p)
-                ref = asof or r.get("t0_date")
-                j = find_index_asof(dd, ref) if ref else None
-                if j is not None:
-                    ps = price_structure_labels(dd, j)
+                j_ps = find_index_asof(dd, asof or r.get("t0_date"))   # 가격구조=현재(asof)
+                if j_ps is not None:
+                    ps = price_structure_labels(dd, j_ps)
+                t0d = r.get("t0_date")
+                j_t0 = find_index_asof(dd, t0d) if t0d else None       # 터치=진입(t0_date) 후
+                if j_t0 is not None and entry and entry > 0:
+                    tp_obs = tp_touch(dd, j_t0, entry)
         led.record(
             "A",
+            variant=a_variant,                       # 6/8 메타: A1/A2 판정 라벨(variant 단일키)
             ticker=r.get("code"), name=r.get("name"), sector=r.get("sector"),
             group=r.get("track"),
             entry_reason=f"STEADY+{cat.get('kind')}/{grade} {val}",
             signal_source=sig,
-            virtual_entry_price=entry,
+            virtual_entry_date=r.get("t0_date"), virtual_entry_price=entry,
+            entry_basis="T0_CLOSE",                  # 6/8 메타: A 현재 기준 명시(로직 불변)
             MFE=r.get("mfe_pct_hold40"), MAE=r.get("mae_pct_hold40"),
             holding_days=0, supply=None, market_regime=None,
-            capital_allocated=per, position_size_pct=pct,
+            capital_allocated=per, capital_bucket=f"A_{int(A_SEED)}", position_size_pct=pct,
             # extra (넓게 병행 — sdart forward 부품 전체 보존 + EVENT hook 태그 + 가격구조 라벨)
             a_variant=a_variant, event_layer=event_layer,
             catalyst=cat, entry=r.get("entry"),
             raw_fwd_from_t0close=r.get("raw_fwd_from_t0close"),
             raw_fwd_from_t1open=r.get("raw_fwd_from_t1open"),
             would_stop=r.get("would_stop"), would_exit=r.get("would_exit"),
+            tp_touch_observer=tp_obs, tp_touch_level_pct=[5.0, 10.0],   # 6/8 관측용(★익절 아님)
+            tp_touch_only=True,
             cap_억=r.get("cap_억"), track=r.get("track"),
             surge_pct=r.get("surge_pct"), turnover_억=r.get("turnover_억"),
             high_120d=r.get("high_120d"), t0_date=r.get("t0_date"),
@@ -212,6 +221,14 @@ def selftest():
     ok.append(("T11 A 가격구조 키 보존(c2p없음 → None)",
                "weekly_open_state" in e7 and e7["weekly_open_state"] is None
                and "float_candle_state" in e7 and e7["overheat_grade"] is None))
+    # 6/8 A 메타필드(장부 명확화) — variant=a_variant / bucket=A_30 / entry_basis / virtual_entry_date / tp_touch_only
+    led8 = new_ledger("2026-06-04")
+    record_sdart_into(led8, [rec])
+    row8 = led8.candidates["A"][0]
+    ok.append(("T12 A 메타(variant=A1·bucket=A_30·entry_basis·entry_date·tp_touch_only)",
+               row8["variant"] == "A1" and row8["capital_bucket"] == "A_30"
+               and row8["entry_basis"] == "T0_CLOSE" and row8["virtual_entry_date"] == "2026-06-04"
+               and row8["extra"]["tp_touch_only"] is True and row8["extra"]["tp_touch_observer"] is None))
     print("paper_3type_daily_run 셀프테스트:")
     for nme, p in ok:
         print(f"  [{'PASS' if p else 'FAIL'}] {nme}")

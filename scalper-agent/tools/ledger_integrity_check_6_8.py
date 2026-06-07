@@ -108,10 +108,44 @@ def check_ledger(data):
     return out
 
 
+VARIANT_OK = {"A1", "A2", "B", "C"}
+
+
+def check_meta(data):
+    """[보조] 6/8 메타 명확화 필드 점검 — 핵심 8/8과 분리(장부 설명필드 + 트레일링only 보증)."""
+    cands = data.get("candidates", {})
+    A, B, C = cands.get("A", []), cands.get("B", []), cands.get("C", [])
+    allc = A + B + C
+    out = []
+
+    # M1. variant 존재·유효(A1/A2/B/C 판정 라벨)
+    bad = [r.get("ticker") for r in allc if r.get("variant") not in VARIANT_OK]
+    out.append(("M1. variant 존재·유효(A1/A2/B/C)", not bad, f"위반 {bad[:5]}"))
+
+    # M2. virtual_entry_date · entry_basis · capital_bucket 존재(장부 명확화)
+    miss = [r.get("ticker") for r in allc if r.get("virtual_entry_date") is None
+            or r.get("entry_basis") is None or r.get("capital_bucket") is None]
+    out.append(("M2. entry_date·entry_basis·capital_bucket 존재", not miss, f"누락 {miss[:5]}"))
+
+    # M3. capital_bucket 가 type prefix 와 일치(A_/B_/C_)
+    badb = [r.get("ticker") for r in allc if r.get("capital_bucket") and r.get("type")
+            and not str(r["capital_bucket"]).startswith(f"{r['type']}_")]
+    out.append(("M3. capital_bucket type 일치(A_/B_/C_)", not badb, f"불일치 {badb[:5]}"))
+
+    # M4. ★ would_take_profit 금지(없어야) + tp_touch_only=True (트레일링 only 영구룰 보증)
+    forbidden = [r.get("ticker") for r in allc
+                 if "would_take_profit" in _ext(r) or "would_take_profit" in r]
+    bad_only = [r.get("ticker") for r in allc if _ext(r).get("tp_touch_only") is not True]
+    out.append(("M4. would_take_profit 금지·tp_touch_only=True", not forbidden and not bad_only,
+                f"금지필드 {forbidden[:5]} / only위반 {bad_only[:5]}"))
+    return out
+
+
 def _print(title, data):
     res = check_ledger(data)
-    npass = sum(1 for _, p, _ in res)  # placeholder
+    meta = check_meta(data)
     npass = sum(1 for _, p, _ in res if p)
+    mpass = sum(1 for _, p, _ in meta if p)
     print("=" * 90)
     print(f"ledger 무결성 점검 — {title}")
     print(f"  date={data.get('date')}  summary={data.get('summary')}")
@@ -120,11 +154,17 @@ def _print(title, data):
         print(f"  [{'PASS' if p else 'FAIL'}] {nme}")
         if not p:
             print(f"          ↳ {detail}")
-    verdict = "PASS (7/7 + 동일기준)" if npass == len(res) else f"FAIL ({npass}/{len(res)})"
     print("-" * 90)
-    print(f"  무결성 판정: {verdict}")
-    print("  ※ read-only 점검 — 실주문 0 / ledger 무수정 / 매매경로 무접촉")
-    return npass == len(res)
+    verdict = "PASS (8/8)" if npass == len(res) else f"FAIL ({npass}/{len(res)})"
+    print(f"  ★ 핵심 무결성 판정: {verdict}   ← 8/8 PASS 전 수익률 해석 금지(사장님)")
+    print("  [보조] 메타 명확화 점검(장부 설명필드 + 트레일링only 보증):")
+    for nme, p, detail in meta:
+        print(f"    [{'PASS' if p else 'FAIL'}] {nme}")
+        if not p:
+            print(f"            ↳ {detail}")
+    print(f"  보조 메타: {mpass}/{len(meta)}" + ("" if mpass == len(meta) else "  (장부 명확화 미흡 — 보고에 명시)"))
+    print("  ※ read-only 점검 — 실주문 0 / ledger 무수정 / 매매경로 무접촉 / 트레일링only 유지")
+    return npass == len(res)   # verdict = 핵심 8/8 기준(사장님 프레임)
 
 
 def _latest_ledger():
@@ -176,25 +216,34 @@ def selftest():
         "date": "2026-06-08",
         "summary": {"A": 1, "B": 1, "C": 1, "rejects": {"A": 0, "B": 0, "C": 0}},
         "candidates": {
-            "A": [{"ticker": "111", "date": "2026-06-08", "extra": {
-                "weekly_open_state": "ABOVE", "half_year_open_state": None,
-                "float_candle_state": "FIRST_FLOAT", "annual_overheat_warning": True,
-                "return_1y_pct": 531.1, "sector_peer_sync_state": None}}],
-            "B": [{"ticker": "222", "date": "2026-06-08", "extra": {
-                "weekly_open_state": "BELOW", "half_year_open_state": "ABOVE",
-                "half_pullback_state": "HALF_PULLBACK_VALID", "annual_overheat_warning": False,
-                "return_1y_pct": 12.0, "sector_peer_sync_state": "STRONG",
-                "features": {"pullback_3": True}}}],
-            "C": [{"ticker": "333", "date": "2026-06-08", "extra": {
-                "weekly_open_state": "ABOVE", "half_year_open_state": "BELOW",
-                "breakout_state": "BREAKOUT", "annual_overheat_warning": None,
-                "return_1y_pct": None, "sector_peer_sync_state": "WEAK",
-                "features": {"break_5": True, "new_high": False, "strong_bull": False}}}],
+            "A": [{"ticker": "111", "type": "A", "variant": "A1", "date": "2026-06-08",
+                   "virtual_entry_date": "2026-06-08", "entry_basis": "T0_CLOSE",
+                   "capital_bucket": "A_30", "extra": {
+                       "weekly_open_state": "ABOVE", "half_year_open_state": None,
+                       "float_candle_state": "FIRST_FLOAT", "annual_overheat_warning": True,
+                       "return_1y_pct": 531.1, "sector_peer_sync_state": None,
+                       "tp_touch_only": True}}],
+            "B": [{"ticker": "222", "type": "B", "variant": "B", "date": "2026-06-08",
+                   "virtual_entry_date": "2026-06-08", "entry_basis": "T0_CLOSE",
+                   "capital_bucket": "B_35", "extra": {
+                       "weekly_open_state": "BELOW", "half_year_open_state": "ABOVE",
+                       "half_pullback_state": "HALF_PULLBACK_VALID", "annual_overheat_warning": False,
+                       "return_1y_pct": 12.0, "sector_peer_sync_state": "STRONG",
+                       "features": {"pullback_3": True}, "tp_touch_only": True}}],
+            "C": [{"ticker": "333", "type": "C", "variant": "C", "date": "2026-06-08",
+                   "virtual_entry_date": "2026-06-08", "entry_basis": "T0_CLOSE",
+                   "capital_bucket": "C_35", "extra": {
+                       "weekly_open_state": "ABOVE", "half_year_open_state": "BELOW",
+                       "breakout_state": "BREAKOUT", "annual_overheat_warning": None,
+                       "return_1y_pct": None, "sector_peer_sync_state": "WEAK",
+                       "features": {"break_5": True, "new_high": False, "strong_bull": False},
+                       "tp_touch_only": True}}],
         },
         "rejects": {"A": [], "B": [], "C": []},
     }
     res = check_ledger(good)
     ok.append(("T1 정상 ledger → 8/8 PASS", all(p for _, p, _ in res)))
+    ok.append(("T1b 정상 ledger → 보조 메타 4/4 PASS", all(p for _, p, _ in check_meta(good))))
 
     # 오염 1: weekly_open_state 누락(B) → check1 FAIL
     bad1 = json.loads(json.dumps(good))
@@ -236,6 +285,24 @@ def selftest():
     empty = {"date": "2026-06-08", "summary": {"A": 0, "B": 0, "C": 0, "rejects": {}},
              "candidates": {"A": [], "B": [], "C": []}, "rejects": {"A": [], "B": [], "C": []}}
     ok.append(("T8 후보0건(정상 표본) → 8/8 PASS", all(p for _, p, _ in check_ledger(empty))))
+    ok.append(("T8b 후보0건 → 보조 메타도 4/4 PASS", all(p for _, p, _ in check_meta(empty))))
+
+    # 메타 오염 6/8: would_take_profit 부활 → M4 FAIL (★ 고정 TP 부활 차단)
+    badm1 = json.loads(json.dumps(good))
+    badm1["candidates"]["C"][0]["extra"]["would_take_profit"] = True
+    ok.append(("T9 would_take_profit 부활 → M4 FAIL", check_meta(badm1)[3][1] is False))
+    # variant 누락 → M1 FAIL
+    badm2 = json.loads(json.dumps(good))
+    badm2["candidates"]["B"][0]["variant"] = None
+    ok.append(("T10 variant 누락 → M1 FAIL", check_meta(badm2)[0][1] is False))
+    # tp_touch_only False(터치 관측 아님) → M4 FAIL
+    badm3 = json.loads(json.dumps(good))
+    badm3["candidates"]["A"][0]["extra"]["tp_touch_only"] = False
+    ok.append(("T11 tp_touch_only False → M4 FAIL", check_meta(badm3)[3][1] is False))
+    # capital_bucket type 불일치(B인데 A_30) → M3 FAIL
+    badm4 = json.loads(json.dumps(good))
+    badm4["candidates"]["B"][0]["capital_bucket"] = "A_30"
+    ok.append(("T12 capital_bucket type 불일치 → M3 FAIL", check_meta(badm4)[2][1] is False))
 
     print("ledger_integrity_check 셀프테스트:")
     for nme, p in ok:

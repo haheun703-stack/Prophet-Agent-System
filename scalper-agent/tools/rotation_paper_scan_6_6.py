@@ -56,6 +56,7 @@ STRONG = ("HOT", "WARMING", "RELAY")   # '강한 섹터/그룹' = 설계서 8장
 HOLD_CAP = 40
 FWD_H = (1, 3, 5, 10, 20)
 TYPE_SEED = {"B": 35.0, "C": 35.0}     # 설계서 5장 A30/B35/C35 (A는 sdart 별도)
+TP_TOUCH_LEVELS = (5.0, 10.0)          # 6/8 관측용 터치 레벨(★익절 아님 — 트레일링 only 영구룰 유지)
 
 # data row 인덱스: 0=date 1=open 2=high 3=low 4=close 5=volume
 
@@ -109,6 +110,22 @@ def exit_ma(d, i, entry, n):
         if d[k][4] < _ma(d, k, n):
             return _hit(d, k, entry, d[k][4])
     return dict(_MISS)
+
+
+def tp_touch(d, i, entry, levels=TP_TOUCH_LEVELS):
+    """★ 관측용 — +lvl% 가격에 '닿았는지'만 기록(익절 아님). 사장님 6/8: 트레일링 only
+    영구룰 유지 — 그 자리서 팔았다고 가정 X, 청산은 would_stop/would_exit 중심. 미래없으면 reached False.
+    would_take_profit(고정 TP 부활 오해) 금지 → tp_touch_observer(터치 관측)로 대체."""
+    out = {}
+    end = min(len(d), i + 1 + HOLD_CAP)
+    for lvl in levels:
+        if entry <= 0:
+            out[f"+{lvl:g}%"] = {"reached": False, "date": None}
+            continue
+        target = entry * (1 + lvl / 100.0)
+        hit = next((d[k][0] for k in range(i + 1, end) if d[k][2] >= target), None)
+        out[f"+{lvl:g}%"] = {"reached": hit is not None, "date": hit}
+    return out
 
 
 # ── 종목/섹터 모멘텀 (pykrx 우회: 우리 일봉으로 직접 계산, sector_relay 로직 동일) ──
@@ -244,7 +261,9 @@ def collect_candidates(sectors):
             ps = price_structure_labels(d, i)              # 6/8: 주봉/월/반기 시가·첫봉투봉·연간과열
             base = dict(
                 ticker=s["code"], name=s["name"], sector=sec["name"], group=s["tier"],
-                virtual_entry_price=round(entry, 2), market_regime=sec["status"],
+                virtual_entry_date=d[i][0], virtual_entry_price=round(entry, 2),
+                entry_basis="T0_CLOSE",                    # 6/8 메타: B/C 현재 기준 명시(로직 불변)
+                market_regime=sec["status"],
                 sector_rotation_score=sec["momentum_5d"], group_rotation_score=sec["breadth"],
                 MFE=mfe, MAE=mae, holding_days=0, supply=None,
                 raw_fwd=raw_fwd(d, i, entry),
@@ -254,6 +273,9 @@ def collect_candidates(sectors):
             )
             base.update(ps)                                # 가격구조 라벨(flat, hard gate 0)
             base.update(sector_peer_sync(sec["stocks"], s["code"]))   # 섹터 동조화(12-섹터 근사)
+            base["tp_touch_observer"] = tp_touch(d, i, entry)   # 6/8 관측용 터치(★익절 아님)
+            base["tp_touch_level_pct"] = list(TP_TOUCH_LEVELS)
+            base["tp_touch_only"] = True                   # 트레일링 only 유지 — 터치 관측일뿐
             # B: 눌림 (-3% 이상 도달 = 후보)
             pf = pullback_features(d, i)
             if pf["pullback_3"]:
@@ -305,9 +327,12 @@ def record_bc_into(led, cands):
         n = len(lst)
         per = round(TYPE_SEED[t] / n, 2) if n else 0.0
         pct = round(100.0 / n, 1) if n else 0.0
+        bucket = f"{t}_{int(TYPE_SEED[t])}"        # 6/8 메타: B_35 / C_35 (capital_bucket 명시)
         for _, kw in lst:
             kw["capital_allocated"] = per
             kw["position_size_pct"] = pct
+            kw["capital_bucket"] = bucket
+            kw["variant"] = t                      # 6/8 메타: variant=B/C 판정 라벨
             led.record(t, **kw)
 
 
@@ -400,6 +425,22 @@ def selftest():
                integ_after["summary"]["A"] == 1 and integ_after["summary"]["B"] == 1))
     integ_path.unlink(missing_ok=True)
     bc_path.unlink(missing_ok=True)
+    # 6/8 tp_touch 관측(★익절 아님 — 트레일링 only 유지, 닿았는지만)
+    d_t = [("2026-01-01", 100, 100, 100, 100, 1), ("2026-01-02", 100, 100, 100, 100, 1),
+           ("2026-01-03", 100, 100, 100, 100, 1), ("2026-01-06", 100, 106, 100, 105, 1)]
+    tt = tp_touch(d_t, 2, 100.0)
+    ok.append(("T13 tp_touch +5%도달·+10%미달(터치관측만)",
+               tt["+5%"]["reached"] is True and tt["+10%"]["reached"] is False))
+    ok.append(("T14 tp_touch 미래없음 → reached False",
+               tp_touch(d_t, 3, 105.0)["+5%"]["reached"] is False))
+    # 6/8 메타: record_bc_into capital_bucket(B_35/C_35)·variant(B/C)
+    led_m = new_ledger("2026-06-04")
+    record_bc_into(led_m, [("B", {"ticker": "1", "name": "b", "virtual_entry_price": 100}, 1.0),
+                           ("C", {"ticker": "2", "name": "c", "virtual_entry_price": 200}, 1.0)])
+    rb = led_m.candidates["B"][0]; rc = led_m.candidates["C"][0]
+    ok.append(("T15 capital_bucket/variant (B_35·C_35 / B·C)",
+               rb["capital_bucket"] == "B_35" and rb["variant"] == "B"
+               and rc["capital_bucket"] == "C_35" and rc["variant"] == "C"))
     print("rotation_paper_scan 셀프테스트:")
     for nme, p in ok:
         print(f"  [{'PASS' if p else 'FAIL'}] {nme}")

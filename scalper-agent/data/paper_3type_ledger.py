@@ -24,15 +24,19 @@ TYPE_SOURCE = {
     "C": "paper:3type:C_ROTATION_RIDE",
 }
 
-# 필수 기록 필드 (사장님 지시서 6/5)
+# 필수 기록 필드 (사장님 지시서 6/5 + 6/8 메타 명확화 4필드)
+# ★ 6/8 메타필드(virtual_entry_date/entry_basis/capital_bucket/variant)=장부 명확화 전용.
+#   전략·진입·청산 로직 변경 0 — "현재 쓰는 기준을 명시만"(사장님 6/8): B/C·A 모두 T0 종가
+#   진입이면 entry_basis="T0_CLOSE"(억지 T+1 변경 금지), capital_bucket=A_30/B_35/C_35,
+#   variant=A1/A2/B/C 판정 라벨. 미전달 시 None(후방호환).
 FIELDS = [
-    "date", "type", "ticker", "name", "sector", "group",
+    "date", "type", "variant", "ticker", "name", "sector", "group",
     "entry_reason", "signal_source",
-    "virtual_entry_price", "virtual_exit_price",
+    "virtual_entry_date", "virtual_entry_price", "entry_basis", "virtual_exit_price",
     "unrealized_pnl", "realized_pnl", "MFE", "MAE", "holding_days",
     "supply", "market_regime",
     "sector_rotation_score", "group_rotation_score",
-    "capital_allocated", "position_size_pct", "reject_reason",
+    "capital_allocated", "capital_bucket", "position_size_pct", "reject_reason",
 ]
 
 
