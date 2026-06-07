@@ -34,8 +34,13 @@ sys.path.insert(0, str(TOOLS))
 from data.paper_3type_ledger import new_ledger  # noqa: E402
 from rotation_paper_scan_6_6 import (  # noqa: E402
     _code_to_path, scan_sectors, collect_candidates, record_bc_into, STRONG, tp_touch)
+from price_structure_features_6_8 import (  # noqa: E402
+    gap_open_features, candle_shape_features)
 
 A_SEED = 30.0   # 설계 5장 A30/B35/C35 (B/C 시드는 rotation_paper_scan.TYPE_SEED)
+# 6/8 갭/꼬리 None 기본(키 보존) — i<1·rng=0 케이스로 전 키 None dict 생성
+_GAP_NONE = gap_open_features([("", 0, 0, 0, 0, 0)], 0)
+_CANDLE_NONE = candle_shape_features([("", 1, 1, 1, 1, 1)], 0)
 
 
 # ── A(sdart) 어댑터: sdart build_record dict → paper_3type ledger "A" record ──
@@ -71,6 +76,8 @@ def record_sdart_into(led, records, event_snapshot=None, c2p=None, asof=None):
         # 일봉 로드 가능 시만 계산, 불가/미전달 시 ps 전 키 None·tp_obs None(키 보존).
         ps = price_structure_labels(None, None)
         tp_obs = None
+        gap_lbl = dict(_GAP_NONE)
+        candle_lbl = dict(_CANDLE_NONE)
         if c2p is not None:
             code = r.get("code")
             p = c2p.get(code) or c2p.get(str(code).zfill(6))
@@ -80,9 +87,12 @@ def record_sdart_into(led, records, event_snapshot=None, c2p=None, asof=None):
                 if j_ps is not None:
                     ps = price_structure_labels(dd, j_ps)
                 t0d = r.get("t0_date")
-                j_t0 = find_index_asof(dd, t0d) if t0d else None       # 터치=진입(t0_date) 후
-                if j_t0 is not None and entry and entry > 0:
-                    tp_obs = tp_touch(dd, j_t0, entry)
+                j_t0 = find_index_asof(dd, t0d) if t0d else None       # 터치·갭·꼬리=진입(t0_date) 캔들
+                if j_t0 is not None:
+                    gap_lbl = gap_open_features(dd, j_t0, ps.get("weekly_open"))
+                    candle_lbl = candle_shape_features(dd, j_t0)
+                    if entry and entry > 0:
+                        tp_obs = tp_touch(dd, j_t0, entry)
         led.record(
             "A",
             variant=a_variant,                       # 6/8 메타: A1/A2 판정 라벨(variant 단일키)
@@ -107,14 +117,15 @@ def record_sdart_into(led, records, event_snapshot=None, c2p=None, asof=None):
             surge_pct=r.get("surge_pct"), turnover_억=r.get("turnover_억"),
             high_120d=r.get("high_120d"), t0_date=r.get("t0_date"),
             sdart_status=r.get("status"),
-            **ps,
+            **ps, **gap_lbl, **candle_lbl,   # 6/8 가격구조 + 갭/시가 + 꼬리/종가
         )
     return n
 
 
-def run(asof, skip_a=False, scan_events=False):
+def run(asof, skip_a=False, scan_events=False, skip_breadth=False):
     """A/B/C를 한 ledger에 기록 → save. 반환 dict(요약).
-    scan_events=True면 event_detector 실시간 스캔(네트워크)으로 events.json 갱신 후 A2 판정."""
+    scan_events=True면 event_detector 실시간 스캔(네트워크)으로 events.json 갱신 후 A2 판정.
+    skip_breadth=False(기본)면 전종목 시장 폭넓이(~83초) 계산해 market_context 기록."""
     led = new_ledger(asof)
     c2p = _code_to_path()        # A(가격구조 라벨)·B/C 공용 — 네트워크 0
     # A — sdart (네트워크: DART 조회) + EVENT hook(A1/A2)
@@ -144,13 +155,20 @@ def run(asof, skip_a=False, scan_events=False):
     sectors = scan_sectors(c2p, asof)
     cands = collect_candidates(sectors)
     record_bc_into(led, cands)
+    # 6/8 시장 컨텍스트 — 전종목 폭넓이+거래대금(~83초). skip_breadth로 빠른 점검 시 생략.
+    if not skip_breadth:
+        from market_breadth_6_8 import market_breadth  # noqa: E402
+        from price_structure_features_6_8 import find_index_asof  # noqa: E402
+        from leader_prospective_scan_6_2 import load_daily  # noqa: E402
+        led.set_market_context(market_breadth(c2p, asof, load_daily, find_index_asof))
     path = led.save()
     nb = sum(1 for t, _, _ in cands if t == "B")
     nc = sum(1 for t, _, _ in cands if t == "C")
     return {"asof": asof, "path": path, "sectors": sectors,
             "a_n": a_n, "a1_n": a1, "a2_n": a2, "n_steady": n_steady,
             "b_n": nb, "c_n": nc, "event_note": event_note,
-            "summary": led.summary(), "skip_a": skip_a}
+            "summary": led.summary(), "skip_a": skip_a,
+            "skip_breadth": skip_breadth, "breadth": led.market_context}
 
 
 # ─────────────────────────── selftest (합성, 네트워크 0) ───────────────────────────
@@ -229,6 +247,9 @@ def selftest():
                row8["variant"] == "A1" and row8["capital_bucket"] == "A_30"
                and row8["entry_basis"] == "T0_CLOSE" and row8["virtual_entry_date"] == "2026-06-04"
                and row8["extra"]["tp_touch_only"] is True and row8["extra"]["tp_touch_observer"] is None))
+    ok.append(("T13 A 갭/꼬리 키 보존(c2p없음 → None)",
+               "gap_pct" in e7 and e7["gap_pct"] is None
+               and "candle_shape" in e7 and e7["candle_shape"] is None))
     print("paper_3type_daily_run 셀프테스트:")
     for nme, p in ok:
         print(f"  [{'PASS' if p else 'FAIL'}] {nme}")
@@ -249,6 +270,14 @@ def _print_summary(res):
         if res.get("event_note"):
             print(f"     EVENT hook: {res['event_note']}")
     print(f"  B/C: 강한섹터 {len(strong)}/{len(sectors)} → B {res['b_n']}건 · C {res['c_n']}건")
+    b = res.get("breadth")
+    if b:
+        print(f"  시장(breadth): {b['breadth_pct']}({b['breadth_state']}) "
+              f"상승{b['advancers']}/하락{b['decliners']} +3%{b['up_3pct']}/-3%{b['down_3pct']} "
+              f"상한{b['limit_up']}/하한{b['limit_down']} 52신고{b['new_high_52w']}/신저{b['new_low_52w']} "
+              f"거래대금top10집중{b['turnover_top10_share']}")
+    elif res.get("skip_breadth"):
+        print("  시장(breadth): [skip] (--skip-breadth)")
     print(f"  summary: {res['summary']}")
     print("=" * 100)
     print("★★ shadow=기록만. 6/4~6/12 forward 누적 → 6/12 타입별 1차 판정(영구룰 확정 아님).")
@@ -266,6 +295,8 @@ def main():
     ap.add_argument("--skip-a", action="store_true", help="A(sdart, 네트워크) 건너뛰고 B/C만")
     ap.add_argument("--scan-events", action="store_true",
                     help="event_detector 실시간 스캔(네트워크: DART+네이버)으로 events.json 갱신 → A2 판정")
+    ap.add_argument("--skip-breadth", action="store_true",
+                    help="전종목 시장 폭넓이(~83초) 생략 — 빠른 점검용")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
     if a.selftest:
@@ -275,7 +306,7 @@ def main():
     except ValueError:
         print(f"[중단] --asof 형식 오류: {a.asof} (YYYY-MM-DD 필요)")
         sys.exit(2)
-    res = run(asof, skip_a=a.skip_a, scan_events=a.scan_events)
+    res = run(asof, skip_a=a.skip_a, scan_events=a.scan_events, skip_breadth=a.skip_breadth)
     _print_summary(res)
 
 

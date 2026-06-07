@@ -227,6 +227,63 @@ def breakout(d, i, sector_status=None, lookback=BREAKOUT_LOOKBACK):
             "breakout_vol_ratio": round(vr, 2)}
 
 
+# ───────────────────────── 갭 / 시가 위치 (6/8 3묶음①) ─────────────────────────
+def gap_open_features(d, i, weekly_open=None):
+    """진입 캔들 갭·시가 위치 — 추격위험/반전 판별 (관측 라벨, hard gate 0).
+    갭상승 후 음봉=추격위험 / 갭하락 후 양봉=반전후보 / 시가 위 마감=힘 유지. i<1이면 전 키 None."""
+    if i < 1:
+        return {"gap_pct": None, "gap_up": None, "gap_down": None, "gap_fill": None,
+                "open_above_prev_high": None, "open_above_prev_close": None,
+                "open_above_weekly": None, "close_above_open": None}
+    o, h, l, c = d[i][1], d[i][2], d[i][3], d[i][4]
+    pc, ph = d[i - 1][4], d[i - 1][2]
+    if pc <= 0 or o <= 0:
+        return {"gap_pct": None, "gap_up": None, "gap_down": None, "gap_fill": None,
+                "open_above_prev_high": None, "open_above_prev_close": None,
+                "open_above_weekly": None, "close_above_open": None}
+    gap = (o / pc - 1) * 100
+    if gap > 0:
+        gap_fill = l <= pc          # 갭상승 → 저가가 전일종가 도달 = 갭 메움
+    elif gap < 0:
+        gap_fill = h >= pc          # 갭하락 → 고가가 전일종가 도달 = 갭 메움
+    else:
+        gap_fill = True
+    return {
+        "gap_pct": round(gap, 2),
+        "gap_up": bool(gap > 0), "gap_down": bool(gap < 0),
+        "gap_fill": bool(gap_fill),
+        "open_above_prev_high": bool(o > ph),
+        "open_above_prev_close": bool(o > pc),
+        "open_above_weekly": (bool(o > weekly_open) if (weekly_open and weekly_open > 0) else None),
+        "close_above_open": bool(c > o),     # 시가 위 마감(양봉) = 당일 힘 유지
+    }
+
+
+# ───────────────────────── 꼬리 / 종가 위치 (6/8 3묶음②) ─────────────────────────
+def candle_shape_features(d, i):
+    """캔들 모양 — 종가위치·윗/아랫꼬리·몸통 (당일 힘 유지 여부, 관측 라벨).
+    종가 고가권=매수세 유지 / 윗꼬리 길다=물량출회 / 아랫꼬리 길다=저가매수 유입."""
+    o, h, l, c = d[i][1], d[i][2], d[i][3], d[i][4]
+    rng = h - l
+    if rng <= 0:
+        return {"close_location_pct": None, "upper_wick_pct": None,
+                "lower_wick_pct": None, "body_pct": None, "candle_shape": None}
+    clp = (c - l) / rng
+    uw = (h - max(o, c)) / rng
+    lw = (min(o, c) - l) / rng
+    bp = abs(c - o) / rng
+    if clp >= 0.7 and uw <= 0.2:
+        shape = "STRONG_CLOSE"      # 종가 고가권 = 매수세 유지
+    elif uw >= 0.5:
+        shape = "UPPER_WICK"        # 윗꼬리 장대 = 물량 출회
+    elif lw >= 0.5:
+        shape = "LOWER_WICK"        # 아랫꼬리 장대 = 저가매수 유입
+    else:
+        shape = "NEUTRAL"
+    return {"close_location_pct": round(clp, 3), "upper_wick_pct": round(uw, 3),
+            "lower_wick_pct": round(lw, 3), "body_pct": round(bp, 3), "candle_shape": shape}
+
+
 # ───────────────────────── 섹터·그룹 동조화 ─────────────────────────
 def sector_peer_sync(sec_stocks, self_code):
     """주도주는 혼자 안 간다 — 같은 섹터 동반 강세 종목 수. 자기 제외.
@@ -360,6 +417,27 @@ def selftest():
                find_index_asof(dw, "2026-06-02") == 1))
     ok.append(("T9b find_index_asof(데이터 이전) → None",
                find_index_asof(dw, "2020-01-01") is None))
+
+    # T10 갭/시가 위치 — 전일종가 100, 시가 105(갭+5%), 저가 103(갭 미충족), 양봉 마감
+    dg = [("2026-06-03", 99, 101, 98, 100, 1), ("2026-06-04", 105, 110, 103, 108, 1)]
+    g = gap_open_features(dg, 1, weekly_open=104)
+    ok.append(("T10 갭+5%·시가위마감·갭미충족·시가>전고·시가>주봉",
+               abs(g["gap_pct"] - 5.0) < 0.01 and g["gap_up"] and not g["gap_fill"]
+               and g["close_above_open"] and g["open_above_prev_high"] and g["open_above_weekly"]))
+    dg2 = [("2026-06-03", 99, 101, 98, 100, 1), ("2026-06-04", 105, 110, 99, 102, 1)]
+    ok.append(("T10b 갭상승 후 갭메움(저가<=전일종가) → gap_fill True",
+               gap_open_features(dg2, 1)["gap_fill"] is True))
+    ok.append(("T10c i<1 → 전 키 None", gap_open_features(dg, 0)["gap_pct"] is None))
+
+    # T11 꼬리/종가 위치
+    ok.append(("T11 종가 고가권 → STRONG_CLOSE",
+               candle_shape_features([("x", 100, 110, 99, 109, 1)], 0)["candle_shape"] == "STRONG_CLOSE"))
+    ok.append(("T11b 윗꼬리 장대 → UPPER_WICK",
+               candle_shape_features([("x", 100, 120, 99, 101, 1)], 0)["candle_shape"] == "UPPER_WICK"))
+    ok.append(("T11c 아랫꼬리 장대 → LOWER_WICK",
+               candle_shape_features([("x", 8, 10, 0, 6, 1)], 0)["candle_shape"] == "LOWER_WICK"))
+    ok.append(("T11d rng=0 → None",
+               candle_shape_features([("x", 100, 100, 100, 100, 1)], 0)["close_location_pct"] is None))
 
     print("price_structure_features 셀프테스트:")
     for nme, p in ok:

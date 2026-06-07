@@ -138,6 +138,22 @@ def check_meta(data):
     bad_only = [r.get("ticker") for r in allc if _ext(r).get("tp_touch_only") is not True]
     out.append(("M4. would_take_profit 금지·tp_touch_only=True", not forbidden and not bad_only,
                 f"금지필드 {forbidden[:5]} / only위반 {bad_only[:5]}"))
+
+    # M5. 갭/시가 라벨 per-candidate 존재 (6/8 3묶음①)
+    miss5 = [r.get("ticker") for r in allc
+             if "gap_pct" not in _ext(r) or "close_above_open" not in _ext(r)]
+    out.append(("M5. 갭/시가 라벨 존재(gap_pct·close_above_open)", not miss5, f"누락 {miss5[:5]}"))
+
+    # M6. 꼬리/종가 라벨 per-candidate 존재 (6/8 3묶음②)
+    miss6 = [r.get("ticker") for r in allc
+             if "close_location_pct" not in _ext(r) or "candle_shape" not in _ext(r)]
+    out.append(("M6. 꼬리/종가 라벨 존재(close_location·candle_shape)", not miss6, f"누락 {miss6[:5]}"))
+
+    # M7. market_context(시장 폭넓이) 블록 존재 (6/8 3묶음③) — data 레벨, 후보 무관
+    mc = data.get("market_context")
+    out.append(("M7. market_context(breadth) 존재",
+                isinstance(mc, dict) and mc.get("breadth_state") is not None,
+                f"market_context={'있음' if isinstance(mc, dict) else mc}"))
     return out
 
 
@@ -189,8 +205,9 @@ def run_file(asof=None):
     return _print(os.path.basename(path), data)
 
 
-def run_dry(asof):
-    """실 코드(collect_candidates + record_sdart_into)로 임시 ledger 생성 → 점검(save 없음, 6/8 전 리허설)."""
+def run_dry(asof, skip_breadth=False):
+    """실 코드(collect_candidates + record_sdart_into)로 임시 ledger 생성 → 점검(save 없음, 6/8 전 리허설).
+    skip_breadth=True면 전종목 폭넓이(~83초) 생략 → 빠른 핵심 8/8 점검(M7만 N/A=FAIL 표시)."""
     sys.path.insert(0, str(SA)); sys.path.insert(0, str(TOOLS))
     from rotation_paper_scan_6_6 import _code_to_path, scan_sectors, collect_candidates, record_bc_into
     from paper_3type_daily_run_6_6 import record_sdart_into
@@ -203,47 +220,57 @@ def run_dry(asof):
            "entry": {"t0_close": 351500.0}, "status": "rehearsal(no order)"}
     record_sdart_into(led, [rec], c2p=c2p, asof=asof)
     record_bc_into(led, collect_candidates(scan_sectors(c2p, asof)))
+    # 6/8 시장 컨텍스트(전종목 ~83초) — M7 재현. skip_breadth면 생략(빠른 점검).
+    if not skip_breadth:
+        from market_breadth_6_8 import market_breadth
+        from price_structure_features_6_8 import find_index_asof
+        from leader_prospective_scan_6_2 import load_daily
+        led.set_market_context(market_breadth(c2p, asof, load_daily, find_index_asof))
     data = {"date": asof, "summary": led.summary(),
+            "market_context": led.market_context,
             "candidates": led.candidates, "rejects": led.rejects}
-    return _print(f"[DRY 리허설 asof={asof}] 실 코드 생성 ledger (save 안 함)", data)
+    tag = "breadth 포함" if not skip_breadth else "breadth skip→M7 N/A"
+    return _print(f"[DRY 리허설 asof={asof}] 실 코드 생성 ledger (save 안 함, {tag})", data)
 
 
 # ─────────────────────────── selftest (합성 ledger, 네트워크 0) ───────────────────────────
 def selftest():
     ok = []
     # 정상 ledger — 7/7 + 8 전부 PASS 여야
+    _gc = {"gap_pct": 1.2, "close_above_open": True,           # 갭/꼬리 공통(M5·M6 충족)
+           "close_location_pct": 0.9, "candle_shape": "STRONG_CLOSE", "tp_touch_only": True}
     good = {
         "date": "2026-06-08",
         "summary": {"A": 1, "B": 1, "C": 1, "rejects": {"A": 0, "B": 0, "C": 0}},
+        "market_context": {"breadth_state": "MIXED", "breadth_pct": 0.5,
+                           "advancers": 100, "decliners": 100},
         "candidates": {
             "A": [{"ticker": "111", "type": "A", "variant": "A1", "date": "2026-06-08",
                    "virtual_entry_date": "2026-06-08", "entry_basis": "T0_CLOSE",
                    "capital_bucket": "A_30", "extra": {
                        "weekly_open_state": "ABOVE", "half_year_open_state": None,
                        "float_candle_state": "FIRST_FLOAT", "annual_overheat_warning": True,
-                       "return_1y_pct": 531.1, "sector_peer_sync_state": None,
-                       "tp_touch_only": True}}],
+                       "return_1y_pct": 531.1, "sector_peer_sync_state": None, **_gc}}],
             "B": [{"ticker": "222", "type": "B", "variant": "B", "date": "2026-06-08",
                    "virtual_entry_date": "2026-06-08", "entry_basis": "T0_CLOSE",
                    "capital_bucket": "B_35", "extra": {
                        "weekly_open_state": "BELOW", "half_year_open_state": "ABOVE",
                        "half_pullback_state": "HALF_PULLBACK_VALID", "annual_overheat_warning": False,
                        "return_1y_pct": 12.0, "sector_peer_sync_state": "STRONG",
-                       "features": {"pullback_3": True}, "tp_touch_only": True}}],
+                       "features": {"pullback_3": True}, **_gc}}],
             "C": [{"ticker": "333", "type": "C", "variant": "C", "date": "2026-06-08",
                    "virtual_entry_date": "2026-06-08", "entry_basis": "T0_CLOSE",
                    "capital_bucket": "C_35", "extra": {
                        "weekly_open_state": "ABOVE", "half_year_open_state": "BELOW",
                        "breakout_state": "BREAKOUT", "annual_overheat_warning": None,
                        "return_1y_pct": None, "sector_peer_sync_state": "WEAK",
-                       "features": {"break_5": True, "new_high": False, "strong_bull": False},
-                       "tp_touch_only": True}}],
+                       "features": {"break_5": True, "new_high": False, "strong_bull": False}, **_gc}}],
         },
         "rejects": {"A": [], "B": [], "C": []},
     }
     res = check_ledger(good)
     ok.append(("T1 정상 ledger → 8/8 PASS", all(p for _, p, _ in res)))
-    ok.append(("T1b 정상 ledger → 보조 메타 4/4 PASS", all(p for _, p, _ in check_meta(good))))
+    ok.append(("T1b 정상 ledger → 보조 메타 7/7 PASS", all(p for _, p, _ in check_meta(good))))
 
     # 오염 1: weekly_open_state 누락(B) → check1 FAIL
     bad1 = json.loads(json.dumps(good))
@@ -283,9 +310,10 @@ def selftest():
 
     # 후보 0건(약세장) → 누락 검사는 vacuously PASS, 동일기준도 PASS
     empty = {"date": "2026-06-08", "summary": {"A": 0, "B": 0, "C": 0, "rejects": {}},
+             "market_context": {"breadth_state": "MIXED"},
              "candidates": {"A": [], "B": [], "C": []}, "rejects": {"A": [], "B": [], "C": []}}
     ok.append(("T8 후보0건(정상 표본) → 8/8 PASS", all(p for _, p, _ in check_ledger(empty))))
-    ok.append(("T8b 후보0건 → 보조 메타도 4/4 PASS", all(p for _, p, _ in check_meta(empty))))
+    ok.append(("T8b 후보0건 → 보조 메타도 7/7 PASS", all(p for _, p, _ in check_meta(empty))))
 
     # 메타 오염 6/8: would_take_profit 부활 → M4 FAIL (★ 고정 TP 부활 차단)
     badm1 = json.loads(json.dumps(good))
@@ -303,6 +331,18 @@ def selftest():
     badm4 = json.loads(json.dumps(good))
     badm4["candidates"]["B"][0]["capital_bucket"] = "A_30"
     ok.append(("T12 capital_bucket type 불일치 → M3 FAIL", check_meta(badm4)[2][1] is False))
+    # 6/8 3묶음 오염: gap_pct 누락 → M5 FAIL
+    badm5 = json.loads(json.dumps(good))
+    del badm5["candidates"]["B"][0]["extra"]["gap_pct"]
+    ok.append(("T13 gap_pct 누락 → M5 FAIL", check_meta(badm5)[4][1] is False))
+    # candle_shape 누락 → M6 FAIL
+    badm6 = json.loads(json.dumps(good))
+    del badm6["candidates"]["C"][0]["extra"]["candle_shape"]
+    ok.append(("T14 candle_shape 누락 → M6 FAIL", check_meta(badm6)[5][1] is False))
+    # market_context 없음 → M7 FAIL
+    badm7 = json.loads(json.dumps(good))
+    badm7["market_context"] = None
+    ok.append(("T15 market_context None → M7 FAIL", check_meta(badm7)[6][1] is False))
 
     print("ledger_integrity_check 셀프테스트:")
     for nme, p in ok:
@@ -318,13 +358,15 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--asof", default=None, help="점검할 ledger 날짜(없으면 최신 통합 ledger)")
     ap.add_argument("--dry", action="store_true", help="실 코드로 임시 ledger 생성→점검(6/8 전 리허설)")
+    ap.add_argument("--skip-breadth", action="store_true",
+                    help="dry 시 전종목 폭넓이(~83초) 생략 — 빠른 핵심 8/8 점검(M7만 N/A)")
     ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
     if a.selftest:
         sys.exit(0 if selftest() else 1)
     if a.dry:
         from datetime import date
-        sys.exit(0 if run_dry(a.asof or date.today().isoformat()) else 1)
+        sys.exit(0 if run_dry(a.asof or date.today().isoformat(), a.skip_breadth) else 1)
     sys.exit(0 if run_file(a.asof) else 1)
 
 

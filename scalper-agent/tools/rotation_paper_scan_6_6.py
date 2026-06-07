@@ -39,7 +39,8 @@ from data.paper_3type_ledger import new_ledger  # noqa: E402
 from leader_prospective_scan_6_2 import load_daily, _ma, _is_excluded  # noqa: E402
 # 6/8 관측 레이어(가격구조 feature/label) — 진입 조건 변경 아님, 기록·태그만(hard gate 0).
 from price_structure_features_6_8 import (  # noqa: E402
-    price_structure_labels, half_pullback, breakout, sector_peer_sync)
+    price_structure_labels, half_pullback, breakout, sector_peer_sync,
+    gap_open_features, candle_shape_features)
 
 # SECTORS·status 분류 = sector_relay 단일진실 재사용.
 # (sector_relay가 `from pykrx import stock`을 모듈로드 시 실행하나, 우리는 데이터조회 함수는 호출 X.
@@ -276,6 +277,8 @@ def collect_candidates(sectors):
             base["tp_touch_observer"] = tp_touch(d, i, entry)   # 6/8 관측용 터치(★익절 아님)
             base["tp_touch_level_pct"] = list(TP_TOUCH_LEVELS)
             base["tp_touch_only"] = True                   # 트레일링 only 유지 — 터치 관측일뿐
+            base.update(gap_open_features(d, i, ps.get("weekly_open")))   # 6/8 갭/시가 위치
+            base.update(candle_shape_features(d, i))                       # 6/8 꼬리/종가 위치
             # B: 눌림 (-3% 이상 도달 = 후보)
             pf = pullback_features(d, i)
             if pf["pullback_3"]:

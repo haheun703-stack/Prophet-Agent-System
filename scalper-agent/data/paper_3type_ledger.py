@@ -47,6 +47,7 @@ class Paper3TypeLedger:
         self.date = date
         self.candidates = {"A": [], "B": [], "C": []}
         self.rejects = {"A": [], "B": [], "C": []}
+        self.market_context = None     # 6/8 3묶음③ 시장 폭넓이+거래대금(그날 1블록, per-candidate 아님)
 
     def _row(self, type_: str, fields: dict) -> dict:
         rec = {f: fields.get(f) for f in FIELDS}
@@ -73,6 +74,10 @@ class Paper3TypeLedger:
         fields["reject_reason"] = reject_reason
         self.rejects[type_].append(self._row(type_, fields))
 
+    def set_market_context(self, ctx: dict):
+        """6/8 시장 컨텍스트(폭넓이+거래대금) 1블록 기록. hard gate 아님 — 해석용 좌표축."""
+        self.market_context = ctx
+
     def summary(self) -> dict:
         return {
             "A": len(self.candidates["A"]),
@@ -94,6 +99,7 @@ class Paper3TypeLedger:
             "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "type_source": TYPE_SOURCE,
             "summary": self.summary(),
+            "market_context": self.market_context,   # 6/8 시장 폭넓이+거래대금(없으면 None)
             "candidates": self.candidates,
             "rejects": self.rejects,
             "note": "real_order=0 / scheduler=untouched / SAJANG=untouched / record-only",
