@@ -15,7 +15,7 @@ import logging
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("BH.MarketOpenRegime")
 
@@ -645,4 +645,54 @@ def decide_open_gate(gate: Optional[dict], base_top_k: int) -> dict:
         "allow": allow, "top_k": new_top_k, "gate": gname,
         "preferred": preferred, "avoid": avoid, "fresh_ok": fresh_ok,
         "reason": reason,
+    }
+
+
+def summarize_open_gate_health(gate: Optional[dict], base_top_k: int = 3) -> dict:
+    """Build a compact 09:10 health payload for the D1 open gate.
+
+    This is intentionally side-effect free. The scheduler job can log or send
+    the returned text, while tests can assert the same decision contract used
+    by the 09:15 entry path.
+    """
+    decision = decide_open_gate(gate, base_top_k)
+    freshness = (gate or {}).get("freshness") or {}
+    warnings = list(freshness.get("warnings") or [])
+    generated_at = (gate or {}).get("generated_at")
+    score = (gate or {}).get("overnight_korea_score")
+    position_scale = (gate or {}).get("position_scale")
+
+    needs_attention = (
+        decision["gate"] == "NO_GATE"
+        or not decision["fresh_ok"]
+        or bool(warnings)
+        or not decision["allow"]
+    )
+
+    text_lines = [
+        "[MARKET_OPEN_GATE 09:10]",
+        f"gate={decision['gate']} fresh_ok={decision['fresh_ok']} allow={decision['allow']}",
+        f"top_k={int(base_top_k)}->{decision['top_k']} score={score}",
+        "preferred=" + ",".join(decision["preferred"] or []) +
+        " | avoid=" + ",".join(decision["avoid"] or []),
+        f"reason={decision['reason']}",
+    ]
+    if generated_at:
+        text_lines.append(f"generated_at={generated_at}")
+    if warnings:
+        text_lines.append("warnings=" + " / ".join(str(w) for w in warnings))
+    if position_scale is not None:
+        text_lines.append(f"position_scale_ignored={position_scale}")
+    if decision["gate"] == "NO_GATE":
+        text_lines.append("gate unavailable, legacy open entry used")
+
+    return {
+        "decision": decision,
+        "freshness": freshness,
+        "warnings": warnings,
+        "generated_at": generated_at,
+        "overnight_korea_score": score,
+        "position_scale_ignored": position_scale,
+        "needs_attention": needs_attention,
+        "text": "\n".join(text_lines),
     }

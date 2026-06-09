@@ -4495,6 +4495,82 @@ class TradingCOO:
             logger.warning(f"[COO] 자율 보고 {report_type} 실패 (무시): {e}")
             return {"sent": False, "error": str(e)[:200]}
 
+    async def _job_market_open_regime_build(self, context=None) -> dict:
+        """Build MARKET_OPEN_REGIME packets before the 09:15 D1 open entry."""
+        try:
+            from data.trading_calendar import is_trading_day
+            if not is_trading_day():
+                logger.info("[MARKET_OPEN] build skipped: non-trading day")
+                return {"market_open_regime": "SKIP_NON_TRADING_DAY"}
+        except Exception as e:
+            logger.warning(f"[MARKET_OPEN] trading-day check failed, continue build: {e}")
+
+        try:
+            from data.market_open_regime import build_all, format_brief
+
+            result = await asyncio.to_thread(build_all, DATA_STORE, True)
+            scalper_gate = result.get("scalper_open_gate", {}) or {}
+            freshness = scalper_gate.get("freshness") or {}
+            brief = format_brief(result).replace("\n", " | ")
+            log_fn = logger.info if freshness.get("ok", False) else logger.warning
+            log_fn(
+                "[MARKET_OPEN] build complete gate=%s score=%s fresh_ok=%s warnings=%s | %s",
+                scalper_gate.get("gate"),
+                scalper_gate.get("overnight_korea_score"),
+                freshness.get("ok"),
+                freshness.get("warnings", []),
+                brief,
+            )
+            return {
+                "market_open_regime": "OK",
+                "gate": scalper_gate.get("gate"),
+                "fresh_ok": freshness.get("ok"),
+                "warnings": freshness.get("warnings", []),
+            }
+        except Exception as e:
+            logger.warning(f"[MARKET_OPEN] build failed: {e}")
+            return {"market_open_regime": f"ERROR: {e}"}
+
+    async def _job_market_open_gate_health(self, context=None) -> dict:
+        """09:10 readiness log for the 09:15 open gate.
+
+        Runs build once more so a missed 08:45 job or late US/ETF refresh still
+        gets reflected before D1 open entry.
+        """
+        build_result = await self._job_market_open_regime_build(context)
+
+        try:
+            from data.market_open_regime import (
+                load_scalper_open_gate,
+                summarize_open_gate_health,
+            )
+
+            health = summarize_open_gate_health(load_scalper_open_gate(), base_top_k=3)
+            log_fn = logger.warning if health["needs_attention"] else logger.info
+            log_fn("[MARKET_OPEN] 09:10 health\n%s", health["text"])
+
+            if context is not None and self.bot and getattr(self.bot, "chat_id", None):
+                try:
+                    await context.bot.send_message(
+                        chat_id=self.bot.chat_id,
+                        text=health["text"],
+                    )
+                except Exception as send_err:
+                    logger.warning(f"[MARKET_OPEN] 09:10 health telegram failed: {send_err}")
+
+            return {
+                "market_open_gate_health": "OK",
+                "build": build_result,
+                "gate": health["decision"]["gate"],
+                "fresh_ok": health["decision"]["fresh_ok"],
+                "top_k": health["decision"]["top_k"],
+                "needs_attention": health["needs_attention"],
+                "warnings": health["warnings"],
+            }
+        except Exception as e:
+            logger.warning(f"[MARKET_OPEN] 09:10 health failed: {e}")
+            return {"market_open_gate_health": f"ERROR: {e}", "build": build_result}
+
     async def _job_surge_pattern_learning(self, context=None) -> None:
         """[5/20 사장님 비전] 매일 15:35 — 급등 종목 패턴 학습.
 
@@ -4889,6 +4965,10 @@ class TradingCOO:
         jq.run_daily(self._job_auction_scan, time=kst_time(8, 30))
         logger.info("[COO] A15 동시호가 스캐너 등록: 08:30 KST")
 
+        # MARKET_OPEN_REGIME: 09:15 D1 open entry gate packet build.
+        jq.run_daily(self._job_market_open_regime_build, time=kst_time(8, 45))
+        logger.info("[COO] MARKET_OPEN_REGIME build 등록: 08:45 KST")
+
         # ── G2 MORNING_LAUNCH (08:55) ──
         jq.run_daily(self.run_g2, time=kst_time(8, 55))
         logger.info("[COO] G2 MORNING_LAUNCH 등록: 08:55 KST")
@@ -4900,6 +4980,10 @@ class TradingCOO:
         # ── G4 INTRADAY_LOOP (09:00) ──
         jq.run_daily(self.run_g4_setup, time=kst_time(9, 0))
         logger.info("[COO] G4 INTRADAY_LOOP 등록: 09:00 KST")
+
+        # MARKET_OPEN_GATE: readiness log before 09:15 asset_pool entry.
+        jq.run_daily(self._job_market_open_gate_health, time=kst_time(9, 10))
+        logger.info("[COO] MARKET_OPEN_GATE health 등록: 09:10 KST")
 
         # ── 모니터 헬스체크 (5분 반복) ──
         jq.run_repeating(self.check_monitor_health, interval=300, first=600)

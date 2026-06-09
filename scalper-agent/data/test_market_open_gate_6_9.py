@@ -11,7 +11,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from data.market_open_regime import decide_open_gate, theme_of_sector  # noqa: E402
+from data.market_open_regime import (  # noqa: E402
+    decide_open_gate,
+    summarize_open_gate_health,
+    theme_of_sector,
+)
 
 
 def _gate(name, delta, fresh, pref=None, avoid=None):
@@ -72,9 +76,32 @@ def test_block_ignores_top_k():
     print("[PASS] BLOCK_NEW_BUY는 base_top_k 무관 항상 차단")
 
 
+def test_open_gate_health_summary():
+    stale_gate = _gate("WATCH_ONLY", -1, False, pref=["it", "bio"], avoid=["oil"])
+    stale_gate["generated_at"] = "2026-06-09 08:45:00"
+    stale_gate["overnight_korea_score"] = 55
+    stale_gate["position_scale"] = 0.5
+    stale_gate["freshness"]["warnings"] = ["us_overnight_stale"]
+
+    h = summarize_open_gate_health(stale_gate, base_top_k=3)
+    assert h["decision"]["gate"] == "WATCH_ONLY"
+    assert h["decision"]["top_k"] == 2
+    assert h["needs_attention"] is True
+    assert h["position_scale_ignored"] == 0.5
+    assert "position_scale_ignored=0.5" in h["text"]
+    assert "warnings=us_overnight_stale" in h["text"]
+
+    missing = summarize_open_gate_health(None, base_top_k=3)
+    assert missing["decision"]["gate"] == "NO_GATE"
+    assert missing["needs_attention"] is True
+    assert "legacy open entry used" in missing["text"]
+    print("[PASS] 09:10 open gate health summary")
+
+
 if __name__ == "__main__":
     test_decide_open_gate_branches()
     test_no_side_effect_keys()
     test_theme_of_sector()
     test_block_ignores_top_k()
-    print("\n[ALL PASS] market_open_gate 회귀 4종")
+    test_open_gate_health_summary()
+    print("\n[ALL PASS] market_open_gate 회귀 5종")

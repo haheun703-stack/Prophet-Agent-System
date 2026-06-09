@@ -2263,7 +2263,7 @@ class AutoTrader:
                         f"reason={_decision['reason']}"
                     )
                 else:
-                    logger.info("[open_gate] 게이트 파일 없음/읽기실패 → 기존 동작 유지(하위호환)")
+                    logger.warning("[open_gate] gate unavailable, legacy open entry used")
 
         # ── ★ 5/20 사장님 비전: 점수 기반 정렬 + 이상한 종목 차단 ★ ──
         # 5/20 사고: 검증모드 grade D+F 매수 (링크제니시스/롯데이노베이트)
