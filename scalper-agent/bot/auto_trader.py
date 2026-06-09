@@ -2226,6 +2226,45 @@ class AutoTrader:
         except Exception as e:
             logger.warning(f"[asset_pool] advisory 게이트 실패 (continue): {e}")
 
+        # ── ★ MARKET_OPEN_REGIME open gate (6/9 사장님) — D1 09:15 시초 진입 필터 ★ ──
+        # gate는 진입 전 필터로만 사용. 주문/SAJANG/수량 무접촉 (top_k·후보 score만 조정).
+        # 판정은 순수함수 decide_open_gate (단위 테스트 대상). timing_mode=='open'만 적용
+        # (14:50 pre_close_d는 별개 함수라 자동 제외). 파일 없음 → 기존 동작 유지(하위호환).
+        _gate_preferred: set = set()
+        _gate_avoid: set = set()
+        if timing_mode == "open":
+            try:
+                from data.market_open_regime import load_scalper_open_gate, decide_open_gate
+                _decision = decide_open_gate(load_scalper_open_gate(), top_k)
+            except Exception as _ge:
+                _decision = None
+                logger.warning(f"[open_gate] 판정 실패 → 기존 동작 유지: {_ge}")
+            if _decision:
+                _gname = _decision["gate"]
+                if not _decision["allow"]:
+                    await _send(
+                        f"🛑 open_gate={_gname} ({_decision['reason']}) → 09:15 시초 신규매수 차단/관찰 "
+                        f"(top_k={_decision['top_k']})"
+                    )
+                    logger.warning(f"[open_gate] {_gname} allow=False reason={_decision['reason']} → return")
+                    return
+                if _gname != "NO_GATE":
+                    if top_k != _decision["top_k"]:
+                        await _send(
+                            f"🔀 open_gate={_gname} → top_k {top_k}→{_decision['top_k']} "
+                            f"(fresh_ok={_decision['fresh_ok']})"
+                        )
+                    top_k = _decision["top_k"]
+                    _gate_preferred = set(_decision["preferred"])
+                    _gate_avoid = set(_decision["avoid"])
+                    logger.info(
+                        f"[open_gate] gate={_gname} top_k={top_k} "
+                        f"preferred={sorted(_gate_preferred)} avoid={sorted(_gate_avoid)} "
+                        f"reason={_decision['reason']}"
+                    )
+                else:
+                    logger.info("[open_gate] 게이트 파일 없음/읽기실패 → 기존 동작 유지(하위호환)")
+
         # ── ★ 5/20 사장님 비전: 점수 기반 정렬 + 이상한 종목 차단 ★ ──
         # 5/20 사고: 검증모드 grade D+F 매수 (링크제니시스/롯데이노베이트)
         # → asset_pool도 점수 기반 정렬 + 최소 점수 임계값 + AVOID 차단 적용
@@ -2336,6 +2375,34 @@ class AutoTrader:
             logger.info(f"[asset_pool] korean_surge_pattern 적용 후 후보 {len(ranked)}종")
         except Exception as e:
             logger.warning(f"[asset_pool] korean_surge_pattern 실패 (무시): {e}")
+
+        # ── ★ open gate preferred/avoid 테마 가점·감점 (6/9 사장님) ★ ──
+        # 주문/SAJANG 무접촉 — 후보 score만 조정 후 재정렬. timing_mode=='open' + gate 테마 있을 때만.
+        # gate 미작동(파일없음/테마없음) 시 이 블록 자체가 skip → 기존 동작 100% 유지.
+        if timing_mode == "open" and (_gate_preferred or _gate_avoid):
+            try:
+                from data.market_open_regime import theme_of_sector
+                _GATE_PREFER_BONUS = 15.0
+                _GATE_AVOID_PENALTY = 20.0
+                _adj = 0
+                for r in ranked:
+                    _tk = theme_of_sector(str(r.get("sector") or r.get("theme") or ""))
+                    if not _tk:
+                        continue
+                    if _tk in _gate_preferred:
+                        r["score"] = r.get("score", 0) + _GATE_PREFER_BONUS
+                        _adj += 1
+                    elif _tk in _gate_avoid:
+                        r["score"] = r.get("score", 0) - _GATE_AVOID_PENALTY
+                        _adj += 1
+                # 가점/감점 반영 재정렬 (gate 적용 시에만 — 기존 동작 무영향)
+                ranked.sort(key=lambda r: r.get("score", 0), reverse=True)
+                logger.info(
+                    f"[open_gate] 테마 가점/감점 {_adj}종 적용 후 재정렬 "
+                    f"(preferred+{_GATE_PREFER_BONUS}/avoid-{_GATE_AVOID_PENALTY})"
+                )
+            except Exception as _te:
+                logger.warning(f"[open_gate] 테마 가점/감점 실패 (무시): {_te}")
 
         # ★ 5/20 fix: 최소 점수 임계값 30 (이상한 종목 자동 제외) ★
         # 진원생명과학(90점)/티웨이(65점) 같은 고점수만 통과
