@@ -4571,6 +4571,32 @@ class TradingCOO:
             logger.warning(f"[MARKET_OPEN] 09:10 health failed: {e}")
             return {"market_open_gate_health": f"ERROR: {e}", "build": build_result}
 
+    async def _job_sector_reversal_shadow(self, context=None) -> dict:
+        """15:50 관측 — 섹터 reversal shadow 적재 (6/9 사장님, 매수 무접촉).
+
+        HOT_5D(기존 5일 선정) + REVERSAL_D0(당일 급반등·5일 미선정)을 별도 json에 누적하고
+        forward를 채운다. 6/12에 두 그룹 forward 비교 → 다음주 실전 보조점수 반영 결정.
+        ★실매수 로직/HOT 판정/tier/SAJANG/order path 무접촉 — read-only 관측만.★
+        """
+        try:
+            from data.trading_calendar import is_trading_day
+            if not is_trading_day():
+                return {"sector_reversal_shadow": "SKIP_NON_TRADING_DAY"}
+            from data.sector_reversal_shadow import build_shadow, update_forward
+            from datetime import datetime
+            asof = datetime.now().strftime("%Y-%m-%d")
+            r = await asyncio.to_thread(build_shadow, asof)        # 일봉 read 블로킹 회피(표준)
+            filled = await asyncio.to_thread(update_forward)
+            logger.info(
+                f"[SECTOR_SHADOW] {asof} 기록 {len(r.get('records', []))}건 / "
+                f"forward 채움 {filled}건 (매수 무접촉·관측 전용)"
+            )
+            return {"sector_reversal_shadow": "OK",
+                    "records": len(r.get("records", [])), "forward_filled": filled}
+        except Exception as e:
+            logger.warning(f"[SECTOR_SHADOW] 실패 (무시): {e}")
+            return {"sector_reversal_shadow": f"ERROR: {e}"}
+
     async def _job_surge_pattern_learning(self, context=None) -> None:
         """[5/20 사장님 비전] 매일 15:35 — 급등 종목 패턴 학습.
 
@@ -5030,6 +5056,10 @@ class TradingCOO:
         # 5/26 사고 5건 모두 "사장님 영구 룰 default off / 옛 코드 잔존" 패턴 → 자동 검출
         jq.run_daily(self._job_daily_self_audit, time=kst_time(15, 45))
         logger.info("[COO] ★ Daily Self-Audit 등록: 15:45 KST (사장님 영구 룰 13건 자동 검증) ★")
+
+        # ── ★ 섹터 reversal shadow 관측 (6/9 사장님, 매수 무접촉·6/12 판정용) ★ ──
+        jq.run_daily(self._job_sector_reversal_shadow, time=kst_time(15, 50))
+        logger.info("[COO] ★ Sector Reversal Shadow 등록: 15:50 KST (HOT_5D vs REVERSAL_D0 관측, 6/12 판정) ★")
 
         # ── ★ NXT 관망일 마커 catch-up (5/27 신설, 웹봇 STALE 알람 차단) ★ ──
         # 매일 17:30 — 최근 7일 누락 휴장일/관망일 row 자동 적재
