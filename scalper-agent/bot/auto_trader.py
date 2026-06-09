@@ -2381,12 +2381,19 @@ class AutoTrader:
         # gate 미작동(파일없음/테마없음) 시 이 블록 자체가 skip → 기존 동작 100% 유지.
         if timing_mode == "open" and (_gate_preferred or _gate_avoid):
             try:
-                from data.market_open_regime import theme_of_sector
+                from data.market_open_regime import theme_of_sector, load_universe_sectors
                 _GATE_PREFER_BONUS = 15.0
                 _GATE_AVOID_PENALTY = 20.0
+                # ★ 6/9 검수 fix: 후보 dict엔 최상위 sector 키가 없어(get_top/diversified/
+                # merge_jgis/enrich 어디서도 미주입) 테마 가점이 항상 silent no-op이었음.
+                # → code로 universe.json 한글 sector를 역참조. 후보에 sector/theme가 이미
+                # 있으면 그걸 우선(향후 호환). 맵 비면(파일없음) 기존처럼 전부 skip(무해).
+                _sec_map = load_universe_sectors()
                 _adj = 0
                 for r in ranked:
-                    _tk = theme_of_sector(str(r.get("sector") or r.get("theme") or ""))
+                    _sec = (str(r.get("sector") or r.get("theme") or "")
+                            or _sec_map.get(str(r.get("code") or ""), ""))
+                    _tk = theme_of_sector(_sec)
                     if not _tk:
                         continue
                     if _tk in _gate_preferred:

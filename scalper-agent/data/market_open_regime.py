@@ -590,6 +590,25 @@ def theme_of_sector(text: str) -> Optional[str]:
     return _theme_from_text(text)
 
 
+def load_universe_sectors(data_dir: Path = DATA_DIR) -> Dict[str, str]:
+    """code -> universe.json 한글 sector 맵 (없으면 빈 dict).
+
+    open gate 테마 가점/감점(auto_trader)이 후보의 sector를 읽을 수 있게 하는 consumer
+    helper. 후보 dict에 최상위 sector 키가 없어 theme 매칭이 항상 silent no-op이던 문제
+    (6/9 전체검수 확정)를 보완 — 후보 code로 universe sector를 역참조한다.
+    read-only (주문/SAJANG/picks 무접촉). 파일 없음/손상 시 {} 반환(하위호환=가점 skip).
+    """
+    data = _load_json(data_dir / "universe.json", {})
+    out: Dict[str, str] = {}
+    if isinstance(data, dict):
+        for code, entry in data.items():
+            if isinstance(entry, dict):
+                sector = entry.get("sector")
+                if sector:
+                    out[str(code)] = str(sector)
+    return out
+
+
 def decide_open_gate(gate: Optional[dict], base_top_k: int) -> dict:
     """Pure decision for the scalper D1 open filter (no side effects).
 

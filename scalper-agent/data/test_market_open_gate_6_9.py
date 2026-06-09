@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from data.market_open_regime import (  # noqa: E402
     decide_open_gate,
+    load_universe_sectors,
     summarize_open_gate_health,
     theme_of_sector,
 )
@@ -98,10 +99,47 @@ def test_open_gate_health_summary():
     print("[PASS] 09:10 open gate health summary")
 
 
+def test_theme_bonus_not_silent_noop():
+    """★ 6/9 검수 fix ★ — 후보 dict에 최상위 sector 키가 없어도 code→sector 역참조로
+    테마 가점이 적용된다 (이전엔 r.get('sector')=None → theme_of_sector('')=None → _adj 항상 0).
+
+    universe.json 비의존: 합성 sec_map으로 auto_trader 가점 블록 로직 그대로 검증.
+    """
+    # 실제 get_top_candidates 형식 — code/score만 (sector/theme 키 없음)
+    ranked = [
+        {"code": "005930", "score": 80},  # 전기전자 → it
+        {"code": "068270", "score": 70},  # 바이오 → bio
+        {"code": "105560", "score": 90},  # 금융 → None (skip)
+    ]
+    sec_map = {"005930": "전기전자", "068270": "바이오", "105560": "금융"}
+    preferred, avoid = {"it", "bio"}, set()
+    adj = 0
+    for r in ranked:
+        sec = (str(r.get("sector") or r.get("theme") or "")
+               or sec_map.get(str(r.get("code") or ""), ""))
+        tk = theme_of_sector(sec)
+        if not tk:
+            continue
+        if tk in preferred:
+            r["score"] += 15.0
+            adj += 1
+        elif tk in avoid:
+            r["score"] -= 20.0
+            adj += 1
+    assert adj == 2, f"가점 적용 {adj} != 2 (silent no-op 재발)"
+    ranked.sort(key=lambda r: r["score"], reverse=True)
+    assert ranked[0]["code"] == "005930", "it 가점 후 삼성전자(95) > 금융(90) 1위여야"
+    # load_universe_sectors 하위호환: 항상 dict (파일 없으면 {}=가점 skip)
+    m = load_universe_sectors()
+    assert isinstance(m, dict)
+    print("[PASS] open gate 테마 가점 silent no-op fix (code→sector 역참조, _adj=2)")
+
+
 if __name__ == "__main__":
     test_decide_open_gate_branches()
     test_no_side_effect_keys()
     test_theme_of_sector()
     test_block_ignores_top_k()
     test_open_gate_health_summary()
-    print("\n[ALL PASS] market_open_gate 회귀 5종")
+    test_theme_bonus_not_silent_noop()
+    print("\n[ALL PASS] market_open_gate 회귀 6종")
