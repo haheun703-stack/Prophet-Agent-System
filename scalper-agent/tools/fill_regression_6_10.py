@@ -23,6 +23,23 @@ from tools.fill_daily_kis_incremental import (  # noqa: E402
 )
 
 
+def _truncate_to_prev(daily_dir, codes, cutoff_date):
+    """사본 csv에서 cutoff_date(포함) 이상 행 제거 → 직전 상태로 되돌림.
+
+    fill을 이미 full로 돌려 daily가 asof까지 채워진 경우, 회귀 의미를 살리려
+    사본을 'asof 직전' 상태로 만든 뒤 증분 vs 전체를 비교한다.
+    """
+    import pandas as pd
+    cut = pd.Timestamp(cutoff_date)
+    for c in codes:
+        f = Path(daily_dir) / f"{c}.csv"
+        if not f.exists():
+            continue
+        df = pd.read_csv(f, index_col=0)
+        idx = pd.to_datetime(df.index, format="ISO8601", errors="coerce")
+        df[idx < cut].to_csv(f)
+
+
 def _snapshot(codes, daily_dir):
     snap = {}
     for c in codes:
@@ -56,12 +73,16 @@ def main():
 
     with tempfile.TemporaryDirectory() as t_inc, tempfile.TemporaryDirectory() as t_full:
         inc_dir, full_dir = Path(t_inc), Path(t_full)
-        # 두 사본 모두 6/9 상태(현재 실 daily)로 복사
+        # 두 사본 복사 후, asof(오늘) 행을 잘라 '직전 상태'로 되돌림
+        # (이미 full fill로 daily가 asof까지 채워졌을 때 회귀 의미 보존)
         for c in codes:
             f = real_daily / f"{c}.csv"
             if f.exists():
                 shutil.copy2(f, inc_dir / f"{c}.csv")
                 shutil.copy2(f, full_dir / f"{c}.csv")
+        _truncate_to_prev(inc_dir, codes, asof)
+        _truncate_to_prev(full_dir, codes, asof)
+        print(f"  사본을 {asof} 직전 상태로 truncate 완료 → 증분 vs 전체20일 비교")
 
         try:
             # ── 증분 모드 (사본 inc_dir) ──
