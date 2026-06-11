@@ -80,6 +80,8 @@ def main():
          [PY, "-c", "from data.market_investor_collector import collect_market_investor as f; r=f(days=3); print('ok' if r else 'EMPTY')"], 600),
         ("⑦ 국적별",
          [PY, "-c", "import collect_all; collect_all.step3_nationality()"], 600),
+        ("⑧ F1 forward+preflight",
+         [PY, "tools/run_f1_forward_preflight.py"], 300),
     ]
 
     results = {}

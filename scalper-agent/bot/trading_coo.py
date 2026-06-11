@@ -4597,6 +4597,66 @@ class TradingCOO:
             logger.warning(f"[SECTOR_SHADOW] 실패 (무시): {e}")
             return {"sector_reversal_shadow": f"ERROR: {e}"}
 
+    # ─── F1 외인 장중 잠정 시간대 로거 (6/11 사장님 + Claude Fable5, read-only 관측) ───
+    # "오늘 +2~5% 종목, 내일 들고 갈까" — 외인 오전 매수 → 오후 반납(단타형) vs 유지(매집형)을
+    # 장중 외인 잠정 시간대 추이로 구분 → 익일 forward 검증. ★매수/picks/SAJANG/order 무접촉★
+    async def _job_f1_select(self, context=None) -> dict:
+        """11:00 — F1 선정(등락률 +3%↑ 상위N + paper 후보 합류) + 첫 외인 스냅샷. 리스트 고정."""
+        try:
+            from data.trading_calendar import is_trading_day
+            if not is_trading_day():
+                return {"f1_select": "SKIP_NON_TRADING_DAY"}
+            trader = getattr(self.auto_trader, "trader", None) if self.auto_trader else None
+            if trader is None:
+                logger.warning("[F1] 11:00 — trader 미연결, 스킵")
+                return {"f1_select": "NO_TRADER"}
+            from data.foreign_f1_intraday_logger import select_and_snapshot_1100
+            from data.flow_collector import _get_kis_session
+            session = await asyncio.to_thread(_get_kis_session)
+            r = await asyncio.to_thread(select_and_snapshot_1100, trader, None, session)
+            logger.info(f"[F1] 11:00 선정 {len(r.get('records', []))}종목 (read-only 관측·매매 무접촉)")
+            return {"f1_select": "OK", "records": len(r.get("records", []))}
+        except Exception as e:
+            logger.warning(f"[F1] 11:00 실패 (무시): {e}")
+            return {"f1_select": f"ERROR: {e}"}
+
+    async def _f1_snapshot(self, snap_label: str) -> dict:
+        """F1 장중 스냅샷 공통 — 11:00 고정 리스트 외인 추가(중도 교체 0)."""
+        try:
+            from data.trading_calendar import is_trading_day
+            if not is_trading_day():
+                return {"f1_snap": "SKIP_NON_TRADING_DAY"}
+            from data.foreign_f1_intraday_logger import snapshot
+            trader = getattr(self.auto_trader, "trader", None) if self.auto_trader else None
+            filled = await asyncio.to_thread(snapshot, trader, snap_label)
+            return {"f1_snap": "OK", "label": snap_label, "filled": filled}
+        except Exception as e:
+            logger.warning(f"[F1] {snap_label} 스냅샷 실패 (무시): {e}")
+            return {"f1_snap": f"ERROR: {e}"}
+
+    async def _job_f1_snapshot_1300(self, context=None) -> dict:
+        return await self._f1_snapshot("1300")
+
+    async def _job_f1_snapshot_1430(self, context=None) -> dict:
+        return await self._f1_snapshot("1430")
+
+    async def _job_f1_snapshot_1530(self, context=None) -> dict:
+        return await self._f1_snapshot("1530")
+
+    async def _job_f1_finalize(self, context=None) -> dict:
+        """16:05 — F1 retention/라벨 확정(is_final 전환). forward는 nightly가 채움."""
+        try:
+            from data.trading_calendar import is_trading_day
+            if not is_trading_day():
+                return {"f1_finalize": "SKIP_NON_TRADING_DAY"}
+            from data.foreign_f1_intraday_logger import finalize
+            n = await asyncio.to_thread(finalize)
+            logger.info(f"[F1] 16:05 finalize {n}종목 확정 (반납/매집 라벨·관측 전용)")
+            return {"f1_finalize": "OK", "finalized": n}
+        except Exception as e:
+            logger.warning(f"[F1] finalize 실패 (무시): {e}")
+            return {"f1_finalize": f"ERROR: {e}"}
+
     async def _job_surge_pattern_learning(self, context=None) -> None:
         """[5/20 사장님 비전] 매일 15:35 — 급등 종목 패턴 학습.
 
@@ -5060,6 +5120,14 @@ class TradingCOO:
         # ── ★ 섹터 reversal shadow 관측 (6/9 사장님, 매수 무접촉·6/12 판정용) ★ ──
         jq.run_daily(self._job_sector_reversal_shadow, time=kst_time(15, 50))
         logger.info("[COO] ★ Sector Reversal Shadow 등록: 15:50 KST (HOT_5D vs REVERSAL_D0 관측, 6/12 판정) ★")
+
+        # ── F1 외인 장중 잠정 시간대 로거 (6/11 사장님+Fable5, read-only 관측, 6/12~) ──
+        jq.run_daily(self._job_f1_select, time=kst_time(11, 0))
+        jq.run_daily(self._job_f1_snapshot_1300, time=kst_time(13, 0))
+        jq.run_daily(self._job_f1_snapshot_1430, time=kst_time(14, 30))
+        jq.run_daily(self._job_f1_snapshot_1530, time=kst_time(15, 30))
+        jq.run_daily(self._job_f1_finalize, time=kst_time(16, 5))
+        logger.info("[COO] ★ F1 외인 장중 잠정 로거 등록: 11:00 선정 / 13:00·14:30·15:30 스냅샷 / 16:05 확정 (반납형 검증, 6/12~) ★")
 
         # ── ★ NXT 관망일 마커 catch-up (5/27 신설, 웹봇 STALE 알람 차단) ★ ──
         # 매일 17:30 — 최근 7일 누락 휴장일/관망일 row 자동 적재
