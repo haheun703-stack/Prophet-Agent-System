@@ -86,10 +86,13 @@ DATA_DIRS = [
     "daily/",          # 종가 OHLCV (~2596 CSV)
     "etf_daily/",      # ETF 일봉 (~21 CSV)
     "flow/",           # 투자자/외인 수급 (~5972 CSV)
+    "flow_market/",    # 시장 11주체 세부 (6/11 fix: sync 누락으로 노트북 stale)
+    "foreign_f1/",     # F1 외인 장중 잠정 ledger (6/12~ VPS 생성, 노트북 분석용)
     "nationality/",    # 국적별 수급 (누적형 + 일별 스냅샷)
     "news_sentiment/", # 뉴스 감성분석
     "learning/",       # 학습 데이터 (insights, journal 등)
 ]
+# ★ shadow/paper는 의도적 sync 제외 유지 (6/10 결정·S-2 덮어쓰기 교훈) — 6/12 판정은 VPS에서 직접.
 
 
 def run_scp(remote_path: str, local_path: str, dry_run: bool = False) -> bool:
