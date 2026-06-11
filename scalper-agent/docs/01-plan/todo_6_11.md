@@ -20,15 +20,21 @@
 
 ## 🎯 오늘(6/11) 할 일
 
-### 1순위 ★ VPS shadow 6/9 기록 합치기 (6/12 판정 직결)
+### 1순위 ★ VPS shadow 6/9 기록 합치기 (6/12 판정 직결) — ✅ **완료(6/11 11:58, 사장님 승인)**
 - **문제**: VPS shadow가 6/10부터 시작 → **6/9(반도체/AI REVERSAL_D0 d0+10.9%·RS+7.69 / 금융 HOT_5D / 바이오 REVERSAL_D0 3건 + forward)가 VPS엔 없음.**
 - 6/12 판정(6/9~6/12 forward 비교)은 6/9가 핵심인데 VPS 누락 → **노트북 sector_reversal_shadow.json(6/9~6/10)을 VPS로 합쳐야** 판정 완전.
 - 방법: 노트북 shadow json → VPS `/home/ubuntu/bodyhunter/scalper-agent/data_store/sector_reversal_shadow.json` 병합(VPS 6/10과 멱등 merge, forward 안 깨지게). 봇 무관·관측 데이터.
 - ★검증: VPS shadow 6/9부터 누적 + 6/9 forward(금융-1.52·반도체-5.21·바이오-2.44) 보존 확인★.
+- ✅ **실행 결과**: 사전점검(VPS 모듈 md5=노트북 일치·6/9 종목 일봉 6/10까지 존재·VPS 백업 생성) → dry-run(/tmp, 원본 무손상, 6/9 forward 노트북값 100% 일치 확인) → 사장님 승인 → 실제 병합(before2→added3→**total5**) → 검증 7/7 PASS(5건·멱등 중복0·6/9 forward/mfe/mae ALL MATCH·6/10 조선rank6·방산rank4 보존·dry-run 동일·forward_d3/d5 null=6/12·6/16 대기).
+- ⚠️ 노트북 6/10 조선 turnover_rank=3 vs VPS=6 (daily 스냅샷 미세차, VPS 메인=단일진실). 노트북 shadow는 백업본으로 보존(미덮어쓰기). VPSSync는 shadow 미동기화라 갈라짐 정상.
+- ⚠️ 3순위 선결조건 사전확인 완료: VPS logs 디렉토리·run_nightly_pipeline.py·venv 전부 존재 → 18:00 cron redirect 정상 가능.
 
-### 2순위 봇 16:03 구버전 중복수집 정리
-- VPS bodyhunter 봇(run_bot.py --once systemd active)이 16:03 구버전 collect_all 수집 → 18:00 통합과 중복(18:00이 덮어 현재 무해, but 자원낭비 + 정보봇 참조 시 구버전 위험).
-- run_bot 내부 스케줄러 확인 → 16:03 수집잡 비활성. ★봇 재시작은 안전윈도(08~09 / 20시+ / 23:30~06)★.
+### 2순위 봇 16:03 구버전 중복수집 정리 — ✅ **조사 완료 → A.현 상태 유지 결정(6/11, 사장님)**
+- **정정**: 어제 인계서의 "16:03 수집잡 비활성화"는 과도하게 단순화한 진단이었음.
+- **규명**: "16:03 수집" = 봇 내부 스케줄러 **G6 DATA_PIPELINE**(15:40 시작 → C3_collect_daily 16:06 완료, 일봉+수급 23.7분). crontab 아님(봇 PID 397, 6/7 시작 = 옛 코드). 6/10 로그 실증.
+- **단순 비활성화 불가**: G6(수집) → G7 EVENING_BRAIN(16:30, 스윙선정·이브닝분석·Paper리포트·국적·수급) **강한 의존**(run_g7가 G6 완료 명시 대기). G6 끄면 G7 전체 깨짐.
+- **사장님 결정 = A. 현 상태 유지(무위험)**: G6/G7는 봇 정규 저녁 브레인. 18:00 nightly(cron=항상 최신 코드)가 덮어 데이터 최신 / 봇 OFF라 매매영향0 / VPSSync 19:00은 18:00 후=최신 수신. 일봉 23분 중복수집(자원낭비)만 감수. **변경 없음 = 사고위험 0.**
+- 비고: 봇은 6/7 옛 코드로 구동 중이나 A 유지 = 재시작 안 함. G6 데이터는 18:00이 덮어 무해. 봇 가동 재개 시 별도 재시작(28c9679 반영) 그때 처리.
 
 ### 3순위 (시각) 6/11 18:00 VPS 첫 자동실행 + 19:00 sync 확인
 - VPS cron 18:00 통합 7단계 자동 → `~/bodyhunter/logs/nightly.log`. **②step6도 폴더 있으니 정상 동기화되는지**(어제 fix).
