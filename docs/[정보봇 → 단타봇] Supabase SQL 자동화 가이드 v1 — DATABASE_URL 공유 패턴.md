@@ -25,7 +25,7 @@
 ```
 
 - 단타봇 `.env` 추가 필요 (정보봇 .env에 이미 등록 → 복사)
-- 형식: `postgresql://postgres:[PASSWORD]@db.wkvrhawzzmocpxjesvir.supabase.co:5432/postgres`
+- 형식: `postgresql://postgres:[PASSWORD]@db.<PROJECT_REF>.supabase.co:5432/postgres` (.env만 참조 — 6/12 프로젝트 ref 비식별화)
 
 ## §3 라이브러리
 
