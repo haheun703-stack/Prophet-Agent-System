@@ -29,7 +29,8 @@ def main():
     r = check_f1_ledger_today()
     status = "OK 찍힘" if r["ok"] else f"⚠경보: {r['reason']}"
     print(f"F1 forward 충전 {total}건 | preflight {status} "
-          f"(records={r['records']} foreign={r['with_foreign']} selected_at={r['selected_at']})")
+          f"(records={r['records']} foreign≠0={r['with_foreign']} "
+          f"snap={r.get('with_snapshot', 0)} selected_at={r['selected_at']})")
     return 0
 
 
