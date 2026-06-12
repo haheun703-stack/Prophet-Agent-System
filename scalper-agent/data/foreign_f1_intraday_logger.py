@@ -302,31 +302,46 @@ def update_forward(asof: Optional[str] = None, save: bool = True) -> int:
 
 # ─────────────────────────── preflight 자가감지 (단서②: "찍힘" 검증) ───────────────────────────
 
+def _judge_ledger(asof: str, data: dict) -> dict:
+    """ledger 내용 → preflight 판정 (순수 로직, I/O 없음 — 셀프테스트 가능).
+
+    ★ 6/12 첫 가동 오판 fix: 스냅샷 dict가 비어있지 않으면(값 전부 0이어도) '충전'으로
+    셌다 → KIS TR 장중 미집계(전부 0)를 "찍힘 정상"으로 오판. with_foreign은 **값≠0**
+    record만 셈(음수=순매도도 실제 값). 전부 0 = 데이터 전제 미충족 전용 경보로 분리.
+    """
+    recs = data.get("records", [])
+    base = {"asof": asof, "records": len(recs), "with_foreign": 0,
+            "with_snapshot": 0, "selected_at": data.get("selected_at")}
+    if not recs:
+        return {**base, "ok": False, "reason": "F1 ledger 종목 0(선정 미실행)"}
+    with_snapshot = sum(1 for r in recs if r.get("foreign_net"))
+    with_foreign = sum(
+        1 for r in recs
+        if any(v not in (None, 0) for v in (r.get("foreign_net") or {}).values()))
+    base.update(with_snapshot=with_snapshot, with_foreign=with_foreign)
+    if with_foreign == 0:
+        reason = ("외인 잠정 전부 0(스냅샷은 찍힘) — KIS TR 장중 당일 미집계, 데이터 전제 미충족(6/12 패턴)"
+                  if with_snapshot else
+                  "외인 잠정 0건 충전 — 장중 당일 잠정 미가용(스냅샷 시각/TR 교정 필요)")
+        return {**base, "ok": False, "reason": reason}
+    return {**base, "ok": True, "reason": "F1 찍힘 정상(값≠0 기준)"}
+
+
 def check_f1_ledger_today(asof: Optional[str] = None) -> dict:
     """preflight — F1 ledger 오늘자가 '찍혔는지' 자가감지. "연결됨"이 아니라 "찍힘"을 시스템이 확인.
 
-    반환 {ok, reason, records, with_foreign, selected_at}.
-    ok=False = 연결됐다 믿었는데 빈 ledger / 외인 미충전 → 데이터 전제 미충족 경보.
+    반환 {ok, reason, records, with_foreign, with_snapshot, selected_at}.
+    with_foreign = 외인 잠정 **값≠0**이 1개라도 찍힌 record 수 (★ 6/12 fix: 값 0 = 충전 아님).
+    with_snapshot = 스냅샷 슬롯이 기록된 record 수 (0 충전 포함 — 미집계 진단용).
+    ok=False = 빈 ledger / 미충전 / 전부 0(장중 미집계) → 데이터 전제 미충족 경보.
     """
     asof = asof or _today_kst()
     p = _ledger_path(asof)
     if not p.exists():
         return {"ok": False, "reason": "F1 ledger 파일 없음(스케줄 미가동/미연결)",
-                "asof": asof, "records": 0, "with_foreign": 0, "selected_at": None}
-    data = _load(asof)
-    recs = data.get("records", [])
-    if not recs:
-        return {"ok": False, "reason": "F1 ledger 종목 0(선정 미실행)",
-                "asof": asof, "records": 0, "with_foreign": 0,
-                "selected_at": data.get("selected_at")}
-    with_foreign = sum(1 for r in recs if r.get("foreign_net"))
-    if with_foreign == 0:
-        return {"ok": False, "reason": "외인 잠정 0건 충전 — 장중 당일 잠정 미가용(스냅샷 시각/TR 교정 필요)",
-                "asof": asof, "records": len(recs), "with_foreign": 0,
-                "selected_at": data.get("selected_at")}
-    return {"ok": True, "reason": "F1 찍힘 정상", "asof": asof,
-            "records": len(recs), "with_foreign": with_foreign,
-            "selected_at": data.get("selected_at")}
+                "asof": asof, "records": 0, "with_foreign": 0, "with_snapshot": 0,
+                "selected_at": None}
+    return _judge_ledger(asof, _load(asof))
 
 
 # ─────────────────────────── 셀프테스트 (순수 로직, KIS 무관) ───────────────────────────
@@ -373,6 +388,29 @@ def _selftest() -> bool:
     # T8 preflight — 빈 ledger 감지
     res = check_f1_ledger_today("1999-01-01")
     ok.append(("T8 preflight 빈 ledger ok=False", res["ok"] is False))
+
+    # T9 ★ 6/12 오판 회귀 — 스냅샷은 찍혔지만 값 전부 0 = 충전 아님(KIS 장중 미집계)
+    res = _judge_ledger("2026-06-12", {"selected_at": "1100", "records": [
+        {"code": "005930", "foreign_net": {"1100": 0, "1300": 0, "1430": 0}},
+        {"code": "000660", "foreign_net": {"1100": 0}},
+    ]})
+    ok.append(("T9 전부 0 → ok=False(미집계 경보)",
+               res["ok"] is False and res["with_foreign"] == 0
+               and res["with_snapshot"] == 2 and "전부 0" in res["reason"]))
+    # T10 값≠0 1건이면 찍힘 정상 — 음수(순매도)도 실제 값
+    res = _judge_ledger("2026-06-12", {"selected_at": "1100", "records": [
+        {"code": "005930", "foreign_net": {"1100": 0}},
+        {"code": "000660", "foreign_net": {"1100": -500}},
+        {"code": "058470", "foreign_net": {}},
+    ]})
+    ok.append(("T10 음수 1건 → ok=True(foreign 1/snap 2)",
+               res["ok"] is True and res["with_foreign"] == 1 and res["with_snapshot"] == 2))
+    # T11 스냅샷 자체 0건 — 기존 미가용 경보 유지
+    res = _judge_ledger("2026-06-12", {"selected_at": "1100", "records": [
+        {"code": "005930", "foreign_net": {}},
+    ]})
+    ok.append(("T11 스냅샷 0건 → ok=False(미가용)",
+               res["ok"] is False and res["with_snapshot"] == 0 and "0건 충전" in res["reason"]))
 
     passed = sum(1 for _, v in ok if v)
     for name, v in ok:
