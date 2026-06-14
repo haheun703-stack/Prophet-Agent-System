@@ -4,10 +4,12 @@
   - shadow가 15:50 자동적재인데 일봉 fill은 저녁(수동)이라 forward가 매일 1주기 지연됨.
   - 해결: fill을 먼저 돌리고 그 뒤에 shadow/paper를 둬서 forward 당일 충전.
 
-순서(★fill 후 shadow = forward 지연 해결★):
+순서(★fill 후 shadow/paper = forward 지연 해결★):
   ① fill 4-way → ② step6 sync → ③ shadow(build+forward) → ④ paper 3-Type
-  → ⑤ 수급 4종 → ⑥ 11주체 → ⑦ 국적별
-  - 관측 3단계(shadow·paper)는 일봉만 필요 → fill 직후 실행(수급보다 앞).
+  → ⑤ paper forward 충전 → ⑥ 수급 4종 → ⑦ 11주체 → ⑧ 국적별 → ⑨ F1
+  - 관측 3단계(shadow·paper build·paper forward)는 일봉만 필요 → fill 직후 실행(수급보다 앞).
+  - ⑤(6/15 신설): paper는 ④에서 코호트 생성만 → forward는 과거 코호트 대상이라 별도 단계.
+    shadow가 ③에서 build+forward를 묶는 것과 동일 취지(H-3 dead code 해소).
 
 안전:
   - 봇 OFF·매수 무접촉·실주문0·SAJANG 무변경(데이터/관측 전용, 검증된 진입점만 호출).
@@ -74,13 +76,15 @@ def main():
          [PY, "tools/run_sector_reversal_shadow_daily.py"], 600),
         ("④ paper 3-Type",
          [PY, "tools/paper_3type_daily_run_6_6.py", "--asof", tstr, "--scan-events"], 900),
-        ("⑤ 수급 4종",
+        ("⑤ paper forward 충전",   # 6/15 H-3 해소 — 과거 코호트 forward_d1/d3/d5·MFE/MAE 멱등 충전
+         [PY, "tools/run_paper_3type_forward_daily.py"], 300),
+        ("⑥ 수급 4종",
          [PY, "-c", "import collect_all as C; C.step2_supply_demand(C.get_universe_codes())"], 3600),
-        ("⑥ 11주체",
+        ("⑦ 11주체",
          [PY, "-c", "from data.market_investor_collector import collect_market_investor as f; r=f(days=3); print('ok' if r else 'EMPTY')"], 600),
-        ("⑦ 국적별",
+        ("⑧ 국적별",
          [PY, "-c", "import collect_all; collect_all.step3_nationality()"], 600),
-        ("⑧ F1 forward+preflight",
+        ("⑨ F1 forward+preflight",
          [PY, "tools/run_f1_forward_preflight.py"], 300),
     ]
 
