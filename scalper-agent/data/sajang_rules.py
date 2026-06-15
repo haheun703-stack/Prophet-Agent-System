@@ -160,6 +160,15 @@ class SajangRules:
     WL_OVERHEAT: float = 0.30              # 과열회피(이상=blow-off 소진 차단)
     WL_LIQ_FLOOR_억: float = 30.0          # 거래대금 하한(못 사는 끼 제외)
 
+    # ── early variant(바닥 초입 포착) shadow 임계 (6/16 설계, shadow-only·주문룰 아님) ──
+    # 근거: docs/02-design/early_entry_shadow_6_15.md — 원익IPS 6/4 pos20=0.03 초입(종가→6/12 +44%)
+    #   vs 6/12 pos20=0.96 추격(d1=-4.8%). 변별자=거래량 아닌 직전 위치(pos20). 거래량 역설(초입1.6x<추격3.8x).
+    # strict(현행 WL_*)와 병렬 shadow 산출 → 6/16~ 2주 forward 관측 → 사장님 결정(관측 없이 flip 금지).
+    # ★ 거래량은 hard gate 완전 제거 → feature 기록만(§7 사장님 6/15 결정). would_stop=SAJANG.TRAILING_PCT 참조.
+    EARLY_DORMANT_MAX: float = 0.20        # early: 휴면 완화(직전 PRE일 최대 일간상승 < 20%, strict 0.10)
+    EARLY_BASE_POS: float = 0.40           # early: pos20 더 타이트(진짜 바닥 ≤ 0.40, strict 0.60)
+    EARLY_TOP_N: int = 30                  # early 후보 폭발 통제(끼점수 상위 N, 0=무제한) — 첫날 모니터 후 조정
+
     @classmethod
     def get_take_profit(cls, buy_price: float) -> int:
         """사장님 영구 룰 — 모든 매수 시 TP=0 강제 (트레일링만)."""
