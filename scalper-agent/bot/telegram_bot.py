@@ -3919,7 +3919,8 @@ class BodyHunterBot:
         import time as _time
         import json as _json
         t0 = _time.time()
-        summary = {"total": 0, "generated": 0, "tg_sent": 0, "supa": 0, "fail": 0}
+        summary = {"total": 0, "generated": 0, "tg_sent": 0, "supa": 0, "fail": 0,
+                   "nat_null": 0, "score_batch_failed": False}
 
         try:
             # ── 대상 분리: 텔레그램용 vs Supabase-only ──
@@ -3963,8 +3964,11 @@ class BodyHunterBot:
             scores = {}
             try:
                 scores = await asyncio.to_thread(score_nationality_batch, all_codes, krx_date_str)
-            except Exception:
-                pass
+            except Exception as e:
+                # R2(웹봇 6/15): 조용한 실패 금지 — batch 전체 예외 시 로그 + 요약 반영.
+                # R1 덕에 scores={}면 전 종목 nat_score=None(미산출)로 안전 적재(거짓 0점 방지).
+                summary["score_batch_failed"] = True
+                logger.error(f"[NatChart] score_nationality_batch 전체 실패 — 전 종목 미산출(null) 적재: {e}")
 
             # ── 전송: 추천+보유만 텔레그램, 전체는 Supabase ──
             for code, buf in charts.items():
@@ -3986,7 +3990,13 @@ class BodyHunterBot:
 
                 # Supabase: 전체 업로드
                 try:
-                    sc, reason = scores.get(code, (0, ""))
+                    # R1(웹봇 6/15): 미산출은 0이 아니라 null. batch 누락/실패/"데이터없음"은
+                    # nat_score=None으로 적재 → 웹이 회색 '—' 표시(빨강 WORST·tier 거짓집계 방지).
+                    # "변화미미"(changes 있고 변화 미달)는 진짜 중립 0점이라 보존(sc=0 유지).
+                    sc, reason = scores.get(code, (None, "미산출"))
+                    if sc is None or reason in ("데이터없음", "미산출"):
+                        sc = None
+                        summary["nat_null"] += 1
                     buf.seek(0)
                     await asyncio.to_thread(
                         upload_chart_to_supabase,
@@ -4006,7 +4016,7 @@ class BodyHunterBot:
         # ── 완료 요약 알림 (반드시 발송) ──
         elapsed = _time.time() - t0
         try:
-            status = "✅" if summary["fail"] == 0 else "⚠️"
+            status = "✅" if (summary["fail"] == 0 and not summary["score_batch_failed"]) else "⚠️"
             msg = (
                 f"{status} 국적차트 자동생성 완료\n"
                 f"대상: {summary['total']}종목\n"
@@ -4018,6 +4028,11 @@ class BodyHunterBot:
             )
             if summary["fail"] > 0:
                 msg += f"\n⚠️ {summary['fail']}종목 차트 생성 실패 — 국적데이터 확인 필요"
+            # R2(웹봇 6/15): batch 실패/미산출을 요약에 반영
+            if summary["score_batch_failed"]:
+                msg += "\n⚠️ 국적점수 batch 전체 실패 — 전 종목 미산출(null) 적재"
+            elif summary["nat_null"] > 0:
+                msg += f"\nℹ️ 미산출 {summary['nat_null']}종목 → null 적재(웹 회색 '—')"
             await context.bot.send_message(chat_id=self.chat_id, text=msg)
         except Exception as e:
             logger.error(f"[NatChart] 요약 알림 발송 실패: {e}")
