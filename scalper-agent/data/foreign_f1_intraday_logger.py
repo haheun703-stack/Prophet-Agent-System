@@ -108,10 +108,37 @@ def _paper_candidate_codes(asof: str) -> set:
     return out
 
 
-def _foreign_net_today(session: Tuple[str, dict], code: str, asof: str) -> Optional[int]:
-    """종목 외인 당일 누적 잠정 순매수 금액(원). read-only(저장 0). None = 미가용/당일행 부재.
+def _fetch_foreign_ranking_map(trader) -> dict:
+    """FHPTJ04400000(외국인/기관 매매종목 가집계) 장중 추정 → {code(6자리): 외인 순매수금액(백만원)}.
 
-    None 반환 = '장중 당일 외인 잠정 미충전' 신호 → preflight가 6/12에 데이터 전제 판정.
+    sort_cls "0"=외인 순매수상위(양수) + "1"=외인 순매도상위(음수, frgn_ntby_tr_pbmn 부호 그대로).
+    랭킹 밖 종목은 dict에 없음(=외인 순매수/매도 상위권 아님 = 잠정 미미 → 호출 측 None 처리).
+    개장 직후(~09:30)는 빈 dict 가능(가집계 미형성). 실패 시 {}. read-only(저장 0).
+
+    ★ 6/15 전환: inquire-investor(FHKST01010900, 일별 가집계)는 장중 당일분 0 미집계라 F1
+      장중 잠정 목적에 부적합(6/15 실호출 검증). 장중 추정 가집계 TR(FHPTJ)로 외인 소스 교체.★
+    """
+    if trader is None:
+        return {}
+    out = {}
+    try:
+        for sort_cls in ("0", "1"):   # 0=순매수상위, 1=순매도상위
+            rows = trader.fetch_foreign_inst_total(target="1", sort_cls=sort_cls) or []
+            for r in rows:
+                code = str(r.get("code", "")).zfill(6)
+                amt = r.get("amount")
+                if code and len(code) == 6 and code != "000000" and amt is not None:
+                    out[code] = int(amt)   # 백만원, 부호 포함(순매수+/순매도-)
+    except Exception as e:
+        logger.warning(f"[F1] 외인 랭킹맵(FHPTJ) 조회 실패: {e}")
+    return out
+
+
+def _foreign_net_today(session: Tuple[str, dict], code: str, asof: str) -> Optional[int]:
+    """[DEPRECATED — 스냅샷은 _fetch_foreign_ranking_map(FHPTJ)로 전환. probe 비교용으로만 보존.]
+    종목 외인 당일 누적 잠정 순매수 금액(원). read-only(저장 0). None = 미가용/당일행 부재.
+
+    inquire-investor(FHKST01010900)는 일별 가집계라 장중 당일분 0/부재 → F1 부적합(6/15 검증).
     """
     try:
         from data.flow_collector import _fetch_investor_api
@@ -212,21 +239,23 @@ def select_and_snapshot_1100(trader, asof: Optional[str] = None,
         data["records"] = records
         logger.info(f"[F1] {asof} 선정: gainer{len(gainer_codes)} + 후보{len(paper_codes)} = {len(records)}종목 (고정)")
 
-    if session is not None:
-        _snapshot_into(data, asof, "1100", session)
+    # 첫 외인 스냅샷 — FHPTJ04400000 장중 추정 가집계 랭킹맵(trader 기반). session 인자는 미사용(하위호환).
+    ranking_map = _fetch_foreign_ranking_map(trader)
+    _snapshot_into(data, "1100", ranking_map)
     if save:
         _save(asof, data)
     return data
 
 
-def _snapshot_into(data: dict, asof: str, snap_label: str,
-                   session: Tuple[str, dict]) -> int:
-    """고정 리스트 종목들의 외인 당일 잠정을 snap_label 슬롯에 기록. is_final record는 skip. 반환=찍힌 수."""
+def _snapshot_into(data: dict, snap_label: str, ranking_map: dict) -> int:
+    """고정 리스트 종목 중 외인 랭킹맵(FHPTJ 장중 추정)에 든 종목의 외인 순매수금액(백만원)을
+    snap_label 슬롯에 기록. is_final record skip. 랭킹 밖(map 부재)=잠정 미미로 미기록(None 유지).
+    반환=찍힌 수."""
     filled = 0
     for rec in data["records"]:
         if rec.get("is_final"):   # 확정 보존(3원칙 ②)
             continue
-        fn = _foreign_net_today(session, rec["code"], asof)
+        fn = ranking_map.get(rec["code"])   # None = 외인 순매수/매도 상위권 아님(잠정 미미)
         if fn is not None:
             rec.setdefault("foreign_net", {})[snap_label] = fn
             filled += 1
@@ -235,24 +264,24 @@ def _snapshot_into(data: dict, asof: str, snap_label: str,
 
 def snapshot(trader, snap_label: str, asof: Optional[str] = None,
              session: Tuple[str, dict] = None, save: bool = True) -> int:
-    """13:00/14:30/15:30 — 고정 리스트 외인 스냅샷 추가(중도 교체 0). 반환=찍힌 수."""
+    """13:00/14:30/15:30 — 고정 리스트 외인 스냅샷 추가(중도 교체 0). 반환=찍힌 수.
+
+    외인 소스 = FHPTJ04400000 장중 추정 가집계(trader). session 인자는 하위호환용·미사용."""
     asof = asof or _today_kst()
     if snap_label not in SNAP_LABELS:
         raise ValueError(f"snap_label must be in {SNAP_LABELS}")
-    if session is None:
-        from data.flow_collector import _get_kis_session
-        session = _get_kis_session()
-        if session is None:
-            logger.error("[F1] KIS 세션 없음 — 스냅샷 스킵")
-            return 0
+    if trader is None:
+        logger.error("[F1] trader 없음 — 스냅샷 스킵")
+        return 0
     data = _load(asof)
     if not data.get("selected_at"):
         logger.warning(f"[F1] {asof} 선정 전 — {snap_label} 스냅샷 스킵(11:00 select 먼저)")
         return 0
-    filled = _snapshot_into(data, asof, snap_label, session)
+    ranking_map = _fetch_foreign_ranking_map(trader)
+    filled = _snapshot_into(data, snap_label, ranking_map)
     if save:
         _save(asof, data)
-    logger.info(f"[F1] {asof} {snap_label} 스냅샷: {filled}/{len(data['records'])}종목 외인 충전")
+    logger.info(f"[F1] {asof} {snap_label} 스냅샷: {filled}/{len(data['records'])}종목 외인 충전(FHPTJ 랭킹)")
     return filled
 
 
@@ -368,22 +397,19 @@ def _selftest() -> bool:
     r, l = _classify(0, 100)
     ok.append(("T6 11:00=0 → SELL_AT_1100", r is None and l == "FOREIGN_NET_SELL_AT_1100"))
 
-    # T7 is_final 3원칙 — 확정 record는 스냅샷 갱신 skip
+    # T7 is_final 3원칙 — 확정 record는 스냅샷 갱신 skip (랭킹맵 교집합 방식, KIS 무호출)
     data = {"date": "2026-06-12", "selected_at": "1100", "records": [
         {"code": "000660", "is_final": True, "foreign_net": {"1100": 999}},
         {"code": "058470", "is_final": False, "foreign_net": {"1100": 100}},
+        {"code": "999999", "is_final": False},   # 랭킹 밖 → 미기록(None 유지)
     ]}
-    # _snapshot_into는 module-global _foreign_net_today를 부르므로 globals() 패치(KIS 무호출)
-    orig = globals()["_foreign_net_today"]
-    globals()["_foreign_net_today"] = lambda s, c, a: 777
-    try:
-        filled = _snapshot_into(data, "2026-06-12", "1300", ("u", {}))
-    finally:
-        globals()["_foreign_net_today"] = orig
+    ranking_map = {"000660": 777, "058470": 777}   # 999999는 랭킹 밖이라 map에 없음
+    filled = _snapshot_into(data, "1300", ranking_map)
     final_rec = data["records"][0]["foreign_net"]
     nonfinal_rec = data["records"][1]["foreign_net"]
     ok.append(("T7 확정 record 보존(skip)", "1300" not in final_rec and final_rec["1100"] == 999))
     ok.append(("T7b 잠정 record 갱신", nonfinal_rec.get("1300") == 777 and filled == 1))
+    ok.append(("T7c 랭킹 밖 종목 미기록", not data["records"][2].get("foreign_net")))
 
     # T8 preflight — 빈 ledger 감지
     res = check_f1_ledger_today("1999-01-01")
