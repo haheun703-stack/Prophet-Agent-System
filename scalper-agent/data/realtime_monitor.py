@@ -443,8 +443,10 @@ class RealtimeMonitor:
         if price <= pos.current_sl:
             return "FULL_SELL", f"SL 히트 ({pos.current_sl:,}원)"
 
-        # 2) TP 히트
-        if price >= pos.current_tp:
+        # 2) TP 히트 (★ 6/18 트랩 가드: current_tp=0 = 트레일링-only → 미발동 ★)
+        # SAJANG FIXED_TP_DISABLED=True면 복원 시 tp=0 등록 → price>=0 항상참 즉시매도 방지.
+        # 청산은 위 SL 히트(트레일링 current_sl)가 담당.
+        if pos.current_tp > 0 and price >= pos.current_tp:
             return "FULL_SELL", f"TP 달성 ({pos.current_tp:,}원)"
 
         # 3) 추세 악화 감지 (최근 5회 연속 하락)

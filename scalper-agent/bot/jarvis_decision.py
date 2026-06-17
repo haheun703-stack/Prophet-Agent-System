@@ -36,6 +36,9 @@ logger = logging.getLogger("BH.Jarvis")
 
 _DATA_DIR = Path(__file__).resolve().parent.parent / "data_store"
 
+# ★ 6/18 단일진실 통일 — TP/SL은 SAJANG 헬퍼 경유 (하드코딩 금지, RULE-005~007) ★
+from data.sajang_rules import SAJANG
+
 # 시총 분류 기준 (억 단위)
 MARKET_CAP_LARGE = 10_000   # 1조+
 MARKET_CAP_MID = 3_000      # 3,000억+
@@ -228,27 +231,25 @@ def decide_action(pos: dict, current_price: int) -> Tuple[str, str]:
             f"VWAP 하단 {vwap_ratio:.3f} / 손실 {pnl_pct:.1f}% → 평단 낮춤 (4시그널 검증)"
         )
 
-    # ── 3️⃣ 시총별 SL (사장님 5/21 22:00 결정) ──
+    # ── 3️⃣ SL — SAJANG 단일진실 (6/18 통일) ──
+    # 5/21 시총별(-10/-5/-3%) 하드코딩 폐기 → SAJANG.get_normal_sl 경유.
+    # 5/25 사장님 룰: 매수가 -3% 안전망 일관(NORMAL_SL_PCT). 시총 무관.
+    # tier/cap은 로그/사유 라벨용으로만 유지(read-only).
     tier, cap = get_market_cap_tier(code)
+    sl_price = SAJANG.get_normal_sl(buy_price)
+    if sl_price > 0 and current_price <= sl_price:
+        return ACTION_SL_SMALL, (
+            f"{tier} {cap:,}억 / 손실 {pnl_pct:.1f}% / "
+            f"SL {sl_price:,}원 도달 (SAJANG -{SAJANG.NORMAL_SL_PCT:.0f}% 안전망)"
+        )
 
-    if tier == "LARGE":
-        if pnl_pct <= -10:
-            return ACTION_SL_LARGE, f"대형주 {cap:,}억 / 손실 {pnl_pct:.1f}% < -10%"
-    elif tier == "MID":
-        if pnl_pct <= -5:
-            return ACTION_SL_MID, f"중형주 {cap:,}억 / 손실 {pnl_pct:.1f}% < -5%"
-    elif tier == "SMALL":
-        if pnl_pct <= -3:
-            return ACTION_SL_SMALL, f"소형주 {cap:,}억 / 손실 {pnl_pct:.1f}% < -3%"
-    else:
-        # UNKNOWN = 안전 우선 (-3% 손절)
-        if pnl_pct <= -3:
-            return ACTION_SL_SMALL, f"시총 미상 / 손실 {pnl_pct:.1f}% < -3% (안전 우선)"
-
-    # ── 4️⃣ 익절 (트레일링 활성 시 별도 처리 — 여기선 일반 익절만) ──
-    # 트레일링은 _job_monitor_fallback에서 별도 처리. 여기는 단순 +10% 익절.
-    if pnl_pct >= 10:
-        return ACTION_TAKE_PROFIT, f"수익 +{pnl_pct:.1f}% → 익절 (smart_sell 지정가)"
+    # ── 4️⃣ 익절 — SAJANG 단일진실 (6/18 통일) ──
+    # 5/21 고정 +10% TP 폐기 → SAJANG.get_take_profit 경유.
+    # FIXED_TP_DISABLED=True(트레일링-only) → get_take_profit()=0 → 아래 가드로 미발동.
+    # 청산은 트레일링(고점 -3%)이 담당. 사장님이 고정TP 부활 시 SAJANG 한 곳만 변경.
+    tp_price = SAJANG.get_take_profit(buy_price)
+    if tp_price > 0 and current_price >= tp_price:
+        return ACTION_TAKE_PROFIT, f"수익 +{pnl_pct:.1f}% / TP {tp_price:,}원 도달 (SAJANG 지정가)"
 
     return ACTION_HOLD, f"관망 (손익 {pnl_pct:+.1f}% / VWAP {vwap_pos} / 시총 {tier})"
 
