@@ -98,3 +98,11 @@ nul
 kis_token.json
 **/kis_token*.json
 scalper-agent/kis_token.json
+
+# ── 6/17 전체커밋 정리: 키/임시/외부SDK/바이너리 제외 ──
+_tmp_zips/
+_tmp_pdf_pages/
+KISOpenAPI_2603*/
+*.bundle
+*.patch
+3파,4파 상승/
