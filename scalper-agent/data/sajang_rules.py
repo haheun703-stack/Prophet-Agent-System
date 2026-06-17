@@ -61,6 +61,11 @@ class SajangRules:
     LIMIT_UP_SELL_PCT: float = 29.0            # 절반 매도 시점 +29%
     LIMIT_UP_HOLD_RATIO: float = 0.5           # 절반 D+1 이월
 
+    # ★ 6/17 사장님 결정 — 상한가 D+0 hard_stop -4.5% 별도 유지 (trailing -3%과 다른 값 공존) ★
+    # 근거: 상한가 종목 시초 변동성↑ → -3%는 상한가 직후 출렁임에 휩쏘. Codex 5/27 원 설계 -4.5%.
+    # 실주문 0(limit_up_position_manager=paper-only·never order). 단일진실화로 하드코딩 0.955/-4.5 제거.
+    LIMIT_UP_HARD_STOP_PCT: float = 4.5        # 상한가 D+0 hard_stop = 진입가 대비 -4.5%
+
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # ★ 5/25 영구 룰 B — 15:26 +10%+ 분할 매도
     # 영구 메모리: project_5_25_rule_b_15_26 (단타봇 자율 5/25 신설)
@@ -183,6 +188,16 @@ class SajangRules:
     def get_trailing_sl(cls, high_watermark: float) -> int:
         """사장님 영구 룰 — 고점 -3% 트레일링 SL."""
         return int(high_watermark * (1 - cls.TRAILING_PCT / 100))
+
+    @classmethod
+    def get_limit_up_hard_stop(cls, entry_price: float) -> int:
+        """사장님 6/17 결정 — 상한가 D+0 진입가 대비 -4.5% hard_stop (paper-only)."""
+        return int(entry_price * (1 - cls.LIMIT_UP_HARD_STOP_PCT / 100))
+
+    @classmethod
+    def is_limit_up_hard_stop_breached(cls, pnl_pct: float) -> bool:
+        """사장님 6/17 결정 — 상한가 D+0 pnl -4.5% 이하 = hard_stop 도달."""
+        return pnl_pct <= -cls.LIMIT_UP_HARD_STOP_PCT
 
     @classmethod
     def kki_grade(cls, kki_score: float) -> str:

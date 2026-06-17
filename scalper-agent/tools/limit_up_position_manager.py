@@ -54,6 +54,10 @@ except Exception:  # pragma: no cover
     get_trading_days_between = None
     is_trading_day = None
 
+# ★ Rule Registry 단일진실 — trailing/hard_stop/익절·갭다운 임계는 SAJANG 경유 (하드코딩 금지) ★
+# (E402: 위 trading_calendar try/except 이후 import 의도적 — sys.path 셋업 후 로드)
+from data.sajang_rules import SAJANG
+
 
 @dataclass
 class PositionAction:
@@ -286,7 +290,7 @@ def _price_fields(pos: dict[str, Any], price_info: dict[str, Any]) -> dict[str, 
         vwap = _as_int(pos.get("last_vwap"))
         vwap_source = str(pos.get("last_vwap_source") or "UNAVAILABLE")
     vwap_gap = _pct(current, vwap) if vwap > 0 else 0.0
-    trail_stop = _round_price(high_water * 0.97) if high_water > entry else 0
+    trail_stop = _round_price(high_water * (1 - SAJANG.TRAILING_PCT / 100)) if high_water > entry else 0
 
     return {
         "current_price": current,
@@ -309,7 +313,7 @@ def _update_mark_to_market(pos: dict[str, Any], fields: dict[str, Any]) -> None:
     pos["trail_stop_price"] = fields["trail_stop_price"]
     pos["last_vwap"] = fields["vwap"]
     pos["last_vwap_source"] = fields["vwap_source"]
-    if pos["last_pnl_pct"] >= 3.0 or _as_int(pos.get("day_offset", 0)) >= 1:
+    if SAJANG.is_trailing_activated(pos["last_pnl_pct"]) or _as_int(pos.get("day_offset", 0)) >= 1:
         pos["trailing_active"] = True
 
 
@@ -344,7 +348,7 @@ def record_entry(
         existing["avg_entry_price"] = new_avg
         existing["initial_qty"] = new_initial
         existing["remaining_qty"] = new_remaining
-        existing["hard_stop_price"] = _round_price(new_avg * 0.955)
+        existing["hard_stop_price"] = _round_price(new_avg * (1 - SAJANG.LIMIT_UP_HARD_STOP_PCT / 100))
         existing["high_water_price"] = max(_as_int(existing.get("high_water_price")), entry_price)
         existing.setdefault("buy_tranches", []).append(
             {"time": now_iso, "qty": qty, "price": entry_price, "source": source, "note": note}
@@ -364,7 +368,7 @@ def record_entry(
         "remaining_qty": qty,
         "sold_qty": 0,
         "cost": cost,
-        "hard_stop_price": _round_price(entry_price * 0.955),
+        "hard_stop_price": _round_price(entry_price * (1 - SAJANG.LIMIT_UP_HARD_STOP_PCT / 100)),
         "high_water_price": entry_price,
         "trail_stop_price": 0,
         "trailing_active": False,
@@ -441,7 +445,7 @@ def _classify_position(
     remaining = _as_int(pos.get("remaining_qty"))
     initial = _as_int(pos.get("initial_qty"))
     sold = _as_int(pos.get("sold_qty"))
-    hard_stop = _as_int(pos.get("hard_stop_price")) or _round_price(entry * 0.955)
+    hard_stop = _as_int(pos.get("hard_stop_price")) or _round_price(entry * (1 - SAJANG.LIMIT_UP_HARD_STOP_PCT / 100))
     pnl = _pct(current, entry)
     flags = pos.setdefault("flags", {})
     spread_pct = _as_float(spread_info.get("spread_pct"))
@@ -505,15 +509,15 @@ def _classify_position(
     if not live_ok:
         return make("WAIT_PRICE", 0, "wait", "price unavailable; do not issue a sell instruction")
 
-    if current <= hard_stop or pnl <= -4.5:
+    if current <= hard_stop or SAJANG.is_limit_up_hard_stop_breached(pnl):
         return make("SELL_ALL", remaining, "risk", f"hard stop breached: current={current:,}, stop={hard_stop:,}, pnl={pnl:+.2f}%")
 
-    if day_offset == 1 and _time_gte(t, 9, 1) and pnl <= -7.0:
-        return make("SELL_ALL", remaining, "risk", f"D+1 gap protection: pnl={pnl:+.2f}% <= -7.00%")
+    if day_offset == 1 and _time_gte(t, 9, 1) and pnl <= SAJANG.D1_GAP_SELL_THRESHOLD:
+        return make("SELL_ALL", remaining, "risk", f"D+1 gap protection: pnl={pnl:+.2f}% <= {SAJANG.D1_GAP_SELL_THRESHOLD:.2f}%")
 
     high_water = fields["high_water_price"]
     trail_stop = fields["trail_stop_price"]
-    trailing_active = bool(pos.get("trailing_active")) or pnl >= 3.0 or day_offset >= 1
+    trailing_active = bool(pos.get("trailing_active")) or SAJANG.is_trailing_activated(pnl) or day_offset >= 1
     if trailing_active and trail_stop > 0:
         checks.append(_check("trailing", "PASS", f"high_water={high_water:,}, trail_stop={trail_stop:,}"))
         if current <= trail_stop and high_water > entry:
@@ -521,9 +525,9 @@ def _classify_position(
     else:
         checks.append(_check("trailing", "PENDING", "trailing not active yet"))
 
-    if day_offset >= 1 and pnl >= 10.0 and not flags.get("profit_half_sold"):
+    if day_offset >= 1 and pnl >= SAJANG.RULE_B_THRESHOLD and not flags.get("profit_half_sold"):
         qty = min(remaining, _ceil_qty(initial, 0.50))
-        return make("SELL_PARTIAL", qty, "profit_lock", f"profit lock: pnl={pnl:+.2f}% >= +10%; sell 50% and trail rest")
+        return make("SELL_PARTIAL", qty, "profit_lock", f"profit lock: pnl={pnl:+.2f}% >= +{SAJANG.RULE_B_THRESHOLD:.0f}%; sell 50% and trail rest")
 
     if day_offset == 0:
         if _time_between(t, 14, 45, 15, 20):
@@ -672,10 +676,10 @@ def build_position_report(args: argparse.Namespace) -> dict[str, Any]:
             "d1_base_sell_pct": 40,
             "d2_base_sell_pct": 30,
             "d3_remaining_time_stop": True,
-            "hard_stop_pct": -4.5,
-            "d1_gap_protection_pct": -7.0,
-            "profit_lock_pct": 10.0,
-            "trailing_pct": 3.0,
+            "hard_stop_pct": -SAJANG.LIMIT_UP_HARD_STOP_PCT,
+            "d1_gap_protection_pct": SAJANG.D1_GAP_SELL_THRESHOLD,
+            "profit_lock_pct": SAJANG.RULE_B_THRESHOLD,
+            "trailing_pct": SAJANG.TRAILING_PCT,
             "apply_paper_actions": bool(args.apply_paper_actions),
         },
     }
