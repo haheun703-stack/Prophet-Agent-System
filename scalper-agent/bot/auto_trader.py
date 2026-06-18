@@ -685,7 +685,9 @@ class AutoTrader:
                     target_state = self._init_dynamic_target(code, name, cp)
                     from data.sajang_rules import SAJANG
                     sl = target_state.dynamic_sl if target_state else item.get("sl", SAJANG.get_normal_sl(cp))
-                    tp = target_state.dynamic_tp if target_state else item.get("tp", SAJANG.get_take_profit(cp))
+                    # ★ 6/18 단일진실(B-2/AUD-8): ATR dynamic_tp / 추천 tp 누수 차단.
+                    #   트레일링-only → persist TP=0 (target_state 유무 무관). 청산은 트레일링/SL.
+                    tp = SAJANG.get_take_profit(cp)
 
                     self._positions[code] = {
                         "entry_price": cp,
@@ -3500,8 +3502,11 @@ class AutoTrader:
                                 target_state = self._init_dynamic_target(
                                     code, watch["name"], cp
                                 )
+                                from data.sajang_rules import SAJANG
                                 sl = target_state.dynamic_sl if target_state else watch["sl"]
-                                tp = target_state.dynamic_tp if target_state else watch["tp"]
+                                # ★ 6/18 단일진실(B-2/AUD-8): ATR dynamic_tp / watch tp 누수 차단.
+                                #   트레일링-only → persist TP=0. 청산은 트레일링/SL.
+                                tp = SAJANG.get_take_profit(cp)
                                 self._positions[code] = {
                                     "entry_price": cp,
                                     "stop_loss": sl,
@@ -4568,6 +4573,7 @@ class AutoTrader:
             DynamicTargetEngine, ACTION_FULL_SELL, ACTION_PARTIAL_SELL,
             ACTION_STOP_LOSS, ACTION_HOLD, ACTION_ADD,
         )
+        from data.sajang_rules import SAJANG  # ★ 6/18 단일진실 — TP 누수 차단용
 
         engine = DynamicTargetEngine()
         lines = ["📊 동적 목표가 재평가"]
@@ -4642,7 +4648,11 @@ class AutoTrader:
                     reason = target_state.reason
                     pos["target_state"] = target_state
                     pos["stop_loss"] = target_state.dynamic_sl
-                    pos["take_profit"] = target_state.dynamic_tp
+                    # ★ 6/18 단일진실(B-2/AUD-8): ATR dynamic_tp를 pos에 persist하면
+                    #   RealtimeMonitor가 고정TP로 매도(트레일링-only 영구룰 위반).
+                    #   SAJANG.get_take_profit(=0) 경유로 누수 차단. 엔진 내부
+                    #   target_state.dynamic_tp는 트레일링 활성 트리거용으로만 유지(미매도).
+                    pos["take_profit"] = SAJANG.get_take_profit(pos["entry_price"])
 
                     # ── 재평가 후 트레일링 상태를 position dict에 역동기화 ──
                     pos["high_watermark"] = target_state.high_watermark
@@ -4686,8 +4696,7 @@ class AutoTrader:
                                 f"  ⚠️ {pos.get('name', code)} REVERSAL 방어\n"
                                 f"     SL 강화: {old_sl:,} → {reversal_sl:,}"
                             )
-                        # TP도 축소 (현재가 +3%로 제한)
-                        from data.sajang_rules import SAJANG
+                        # TP도 축소 (현재가 +3%로 제한) — SAJANG은 함수 상단 L4576에서 import
                         reversal_tp = SAJANG.get_take_profit(cp)
                         old_tp = pos["take_profit"]
                         if reversal_tp < old_tp:
