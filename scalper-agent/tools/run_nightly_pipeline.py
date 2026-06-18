@@ -76,6 +76,8 @@ def main():
          [PY, "tools/run_sector_reversal_shadow_daily.py"], 600),
         ("③-2 early variant shadow",   # 6/16 초입 포착 strict/early 병렬 shadow(매수 무접촉·관측 전용)
          [PY, "tools/run_early_variant_shadow_daily.py"], 600),
+        ("③-3 reentry shadow",   # 6/18 재진입 룰 시뮬(early 후보 소비·손절+재진입 vs 손절만 vs 홀딩·관측 전용)
+         [PY, "tools/run_reentry_shadow_daily.py"], 600),
         ("④ paper 3-Type",
          [PY, "tools/paper_3type_daily_run_6_6.py", "--asof", tstr, "--scan-events"], 900),
         ("⑤ paper forward 충전",   # 6/15 H-3 해소 — 과거 코호트 forward_d1/d3/d5·MFE/MAE 멱등 충전

@@ -174,6 +174,21 @@ class SajangRules:
     EARLY_BASE_POS: float = 0.40           # early: pos20 더 타이트(진짜 바닥 ≤ 0.40, strict 0.60)
     EARLY_TOP_N: int = 30                  # early 후보 폭발 통제(끼점수 상위 N, 0=무제한) — 첫날 모니터 후 조정
 
+    # ── 재진입 룰 (5/31 설계·데이터 검증값) — 주문룰. 현재 shadow 시뮬레이션만 소비(라이브 매수경로 미배선) ──
+    # 설계: docs/02-design/reentry_rule_5_31.md (§2.2 파라미터 = breakout_reentry/reentry_param_optimizer 검증값)
+    # 목적: "흔들기 -3% 손절 뒤 추세 살아있으면(reclaim) 재진입" → would_stop 93% 종목 수익회복 관측.
+    # ★ 6/18 현재: data/reentry_shadow.py(관측 전용)만 should_reenter/effective_hold_days 호출.
+    #   라이브 매수경로 연결은 shadow 검증 + §5 라이브숙제 + 사장님 승인 후 별도(paper 먼저).
+    REENTRY_ENABLED: bool = True           # 사장님 영구룰 default 활성(off 금지 원칙). 단 shadow만 참조(라이브 미배선).
+    REENTRY_MAX: int = 2                    # 최대 재진입 횟수 (plateau 2=3=∞, 칼줍기 방지)
+    REENTRY_AT: str = "close"              # 당일 종가 체결 (종가 >> 익일시가)
+    REENTRY_REQUIRE_RECLAIM: bool = True   # 종가 ≥ 직전 트레일선(reclaim) = 추세 confirm
+    REENTRY_MIN_KKI_GRADE: str = "MODERATE"  # 끼 없는 종목(SLUGGISH) 재추격 금지
+    REENTRY_SIZE_RATIO: float = 1.0        # 풀 비중 (1.0 > 0.5)
+    HOLD_BASE_DAYS: int = 3                # D+3 단타 기본 (자본효율 최고 2.76%/일)
+    RIDE_KKI_GRADE: str = "EXPLOSIVE"      # 이 등급만 RIDE 연장(추세 끝까지)
+    RIDE_MAX_DAYS: int = 10                # RIDE 안전 캡
+
     @classmethod
     def get_take_profit(cls, buy_price: float) -> int:
         """사장님 영구 룰 — 모든 매수 시 TP=0 강제 (트레일링만)."""
@@ -209,6 +224,43 @@ class SajangRules:
         if kki_score >= cls.KKI_MODERATE:
             return "MODERATE"
         return "SLUGGISH"
+
+    # 끼 등급 서열 (재진입 자격게이트 비교용 단일진실)
+    _KKI_GRADE_RANK = {"SLUGGISH": 0, "MODERATE": 1, "HUNTABLE": 2, "EXPLOSIVE": 3}
+
+    @classmethod
+    def effective_hold_days(cls, kki_grade: str) -> int:
+        """재진입 룰 — 끼 등급별 유효 보유/재진입 윈도우 (EXPLOSIVE만 RIDE 연장).
+
+        설계 reentry_rule_5_31.md §2.2: 高끼(EXPLOSIVE)는 추세 끝까지(RIDE 캡 D+10),
+        그 외는 D+3 단타 기본. 리터럴 0건 — SAJANG 상수만 사용.
+        """
+        return cls.RIDE_MAX_DAYS if kki_grade == cls.RIDE_KKI_GRADE else cls.HOLD_BASE_DAYS
+
+    @classmethod
+    def should_reenter(cls, close: float, last_stop: float, kki_grade: str,
+                       re_count: int, day_offset: int, thesis_ok: bool = True) -> bool:
+        """재진입 룰 — 손절 후 재매수 자격 판정 (순수함수, 매도/주문 무접촉).
+
+        설계 reentry_rule_5_31.md §2.1·2.3 — 하나라도 불만족 시 False("방향 틀리면 안 탄다"):
+          ① REENTRY_ENABLED ② re_count < REENTRY_MAX ③ 명분 유효(thesis_ok)
+          ④ 끼 ≥ REENTRY_MIN_KKI_GRADE(SLUGGISH 재추격 금지)
+          ⑤ 윈도우 내(최초 진입 후 effective_hold_days 이내)
+          ⑥ reclaim(종가 ≥ 직전 트레일선) — REENTRY_REQUIRE_RECLAIM 시
+        """
+        if not cls.REENTRY_ENABLED:
+            return False
+        if re_count >= cls.REENTRY_MAX:
+            return False
+        if not thesis_ok:
+            return False
+        if cls._KKI_GRADE_RANK.get(kki_grade, 0) < cls._KKI_GRADE_RANK.get(cls.REENTRY_MIN_KKI_GRADE, 1):
+            return False
+        if day_offset > cls.effective_hold_days(kki_grade):
+            return False
+        if cls.REENTRY_REQUIRE_RECLAIM and close < last_stop:
+            return False
+        return True
 
     @classmethod
     def is_trailing_activated(cls, pnl_pct: float) -> bool:
@@ -315,6 +367,11 @@ class SajangRules:
             f"NORMAL_SL_PCT={cls.NORMAL_SL_PCT}",
             f"BUDGET_CASH_RATIO={cls.BUDGET_CASH_RATIO}",
             f"CASH_RESERVE_PCT={cls.CASH_RESERVE_PCT}  ★ 30% 현금 보유 영구 룰 ★",
+            f"REENTRY_ENABLED={cls.REENTRY_ENABLED} (shadow만 소비·라이브 미배선)",
+            f"REENTRY_MAX={cls.REENTRY_MAX}",
+            f"REENTRY_MIN_KKI_GRADE='{cls.REENTRY_MIN_KKI_GRADE}'",
+            f"HOLD_BASE_DAYS={cls.HOLD_BASE_DAYS}",
+            f"RIDE_KKI_GRADE='{cls.RIDE_KKI_GRADE}' RIDE_MAX_DAYS={cls.RIDE_MAX_DAYS}",
         ]
 
 

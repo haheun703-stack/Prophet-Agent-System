@@ -24,14 +24,18 @@
 - **VPS 코드 = bf14bef (옛 버전)** — 오늘 4 commit 미반영. 봇 프로세스는 6/14 코드 메모리로 돎.
 - 오늘 4 commit은 **전부 매도/TP 경로** → AUTO_TRADE_DISABLED 상태선 비활성 → **관측 데이터 영향 0**. 새 코드 반영은 **실매매 해제 전에만 필수**.
 
-**사장님 결정 = 재시작 시점 (2택)**:
-1. **오늘 20:00 이후 안전 윈도우 재시작** — 미리 반영·새 job(job_limit_up_split_check) 게이트 skip 로그로 사전 검증
-2. **실매매 해제(~6/30) 때 한 번에** — 지금은 그대로
+**✅ 사장님 결정(6/18 사무실) = ① 오늘 20:00 이후 재시작**.
 
-**재시작 절차(6/10 패턴 동일, 안전 윈도우 20:00+/새벽만)**:
-- VPS: `cd /home/ubuntu/bodyhunter && git stash && git pull origin main && git stash pop`(런타임/kill_switch 보존) → `sudo systemctl restart bodyhunter-bot.service`
-- 검증: 크래시0 · 스케줄러 등록(특히 job_limit_up_split_check 2분주기) · 게이트 skip 로그 · AUTO_TRADE_DISABLED=True 유지
-- ※ 17:45 cron이 git pull 자동(확인 필요)이나, **프로세스 재시작 없이는 옛 코드 메모리 유지** → 재시작 필수.
+**✅ cron 자동 pull 확인 완료(6/18 12:58 실측)**:
+- `deploy_pull.sh` = 17:45(평일) + 06:00(매일) cron 등록·**정상 작동**(오늘 06:00 클린 실행 로그 "runtime restored / done").
+- 동작 = `git pull --ff-only` + 런타임 파일(kill_switch/runtime_config/universe) stash 보존. **봇 재시작은 안 함**(스크립트 명시).
+- 06:00엔 origin이 아직 bf14bef라 미반영 → **오늘 17:45 cron이 디스크를 bf14bef → 3a76e1b 자동 pull 예정**.
+- 봇 프로세스 = PID 400, 6/14 04:02 기동(4일+) → 옛 코드 메모리 유지 확정 → **재시작 필수**.
+
+**→ 20:00 작업 = `restart만`으로 확정** (pull은 17:45 cron이 처리):
+1. 디스크 HEAD = `3a76e1b` 확인(17:45 cron 결과). 만약 미반영이면 수동 `deploy_pull.sh` 먼저.
+2. `sudo systemctl restart bodyhunter-bot.service`
+3. 검증: 크래시0 · `job_limit_up_split_check` 2분주기 등록 · 게이트 둘다 True(AUTO_TRADE_DISABLED·GLOBAL) · 실주문0 · 게이트 skip 로그.
 
 ---
 
