@@ -5269,6 +5269,136 @@ class AutoTrader:
         except Exception as e:
             logger.error(f"[eod_split_check] 예외: {type(e).__name__}: {e}")
 
+    async def job_limit_up_split_check(self, context=None):
+        """★ 5/25 사장님 룰 7 (상한가 즉시 분할) ★ 장중 +25%+ 도달 시 절반 즉시 락인.
+
+        사장님 5/25 룰 3:
+          "상한가 치면 안 떨어진다 → 절반 즉시 +29% 락인 + 절반 D+1 이월"
+
+        EOD 룰 B(15:26, +10~25%)와 공존:
+          - 룰 7 = 장중 +25%+ 즉시 (이 job, run_repeating)
+          - 룰 B = 15:26 +10~25% (job_eod_split_check)
+          - already_split 마커로 중복 차단 (룰 7 발동 → 룰 B skip, 역도 동일)
+
+        흐름 = job_eod_split_check와 동일 (should_trigger_split만 차이):
+          1. 보유 종목 평가손익 점검 (KIS API)
+          2. 룰 7 조건 (+25%+ & 미분할 & qty>=2 & asset_pool)
+          3. 절반 즉시 시장가 매도 (당일 +29% 확정 락인)
+          4. 절반 보유 + pending_next_day 마커 (D+1 트레일링 이월)
+        """
+        if not self.is_running:
+            return
+        if self._auto_trade_disabled():
+            logger.info("[limit_up_split] AUTO_TRADE_DISABLED — skip")
+            return
+        # 휴장일 발동 차단 — 다른 모든 job과 동일 표준
+        if not is_trading_day():
+            logger.info("[limit_up_split] 휴장일 — 룰 7 skip")
+            return
+        try:
+            from bot.limit_up_split_sell import should_trigger_split
+
+            bal = await asyncio.to_thread(self.trader.fetch_balance)
+            if not bal or not bal.get("success"):
+                logger.warning("[limit_up_split] 잔고 조회 실패 — 룰 7 발동 skip")
+                return
+
+            kis_positions = bal.get("positions", [])
+            triggered = []
+            for kp in kis_positions:
+                code = kp.get("code")
+                if not code:
+                    continue
+
+                # 사장님 보호 종목 (exclude_codes 등) skip
+                _excl_cfg = (self.config.get("bot", {}) or {}).get("asset_pool", {}).get("exclude_codes", []) or []
+                if code in [str(c) for c in _excl_cfg]:
+                    continue
+
+                pos = self._positions.get(code, {})
+                # 이미 분할된 종목 skip (룰 7 / 룰 B 중복 방지)
+                already_split = bool(pos.get("already_split", False))
+                # asset_pool 매수 종목만 (source='asset_pool')
+                if not str(pos.get("source", "")).startswith("asset_pool"):
+                    continue
+
+                pnl_pct = float(kp.get("pnl_rate", 0))
+                qty = int(kp.get("qty", 0))
+
+                decision = should_trigger_split(
+                    pnl_pct=pnl_pct, qty=qty, already_split=already_split,
+                )
+                if not decision.should_split:
+                    continue
+
+                # ★ 사장님 보호 종목 매도 우회 차단 (5/20 -293만 사고 재발 방지) ★
+                # sl_disabled / manual_sync / sync_auto / 메모리 미등록 → 보호
+                if self._is_sell_protected(code, "limit_up_split_rule_7"):
+                    continue
+
+                # 절반 즉시 시장가 매도 (split=1 = 즉시 1회 락인)
+                try:
+                    sell_resp = await asyncio.to_thread(
+                        self.trader.sell_market, code, decision.sell_qty, 1,
+                    )
+                    if sell_resp and sell_resp.get("success"):
+                        # 부분 체결 검증 — KIS 잔량 재조회 후 sync (EOD 룰 B와 동일)
+                        await asyncio.sleep(1.5)
+                        bal_after = await asyncio.to_thread(self.trader.fetch_balance)
+                        actual_qty = qty
+                        if bal_after and bal_after.get("success"):
+                            for kp_after in bal_after.get("positions", []):
+                                if kp_after.get("code") == code:
+                                    actual_qty = int(kp_after.get("qty", 0))
+                                    break
+                            else:
+                                actual_qty = 0
+
+                        # 절반 보유 → pending_next_day 마커 (실제 잔량 기준)
+                        pos["already_split"] = True
+                        pos["pending_next_day"] = True
+                        pos["split_date"] = datetime.now().date().isoformat()
+                        pos["qty"] = actual_qty
+                        # D+1 이월분 SL 비활성 → 룰 C 보호망 + 트레일링만 (룰 B와 동일)
+                        pos["stop_loss"] = 0
+                        pos["trailing_sl"] = 0
+                        pos["trailing_activated"] = False
+                        pos["high_watermark"] = 0   # D+1 시초가 기준 재시작
+                        self._positions[code] = pos
+                        triggered.append({
+                            "code": code, "name": kp.get("name", code),
+                            "pnl_pct": pnl_pct,
+                            "sell_qty": qty - actual_qty,
+                            "hold_qty": actual_qty,
+                            "expected_sell": decision.sell_qty,
+                        })
+                        logger.info(
+                            f"[limit_up_split] ✅ 룰 7 발동 {code} ({kp.get('name','?')}) "
+                            f"+{pnl_pct:.2f}% / 실매도 {qty - actual_qty}주 + 보유 {actual_qty}주 D+1 이월 "
+                            f"(예상 매도 {decision.sell_qty}주)"
+                        )
+                    else:
+                        logger.warning(f"[limit_up_split] 절반 매도 실패 {code}: {sell_resp}")
+                except Exception as e:
+                    logger.warning(f"[limit_up_split] 매도 예외 {code}: {e}")
+
+            if triggered:
+                self._save_positions()
+                msg_lines = [
+                    f"🚀 [룰 7 상한가 즉시 분할 매도 — 사장님 5/25 룰]",
+                    f"  {len(triggered)}종목 +25%+ 절반 락인 + D+1 이월:",
+                ]
+                for t in triggered:
+                    msg_lines.append(
+                        f"  - {t['name']}({t['code']}) +{t['pnl_pct']:.2f}% "
+                        f"→ {t['sell_qty']}주 익절 / {t['hold_qty']}주 D+1 이월"
+                    )
+                await self._alert("\n".join(msg_lines))
+            else:
+                logger.debug("[limit_up_split] 룰 7 발동 종목 0 (보유 +25%+ asset_pool 없음)")
+        except Exception as e:
+            logger.error(f"[limit_up_split] 예외: {type(e).__name__}: {e}")
+
     async def job_d1_gap_check(self, context=None):
         """★ 룰 C (5/25 신규) ★ D+1 시초가 (09:00) pending_next_day 종목 갭다운 보호망.
 

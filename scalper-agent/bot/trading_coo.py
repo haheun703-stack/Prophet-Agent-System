@@ -5165,6 +5165,12 @@ class TradingCOO:
         jq.run_repeating(self._job_jarvis_decision, interval=300, first=180)
         logger.info("[COO] 박사 자율 의사결정 등록: 5분 반복 (악재+VWAP+시총별 SL+추매 통합)")
 
+        # ★ 5/25 사장님 룰 7 (상한가 즉시 분할) ★ 장중 +25%+ 절반 즉시 락인 + D+1 이월
+        # 6/18 라이브 연결 — should_trigger_split 배선(기존 test만 호출). EOD 룰 B(15:26)와
+        # already_split 마커로 공존(룰 7 발동 시 룰 B skip). 2분 반복 — 상한가 락인 응답성.
+        jq.run_repeating(self.auto_trader.job_limit_up_split_check, interval=120, first=180)
+        logger.info("[COO] ★ 룰 7 상한가 즉시 분할 등록: 2분 반복 (+25%+ asset_pool 절반 락인 + D+1 이월)")
+
         # ── 자비스 자산풀 매수 (사장님 5/19 결정: B 진보 + 1주 모드) ──
         # ★ 5/20 사고 fix: 09:05 → 09:15 이동 ★
         # 5/20 09:05 자비스 5종 일괄 차단 — 시초가 5분 = 체결강도/거래량 안정화 전
