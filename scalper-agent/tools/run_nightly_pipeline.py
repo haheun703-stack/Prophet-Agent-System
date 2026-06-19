@@ -82,6 +82,8 @@ def main():
          [PY, "tools/paper_3type_daily_run_6_6.py", "--asof", tstr, "--scan-events"], 900),
         ("⑤ paper forward 충전",   # 6/15 H-3 해소 — 과거 코호트 forward_d1/d3/d5·MFE/MAE 멱등 충전
          [PY, "tools/run_paper_3type_forward_daily.py"], 300),
+        ("⑤-2 paper 학습 누적",   # 6/19 사장님 지시 — forward 충전 뒤 구조적 집계·누적 학습DB(관측·룰변경0)
+         [PY, "tools/run_paper_learning_daily.py"], 300),
         ("⑥ 수급 4종",
          [PY, "-c", "import collect_all as C; C.step2_supply_demand(C.get_universe_codes())"], 3600),
         ("⑦ 11주체",
