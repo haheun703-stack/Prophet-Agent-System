@@ -146,10 +146,12 @@ if __name__ == "__main__":
     r = build_rule_shadow()
     if r.get("cohorts"):
         print(f"\n=== 규칙 적용 연습장부 ({r['cohorts']}코호트·{r['total_picks']}표본) ===")
+        def _f(x):  # None 안전 포맷(+부호)
+            return f"{x:+}" if isinstance(x, (int, float)) else "n/a"
         for name, rr in r["rules"].items():
             b, g, d = rr["pooled_baseline"], rr["pooled_gated"], rr["pooled_delta"]
             print(f"\n[{name}] {rr['desc']}")
             print(f"  현행:   n={b['n']} d1={b['d1']} d3={b['d3']} 승률={b['win_d1_pct']}% 손절터치={b['mae_touch_pct']}%")
             print(f"  규칙적용: n={g['n']} d1={g['d1']} d3={g['d3']} 승률={g['win_d1_pct']}% 손절터치={g['mae_touch_pct']}%")
-            print(f"  → 개선: d3 {d['d3']:+}%p · 승률 {d['win_d1_pct']:+}%p · 손절터치 {d['mae_touch_pct']:+}%p ({rr['removed_total']}종목 제거)")
+            print(f"  → 개선: d3 {_f(d['d3'])}%p · 승률 {_f(d['win_d1_pct'])}%p · 손절터치 {_f(d['mae_touch_pct'])}%p ({rr['removed_total']}종목 제거)")
         print("\n★ 연습 전용 — 실제 선정 변경 0. 검증 쌓이면 사장님 승인 후 라이브.")
