@@ -62,7 +62,8 @@ def _load_all_picks() -> list:
         except Exception:
             continue
         for c in _flatten_ledger(led):
-            if c.get("forward_d1") is not None:   # resolved만 학습
+            # resolved만 학습 + base 어긋난 오염표본(forward_base_mismatch) 제외(데이터 무결성)
+            if c.get("forward_d1") is not None and not c.get("forward_base_mismatch"):
                 picks.append(c)
     return picks
 
