@@ -84,6 +84,8 @@ def main():
          [PY, "tools/run_paper_3type_forward_daily.py"], 300),
         ("⑤-2 paper 학습 누적",   # 6/19 사장님 지시 — forward 충전 뒤 구조적 집계·누적 학습DB(관측·룰변경0)
          [PY, "tools/run_paper_learning_daily.py"], 300),
+        ("⑤-3 paper 규칙 연습장부",   # 6/19 — 학습 발견 규칙 가상적용(현행 vs 규칙적용 forward 비교·실선정변경0)
+         [PY, "tools/run_paper_rule_shadow_daily.py"], 300),
         ("⑥ 수급 4종",
          [PY, "-c", "import collect_all as C; C.step2_supply_demand(C.get_universe_codes())"], 3600),
         ("⑦ 11주체",
