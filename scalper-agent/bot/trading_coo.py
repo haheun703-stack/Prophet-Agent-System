@@ -3663,11 +3663,12 @@ class TradingCOO:
         데이터가 전날이므로, 35분 후 1회 재시도를 예약한다.
         """
         try:
-            from data.pension_finance_scan import scan_pension_finance
+            # 6/19: 연기금/금투(KRX pykrx) 6/9 박제 + KRX 차단 → KRX-free 기관계 스캐너로 대체(사장님 결정 B)
+            from data.institution_accum_scan import scan_institution_accum
             from data.upload_pension_scan import upload_pension_scan
             from datetime import date as _date
 
-            result = await asyncio.to_thread(scan_pension_finance)
+            result = await asyncio.to_thread(scan_institution_accum)
             if not result or (
                 not result.get("best_stocks") and not result.get("standby_stocks")
             ):
@@ -3690,7 +3691,7 @@ class TradingCOO:
             # 텔레그램 알림 (수급 강도 TOP 5)
             ranked = result.get("ranked_stocks", [])
             if ranked:
-                lines = [f"[매집 합류 시그널] 수급TOP (D+5 +1.6%)"]
+                lines = [f"[기관 매집 합류 시그널 · KRX-free] 수급TOP"]
                 for i, s in enumerate(ranked[:5], 1):
                     joined_tag = (
                         "오늘" if s.get("fi_joined") == "TODAY"
@@ -3701,9 +3702,9 @@ class TradingCOO:
                     f_today = s.get('fi_today', 0) or 0
                     lines.append(
                         f"  {i}. {s.get('name','?')} {s.get('pension_score', 0)}점 "
-                        f"연{s.get('pension_buy_days', 0)}d "
+                        f"기관{s.get('pension_buy_days', 0)}d "
                         f"누적{p_cum:+.0f}억 "
-                        f"금투{f_today:+.0f}억 "
+                        f"외인{f_today:+.0f}억 "
                         f"[{joined_tag}]"
                     )
                 standby_count = result.get("standby_count", 0)

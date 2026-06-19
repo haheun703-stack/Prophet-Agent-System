@@ -90,6 +90,8 @@ def main():
          [PY, "-c", "import collect_all; collect_all.step3_nationality()"], 600),
         ("⑨ F1 forward+preflight",
          [PY, "tools/run_f1_forward_preflight.py"], 300),
+        ("⑩ 기관매집스캔(KRX-free)",   # 6/19 연기금 KRX박제 대체 — KIS 기관계 fresh 시그널 + 업로드(⑥ 수급 뒤)
+         [PY, "tools/run_institution_accum_scan.py"], 300),
     ]
 
     results = {}
