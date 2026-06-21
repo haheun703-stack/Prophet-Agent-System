@@ -68,6 +68,24 @@ def _load_all_picks() -> list:
     return picks
 
 
+def _dedup_by_stock(picks: list) -> list:
+    """(date, ticker) 중복 제거 — 같은 종목이 B·C 등 여러 type에 동시 선정될 때 1표본만 카운트.
+
+    배경(6/22): 6/12 24 candidate 중 8종목이 B·C 동시선정 → 고유 16종목인데 표본 24로 부풀려져,
+      섹터·레짐·MAE대역 같은 '종목 단위' 집계에서 그 종목 가중치가 2배가 되는 왜곡 발생.
+    정책: type 우선순위(A>B>C)로 첫 1개만 유지(결정적). forward/MAE는 종목 고유라 어느 type을
+      남겨도 결과 통계 동일, entry_reason 파생(ma20·pullback)만 우선 type 기준으로 결정.
+    ※ by_type(시나리오 단위) 집계는 원본을 써야 하므로 여기서 dedup하지 않음(호출부에서 분리).
+    """
+    order = {"A": 0, "B": 1, "C": 2}
+    seen = {}
+    for c in sorted(picks, key=lambda x: (str(x.get("date")), str(x.get("ticker")),
+                                          order.get(x.get("type"), 9))):
+        # 정렬 키와 dict 키를 동일 표현(str)으로 통일 — 향후 ticker 타입 변동에도 결정성 견고(L-1)
+        seen.setdefault((str(c.get("date")), str(c.get("ticker"))), c)
+    return list(seen.values())
+
+
 def _ma20_support(entry_reason) -> str:
     if isinstance(entry_reason, str):
         m = _MA20_RE.search(entry_reason)
@@ -150,13 +168,14 @@ def _insights(agg: dict) -> list:
 
 def build_paper_learning(save: bool = True) -> dict:
     """paper 3type forward 누적 집계 → 학습DB. 매일 전체 재집계(forward 채워질수록 표본↑)."""
-    picks = _load_all_picks()
+    picks_raw = _load_all_picks()
+    picks = _dedup_by_stock(picks_raw)  # 종목 단위 집계용(중복 제거) — by_type만 원본 사용
     if not picks:
         logger.info("[paper_learning] resolved picks 없음 — skip")
         return {"total_samples": 0}
 
     agg = {
-        "by_type": _group_by(picks, lambda c: c.get("type")),
+        "by_type": _group_by(picks_raw, lambda c: c.get("type")),  # 시나리오 단위 = 원본(그룹 내 중복 없음)
         "by_market_regime": _group_by(picks, lambda c: c.get("market_regime")),
         "by_breadth_state": _group_by(picks, lambda c: c.get("_breadth_state")),
         "by_sector": _group_by(picks, lambda c: c.get("sector")),
@@ -167,10 +186,13 @@ def build_paper_learning(save: bool = True) -> dict:
     result = {
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "total_samples": len(picks),
+        "total_samples_raw": len(picks_raw),
+        "dedup_removed": len(picks_raw) - len(picks),
         "overall": _stats(picks),
         **agg,
         "insights": _insights(agg),
-        "note": "paper 3type forward 누적 학습DB(관측 전용). 룰 자동변경 X — 단타봇 제안→사장님 승인→shadow→live.",
+        "note": "paper 3type forward 누적 학습DB(관측 전용). 종목 단위 집계는 (date,ticker) 중복제거, "
+                "by_type만 원본(시나리오 단위). 룰 자동변경 X — 단타봇 제안→사장님 승인→shadow→live.",
     }
     if save:
         try:
@@ -179,7 +201,8 @@ def build_paper_learning(save: bool = True) -> dict:
             logger.warning(f"[paper_learning] 저장 실패: {e}")
 
     ov = result["overall"]
-    logger.info(f"[paper_learning] 누적 {len(picks)}표본 학습 — 전체 d1={ov['d1']} d3={ov['d3']} "
+    logger.info(f"[paper_learning] 누적 {len(picks)}표본(원본 {len(picks_raw)}, 중복 "
+                f"{len(picks_raw) - len(picks)} 제거) 학습 — 전체 d1={ov['d1']} d3={ov['d3']} "
                 f"승률={ov['win_d1_pct']}% / 인사이트 {len(result['insights'])}건 -> {OUT_PATH.name}")
     return result
 
@@ -190,7 +213,8 @@ if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     r = build_paper_learning()
     if r.get("total_samples"):
-        print(f"\n=== Paper 누적 학습DB ({r['total_samples']}표본) ===")
+        print(f"\n=== Paper 누적 학습DB ({r['total_samples']}표본"
+              f", 원본 {r.get('total_samples_raw')} 중 중복 {r.get('dedup_removed')} 제거) ===")
         ov = r["overall"]
         print(f"전체: d1={ov['d1']} d3={ov['d3']} d5={ov['d5']} 승률={ov['win_d1_pct']}% (d5표본 {ov['n_d5']})")
         print("\n[ma20 지지여부]")

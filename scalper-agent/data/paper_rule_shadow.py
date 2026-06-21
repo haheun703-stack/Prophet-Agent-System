@@ -21,7 +21,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-from data.paper_learning import _flatten_ledger, _avg, LEDGER_DIR
+from data.paper_learning import _flatten_ledger, _avg, LEDGER_DIR, _dedup_by_stock
 
 logger = logging.getLogger("BH.PaperRuleShadow")
 
@@ -52,6 +52,9 @@ def _cohorts() -> dict:
         date = led.get("date", f.stem.replace("ledger_", ""))
         picks = [c for c in _flatten_ledger(led)
                  if c.get("forward_d1") is not None and not c.get("forward_base_mismatch")]
+        # B·C 동시선정 종목 1표본 (⑤-2 paper_learning과 동일 정책) — 같은 종목 1포지션이라
+        # 포트폴리오 성과·규칙 delta가 중복 가중되지 않도록 (date,ticker) dedup.
+        picks = _dedup_by_stock(picks)
         if picks:
             out[date] = picks
     return out
