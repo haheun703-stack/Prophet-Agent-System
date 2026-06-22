@@ -120,6 +120,15 @@ def collect_etf_daily(codes: list[str] = None, months: int = 12, force: bool = F
 
     Returns: 성공 수집 종목 수
     """
+    # ★ KRX 전역 kill switch (6/22 IP 차단 대응) — pykrx=KRX. default 차단. 새 IP 후 1봇만.
+    try:
+        from data.krx_gate import krx_enabled, krx_block_reason
+        if not krx_enabled():
+            print(f"[krx_gate] {krx_block_reason()}")
+            return 0
+    except Exception:
+        print("[krx_gate] 게이트 로드 실패 — KRX 보수적 차단(IP 보호)")
+        return 0
     from pykrx import stock
     import pandas as pd
 

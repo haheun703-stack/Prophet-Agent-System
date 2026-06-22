@@ -40,6 +40,15 @@ class WhaleCollector:
                 'foreign_flow_trend': DataFrame,  # 외국인 순매수 트렌드
             }
         """
+        # ★ KRX 전역 kill switch (6/22 IP 차단 대응) — default 차단. 새 IP 후 1봇만.
+        try:
+            from collectors.krx_gate import krx_enabled, krx_block_reason
+            if not krx_enabled():
+                logger.warning("[krx_gate] %s", krx_block_reason())
+                return {}
+        except Exception:
+            logger.warning("[krx_gate] 게이트 로드 실패 — KRX 보수적 차단(IP 보호)")
+            return {}
         logger.info(f"[Whale] {ticker} 고래 추적")
         
         result = {

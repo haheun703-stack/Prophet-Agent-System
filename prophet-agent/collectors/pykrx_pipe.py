@@ -54,6 +54,15 @@ class PykrxCollector:
                 'market_cap': DataFrame,      # 시총/외국인지분
             }
         """
+        # ★ KRX 전역 kill switch (6/22 IP 차단 대응) — default 차단. 새 IP 후 1봇만.
+        try:
+            from collectors.krx_gate import krx_enabled, krx_block_reason
+            if not krx_enabled():
+                logger.warning("[krx_gate] %s", krx_block_reason())
+                return {}
+        except Exception:
+            logger.warning("[krx_gate] 게이트 로드 실패 — KRX 보수적 차단(IP 보호)")
+            return {}
         end_date = datetime.now().strftime('%Y%m%d')
         start_date = (datetime.now() - timedelta(days=self.lookback)).strftime('%Y%m%d')
         
@@ -138,6 +147,15 @@ class PykrxCollector:
         분석 대상 종목 유니버스 생성
         시총 기준 상위 N종목 추출
         """
+        # ★ KRX 전역 kill switch (6/22 IP 차단 대응) — default 차단. 새 IP 후 1봇만.
+        try:
+            from collectors.krx_gate import krx_enabled, krx_block_reason
+            if not krx_enabled():
+                logger.warning("[krx_gate] %s", krx_block_reason())
+                return []
+        except Exception:
+            logger.warning("[krx_gate] 게이트 로드 실패 — KRX 보수적 차단(IP 보호)")
+            return []
         today = datetime.now().strftime('%Y%m%d')
         all_tickers = []
         

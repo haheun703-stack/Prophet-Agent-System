@@ -106,6 +106,9 @@ class ProphetSynthesizer:
     def _get_name(self, ticker: str) -> str:
         """종목코드 → 종목명 매핑"""
         try:
+            from collectors.krx_gate import krx_enabled
+            if not krx_enabled():
+                return ticker  # KRX 차단(6/22 IP 대응) — 이름 조회 skip, ticker 그대로
             from pykrx import stock
             today = datetime.now().strftime('%Y%m%d')
             name = stock.get_market_ticker_name(ticker)

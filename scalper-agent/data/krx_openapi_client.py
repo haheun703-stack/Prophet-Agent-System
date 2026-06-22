@@ -49,6 +49,15 @@ def _get_api_key() -> str:
 
 def _fetch(endpoint: str, bas_dd: str) -> List[Dict]:
     """KRX Open API 호출 → OutBlock_1 리스트 반환."""
+    # ★ KRX 전역 kill switch (6/22 IP 차단 대응) — default 차단. 새 IP 후 1봇만 활성.
+    try:
+        from data.krx_gate import krx_enabled, krx_block_reason
+        if not krx_enabled():
+            logger.warning("[krx_gate] %s", krx_block_reason())
+            return []
+    except Exception:
+        logger.warning("[krx_gate] 게이트 로드 실패 — KRX 보수적 차단(IP 보호)")
+        return []
     key = _get_api_key()
     if not key:
         logger.warning("KRX_OPEN_API_KEY 미설정")

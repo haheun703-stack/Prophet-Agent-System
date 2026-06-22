@@ -117,6 +117,15 @@ def build_universe(min_cap_억: int = 200) -> dict:
     Returns:
         {code: {"name": ..., "market": ..., "cap": ...}}
     """
+    # ★ KRX 전역 kill switch (6/22 IP 차단 대응) — pykrx=KRX. default 차단. 새 IP 후 1봇만.
+    try:
+        from data.krx_gate import krx_enabled, krx_block_reason
+        if not krx_enabled():
+            logger.warning("[krx_gate] %s", krx_block_reason())
+            return {}
+    except Exception:
+        logger.warning("[krx_gate] 게이트 로드 실패 — KRX 보수적 차단(IP 보호)")
+        return {}
     from pykrx import stock
 
     print(f"\n🔍 유니버스 빌드 - 시총 {min_cap_억:,}억원 이상")
@@ -619,6 +628,15 @@ def collect_smallcap_daily(months: int = 6, force: bool = False):
 def collect_daily_pykrx(codes: list, months: int = 24, force: bool = False,
                         n_workers: int = 4):
     """pykrx로 일봉 데이터 수집 (DC-06: 병렬화 + C1: 스레드 안전)"""
+    # ★ KRX 전역 kill switch (6/22 IP 차단 대응) — pykrx=KRX 웹스크래핑. default 차단. 새 IP 후 1봇만.
+    try:
+        from data.krx_gate import krx_enabled, krx_block_reason
+        if not krx_enabled():
+            logger.warning("[krx_gate] %s", krx_block_reason())
+            return 0
+    except Exception:
+        logger.warning("[krx_gate] 게이트 로드 실패 — KRX 보수적 차단(IP 보호)")
+        return 0
     import threading
     from concurrent.futures import ThreadPoolExecutor
     from pykrx import stock

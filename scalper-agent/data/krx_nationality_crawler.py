@@ -498,6 +498,15 @@ def _get_valid_session() -> requests.Session:
       2. KRX 직접 로그인 (smile.krx.co.kr) ← 가장 안정적
       3. Playwright 네이버 OAuth (백업)
     """
+    # ★ KRX 전역 kill switch (6/22 IP 차단 대응) — default 차단. 새 IP 후 1봇만 활성.
+    try:
+        from data.krx_gate import krx_enabled, krx_block_reason
+        if not krx_enabled():
+            logger.warning("[krx_gate] %s", krx_block_reason())
+            return None
+    except Exception:
+        logger.warning("[krx_gate] 게이트 로드 실패 — KRX 보수적 차단(IP 보호)")
+        return None
     # 1) 기존 쿠키
     cookies = _load_cookies()
     if cookies:
@@ -533,6 +542,15 @@ async def _get_valid_session_async() -> requests.Session:
 
     우선순위: 쿠키 → 직접 로그인 → Playwright
     """
+    # ★ KRX 전역 kill switch (6/22 IP 차단 대응) — default 차단. 새 IP 후 1봇만 활성.
+    try:
+        from data.krx_gate import krx_enabled, krx_block_reason
+        if not krx_enabled():
+            logger.warning("[krx_gate] %s", krx_block_reason())
+            return None
+    except Exception:
+        logger.warning("[krx_gate] 게이트 로드 실패 — KRX 보수적 차단(IP 보호)")
+        return None
     # 1) 기존 쿠키
     cookies = _load_cookies()
     if cookies:
