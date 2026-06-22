@@ -319,40 +319,14 @@ def collect_candidates(sectors):
     return cands
 
 
-_UNIV_CAP = None
-
-
-def _cap_of(code):
-    """universe.json cap_억(시총) 조회 (lazy·실패시 0). 6/22 대장주 우선 정렬용."""
-    global _UNIV_CAP
-    if _UNIV_CAP is None:
-        try:
-            import json
-            _UNIV_CAP = json.loads((SA / "data_store" / "universe.json").read_text(encoding="utf-8"))
-        except Exception:
-            _UNIV_CAP = {}
-    return float((_UNIV_CAP.get(str(code).zfill(6)) or {}).get("cap_억", 0) or 0)
-
-
 def record_bc_into(led, cands):
     """cands(B/C)를 기존 ledger 인스턴스에 record (save 안 함 — 통합러너가 A와 함께 저장).
-    capital 균등배분(2-pass): type별 시드(B35/C35)를 후보 수로 나눔.
-
-    ★ 6/22 사장님 결정 — 우선순위 정렬 변경 (전체시장 분석 tools/bigcap_vs_smallcap_returns_6_22.py) ★
-      6/12→6/19 실측: 승자=지수 대장주(삼성전자·SK하이닉스·SK스퀘어 = 시총 top3 → +10~31%),
-      패자=그 아래 중견주(한미반도체 39조·원익IPS·ISC·솔브레인 → -15~19%).
-      ★ 진입 눌림 깊이는 승패 예측 못함(SK하이닉스 진입 -10.68% 깊게 눌렸어도 +28% 승) →
-        진짜 신호 = 시총(대장주). 거친 티어 컷(5조) 아닌 '원시 시총 내림차순' 우선 정렬.
-      B/C 정렬을 '시총↑(대장주) 우선' + 동률시 기존 키(눌림깊이/돌파강도)로. 후보는 전부 forward 관측
-      (넓게병행 불변), '우선순위'만 변경 → record-only(주문·매도·게이트·picks·asset_pool 무접촉).
-    """
+    capital 균등배분(2-pass): type별 시드(B35/C35)를 후보 수로 나눔."""
     by_type = {"B": [], "C": []}
     for t, kw, key in cands:
-        kw["cap_억"] = _cap_of(kw.get("ticker"))     # 투명성: 시총 기록
         by_type[t].append((key, kw))
     for t, lst in by_type.items():
-        # 대장주(시총) 1차 우선 + 동률시 기존 키(B 눌림깊이 / C 돌파강도) 2차.
-        lst.sort(key=lambda x: (x[1].get("cap_억", 0.0), x[0]), reverse=True)
+        lst.sort(key=lambda x: x[0], reverse=True)
         n = len(lst)
         per = round(TYPE_SEED[t] / n, 2) if n else 0.0
         pct = round(100.0 / n, 1) if n else 0.0
