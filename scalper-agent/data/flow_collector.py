@@ -810,16 +810,58 @@ def collect_all_flow(
     return result
 
 
+def _compute_real_data_status(inv_dict: dict) -> Tuple[int, Optional[str]]:
+    """placeholder(수급 전부 0인 trailing 행) 제외한 실데이터 종목수·최신일 계산 (순수).
+
+    investor.csv는 개장 전 placeholder 행(수급 전부 0)이 미리 생겨, 마커의
+    date(=수집 실행일)가 '데이터 최신일'로 오해되는 문제가 있다. 이 함수는
+    placeholder를 걷어낸 '실제 수급 데이터의 종목수와 최신일'을 산출해
+    마커를 정직화한다(date와 분리). supply_analyzer의 trim 로직을 단일 진실로 재사용.
+
+    Returns: (real_count, data_through)  — data_through는 'YYYY-MM-DD' 또는 None
+    """
+    from data.supply_analyzer import _trim_trailing_placeholder_rows
+    real_count = 0
+    data_through = None
+    for _df in (inv_dict or {}).values():
+        trimmed = _trim_trailing_placeholder_rows(_df)
+        if trimmed is None or len(trimmed) == 0:
+            continue
+        real_count += 1
+        try:
+            last = str(trimmed.index[-1].date())
+        except AttributeError:
+            last = str(trimmed.index[-1])
+        if data_through is None or last > data_through:
+            data_through = last
+    return real_count, data_through
+
+
 def _write_flow_marker(result: dict, total_codes: int = 0):
-    """수급 수집 완료 마커 파일 기록 (AUTO-RECOVERY 검증용)."""
+    """수급 수집 완료 마커 파일 기록 (AUTO-RECOVERY 검증용).
+
+    필드 의미 (6/22 정직화):
+      date          = 수집 잡 실행일 (freshness 체크 = '오늘 수집이 돌았나')
+      data_through  = 실수급 데이터 최신일 (placeholder 제외) ★ '언제까지의 데이터인가'
+      investor      = 처리 종목수 (placeholder 포함)
+      investor_real = 실데이터 종목수 (placeholder 제외) ★
+    """
     import json
     from datetime import date
-    inv_count = len(result.get("investor", {}))
+    inv_dict = result.get("investor", {})
+    inv_count = len(inv_dict)
     fex_count = len(result.get("foreign_exhaustion", {}))
     coverage = inv_count / total_codes * 100 if total_codes > 0 else 0
+    try:
+        real_count, data_through = _compute_real_data_status(inv_dict)
+    except Exception as e:
+        logger.warning(f"[FLOW] 실데이터 상태 계산 실패(마커는 기록 진행): {e}")
+        real_count, data_through = 0, None
     marker = {
         "date": date.today().strftime("%Y-%m-%d"),
+        "data_through": data_through,
         "investor": inv_count,
+        "investor_real": real_count,
         "foreign_exhaustion": fex_count,
         "short_balance": len(result.get("short_balance", {})),
         "short_volume": len(result.get("short_volume", {})),
@@ -831,7 +873,8 @@ def _write_flow_marker(result: dict, total_codes: int = 0):
         with open(marker_path, "w", encoding="utf-8") as f:
             json.dump(marker, f, ensure_ascii=False, indent=2)
         logger.info(f"[FLOW] 마커 기록: investor={inv_count}/{total_codes} "
-                     f"({coverage:.1f}%), foreign_exh={fex_count}")
+                     f"({coverage:.1f}%, 실데이터 {real_count}종목 through {data_through}), "
+                     f"foreign_exh={fex_count}")
     except Exception as e:
         logger.warning(f"[FLOW] 마커 기록 실패: {e}")
 
