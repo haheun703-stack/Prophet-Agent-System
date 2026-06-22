@@ -21,7 +21,7 @@
 """
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -36,6 +36,27 @@ DATA_DIR = Path(__file__).resolve().parent.parent / "data_store"
 FLOW_DIR = DATA_DIR / "flow"
 SHORT_DIR = DATA_DIR / "short"
 DAILY_DIR = DATA_DIR / "daily"
+
+
+def _trim_trailing_placeholder_rows(df: Optional[pd.DataFrame]) -> Optional[pd.DataFrame]:
+    """장 시작 전 생성되는 placeholder 행(수급 전부 0) 방어.
+
+    investor.csv는 개장 전 아침에 '그날 날짜 + 종가 캐리 + 수급 전부 0'인
+    placeholder 행이 미리 생긴다(EOD에 실데이터로 채워짐). 이 행이 최신행으로
+    남으면 5일 누적/연속일/마지막행 점수에 0이 섞여 종목 선정이 왜곡된다.
+
+    수급 컬럼(이름에 '금액' 또는 '수량' 포함)이 전부 0인 trailing 행을 제거한다.
+    종가/전일대비는 판정 제외. 수급 컬럼 식별 실패 시 원본 그대로 반환(fail-safe).
+    중간 행은 건드리지 않고 맨 끝부터 연속된 0행만 제거(시계열 연속성 보존).
+    """
+    if df is None or len(df) == 0:
+        return df
+    supply_cols = [c for c in df.columns if ("금액" in str(c) or "수량" in str(c))]
+    if not supply_cols:
+        return df
+    while len(df) > 0 and bool((df[supply_cols].iloc[-1] == 0).all()):
+        df = df.iloc[:-1]
+    return df
 
 
 @dataclass
@@ -466,7 +487,8 @@ class SupplyAnalyzer:
         if code not in self._cache_investor:
             path = FLOW_DIR / f"{code}_investor.csv"
             if path.exists():
-                self._cache_investor[code] = pd.read_csv(path, index_col=0, parse_dates=True)
+                _df = pd.read_csv(path, index_col=0, parse_dates=True)
+                self._cache_investor[code] = _trim_trailing_placeholder_rows(_df)
 
         if code not in self._cache_foreign:
             path = FLOW_DIR / f"{code}_foreign_exh.csv"
