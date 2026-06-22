@@ -2151,12 +2151,18 @@ class TradingCOO:
             except Exception as _e:
                 logger.warning(f"[C35] flow STALE 체크 실패(무시): {_e}")
 
+            # ── v5.1: 수급 강도 TOP 발행 (missed_gainers와 독립) ──
+            # ★ 6/22 STALE 사고 방지: flow_intensity는 universe 전체 수급강도라
+            #   missed_gainers(오늘 급등주)와 데이터 독립. 패턴 스캔이
+            #   missed_gainers 부재로 early return해도 먼저 독립 발행한다.
+            intensity_count = await self._publish_flow_intensity()
+
             # 동기 함수를 스레드로 실행 (CSV 읽기 다수)
             results = await asyncio.to_thread(analyze_missed_gainers, date_str)
 
             if not results:
                 logger.info("[C35] 패턴 스캔: 대상 없음 (missed_gainers 비어있음)")
-                return {"pattern_scan": "EMPTY", "count": 0}
+                return {"pattern_scan": "EMPTY", "count": 0, "flow_intensity": intensity_count}
 
             # 패턴별 집계
             counts: dict = {}
@@ -2192,34 +2198,6 @@ class TradingCOO:
             except Exception as _be:
                 logger.warning(f"[C35] bomb_watchlist 생성 실패(무시): {_be}")
 
-            # ── v5.0: 수급 강도 TOP 생성 + Supabase 업로드 ──
-            intensity_count = 0
-            try:
-                from tools.flow_intelligence import generate_flow_intensity_data
-                from data.upload_flow_intensity import upload_flow_intensity
-                intensity_data = await asyncio.to_thread(
-                    generate_flow_intensity_data, 7, 2000
-                )
-                _top_stocks = (intensity_data or {}).get("top_stocks") or []
-                if _top_stocks:
-                    intensity_count = len(_top_stocks)
-                    await asyncio.to_thread(upload_flow_intensity, intensity_data)
-                    # 로컬 저장 → morning_recommendation 후보 소스로 사용
-                    _fi_path = DATA_STORE / "flow_intensity.json"
-                    _tmp_fi = _fi_path.with_suffix(".tmp")
-                    _tmp_fi.write_text(
-                        json.dumps(intensity_data, ensure_ascii=False, indent=2),
-                        encoding="utf-8",
-                    )
-                    _tmp_fi.replace(_fi_path)  # 원자적 교체
-                    top1 = _top_stocks[0]
-                    logger.info(
-                        f"[C35] 수급강도 TOP{intensity_count} → {_fi_path.name} 저장: "
-                        f"1위 {top1['name']}({top1['intensity_pct']}%)"
-                    )
-            except Exception as _ie:
-                logger.warning(f"[C35] 수급강도 생성/업로드 실패(무시): {_ie}")
-
             return {
                 "pattern_scan": "OK",
                 "count": len(results),
@@ -2236,6 +2214,47 @@ class TradingCOO:
         except Exception as e:
             logger.warning(f"[C35] 수급 패턴 스캔 실패 (무시): {e}")
             return {"pattern_scan": f"ERROR: {e}"}
+
+    async def _publish_flow_intensity(self) -> int:
+        """수급 강도 TOP 생성 + Supabase 업로드 + 로컬 저장 (독립 발행).
+
+        ★ flow_intensity는 universe 전체 수급강도라 missed_gainers(오늘 급등주)와
+        데이터가 독립이다. 따라서 C35 패턴 스캔의 early return(missed_gainers
+        부재로 FileNotFoundError, 또는 EMPTY)과 무관하게 독립 발행해야 한다.
+        (6/22 STALE 사고: missed_gainers/2026-06-22.json 부재 → C35 early return
+         → flow_intensity 미발행 → 웹 패널 STALE. 재발 방지 위해 분리.)
+
+        Returns:
+            발행한 top_stocks 종목 수 (빈 데이터/실패 시 0).
+        """
+        try:
+            from tools.flow_intelligence import generate_flow_intensity_data
+            from data.upload_flow_intensity import upload_flow_intensity
+            intensity_data = await asyncio.to_thread(
+                generate_flow_intensity_data, 7, 2000
+            )
+            _top_stocks = (intensity_data or {}).get("top_stocks") or []
+            if not _top_stocks:
+                logger.warning("[C35] 수급강도 top_stocks 빈 데이터 — 발행 스킵")
+                return 0
+            await asyncio.to_thread(upload_flow_intensity, intensity_data)
+            # 로컬 저장 → morning_recommendation 후보 소스로 사용
+            _fi_path = DATA_STORE / "flow_intensity.json"
+            _tmp_fi = _fi_path.with_suffix(".tmp")
+            _tmp_fi.write_text(
+                json.dumps(intensity_data, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            _tmp_fi.replace(_fi_path)  # 원자적 교체
+            top1 = _top_stocks[0]
+            logger.info(
+                f"[C35] 수급강도 TOP{len(_top_stocks)} → {_fi_path.name} 저장: "
+                f"1위 {top1['name']}({top1['intensity_pct']}%)"
+            )
+            return len(_top_stocks)
+        except Exception as _ie:
+            logger.warning(f"[C35] 수급강도 생성/업로드 실패(무시): {_ie}")
+            return 0
 
     async def _job_market_flow_collect(self, context=None) -> dict:
         """C3M: 시장별 11주체 수급 수집 (KOSPI/KOSDAQ) — KIS FHPTJ04040000.
