@@ -1748,6 +1748,14 @@ def upload_dashboard_swing(swing_data: dict) -> bool:
         rotation = alloc.get("rotation", {})
         liquidity = alloc.get("liquidity_cycle", {})
 
+        # ★ 6/22 사장님: 테마 relay-aware 매매포인트(theme_relay_shadow 관측) → 한국스윙 '매매포인트' 탭 ★
+        try:
+            from data.theme_trading_points import build_trading_points
+            _trading_points = build_trading_points()
+        except Exception as _tp_e:
+            logger.warning(f"[DASHBOARD] trading_points 생성 실패(무시): {_tp_e}")
+            _trading_points = {}
+
         row = {
             "date": swing_data["date"],
             # BRAIN
@@ -1809,6 +1817,8 @@ def upload_dashboard_swing(swing_data: dict) -> bool:
             "sector_rotation": _build_sector_rotation(),
             # 기관 선매집 탐지 (잠복+움직임 종목)
             "stealth_stocks": _build_stealth_stocks(),
+            # ★ 6/22 테마 relay-aware 매매포인트 (강한 테마 주도그룹·초입·바통, 관측·실매수 아님) ★
+            "trading_points": _trading_points,
         }
 
         # alloc_* 합계 100% 보정
@@ -1829,7 +1839,7 @@ def upload_dashboard_swing(swing_data: dict) -> bool:
             # 컬럼 미존재 시 해당 필드 제거 후 재시도
             err_str = str(upsert_err)
             if "does not exist" in err_str:
-                for col in ["stealth_stocks", "brain_raw_pct", "brain_capped_pct", "regime_cap_reason"]:
+                for col in ["trading_points", "stealth_stocks", "brain_raw_pct", "brain_capped_pct", "regime_cap_reason"]:
                     if col in err_str and col in row:
                         logger.warning(f"[DASHBOARD] {col} 컬럼 미존재 → 제거 후 재시도")
                         del row[col]
