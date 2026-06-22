@@ -1,0 +1,100 @@
+{
+  "version": "2026-06-22",
+  "updated_at": "2026-06-22",
+  "source": "단타봇 멀티테마 relay 분석(tools/multi_theme_relay_6_22.py) + 사장님·Codex 결정 6/22",
+  "principles": {
+    "role_not_size": "대장주=그 테마의 주도 대표주(역할), 소부장=공급망 역할. 시총 크기로 분류 금지. 실증: 에코프로비엠 20조·포스코퓨처엠 22조는 소부장(2차전지 소재)인데 로봇 대장주 두산로보틱스(6.9조)보다 큼 → 시총 분류 시 오판.",
+    "no_hardcoded_relay": "relay 방향(소부장→대장주 등)은 registry에 박지 않는다. group 멤버십만 정의. 누가 주도하는지는 intra_theme_group_strength로 매일 관측(relay_leader_group). 반도체=relay/자동차=소부장지속/방산=대장주지속은 6/4~6/19 한 구간 결과지 영구 법칙 아님.",
+    "group_classification": "manual seed(leaders/supply_chain) 우선. seed에 없는 테마 멤버만 marketcap_fallback_조 기준(이상=leader 후보, 미만=supply_chain). 시총 단독 분류 금지 — seed가 항상 우선.",
+    "theme_strength_gate": "theme_strength(구성종목 momentum/breadth) 음수=약세 테마는 통째 회피(로봇·ESS 6/4~19 둘 다 손실 교훈). 강한 테마 안에서만 group/leader 따짐."
+  },
+  "themes": {
+    "반도체": {
+      "leaders": [
+        {"code": "005930", "name": "삼성전자"},
+        {"code": "000660", "name": "SK하이닉스"},
+        {"code": "009150", "name": "삼성전기"},
+        {"code": "402340", "name": "SK스퀘어"}
+      ],
+      "supply_chain": [
+        {"code": "042700", "name": "한미반도체"},
+        {"code": "357780", "name": "솔브레인"},
+        {"code": "240810", "name": "원익IPS"},
+        {"code": "095340", "name": "ISC"},
+        {"code": "058470", "name": "리노공업"},
+        {"code": "005290", "name": "동진쎄미켐"},
+        {"code": "036930", "name": "주성엔지니어링"},
+        {"code": "000990", "name": "DB하이텍"},
+        {"code": "064760", "name": "티씨케이"},
+        {"code": "067310", "name": "하나마이크론"}
+      ],
+      "marketcap_fallback_조": 50
+    },
+    "로봇": {
+      "leaders": [
+        {"code": "454910", "name": "두산로보틱스"},
+        {"code": "277810", "name": "레인보우로보틱스"}
+      ],
+      "supply_chain": [
+        {"code": "058610", "name": "에스피지"},
+        {"code": "090360", "name": "로보스타"},
+        {"code": "389500", "name": "에스비비테크"},
+        {"code": "348340", "name": "뉴로메카"},
+        {"code": "160190", "name": "하이젠알앤엠"},
+        {"code": "117730", "name": "티로보틱스"}
+      ],
+      "marketcap_fallback_조": 5
+    },
+    "자동차": {
+      "leaders": [
+        {"code": "005380", "name": "현대차"},
+        {"code": "000270", "name": "기아"},
+        {"code": "012330", "name": "현대모비스"}
+      ],
+      "supply_chain": [
+        {"code": "204320", "name": "HL만도"},
+        {"code": "018880", "name": "한온시스템"},
+        {"code": "005850", "name": "에스엘"},
+        {"code": "010690", "name": "화신"},
+        {"code": "015750", "name": "성우하이텍"},
+        {"code": "010770", "name": "평화홀딩스"}
+      ],
+      "marketcap_fallback_조": 50
+    },
+    "2차전지_ESS": {
+      "leaders": [
+        {"code": "373220", "name": "LG에너지솔루션"},
+        {"code": "006400", "name": "삼성SDI"},
+        {"code": "096770", "name": "SK이노베이션"}
+      ],
+      "supply_chain": [
+        {"code": "247540", "name": "에코프로비엠"},
+        {"code": "066970", "name": "엘앤에프"},
+        {"code": "003670", "name": "포스코퓨처엠"},
+        {"code": "278280", "name": "천보"},
+        {"code": "393890", "name": "더블유씨피"},
+        {"code": "020150", "name": "롯데에너지머티리얼즈"}
+      ],
+      "marketcap_fallback_조": 30
+    },
+    "방산": {
+      "leaders": [
+        {"code": "012450", "name": "한화에어로스페이스"},
+        {"code": "064350", "name": "현대로템"},
+        {"code": "047810", "name": "한국항공우주"}
+      ],
+      "supply_chain": [
+        {"code": "272210", "name": "한화시스템"},
+        {"code": "010820", "name": "퍼스텍"},
+        {"code": "005870", "name": "휴니드"},
+        {"code": "448710", "name": "코츠테크놀로지"},
+        {"code": "077970", "name": "STX엔진"}
+      ],
+      "marketcap_fallback_조": 15
+    }
+  },
+  "unresolved_seed": {
+    "note": "universe.json에 코드 없어 제외 — 다음 갱신 시 확인",
+    "items": ["LIG넥스원(방산 leader 후보)", "평화정공(자동차 supply, 평화홀딩스로 대체)"]
+  }
+}
