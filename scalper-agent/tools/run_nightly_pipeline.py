@@ -5,8 +5,9 @@
   - 해결: fill을 먼저 돌리고 그 뒤에 shadow/paper를 둬서 forward 당일 충전.
 
 순서(★fill 후 shadow/paper = forward 지연 해결★):
-  ① fill 4-way → ② step6 sync → ③ shadow(build+forward) → ④ paper 3-Type
+  ① fill 4-way → ② step6 sync → ②-2 missed_gainers backfill → ③ shadow(build+forward) → ④ paper 3-Type
   → ⑤ paper forward 충전 → ⑥ 수급 4종 → ⑦ 11주체 → ⑧ 국적별 → ⑨ F1
+  - ②-2(6/23 신설): 일봉 늦은 적재일 missed_gainers self-heal 재생성(fill·sync 직후).
   - 관측 3단계(shadow·paper build·paper forward)는 일봉만 필요 → fill 직후 실행(수급보다 앞).
   - ⑤(6/15 신설): paper는 ④에서 코호트 생성만 → forward는 과거 코호트 대상이라 별도 단계.
     shadow가 ③에서 build+forward를 묶는 것과 동일 취지(H-3 dead code 해소).
@@ -72,6 +73,8 @@ def main():
          [PY, "tools/fill_daily_kis_incremental.py", "--parallel", "4"], 1800),
         ("② step6 sync",
          [PY, "-c", "import collect_all; collect_all.step6_sync_stock_data_daily()"], 600),
+        ("②-2 missed_gainers backfill",   # 6/23 STALE 사고 fix — 일봉 늦은 적재일 self-heal 재생성(① fill·② sync 직후)
+         [PY, "tools/run_missed_gainers_backfill.py"], 300),
         ("③ shadow build+forward",
          [PY, "tools/run_sector_reversal_shadow_daily.py"], 600),
         ("③-2 early variant shadow",   # 6/16 초입 포착 strict/early 병렬 shadow(매수 무접촉·관측 전용)

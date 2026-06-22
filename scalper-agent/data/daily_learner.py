@@ -22,7 +22,7 @@ from pathlib import Path
 from datetime import datetime, date, timedelta
 from data.trading_calendar import is_trading_day, next_trading_day, last_trading_day
 from collections import defaultdict
-from typing import Dict, List, Optional, Tuple
+from typing import Optional, Union
 from dotenv import load_dotenv
 
 # ── 경로 ──
@@ -247,10 +247,19 @@ def verify_recommendations(today: str) -> dict:
 # ═══════════════════════════════════════════
 #  2. 놓친 급등주 역추적
 # ═══════════════════════════════════════════
-def find_missed_gainers(today: str, threshold: float = 3.0) -> list:
+def find_missed_gainers(
+    today: str, threshold: float = 3.0, return_stats: bool = False
+) -> Union[list, tuple]:
     """당일 +3% 이상 급등했는데 추천에 없던 종목 찾기
 
+    Args:
+        return_stats: True면 (missed, stats) 튜플 반환.
+            stats = {"checked": 당일 일봉 적재 종목 수, "daily_loaded": checked > 0}.
+            ★ 6/22 STALE 사고 후 신설 — 일봉 미적재(빈 결과)와 진짜 급등주 0을
+            구분하기 위함. False(기본)면 기존대로 missed 리스트만 반환(하위 호환).
+
     Returns: [{code, name, change_rate, volume, reason_missed}]
+             (return_stats=True면 (위 리스트, stats dict) 튜플)
     """
     from data.kis_collector import UNIVERSE
 
@@ -280,11 +289,22 @@ def find_missed_gainers(today: str, threshold: float = 3.0) -> list:
                 rows = list(reader)
                 if not rows:
                     continue
-                last = rows[-1]
+                # ★ 6/23 fix(Medium-2): 'today' 행을 last row 고정이 아니라 전체에서
+                #   탐색. 당일 학습은 today=last row(일반)지만, backfill은 과거일이라
+                #   일봉이 더 최신까지 적재되면 today가 중간 행일 수 있다. last row
+                #   고정 시 last_date != today로 checked=0 → 잘못 skip(복구 불가).
+                #   뒤에서부터(최신 우선) 매칭해 당일 동작은 bit-identical 보존.
                 # CSV 인덱스 컬럼명: pandas to_csv → 빈 문자열("") 키
-                last_date = last.get("", "") or last.get("날짜", "") or last.get("date", "")
-                if last_date != today:
+                target_idx = None
+                for _i in range(len(rows) - 1, -1, -1):
+                    _rd = (rows[_i].get("", "") or rows[_i].get("날짜", "")
+                           or rows[_i].get("date", ""))
+                    if _rd == today:
+                        target_idx = _i
+                        break
+                if target_idx is None:
                     continue
+                last = rows[target_idx]
 
                 # CSV 컬럼: 한글(날짜/종가/거래량/등락률) 또는 영문(date/close/volume)
                 close_raw = last.get("종가") or last.get("close", 0)
@@ -292,11 +312,12 @@ def find_missed_gainers(today: str, threshold: float = 3.0) -> list:
                 chg_raw = last.get("등락률")
                 close = int(float(close_raw)) if close_raw else 0
                 vol = int(float(vol_raw)) if vol_raw else 0
-                # 등락률 없으면 전일 대비 계산
+                # 등락률 없으면 전일 대비 계산 (target_idx 직전 행)
                 if chg_raw is not None and chg_raw != "":
                     chg = float(chg_raw)
-                elif len(rows) >= 2:
-                    prev_close = float(rows[-2].get("종가") or rows[-2].get("close", 0) or 0)
+                elif target_idx >= 1:
+                    prev_close = float(rows[target_idx - 1].get("종가")
+                                       or rows[target_idx - 1].get("close", 0) or 0)
                     chg = ((close / prev_close) - 1) * 100 if prev_close > 0 else 0
                 else:
                     chg = 0
@@ -318,7 +339,13 @@ def find_missed_gainers(today: str, threshold: float = 3.0) -> list:
     missed.sort(key=lambda x: x["change_rate"], reverse=True)
     logger.info(f"유니버스 {checked}종목 중 +{threshold}% 급등: {len(missed)}개 (추천 누락)")
     # 5/18 사장님 명시: "TOP 50 매일 AUTO 학습" — 30→50 확대 (종목 발굴 풀 ↑)
-    return missed[:50]  # TOP 50까지
+    result = missed[:50]  # TOP 50까지
+    if return_stats:
+        # ★ 6/22 STALE 사고 fix: 일봉 적재 여부(checked)를 호출처에 전달.
+        #   checked=0 = 당일 일봉(daily CSV) 미적재(KRX 지연 등) → 빈 결과는
+        #   "데이터 부재"이지 "급등주 0"이 아님. 호출처가 파일 생성 여부 판단.
+        return result, {"checked": checked, "daily_loaded": checked > 0}
+    return result
 
 
 def save_missed_gainers_file(today: str, missed: list, threshold: float = 3.0) -> Path:
@@ -352,6 +379,66 @@ def save_missed_gainers_file(today: str, missed: list, threshold: float = 3.0) -
             tmp.unlink(missing_ok=True)
 
     return out_path
+
+
+def backfill_missed_gainers(lookback_days: int = 10) -> dict:
+    """최근 거래일 중 missed_gainers 파일이 없는 날을, 일봉이 (나중에)
+    채워졌으면 자동 재생성한다 (self-heal).
+
+    ★ 6/22 STALE 사고 후 신설. 일봉이 KRX 지연 등으로 늦게 적재된 날은
+    당일 저녁 missed_gainers 생성에 실패한다(빈 결과 → 미생성). 이후 일봉이
+    채워지면 이 함수가 누락일을 감지해 재생성한다. 영구 공백 차단.
+
+    멱등: 이미 파일이 있는 날은 건너뛴다(재생성 X). 일봉이 여전히 부재면
+    skip하고 다음 실행 기회로 미룬다(잘못된 빈 파일 박제 방지).
+
+    주의(Medium-1): 과거일 재생성 시 find_missed_gainers의 추천누락(rec_codes)
+    판정은 현재 recommendation.json 기준 근사다(과거 추천 스냅샷 부재). 사후
+    진단/패턴학습용 자료라 영향은 작다. 주 시나리오는 당일/익일 복구.
+
+    Args:
+        lookback_days: 오늘부터 거슬러 점검할 거래일 수.
+
+    Returns:
+        {"created": [재생성 날짜], "skipped": [일봉 여전히 부재], "existing": 기존 개수}
+    """
+    out_dir = LEARNING_DIR / "missed_gainers"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    created: list = []
+    skipped: list = []
+    existing = 0
+
+    cur = date.today()
+    checked_days = 0
+    while checked_days < lookback_days:
+        if is_trading_day(cur):
+            checked_days += 1
+            ds = cur.strftime("%Y-%m-%d")
+            fpath = out_dir / f"{ds}.json"
+            if fpath.exists():
+                existing += 1
+            else:
+                try:
+                    missed, stats = find_missed_gainers(ds, return_stats=True)
+                    if stats["daily_loaded"]:
+                        save_missed_gainers_file(ds, missed)
+                        created.append(ds)
+                    else:
+                        skipped.append(ds)  # 일봉 여전히 부재 → 다음 기회
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(f"[MissedGainers] backfill {ds} 실패(무시): {e}")
+                    skipped.append(ds)
+        cur = cur - timedelta(days=1)
+
+    if created:
+        logger.info(f"[MissedGainers] backfill 재생성 {len(created)}일: {created}")
+    else:
+        logger.info(
+            f"[MissedGainers] backfill: 재생성 0일 "
+            f"(existing={existing}, skipped={len(skipped)})"
+        )
+    return {"created": created, "skipped": skipped, "existing": existing}
 
 
 # ═══════════════════════════════════════════
@@ -1116,10 +1203,18 @@ def run(quick: bool = False):
     missed = []
     if not quick:
         logger.info("[Phase 2] 놓친 급등주 역추적...")
-        missed = find_missed_gainers(today)
+        missed, _mg_stats = find_missed_gainers(today, return_stats=True)
         # 2.5 날짜별 파일 축적 (텔레그램 제외 → 파일로만 축적)
-        if missed:
+        # ★ 6/22 STALE 사고 fix: 일봉 적재됨(daily_loaded)이면 빈 결과여도 파일 생성
+        #   → 다운스트림(C35 analyze_missed_gainers) FileNotFoundError 연쇄 차단.
+        #   일봉 자체 미적재(checked=0, KRX 지연 등)면 미생성 + 경고 → backfill이 복구.
+        if _mg_stats["daily_loaded"]:
             save_missed_gainers_file(today, missed)
+        else:
+            logger.warning(
+                f"[MissedGainers] {today} 일봉 미적재(checked=0) — "
+                f"파일 미생성, backfill 대기"
+            )
 
     # 3. DB 저장
     logger.info("[Phase 3] 학습 DB 저장...")
