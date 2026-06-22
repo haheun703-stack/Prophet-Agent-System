@@ -4,15 +4,23 @@
 사장님 6/22: "KRX IP 주소 락 걸렸다. 너희가 무자비하게 너무 들어가서 못 들어간다.
   KRX는 비활성화 해놓고, 내가 IP 새로 받으면 그때 다시 1명의 봇만 진행."
 
-배경: 여러 봇(단타봇·prophet-agent 예언자·퀀트봇)이 KRX를 과다 크롤링 → 사무실/노트북 IP 차단
-  (6/19에도 124.52.138.181 차단 기록). KRX 실호출은 모두 이 게이트를 통과해야만 나간다.
+배경: 여러 봇(단타봇·prophet-agent 예언자·퀀트봇)이 KRX를 과다 호출 → KRX 접근 차단.
+  KRX 실호출은 모두 이 게이트를 통과해야만 나간다.
+
+★ 원인 정정(6/22 정보봇·퀀트봇 진단): 처음엔 IP 차단으로 인지했으나(6/19 124.52.138.181),
+  실제 원인은 **KRX 계정잠금(CD007)** — IP 무관·계정 단위. 같은 KRX 계정으로 로그인하는
+  모든 봇/서버가 잠금에 기여한다. → 이 게이트(KRX 호출 0)는 원인이 IP든 계정잠금이든 더더욱
+  유효하다. ('새 IP 받으면'은 초기 전제. 계정잠금이면 KRX 계정 해제가 핵심이고, 그 뒤에도
+  KRX는 퀀트봇 1봇만 단일 계정 로그인해야 재잠금을 피한다.)
 
 정책:
 - default = 차단(False). KRX 실호출(pykrx 웹스크래핑·KRX nationality 크롤러·KRX OpenAPI)은
   krx_enabled()가 True일 때만 허용.
 - .env(루트) KRX_ENABLED=1 또는 환경변수 KRX_ENABLED=1 일 때만 활성.
-- ★ 새 IP 받은 뒤 '1봇만' 켤 때, 그 1봇 환경에서만 KRX_ENABLED=1 설정한다.
-  (단타봇·prophet-agent는 루트 .env를 공유하므로, 1봇 일원화 시 봇별 env 분리 필요 — 사장님 결정.)
+- ★★ 사장님 6/22 확정: KRX는 **퀀트봇(D:\\sub-agent-project_퀀트봇)이 1봇 전담**한다. ★★
+  단타봇·prophet-agent(예언자)는 KRX_ENABLED **영구 OFF** — 새 IP 받아도 여기선 KRX 켜지 말 것.
+  단타봇은 퀀트봇의 KRX 산출물(quant_investor_extra.json 등)을 sync로 받아 쓴다(KRX 직접 호출 X).
+  → 즉 이 게이트는 단타봇/예언자에선 사실상 영구 차단 상태가 정상. KRX_ENABLED=1 설정 금지.
 """
 import os
 from pathlib import Path
