@@ -188,6 +188,12 @@ class SajangRules:
     HOLD_BASE_DAYS: int = 3                # D+3 단타 기본 (자본효율 최고 2.76%/일)
     RIDE_KKI_GRADE: str = "EXPLOSIVE"      # 이 등급만 RIDE 연장(추세 끝까지)
     RIDE_MAX_DAYS: int = 10                # RIDE 안전 캡
+    # ★ 6/22 라이브 배선 게이트 (사장님 결정 = 코드는 배선하되 기본 OFF) ★
+    #   reentry_watch.py + _job_reentry_check 가 이 플래그를 본다.
+    #   False = 손절 종목 감시·재진입 판정은 하되, 실제 매수 대신 관측 intent(allowed=False)만 기록(실주문 0).
+    #   True 로 flip 조건(설계 §8): shadow 검증 + §5 라이브숙제(분봉/비용/생존편향/실끼/자본슬롯) + paper 리허설 + 사장님 승인.
+    #   ★ 관측 없이 flip 금지 (5/31·5/26 사고 교훈). default off 금지 원칙의 예외 = 라이브 주문 신규동작이라 검증 전 보호. ★
+    REENTRY_LIVE: bool = False
 
     @classmethod
     def get_take_profit(cls, buy_price: float) -> int:
@@ -367,7 +373,8 @@ class SajangRules:
             f"NORMAL_SL_PCT={cls.NORMAL_SL_PCT}",
             f"BUDGET_CASH_RATIO={cls.BUDGET_CASH_RATIO}",
             f"CASH_RESERVE_PCT={cls.CASH_RESERVE_PCT}  ★ 30% 현금 보유 영구 룰 ★",
-            f"REENTRY_ENABLED={cls.REENTRY_ENABLED} (shadow만 소비·라이브 미배선)",
+            f"REENTRY_ENABLED={cls.REENTRY_ENABLED} (룰 활성 — 라이브 발동은 REENTRY_LIVE 게이트가 별도 차단)",
+            f"REENTRY_LIVE={cls.REENTRY_LIVE} ★ 라이브 매수경로 게이트(기본 OFF·실주문 차단) ★",
             f"REENTRY_MAX={cls.REENTRY_MAX}",
             f"REENTRY_MIN_KKI_GRADE='{cls.REENTRY_MIN_KKI_GRADE}'",
             f"HOLD_BASE_DAYS={cls.HOLD_BASE_DAYS}",

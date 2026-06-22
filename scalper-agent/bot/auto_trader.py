@@ -111,6 +111,17 @@ class AutoTrader:
         except Exception as _cb_e:
             logger.warning(f"[auto_trader] callback 등록 실패: {_cb_e}")
 
+        # ★ 6/22 재진입 감시 콜백 등록 (매도 무접촉) ★
+        # 손절/트레일링 매도 이벤트를 read-only 구독 → reentry_watch_live.json 채움.
+        # 실제 재진입 매수는 SAJANG.REENTRY_LIVE 게이트(_job_reentry_check) — 기본 OFF.
+        try:
+            from data import trade_journal as _tj2
+            from data import reentry_watch as _rw
+            _tj2.register_trade_callback(_rw.on_trade_event)
+            logger.info("[auto_trader] reentry_watch callback 등록 — 손절 종목 재진입 감시(REENTRY_LIVE 게이트로 실주문 차단)")
+        except Exception as _rw_e:
+            logger.warning(f"[auto_trader] reentry_watch callback 등록 실패: {_rw_e}")
+
         # ★★★ 5/26 23:00 CRITICAL #1 fix ★★★
         # commit d18c3bd에서 _pre_sell_alert 함수 추가 시 init 코드가 잘못 함수 본문에 포함됨
         # 5/27 09:15 가동 시 self._risk_state AttributeError 즉시 봇 크래시 위험
@@ -4175,6 +4186,111 @@ class AutoTrader:
                 logger.error(f"[notify_trade] dispatch 실패: {_ne}")
         except Exception as e:
             logger.error(f"[notify_trade] 텔레그램 알림 실패: {e}")
+
+    async def reentry_buy_one(self, code: str, watch_rec: dict, live: Optional[bool] = None) -> dict:
+        """재진입 매수 1건 — 설계 reentry_rule_5_31.md §4 (기존 매수 primitive 재사용, 새 주문통로 X).
+
+        ★ 안전 ★
+        - live=None → SAJANG.REENTRY_LIVE (기본 False). False면 실제 매수 대신 관측 intent(allowed=False)만 기록 → 실주문 0.
+        - live=True 라도 _auto_trade_disabled / 휴장일 / 중복보유(원래 슬롯) / _is_sell_protected 가드 통과해야 매수.
+        - 자금: '원래 슬롯 유지 + cash30' (사장님 6/22) → SAJANG.calc_budget_per_stock(cash, total_eval, top_k=1).
+        - 매도 무접촉. 라이브 매수는 asset_pool 과 동일 execute_vwap_split_buy primitive.
+        반환: dict(action ∈ {OBSERVE, REENTER, SKIP}, code, qty, reason, ...).
+        """
+        from data.sajang_rules import SAJANG   # 코드베이스 컨벤션 = 함수 로컬 import
+        live = SAJANG.REENTRY_LIVE if live is None else bool(live)
+        name = watch_rec.get("name", code)
+
+        if not is_trading_day():
+            return {"action": "SKIP", "code": code, "reason": "휴장일"}
+        if self._auto_trade_disabled():
+            return {"action": "SKIP", "code": code, "reason": "AUTO_TRADE_DISABLED"}
+        if code in getattr(self, "_real_holdings_codes", set()) or code in self._positions:
+            return {"action": "SKIP", "code": code, "reason": "이미 보유(원래 슬롯 점유)"}
+        if self._is_sell_protected(code, "reentry"):
+            return {"action": "SKIP", "code": code, "reason": "sell_protected(사장님 보호종목)"}
+
+        # 현재가
+        close = 0.0
+        try:
+            pi = await asyncio.to_thread(self.trader.fetch_price, code)
+            if pi and pi.get("success"):
+                close = float(pi.get("current_price", 0))
+        except Exception as _pe:
+            logger.warning(f"[reentry] {name}({code}) 현재가 조회 실패: {_pe}")
+        if close <= 0:
+            return {"action": "SKIP", "code": code, "reason": "현재가 조회 실패"}
+
+        # 수량 = 원래 슬롯 유지 + cash30 (top_k=1 분배) — SAJANG 단일진실
+        qty = 0
+        try:
+            bal = await asyncio.to_thread(self.trader.fetch_balance)
+            if bal and bal.get("success"):
+                cash = float(bal.get("cash", 0) or 0)
+                total_eval = float(bal.get("total_eval", bal.get("eval_amount", 0)) or 0)
+                budget = SAJANG.calc_budget_per_stock(cash, total_eval, top_k=1)
+                qty = int(budget // close) if close > 0 else 0
+        except Exception as _be:
+            logger.warning(f"[reentry] {name}({code}) 잔고/예산 계산 실패: {_be}")
+
+        msg = (f"REENTRY {name}({code}) 종가 {int(close):,} ≥ 손절선 "
+               f"{int(watch_rec.get('last_stop_price', 0)):,} reclaim / 끼={watch_rec.get('kki_grade')} "
+               f"re_count={watch_rec.get('re_count', 0)} qty={qty}")
+
+        # ── 관측 모드 (기본): 실주문 X, intent(allowed=False)만 — No Intent No Order 준수 ──
+        if not live:
+            try:
+                from bot.order_intent import record_order_intent
+                record_order_intent(
+                    side="BUY", code=code, qty=qty, source="reentry", manual=False,
+                    allowed=False, reason="REENTRY_OBSERVE", strategy="reentry_watch",
+                    message=msg, dedupe_daily=True,
+                )
+            except Exception as _ie:
+                logger.warning(f"[reentry] 관측 intent 기록 실패: {_ie}")
+            logger.info(f"[reentry/OBSERVE] {msg}  (REENTRY_LIVE=False → 실주문 0)")
+            return {"action": "OBSERVE", "code": code, "qty": qty, "close": int(close),
+                    "reason": "관측(REENTRY_LIVE=False)"}
+
+        # ── 라이브 모드: 실제 재진입 매수 (asset_pool 과 동일 primitive) ──
+        if qty < 1:
+            return {"action": "SKIP", "code": code, "reason": "예산 부족(cash30 분배 후 1주 미만)"}
+        try:
+            from bot.vwap_split_buy import execute_vwap_split_buy
+            split = await execute_vwap_split_buy(
+                trader=self.trader, code=code, name=name,
+                open_price=int(close), total_qty=qty, send_alert=self._send_alert,
+            )
+            if not getattr(split, "success", False):
+                return {"action": "SKIP", "code": code, "reason": "매수 체결 실패"}
+            filled_qty = split.total_bought_qty
+            buy_price = float(getattr(split, "avg_price", close) or close)
+        except Exception as _oe:
+            logger.warning(f"[reentry] {name}({code}) 매수 실패: {_oe}")
+            return {"action": "SKIP", "code": code, "reason": f"매수 예외: {type(_oe).__name__}"}
+
+        # 포지션 등록 (SAJANG 단일진실: -3% 안전망 / TP=0 / mode=swing). source='reentry' 로 추적.
+        self._positions[code] = {
+            "name": name, "qty": filled_qty, "buy_price": buy_price, "entry_price": buy_price,
+            "high_watermark": buy_price, "trailing_activated": False, "trailing_sl": 0,
+            "stop_loss": SAJANG.get_normal_sl(buy_price), "take_profit": SAJANG.get_take_profit(buy_price),
+            "regime": "NORMAL", "mode": "swing", "source": "reentry",
+            "timing_mode": watch_rec.get("timing_mode", "open"),
+            "entry_date": datetime.now().strftime("%Y-%m-%d"),
+            "sl_disabled": False,
+            "reentry_of": code, "re_count": int(watch_rec.get("re_count", 0)) + 1,
+        }
+        self._save_positions()
+        try:
+            from data import trade_journal as _tj
+            _tj.log_buy(code=code, name=name, qty=filled_qty, price=buy_price,
+                        source="external", signal_tags="reentry(reclaim)", final_score=0,
+                        note="reentry stop_reclaim")
+        except Exception as _tje:
+            logger.warning(f"[reentry] trade_journal 적재 실패: {_tje}")
+        logger.info(f"[reentry/REENTER] {msg} → 체결 {filled_qty}주 @{int(buy_price):,}")
+        return {"action": "REENTER", "code": code, "qty": filled_qty, "price": int(buy_price),
+                "reason": "재진입 체결"}
 
     def _compute_dynamic_trailing_sl(self, pos: dict, current_price: int,
                                        trend_strength: Optional[dict] = None) -> int:

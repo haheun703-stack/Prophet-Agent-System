@@ -4598,6 +4598,54 @@ class TradingCOO:
             logger.warning(f"[SECTOR_SHADOW] 실패 (무시): {e}")
             return {"sector_reversal_shadow": f"ERROR: {e}"}
 
+    async def _job_reentry_check(self, context=None) -> dict:
+        """15:55 종가 — 손절 종목 재진입 감시 (설계 reentry_rule_5_31.md §2.1, 6/22 라이브 배선).
+
+        reentry_watch_live.json(매도 무접촉 콜백이 채움) → SAJANG.should_reenter 판정 →
+          REENTER 결정마다 auto_trader.reentry_buy_one.
+        ★ SAJANG.REENTRY_LIVE=False(기본)면 reentry_buy_one 이 관측 intent(allowed=False)만 → 실주문 0. ★
+        ★ is_trading_day + AUTO_TRADE_DISABLED 표준 가드. 매도/picks/SAJANG 무접촉. ★
+        """
+        try:
+            from data.trading_calendar import is_trading_day
+            if not is_trading_day():
+                return {"reentry_check": "SKIP_NON_TRADING_DAY"}
+            if not self.auto_trader:
+                return {"reentry_check": "NO_AUTO_TRADER"}
+            if self.auto_trader._auto_trade_disabled():
+                logger.info("[REENTRY] AUTO_TRADE_DISABLED — 평가 skip")
+                return {"reentry_check": "AUTO_TRADE_DISABLED"}
+            from data import reentry_watch as _rw
+            from data.sajang_rules import SAJANG
+            trader = getattr(self.auto_trader, "trader", None)
+
+            def _price(code):
+                try:
+                    pi = trader.fetch_price(code) if trader else None
+                    if pi and pi.get("success"):
+                        return float(pi.get("current_price", 0))
+                except Exception:
+                    return None
+                return None
+
+            decisions = await asyncio.to_thread(_rw.evaluate_watch, _price)
+            reenters = [d for d in decisions if d.get("action") == "REENTER"]
+            acted = 0
+            for d in reenters:
+                res = await self.auto_trader.reentry_buy_one(d["code"], d)
+                if res.get("action") in ("REENTER", "OBSERVE"):
+                    _rw.mark_acted(d["code"])
+                    acted += 1
+            logger.info(
+                f"[REENTRY] 감시 {len(decisions)}건 / REENTER {len(reenters)} / acted {acted} "
+                f"(REENTRY_LIVE={SAJANG.REENTRY_LIVE} → {'실매수' if SAJANG.REENTRY_LIVE else '관측 intent만'})"
+            )
+            return {"reentry_check": "OK", "watched": len(decisions),
+                    "reenter": len(reenters), "acted": acted, "live": SAJANG.REENTRY_LIVE}
+        except Exception as e:
+            logger.warning(f"[REENTRY] 실패 (무시): {e}")
+            return {"reentry_check": f"ERROR: {e}"}
+
     # ─── F1 외인 장중 잠정 시간대 로거 (6/11 사장님 + Claude Fable5, read-only 관측) ───
     # "오늘 +2~5% 종목, 내일 들고 갈까" — 외인 오전 매수 → 오후 반납(단타형) vs 유지(매집형)을
     # 장중 외인 잠정 시간대 추이로 구분 → 익일 forward 검증. ★매수/picks/SAJANG/order 무접촉★
@@ -5121,6 +5169,12 @@ class TradingCOO:
         # ── ★ 섹터 reversal shadow 관측 (6/9 사장님, 매수 무접촉·6/12 판정용) ★ ──
         jq.run_daily(self._job_sector_reversal_shadow, time=kst_time(15, 50))
         logger.info("[COO] ★ Sector Reversal Shadow 등록: 15:50 KST (HOT_5D vs REVERSAL_D0 관측, 6/12 판정) ★")
+
+        # ── ★ 재진입 감시 (6/22 사장님, 설계 §2.1 당일 종가 reclaim) ★ ──
+        # 손절 종목이 종가에 손절선 회복 + 끼/윈도우 자격 통과 시 재진입.
+        # ★ SAJANG.REENTRY_LIVE=False(기본) → 관측 intent만(실주문 0). flip은 §5 숙제+paper+사장님 승인 후. ★
+        jq.run_daily(self._job_reentry_check, time=kst_time(15, 55))
+        logger.info("[COO] ★ 재진입 감시 등록: 15:55 KST (손절 reclaim 재진입, REENTRY_LIVE 게이트로 실주문 차단) ★")
 
         # ── F1 외인 장중 잠정 시간대 로거 (6/11 사장님+Fable5, read-only 관측, 6/12~) ──
         jq.run_daily(self._job_f1_select, time=kst_time(11, 0))
