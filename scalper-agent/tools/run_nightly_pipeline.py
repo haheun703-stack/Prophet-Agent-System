@@ -101,6 +101,8 @@ def main():
          [PY, "tools/run_f1_forward_preflight.py"], 300),
         ("⑩ 기관매집스캔(KRX-free)",   # 6/19 연기금 KRX박제 대체 — KIS 기관계 fresh 시그널 + 업로드(⑥ 수급 뒤)
          [PY, "tools/run_institution_accum_scan.py"], 300),
+        ("⑪ catalyst 명분맥점 발굴",   # 6/24 명분 있는 끼 종목(상한가·3일10%+ → 재료·명분등급·점화맥점) record-only
+         [PY, "tools/run_catalyst_scanner_daily.py"], 600),
     ]
 
     results = {}
