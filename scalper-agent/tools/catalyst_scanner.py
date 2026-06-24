@@ -149,6 +149,49 @@ def _ignition(rows):
     return is_ig, vol_ratio, prior_max
 
 
+def _ranking_volumes():
+    """ranking_scan(오늘 실시간 KIS)에서 code→오늘 거래량 맵."""
+    if not RANKING_SCAN.exists():
+        return {}
+    try:
+        rs = json.loads(RANKING_SCAN.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    out = {}
+    for grp in ("upper_limit", "near_limit", "surge_top", "volume_top"):
+        for u in rs.get(grp, []):
+            if u.get("code") and u.get("volume"):
+                out.setdefault(u["code"], u["volume"])
+    return out
+
+
+def _intraday_ignition(code, today_chg, today_vol):
+    """★ 오늘 장중 점화 — 어제까지 휴면 + 오늘 거래량 폭발 + 첫 양봉(상한가 추격 미만).
+
+    ranking_scan(오늘 실시간 거래량/등락) + daily(어제까지)로 보해양조 6/18형을
+    마감 안 기다리고 장중에 포착. 상한가(추격·뉴스)는 제외, +5~25% 막 가는 자리.
+    Returns: (is_ignition, vol_ratio)."""
+    if today_vol is None or today_chg is None:
+        return False, None
+    rows = _rows(code)  # 어제까지
+    if len(rows) < IGNITE_PRE + 2:
+        return False, None
+    closes = [r[1] for r in rows]
+    vols = [r[4] for r in rows]
+    win = vols[-20:]
+    avg_vol = sum(win) / len(win) if win else 0
+    vol_ratio = round(today_vol / avg_vol, 1) if avg_vol > 0 else None
+    prior = []
+    for j in range(max(1, len(closes) - IGNITE_PRE), len(closes)):
+        if closes[j - 1] > 0:
+            prior.append((closes[j] / closes[j - 1] - 1) * 100)
+    prior_max = round(max(prior), 1) if prior else 0.0
+    is_ig = (prior_max < IGNITE_DORMANT_MAX) \
+        and (vol_ratio is not None and vol_ratio >= IGNITE_VOL_X) \
+        and (IGNITE_SURGE_MIN <= today_chg < 25)
+    return is_ig, vol_ratio
+
+
 def _maek_jeom(pos20, chg_3d, today_chg, is_upper, ig_info):
     """진입 맥점 판별 — 초입점화(진짜 맥점) / 눌림 / 추격위험 / 보통.
 
@@ -327,6 +370,7 @@ def scan_catalyst(top_n: int = 30, save: bool = True) -> dict:
     # 재료(뉴스) 분석
     import time
     _cons = _load_consensus()
+    _rs_vol = _ranking_volumes()
     for it in items:
         time.sleep(0.15)  # 네이버 종목뉴스 크롤링 과부하/차단 방지
         try:
@@ -338,9 +382,18 @@ def scan_catalyst(top_n: int = 30, save: bool = True) -> dict:
         it["meongbun_grade"], it["meongbun_kw"] = _meongbun_grade(titles)
         it["news_stage"] = _news_stage(titles)  # ★ 소문/뉴스/중간
         ig = _ignition(_rows(it["code"]))
-        it["vol_ratio"], it["prior_max"] = ig[1], ig[2]
-        it["maek_jeom"] = _maek_jeom(it.get("pos20"), it.get("chg_3d"),
-                                     it.get("today_chg"), it["is_upper"], ig)
+        # ★ 장중 점화 우선 — 오늘 거래량(ranking) + 어제 휴면 (보해양조 6/18형 실시간)
+        intra_ig, intra_vol = _intraday_ignition(
+            it["code"], it.get("today_chg"), _rs_vol.get(it["code"]))
+        if intra_ig:
+            it["maek_jeom"] = "초입점화"
+            it["intraday"] = True
+            it["vol_ratio"], it["prior_max"] = intra_vol, ig[2]
+        else:
+            it["intraday"] = False
+            it["vol_ratio"], it["prior_max"] = ig[1], ig[2]
+            it["maek_jeom"] = _maek_jeom(it.get("pos20"), it.get("chg_3d"),
+                                         it.get("today_chg"), it["is_upper"], ig)
         # 정보봇 컨센서스(있으면 직접 활용) — PER·목표가
         c = _cons.get(it["code"])
         if c:
