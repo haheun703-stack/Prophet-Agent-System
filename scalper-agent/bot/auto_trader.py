@@ -4726,6 +4726,12 @@ class AutoTrader:
                     continue
 
                 cp = price_info["current_price"]
+                entry_px = pos.get("entry_price", 0)
+                if not entry_px or entry_px <= 0:
+                    # 0원/키누락 동기화 포지션(sync_auto_no_price) — ZeroDiv/KeyError 방지.
+                    # _job_monitor_fallback의 SL 폴백이 별도 커버.
+                    logger.warning(f"[daily_reeval] {pos.get('name', code)}({code}) entry_price 0/누락 — 재평가 스킵")
+                    continue
                 pnl = (cp / pos["entry_price"] - 1) * 100
 
                 # 보유일 계산

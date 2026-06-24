@@ -3102,7 +3102,7 @@ class TradingCOO:
         갭업/갭다운/거래폭발 감지 시 텔레그램 경고.
         08:53 최종 서머리 전송 (G2 08:55 직전).
         """
-        from tools.trading_calendar import is_trading_day
+        from data.trading_calendar import is_trading_day
         if not is_trading_day():
             logger.info("[A15] 비거래일 — 동시호가 스캐너 스킵")
             return {"auction_scan": "SKIP_NON_TRADING"}

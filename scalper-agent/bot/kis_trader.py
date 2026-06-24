@@ -1838,6 +1838,8 @@ class KISTrader:
             return {"success": False, "message": f"현재가 조회 실패"}
 
         price = pi["current_price"]
+        if price <= 0:
+            return {"success": False, "message": "현재가 0원 — 매수 불가"}
 
         # 5/19~5/20 D-Day 1주 모드 — amount 사전 축소 (현금 부족 차단 방지)
         one_share = self._is_one_share_mode()
