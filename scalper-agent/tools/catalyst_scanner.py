@@ -169,11 +169,17 @@ def _maek_jeom(pos20, chg_3d, today_chg, is_upper, ig_info):
     return "보통"
 
 
-def _verdict(grade, maek):
-    """명분 + 맥점 → 종합 관측 판정 (record-only, 매수 아님)."""
+def _verdict(grade, maek, news_stage=None):
+    """명분 + 맥점 + 소문/뉴스 단계 → 종합 관측 판정 (record-only, 매수 아님)."""
     if grade in ("강", "중") and maek in ("초입점화", "눌림"):
+        # ★ 소문 단계 + 점화 = 최적 매수자리 ("소문에 사서")
+        if news_stage == "소문":
+            return "★★소문매수(명분+맥점+소문)"
         return "★관측후보(명분+맥점)"
     if grade in ("강", "중") and maek == "추격위험":
+        # 뉴스 단계 + 추격 = 파는 자리 ("뉴스에 판다")
+        if news_stage == "뉴스":
+            return "뉴스매도(확정·다들앎)"
         return "관망(명분O·추격구간)"
     if grade in ("약", "무명분"):
         return "제외(명분약)"
@@ -216,6 +222,38 @@ def _gather_candidates():
                 if "3일강세" not in c["srcs"]:
                     c["srcs"].append("3일강세")
     return cand
+
+
+RUMOR_KW = ["이유는", "왜", "무슨", "들썩", "꿈틀", "주목", "부각", "기대감",
+            "관측", "전망", "검토", "추진", "나선", "소식에", "포착", "노린"]
+NEWS_KW = ["확정", "공시", "체결", "수주 계약", "공급계약", "발표", "출시",
+           "상한가", "급등 마감", "신고가 경신", "잠정 실적", "공급 계약"]
+
+
+def _news_stage(titles):
+    """★ 소문(초입·재료 막 뜸) vs 뉴스(확정·다들 앎) 단계 (사장님 6/24 '소문에 사서 뉴스에 판다').
+
+    소문 = 의문형('이유는?'·'왜')·기대감 → 막 알려지기 시작 = 매수 자리(보해양조 6/18).
+    뉴스 = 확정·공시·상한가 → 다들 앎 = 파는 자리(보해양조 6/23)."""
+    text = " ".join(titles)
+    has_rumor = ("?" in text) or any(k in text for k in RUMOR_KW)
+    has_confirm = any(k in text for k in NEWS_KW)
+    if has_rumor and not has_confirm:
+        return "소문"
+    if has_confirm:
+        return "뉴스"
+    return "중간"
+
+
+def _load_consensus():
+    """정보봇 컨센서스(PER/목표가) — 있으면 직접 활용(대형주 한정·stale 가능)."""
+    p = BASE / "data_store" / "consensus.json"
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
 
 
 def _find_next_candidates(items, max_per_theme: int = 8, limit: int = 25):
@@ -288,6 +326,7 @@ def scan_catalyst(top_n: int = 30, save: bool = True) -> dict:
 
     # 재료(뉴스) 분석
     import time
+    _cons = _load_consensus()
     for it in items:
         time.sleep(0.15)  # 네이버 종목뉴스 크롤링 과부하/차단 방지
         try:
@@ -297,11 +336,17 @@ def scan_catalyst(top_n: int = 30, save: bool = True) -> dict:
             titles = []
         it["titles"] = titles[:3]
         it["meongbun_grade"], it["meongbun_kw"] = _meongbun_grade(titles)
+        it["news_stage"] = _news_stage(titles)  # ★ 소문/뉴스/중간
         ig = _ignition(_rows(it["code"]))
         it["vol_ratio"], it["prior_max"] = ig[1], ig[2]
         it["maek_jeom"] = _maek_jeom(it.get("pos20"), it.get("chg_3d"),
                                      it.get("today_chg"), it["is_upper"], ig)
-        it["verdict"] = _verdict(it["meongbun_grade"], it["maek_jeom"])
+        # 정보봇 컨센서스(있으면 직접 활용) — PER·목표가
+        c = _cons.get(it["code"])
+        if c:
+            it["per"] = c.get("per")
+            it["target_price"] = c.get("target_price")
+        it["verdict"] = _verdict(it["meongbun_grade"], it["maek_jeom"], it["news_stage"])
 
     next_cand = _find_next_candidates(items)
     result = {
@@ -335,8 +380,10 @@ def format_report(result: dict) -> str:
             p20 = f"pos{it['pos20']}" if it.get("pos20") is not None else ""
             kw = "/".join(it.get("meongbun_kw") or [])
             title = (it.get("titles") or [""])[0][:38]
+            stage = it.get("news_stage", "")
+            per = f" PER{it['per']}" if it.get("per") else ""
             lines.append(f"  {it['name']}({it['code']}) {tchg} {c3} {p20} "
-                         f"명분[{it['meongbun_grade']}:{kw}] {it['maek_jeom']}")
+                         f"명분[{it['meongbun_grade']}:{kw}] {it['maek_jeom']} [단계:{stage}]{per}")
             lines.append(f"      → {title}")
     # ★ 선행 발굴 — 같은 테마 휴면 종목(곧 오를 소재 후보)
     nxt = result.get("next_candidates", [])
