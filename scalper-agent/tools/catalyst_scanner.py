@@ -218,8 +218,57 @@ def _gather_candidates():
     return cand
 
 
+def _find_next_candidates(items, max_per_theme: int = 8, limit: int = 25):
+    """★ 선행 발굴(6/24 사장님): 오늘 점화/강세 종목의 명분 키워드 →
+    theme_map 같은 테마 종목 중 아직 휴면(안 간) 것 = '곧 오를 소재' 후보.
+
+    '왜 올랐나'(후행)를 넘어 '곧 오를 소재 있는 종목'을 미리. 보해양조 '반도체'
+    명분 → theme_map 반도체 테마 종목 중 휴면(pos20 바닥·3일 안 오름) 발굴."""
+    try:
+        from data.theme_collector import load_theme_map
+    except Exception:
+        return []
+    tmap = load_theme_map()
+    themes = tmap.get("themes", {})
+    if not themes:
+        return []
+    # 오늘 강/중 명분 키워드 수집 (시황 오탐 제거된 등급)
+    # 테마 확산은 섹터 테마 키워드만 — '수혜/수주/공장' 등 일반어는 엉뚱 매칭(식품주 오탐)
+    THEME_KW = {"반도체", "HBM", "AI", "데이터센터", "전력", "원전", "로봇",
+                "휴머노이드", "2차전지", "배터리", "방산"}
+    hot_kw = set()
+    for it in items:
+        if it.get("meongbun_grade") in ("강", "중"):
+            hot_kw.update(k for k in (it.get("meongbun_kw") or []) if k in THEME_KW)
+    if not hot_kw:
+        return []
+    today_codes = {it["code"] for it in items}
+    seen = {}
+    for info in themes.values():
+        tname = info.get("name", "")
+        matched = [kw for kw in hot_kw if kw in tname]
+        if not matched:
+            continue
+        cnt = 0
+        for code in info.get("codes", []):
+            if code in today_codes or code in seen:
+                continue
+            rows = _rows(code)
+            pos = _pos20(rows)
+            chg3 = _chg_nd(rows, 3)
+            # 휴면 = pos20 바닥 + 3일 안 오름 = 점화 전(다음 후보)
+            if pos is not None and pos < 0.45 and (chg3 is None or chg3 < 8):
+                seen[code] = {"code": code, "theme": tname, "matched_kw": matched,
+                              "pos20": pos, "chg_3d": chg3}
+                cnt += 1
+                if cnt >= max_per_theme:
+                    break
+    out = sorted(seen.values(), key=lambda x: x["pos20"])  # 가장 바닥부터
+    return out[:limit]
+
+
 def scan_catalyst(top_n: int = 30, save: bool = True) -> dict:
-    """끼 종목 → 재료 → 명분등급 → 맥점 → verdict. record-only."""
+    """끼 종목 → 재료 → 명분등급 → 맥점 → verdict + 선행 후보. record-only."""
     from data.news_collector import NewsCollector
     nc = NewsCollector()
 
@@ -254,10 +303,12 @@ def scan_catalyst(top_n: int = 30, save: bool = True) -> dict:
                                      it.get("today_chg"), it["is_upper"], ig)
         it["verdict"] = _verdict(it["meongbun_grade"], it["maek_jeom"])
 
+    next_cand = _find_next_candidates(items)
     result = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "count": len(items),
         "items": items,
+        "next_candidates": next_cand,  # ★ 선행 발굴: 같은 테마 휴면 종목(곧 오를 소재)
         "note": "record-only / 매수·매도·picks·SAJANG·order 무접촉 / 관측 없이 flip 금지",
     }
     if save:
@@ -287,6 +338,14 @@ def format_report(result: dict) -> str:
             lines.append(f"  {it['name']}({it['code']}) {tchg} {c3} {p20} "
                          f"명분[{it['meongbun_grade']}:{kw}] {it['maek_jeom']}")
             lines.append(f"      → {title}")
+    # ★ 선행 발굴 — 같은 테마 휴면 종목(곧 오를 소재 후보)
+    nxt = result.get("next_candidates", [])
+    if nxt:
+        lines.append(f"\n[★ 곧 오를 소재 후보 — 같은 테마 휴면(아직 안 감)] {len(nxt)}종목")
+        for it in nxt[:15]:
+            kw = "/".join(it.get("matched_kw") or [])
+            c3 = f"3일{it['chg_3d']:+.0f}%" if it.get("chg_3d") is not None else "3일—"
+            lines.append(f"  {it['code']} [{it['theme']}] kw:{kw} pos{it['pos20']} {c3}")
     return "\n".join(lines)
 
 
