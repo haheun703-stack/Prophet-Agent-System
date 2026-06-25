@@ -1687,6 +1687,79 @@ def _load_allocation_data() -> dict:
         return {}
 
 
+def _build_paper_performance() -> dict:
+    """★ 6/25 사장님: 단타봇 페이퍼 매매 누적수익률 → 한국스윙 '시장판단&전략' 옆 패널.
+
+    두 기준 나란히 (사장님 6/25 결정 — 미실현 손실 숨기지 않음):
+      - 전체자산(equity_return_pct): 현금+보유평가, 미실현 보유손실 포함 (보수적·현실)
+      - 청산손익합(realized_sum_pct): 청산(매도)한 거래 손익률 누적 합 (판 것만)
+    퀀트봇 upload_quant_dashboard 방식 — 매일 1건 upsert(on_conflict=date).
+    record-only · 매매 무접촉 (PaperPortfolio._load만, _save 호출 안 함).
+    """
+    try:
+        from engine.paper_portfolio import PaperPortfolio
+        pf = PaperPortfolio()  # _load만 (파일 읽기) — _save 호출 X → 장부 무손상
+    except Exception as e:
+        logger.warning(f"[PAPER] 포트폴리오 로드 실패(무시): {e}")
+        return {}
+
+    try:
+        closed = pf.closed_trades or []
+        daily_log = pf._load_daily_log()
+        today = date.today().strftime("%Y-%m-%d")
+
+        # 기준1: 전체자산 누적 (paper_daily_log 최신 — 미실현 포함)
+        equity_return = daily_log[-1].get("total_return_pct", 0.0) if daily_log else 0.0
+        try:
+            mdd = round(pf._calc_mdd(daily_log), 2)
+        except Exception:
+            mdd = 0.0
+
+        # 기준2: 청산손익합 (realized only — 청산한 거래 pnl_pct 누적)
+        realized_sum = round(sum(t.get("pnl_pct", 0) or 0 for t in closed), 2)
+        total = len(closed)
+        wins = sum(1 for t in closed if (t.get("pnl_pct", 0) or 0) > 0)
+        win_rate = round(wins / total * 100, 1) if total else 0.0
+        # 거래당 평균 손익률 — realized_sum(단순합)이 포지션크기 미반영이라 오해되지 않게 병기
+        avg_realized = round(realized_sum / total, 2) if total else 0.0
+
+        # 오늘 청산
+        today_closed = [t for t in closed if t.get("exit_date") == today]
+        today_realized_pnl = sum(int(t.get("pnl_krw", 0) or 0) for t in today_closed)
+
+        # 자산곡선 (최근 30 스냅샷: date + 전체자산 누적%)
+        curve = [
+            {"date": s.get("date", ""), "equity_pct": round(s.get("total_return_pct", 0) or 0, 2)}
+            for s in daily_log[-30:]
+        ]
+
+        return {
+            "date": today,
+            "start_date": pf.start_date,
+            "initial_cash": pf.initial_cash,
+            # 기준1: 전체자산 (미실현 포함 — 현실)
+            "equity_return_pct": round(equity_return, 2),
+            "mdd_pct": mdd,
+            # 기준2: 청산손익합 (realized — 판 것만)
+            "realized_sum_pct": realized_sum,
+            "avg_realized_pct": avg_realized,
+            "closed_total": total,
+            "closed_wins": wins,
+            "win_rate": win_rate,
+            # 오늘
+            "today_closed": len(today_closed),
+            "today_realized_pnl": today_realized_pnl,
+            "open_positions": len(pf.positions),
+            # 자산곡선 (전체자산 기준)
+            "equity_curve": curve,
+            # 정직성 라벨 (사장님 룰: 미실현 숨기지 않음 / 관측 전용)
+            "note": "전체자산=미실현 보유손실 포함(현실) · 청산합=판 것만(realized). 봇 OFF·paper 관측 전용·실매수 신호 아님.",
+        }
+    except Exception as e:
+        logger.warning(f"[PAPER] 성과 요약 실패(무시): {e}")
+        return {}
+
+
 def upload_dashboard_swing(swing_data: dict) -> bool:
     """dashboard_swing 테이블에 통합 upsert
     swing_data + NXT + Brain Allocation + 시장지표 병합"""
@@ -1819,6 +1892,8 @@ def upload_dashboard_swing(swing_data: dict) -> bool:
             "stealth_stocks": _build_stealth_stocks(),
             # ★ 6/22 테마 relay-aware 매매포인트 (강한 테마 주도그룹·초입·바통, 관측·실매수 아님) ★
             "trading_points": _trading_points,
+            # ★ 6/25 사장님: 단타봇 페이퍼 누적수익률(전체자산+청산합) → '시장판단&전략' 옆 (record-only) ★
+            "paper_performance": _build_paper_performance(),
         }
 
         # alloc_* 합계 100% 보정
@@ -1839,7 +1914,7 @@ def upload_dashboard_swing(swing_data: dict) -> bool:
             # 컬럼 미존재 시 해당 필드 제거 후 재시도
             err_str = str(upsert_err)
             if "does not exist" in err_str:
-                for col in ["trading_points", "stealth_stocks", "brain_raw_pct", "brain_capped_pct", "regime_cap_reason"]:
+                for col in ["paper_performance", "trading_points", "stealth_stocks", "brain_raw_pct", "brain_capped_pct", "regime_cap_reason"]:
                     if col in err_str and col in row:
                         logger.warning(f"[DASHBOARD] {col} 컬럼 미존재 → 제거 후 재시도")
                         del row[col]
