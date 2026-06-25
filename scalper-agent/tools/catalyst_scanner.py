@@ -52,6 +52,7 @@ IGNITE_PRE = 5            # 직전 휴면 측정일
 IGNITE_DORMANT_MAX = 7.0  # 직전 PRE일 최대 일간상승 < 7% = 휴면(조용히 바닥)
 IGNITE_VOL_X = 2.0        # 당일 거래량 >= 20일평균 2배 (거래량 점화)
 IGNITE_SURGE_MIN = 5.0    # 당일 +5%+ 첫 양봉
+IGNITE_CHASE_MAX = 25.0   # ★ G(6/26): 당일 +25%↑ = 상한가권 추격(초입점화 아님) — _ignition/_intraday 공통 상한
 
 
 def _rows(code: str):
@@ -143,9 +144,10 @@ def _ignition(rows):
             prior.append((closes[j] / closes[j - 1] - 1) * 100)
     prior_max = round(max(prior), 1) if prior else 0.0
     today_chg = (closes[-1] / closes[-2] - 1) * 100 if closes[-2] > 0 else 0
+    # ★ G(6/26): 상한가권(+25%↑)은 초입점화 아닌 추격 — _intraday_ignition과 동일 상한 적용
     is_ig = (prior_max < IGNITE_DORMANT_MAX) \
         and (vol_ratio is not None and vol_ratio >= IGNITE_VOL_X) \
-        and (today_chg >= IGNITE_SURGE_MIN)
+        and (IGNITE_SURGE_MIN <= today_chg < IGNITE_CHASE_MAX)
     return is_ig, vol_ratio, prior_max
 
 
@@ -163,6 +165,13 @@ def _ranking_volumes():
             if u.get("code") and u.get("volume"):
                 out.setdefault(u["code"], u["volume"])
     return out
+
+
+def _is_today_loaded(rows, today_str):
+    """★ E(6/26): 일봉 마지막 행이 오늘이면 마감후(오늘봉 적재됨) → _ignition(오늘봉 포함) 정확.
+    아니면 장중(오늘봉 미적재) → _intraday_ignition(어제까지 휴면 + 실시간 today) 사용.
+    혼용 시 마감후에 '어제까지' 가정 함수가 오늘봉 섞인 rows로 돌아 진짜 점화를 놓침."""
+    return bool(rows) and str(rows[-1][0])[:10] == today_str
 
 
 def _intraday_ignition(code, today_chg, today_vol):
@@ -188,7 +197,7 @@ def _intraday_ignition(code, today_chg, today_vol):
     prior_max = round(max(prior), 1) if prior else 0.0
     is_ig = (prior_max < IGNITE_DORMANT_MAX) \
         and (vol_ratio is not None and vol_ratio >= IGNITE_VOL_X) \
-        and (IGNITE_SURGE_MIN <= today_chg < 25)
+        and (IGNITE_SURGE_MIN <= today_chg < IGNITE_CHASE_MAX)
     return is_ig, vol_ratio
 
 
@@ -198,11 +207,14 @@ def _maek_jeom(pos20, chg_3d, today_chg, is_upper, ig_info):
     ★ 핵심 = '초입점화': 휴면 후 거래량 급증 + 첫 강한 양봉(6/18형). pos20 바닥
     단독(죽은 횡보)은 더 이상 초입으로 보지 않음(5/21형 가짜 배제)."""
     is_ig, vol_ratio, prior_max = ig_info
+    # ★ G(6/26): 상한가는 이미 +25%↑ 폭등 = 추격위험. 초입점화(매수자리)로 오라벨 방지 위해 먼저 검사.
+    if is_upper:
+        return "추격위험"
     # 초입점화: 휴면 후 거래량 급증 + 첫 양봉 = 진짜 맥점. 천정 직전 아니면 추격보다 우선.
     if is_ig and (pos20 is None or pos20 < 0.90):
         return "초입점화"
-    # 추격위험: 이미 폭등 — 상한가 추격 or 3일 +40%+ or pos20 천정
-    if is_upper or (chg_3d is not None and chg_3d >= CHASE_3D) \
+    # 추격위험: 이미 폭등 — 3일 +40%+ or pos20 천정
+    if (chg_3d is not None and chg_3d >= CHASE_3D) \
             or (pos20 is not None and pos20 >= 0.85):
         return "추격위험"
     # 눌림: 중간 위치 + 오늘 조정(음수) = 올랐다 쉬는 자리
@@ -324,10 +336,18 @@ def _find_next_candidates(items, max_per_theme: int = 8, limit: int = 25):
     if not hot_kw:
         return []
     today_codes = {it["code"] for it in items}
+    # ★ F(6/26): "AI" 동음이의 오탐 방지 — 조류독감(Avian Influenza)·축산질병 테마는 인공지능 AI 아님
+    AI_FALSE_THEME = ("조류", "ASF", "돼지", "구제역", "열병", "독감", "방역", "축산")
     seen = {}
     for info in themes.values():
         tname = info.get("name", "")
-        matched = [kw for kw in hot_kw if kw in tname]
+        matched = []
+        for kw in hot_kw:
+            if kw not in tname:
+                continue
+            if kw == "AI" and any(d in tname for d in AI_FALSE_THEME):
+                continue  # 조류독감 AI ≠ 인공지능 AI
+            matched.append(kw)
         if not matched:
             continue
         cnt = 0
@@ -371,6 +391,7 @@ def scan_catalyst(top_n: int = 30, save: bool = True) -> dict:
     import time
     _cons = _load_consensus()
     _rs_vol = _ranking_volumes()
+    today_str = datetime.now().strftime("%Y-%m-%d")
     for it in items:
         time.sleep(0.15)  # 네이버 종목뉴스 크롤링 과부하/차단 방지
         try:
@@ -381,10 +402,15 @@ def scan_catalyst(top_n: int = 30, save: bool = True) -> dict:
         it["titles"] = titles[:3]
         it["meongbun_grade"], it["meongbun_kw"] = _meongbun_grade(titles)
         it["news_stage"] = _news_stage(titles)  # ★ 소문/뉴스/중간
-        ig = _ignition(_rows(it["code"]))
-        # ★ 장중 점화 우선 — 오늘 거래량(ranking) + 어제 휴면 (보해양조 6/18형 실시간)
-        intra_ig, intra_vol = _intraday_ignition(
-            it["code"], it.get("today_chg"), _rs_vol.get(it["code"]))
+        rows = _rows(it["code"])
+        ig = _ignition(rows)
+        # ★ E(6/26): 모드 자동감지 — 마감후(오늘봉 적재)는 _ignition(오늘봉 포함) 정확,
+        #   장중(오늘봉 미적재)만 _intraday_ignition(어제까지 휴면 + 실시간 today). 혼용 시 점화 놓침.
+        if _is_today_loaded(rows, today_str):
+            intra_ig, intra_vol = False, None  # 마감후 → _ignition(오늘봉) 사용
+        else:
+            intra_ig, intra_vol = _intraday_ignition(
+                it["code"], it.get("today_chg"), _rs_vol.get(it["code"]))
         if intra_ig:
             it["maek_jeom"] = "초입점화"
             it["intraday"] = True
