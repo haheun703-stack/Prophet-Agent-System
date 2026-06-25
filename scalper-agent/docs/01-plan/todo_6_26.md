@@ -15,6 +15,14 @@
   - SQL `sql/20260625_dashboard_swing_paper_performance.sql` + 웹봇 요청 문서.
   - 4-Tier PASS(T1 95/100 매매무접촉·장부무손상 / T2 0건 / T3 VPS 6/25 −12.51%·today실현−180103 정합 / T4 Codex5 / T5 pre-commit).
 
+## ✅ 6/26 완료분
+
+- **E·F·G catalyst 관측정확도** (commit ba5d692·push·VPS배포):
+  - E `_is_today_loaded` 모드감지 — 마감후(오늘봉적재)=_ignition·장중(어제까지)=_intraday. nightly 진짜점화 놓침 fix.
+  - G `IGNITE_CHASE_MAX=25` 상한 통일 + `_maek_jeom` is_upper 우선 — 상한가 초입점화 오라벨 방지.
+  - F `_find_next_candidates` AI 동음이의 — 조류독감(Avian Influenza)·축산질병 테마 제외.
+  - 4-Tier PASS(T1 96/100 record-only무손상·is_upper동치성 정밀검증 / T2 0건 / T3 단위+VPS실증 장중모드감지·상한가추격위험유지 / T4 Codex5 / T5 pre-commit).
+
 ---
 
 ## ★ 내일 할 것 — 우선순위
