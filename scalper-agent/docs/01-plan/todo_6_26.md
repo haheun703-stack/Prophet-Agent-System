@@ -64,8 +64,11 @@
 - **I orphan 73 + doc-only 14 ≈ 90+ 정리후보** (import 0건). 일회성 study/backtest(`*_5_31`·`*_6_2` 류), make_icon/make_shortcut, manual_order 등.
 - **J 기관매집 스캐너 중복 2개** — `data/inst_accumulation_scan.py`(구·COO 3622) vs `data/institution_accum_scan.py`(신·6/19 KRX-free·nightly⑩). 둘 다 trading_coo 배선 → 어느 출력이 실소비되는지 확인 후 구버전 통합.
 
-## 별건 — 인프라 개선
-- **cp949 pre_commit_check 버그** — `tools/pre_commit_check.py check_unused_imports`가 한글 포함 파일을 cp949로 읽어 occurrence 적게 세 IMP-001 오탐 남발. open()에 encoding="utf-8" 명시로 fix.
+## ✅ 별건 완료 — IMP-001 오탐 fix (commit b196beb·cp949 오진 정정)
+- **진짜 원인 = 인라인 주석 파싱 버그**(cp949 아님). `from x import is_trading_day  # noqa` → name에 주석이 통째로 붙어("is_trading_day  # noqa") 실제 사용처와 매칭 안 돼 occurrence=1 → IMP-001 오탐.
+- fix: `check_unused_imports`가 imports_str에서 인라인 주석(# 이후) 제거.
+- read_text는 최초 커밋(2670356)부터 utf-8 — cp949로 읽으면 UnicodeDecodeError로 파일 SKIP(미검사)지 오탐 아님. 6/24 "cp949" 진단은 오진이었음.
+- 재현+회귀 PASS(오탐파일 0건 / 미사용 path→1·noqa+미사용→1 탐지 보존).
 
 ---
 
