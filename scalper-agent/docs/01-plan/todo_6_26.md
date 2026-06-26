@@ -35,7 +35,8 @@
 - 웹봇 회신 받기(렌더 위치/표기·한국색상·paper관측배지). 요청문서=`docs/[단타봇 → 웹봇] 페이퍼 매매 누적수익률 한국스윙 적재 요청_2026-06-25.md`.
 - ★ 정직성: 단타봇 자체 페이퍼 −12.51%(미실현포함·악화중) 직시. 스크린샷 +6.7%는 통합봇(quantum-master)·청산합 방식이라 낙관편향.
 
-### 1순위 — D: limit_up_split_sell SAJANG 단일진실 치환 (라이브 매도경로)
+### ✅ 1순위 완료(e4c722d·6/26) — D: limit_up_split_sell SAJANG 단일진실 치환 (라이브 매도경로)
+> 모듈상수 4개 SAJANG 파생화·함수로직 0변경·동작무변경(25/10/3/-7 불변). 4-Tier PASS(T1 Crit0·순환참조0 / T2 우회0 / T3 단위27/27+경계 / T4 Codex5). SPLIT_RATIO만 유지(SAJANG LIMIT_UP_HOLD_RATIO와 의미반대). AUTO_TRADE_DISABLED=True(봇OFF)라 봇 가동 시 자동반영·실발동0.
 - 위치: `bot/limit_up_split_sell.py:47-51`
 - 문제: 룰7/룰B/룰C 임계값(LIMIT_UP_TRIGGER_PCT=25 / EOD_SPLIT=10 / D1_TRAIL=3 / D1_GAP=-7)을 **SAJANG import 0**으로 모듈상수 재정의. `trading_coo.py:5245` job_limit_up_split_check(2분반복) 라이브 호출. 현재값은 SAJANG과 일치하나 사장님이 SAJANG 바꾸면 이 매도경로는 안 따라감(드리프트).
 - 조치: 모듈상수 → SAJANG.LIMIT_UP_SPLIT_THRESHOLD / RULE_B_THRESHOLD / TRAILING_PCT / D1_GAP_SELL_THRESHOLD 참조 치환.
