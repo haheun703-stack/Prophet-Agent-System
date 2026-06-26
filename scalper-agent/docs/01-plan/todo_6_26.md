@@ -52,7 +52,8 @@
 - F `tools/catalyst_scanner.py:330` `_find_next_candidates` — `"AI"` 2글자 substring이 `"SI,AI,ASF,조류병"`(축산주 62종목)과 매칭=오탐. 조치: 영문 짧은토큰 단어경계 매칭(`\bAI\b`) 또는 한글 테마키워드만.
 - G 마감후 경로에서 상한가(+30%)가 "추격위험" 아닌 "초입점화"(매수자리) 오라벨. _ignition에 상한가 상한(today_chg<25) 적용 또는 _maek_jeom에서 is_upper를 초입점화보다 먼저 검사.
 
-### 4순위 — 후속: SL 폴백 가드 통일 (C와 동류)
+### ✅ 4순위 완료(16aa171·6/26) — 후속: SL 폴백 가드 통일 (C와 동류)
+> `pos["entry_price"]` → `pos.get("entry_price", 0)`. code-analyzer 96/100 안전(정상종목 동작100%동일·entry=0 오매도0·매도로직변경0). hwm/stop_loss 직접인덱싱은 별건(scope creep 회피).
 - 위치: `bot/auto_trader.py:4461` `_job_monitor_fallback`
 - 문제: `entry = pos["entry_price"]` 직접 인덱싱(.get 아님). 0원은 4468 `if entry>0`로 자체커버되나 entry_price 키 완전누락 시 KeyError 잔존. (C가 막은 것과 같은 클래스)
 - 조치: `pos.get("entry_price", 0)` + 가드 통일.
