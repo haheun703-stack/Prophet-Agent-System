@@ -4458,7 +4458,9 @@ class AutoTrader:
                     continue
 
                 cp = price_info["current_price"]
-                entry = pos["entry_price"]
+                # ★ 6/26 폴백 가드(C 6/24 d1eee78 동류): entry_price 키 누락 KeyError 방지 — .get
+                #   (0원은 아래 pnl_pct `if entry>0`로 자체커버·동작 무변경. entry=0이면 stop_loss=0이라 SL 자연 스킵)
+                entry = pos.get("entry_price", 0)
                 name = pos.get("name", code)
 
                 # ★ 5/24 13-B + 13-C: 동적 트레일링 폭 + 추세 강도 보정 ★
