@@ -40,15 +40,19 @@ from dataclasses import dataclass
 from typing import Optional
 from datetime import date
 
+from data.sajang_rules import SAJANG  # ★ 6/26 D: Rule Registry 단일진실 — 라이브 매도경로 SAJANG 드리프트 방지
+
 logger = logging.getLogger(__name__)
 
 
-# ── 상한가 트리거 임계값 ─────────────────────────────
-LIMIT_UP_TRIGGER_PCT = 25.0       # 룰 3: +25% 이상 = 상한가 임박 → 분할 매도 발동
-EOD_SPLIT_TRIGGER_PCT = 10.0      # ★ 룰 B (5/25 신규) ★ 15:25 통합 청산 시 +10%+ → 장 마감 분할 매도
-SPLIT_RATIO = 0.5                 # 절반(50%) 즉시 매도 / 절반(50%) D+1 이월
-D1_TRAIL_PCT = 3.0                # D+1 트레일링 폭 (-3% 사장님 룰 일관)
-D1_GAP_DOWN_PROTECTION_PCT = -7.0 # ★ 룰 C (5/25 신규) ★ D+1 시초가 -7% 이상 갭다운 → 즉시 매도 보호망
+# ── 상한가 트리거 임계값 (★ 6/26 D: SAJANG 단일진실 파생 — 직접 하드코딩 폐기) ─────────────────
+#   값은 SAJANG과 동일(25/10/3/-7)하나 이제 SAJANG에서 파생 → 사장님이 SAJANG 변경 시 자동 동기(드리프트 방지).
+#   함수 로직은 무변경(이 상수만 SAJANG 파생화). SPLIT_RATIO만 SAJANG 미등록(사장님 룰 3 "절반" 고정).
+LIMIT_UP_TRIGGER_PCT = SAJANG.LIMIT_UP_SPLIT_THRESHOLD       # 룰 3: +25%+ 상한가 임박 → 분할 매도
+EOD_SPLIT_TRIGGER_PCT = SAJANG.RULE_B_THRESHOLD             # 룰 B: 15:26 +10%+ → 장 마감 분할 매도
+SPLIT_RATIO = 0.5                                          # 절반(50%) 즉시 / 절반(50%) D+1 이월 (사장님 룰 3)
+D1_TRAIL_PCT = SAJANG.TRAILING_PCT                         # D+1 트레일링 폭 (고점 -3% 사장님 룰 일관)
+D1_GAP_DOWN_PROTECTION_PCT = SAJANG.D1_GAP_SELL_THRESHOLD  # 룰 C: D+1 시초 -7%+ 갭다운 즉시 매도 보호망
 
 
 @dataclass
