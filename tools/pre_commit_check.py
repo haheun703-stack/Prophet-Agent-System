@@ -203,6 +203,10 @@ def check_unused_imports(filepath: str, content: str) -> list[dict]:
             continue
 
         imports_str = m.group(1)
+        # ★ 6/26: 인라인 주석(# noqa 등) 제거 — 안 떼면 name에 주석이 붙어("is_trading_day  # noqa")
+        #   실제 사용처와 매칭 안 돼 occurrence=1 → IMP-001 오탐 (cp949 아님·인라인 주석 파싱 버그)
+        if "#" in imports_str:
+            imports_str = imports_str.split("#", 1)[0]
         # 멀티라인 import나 as 별칭은 스킵
         if "(" in imports_str or "\\" in line:
             continue
