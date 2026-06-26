@@ -27,7 +27,8 @@
 
 ## ★ 내일 할 것 — 우선순위
 
-### 0순위(즉시·간단) — 한국스윙 페이퍼 적재 마무리
+### ✅ 0순위 완료(웹봇 e8877d8·6/26) — 한국스윙 페이퍼 적재 마무리
+> dashboard_swing.paper_performance 컬럼 prod 추가(웹봇)·단타봇 적재데이터 준비 검증완료(컬럼존재O·누적-12.51·today_trades3건). 16:40 upload부터 자동적재→웹봇UI 표출. 아래는 완료 기록.
 - **(사장님)** Supabase SQL Editor에 1줄 실행:
   `ALTER TABLE dashboard_swing ADD COLUMN IF NOT EXISTS paper_performance JSONB;`
   (단타봇 query()는 읽기전용 설계라 DDL 불가 — 사장님/웹봇 영역)
