@@ -1727,6 +1727,30 @@ def _build_paper_performance() -> dict:
         today_closed = [t for t in closed if t.get("exit_date") == today]
         today_realized_pnl = sum(int(t.get("pnl_krw", 0) or 0) for t in today_closed)
 
+        # ★ 6/26 사장님: 일일 매매일지 — 오늘 체결(매도=청산 / 매수=오늘 신규보유). 웹봇 한국스윙 렌더용.
+        today_trades = []
+        for t in today_closed:
+            today_trades.append({
+                "side": "SELL",
+                "code": t.get("code", ""), "name": t.get("name", ""),
+                "entry": t.get("entry_price"), "exit": t.get("exit_price"),
+                "shares": t.get("shares"),
+                "pnl_pct": t.get("pnl_pct"), "pnl_krw": int(t.get("pnl_krw", 0) or 0),
+                "reason": t.get("reason", ""), "hold_days": t.get("hold_days"),
+                "source": t.get("source", ""),
+            })
+        for _code, _pos in pf.positions.items():
+            if _pos.get("entry_date") == today:
+                today_trades.append({
+                    "side": "BUY",
+                    "code": _code, "name": _pos.get("name", ""),
+                    "entry": _pos.get("entry_price"), "exit": None,
+                    "shares": _pos.get("shares", _pos.get("qty")),
+                    "pnl_pct": None, "pnl_krw": None,
+                    "reason": "", "hold_days": None,
+                    "source": _pos.get("source", ""),
+                })
+
         # 자산곡선 (최근 30 스냅샷: date + 전체자산 누적%)
         curve = [
             {"date": s.get("date", ""), "equity_pct": round(s.get("total_return_pct", 0) or 0, 2)}
@@ -1750,6 +1774,8 @@ def _build_paper_performance() -> dict:
             "today_closed": len(today_closed),
             "today_realized_pnl": today_realized_pnl,
             "open_positions": len(pf.positions),
+            # ★ 6/26: 일일 매매일지 (오늘 체결 매수/매도 내역)
+            "today_trades": today_trades,
             # 자산곡선 (전체자산 기준)
             "equity_curve": curve,
             # 정직성 라벨 (사장님 룰: 미실현 숨기지 않음 / 관측 전용)
