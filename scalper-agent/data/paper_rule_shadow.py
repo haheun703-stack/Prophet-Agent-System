@@ -22,8 +22,16 @@ from datetime import datetime
 from pathlib import Path
 
 from data.paper_learning import _flatten_ledger, _avg, LEDGER_DIR, _dedup_by_stock
+from data.paper_gate_shock import (
+    keep_short_ratio_below, keep_short_surge_below, keep_credit_below,
+)
 
 logger = logging.getLogger("BH.PaperRuleShadow")
+
+
+def _tc(c):
+    """candidate → (ticker, virtual_entry_date) 추출 헬퍼."""
+    return c.get("ticker"), c.get("virtual_entry_date")
 
 SCALPER_DIR = Path(__file__).resolve().parent.parent
 OUT_PATH = SCALPER_DIR / "data_store" / "paper_rule_shadow.json"
@@ -36,6 +44,45 @@ RULES = [
         "desc": "RELAY 레짐 제외 (학습: RELAY 승률 14% < WARMING 42%)",
         "keep": lambda c: c.get("market_regime") != "RELAY",
     },
+    # ── 급락 선행 게이트 (6/27 — 6/22 폭탄=공매도 과열 입증 후 추가) ──
+    # 진입 직전(look-ahead 방지) 공매도 비중/급증·신용 과다 종목 회피. 여러 임계 동시 소급
+    # 비교 → 폭탄은 거르고 좋은 종목은 안 깎는 최적값을 데이터가 정하게 한다.
+    {
+        "name": "gate_short_r8",
+        "desc": "공매도 거래비중 ≥8% 제외 (진입 직전)",
+        "keep": lambda c: keep_short_ratio_below(*_tc(c), 8.0),
+    },
+    {
+        "name": "gate_short_surge2",
+        "desc": "공매도 비중 5일평균比 2배+ 급증 제외",
+        "keep": lambda c: keep_short_surge_below(*_tc(c), 2.0),
+    },
+    {
+        "name": "gate_credit_r5",
+        "desc": "신용융자 잔고율 ≥5% 제외 (반대매매 리스크)",
+        "keep": lambda c: keep_credit_below(*_tc(c), 5.0),
+    },
+    {
+        "name": "gate_combo",
+        "desc": "공매도비중≥8% or 급증2배+ or 신용≥5% 통합 회피",
+        "keep": lambda c: (
+            keep_short_ratio_below(*_tc(c), 8.0)
+            and keep_short_surge_below(*_tc(c), 2.0)
+            and keep_credit_below(*_tc(c), 5.0)
+        ),
+    },
+    # ── 시장 폭(breadth) 게이트 (6/27 — 공매도 게이트 기각 후 진짜 변별자 발견) ──
+    # 학습: BROAD_UP d3 +1.58%(손절터치52%) vs 빈값 d3 -5.80%(손절터치93%). 차이 +7.4%p.
+    {
+        "name": "gate_breadth_up_only",
+        "desc": "breadth=BROAD_UP 일 때만 진입 (시장 폭넓은 상승)",
+        "keep": lambda c: c.get("_breadth_state") == "BROAD_UP",
+    },
+    {
+        "name": "gate_breadth_ex_empty",
+        "desc": "breadth 빈값/BROAD_DOWN 제외 (약세장 회피)",
+        "keep": lambda c: c.get("_breadth_state") not in ("", None, "BROAD_DOWN"),
+    },
 ]
 
 
@@ -45,6 +92,8 @@ def _cohorts() -> dict:
     if not LEDGER_DIR.exists():
         return out
     for f in sorted(LEDGER_DIR.glob("ledger_2026-*.json")):
+        if "_bc_only" in f.name:  # M1(6/27 fix): 정식 6/12 ledger와 date 동일 → silent 덮어쓰기 방지
+            continue
         try:
             led = json.loads(f.read_text(encoding="utf-8"))
         except Exception:

@@ -53,6 +53,15 @@
   - 4-Tier: T1 code-analyzer PASS(record-only위반0·Crit0·High0 / M2 BOM 멱등성 1줄fix + ranking 동류fix) / T2 0건 / T3 mock 6/26 verdict 파싱정확·graceful·멱등성(2행누적+dedup) / T4·T5 커밋.
   - ★다음=월 08:00 정보봇 공급 시작→nightly ⑮ 자동관측 누적→첫 공급분 키 일치 실측→며칠 관측→공매도/신용과 통합 리스크 게이트(②)는 사장님 승인후(관측없이 flip금지).
 
+- **★ 페이퍼 수익률 개선 — 급락선행/시장레짐 게이트 shadow 검증** (사장님 6/27 "관측만 말고 페이퍼 적용해 개선"):
+  - 진단: paper_portfolio 승률 31%(승51/패111)·overall d3 -3.92·손절터치70%. ★주범=6/22 폭탄(STOP_LOSS 295310 -45%·412350 -43.9%·389500 -39%·187870 -27% 한날 집중).
+  - 가설①(공매도 게이트): 6/22 폭탄 중 295310(공매도12%)·389500(5.4%급증)이 사전신호 → 그러나 ★과거 6월 소급 검증서 **기각**(공매도비중≥8% 제외 시 d3 -3.92→-6.67 역효과·승률-8%p). selection bias(대형주가 공매도비중 높음). ★페이퍼 직박 안 한 게 정답(관측없이 flip금지 룰의 이유 실증).
+  - 가설②(시장 폭 breadth): BROAD_UP d3+1.58(손절터치52%) vs 빈값 d3-5.80(손절터치93%)=차+7.4%p. 게이트 소급 d3 +5.5%p ★단 표본 4일(6/4·8·9·12)뿐=과적합(2일 좋은날 사후선택). breadth는 종목아닌 "그날 시장"단위. 이미 "breadth=MAE 1차요인"(6/22) 발견됐으나 게이트 미사용(통로분리).
+  - ★확정: 종목게이트(공매도/신용)<시장레짐게이트(breadth/한미충격)가 진짜 방향. 단 표본부족으로 라이브 확정불가→shadow 매일자동검증(nightly ⑤-3)으로 표본축적→2주+ 통계확실시 사장님승인 라이브.
+  - 신규 `data/paper_gate_shock.py`(공매도/신용 look-ahead방지 게이트 헬퍼·read-only) + `data/paper_rule_shadow.py` RULES 게이트6개(공매도4+breadth2). ★M1 fix: _cohorts가 ledger_*_bc_only를 정식6/12와 date충돌로 silent덮어쓰던 버그(검증신뢰도).
+  - 4-Tier: T1 code-analyzer record-only PASS(매매0접촉·look-ahead방지 strict<·M1 fix) / T3 과거소급 실측(공매도기각·breadth과적합 규명) / Codex 커밋. read-only·실선정변경0.
+  - ★다음=한미충격(6/26~) breadth와 결합한 시장레짐 게이트 표본축적→통계확실시 라이브. 종목게이트는 폐기.
+
 ---
 
 ## ★ 내일 할 것 — 우선순위
