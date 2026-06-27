@@ -62,6 +62,13 @@
   - 4-Tier: T1 code-analyzer record-only PASS(매매0접촉·look-ahead방지 strict<·M1 fix) / T3 과거소급 실측(공매도기각·breadth과적합 규명) / Codex 커밋. read-only·실선정변경0.
   - ★다음=한미충격(6/26~) breadth와 결합한 시장레짐 게이트 표본축적→통계확실시 라이브. 종목게이트는 폐기.
 
+- **★ NXT 페이퍼 breadth 게이트 적용 — paper_portfolio 실개선 1단계** (사장님 6/27 "NXT부터"):
+  - 발견: paper_portfolio(-12.51%)와 paper_3type ledger는 **별개 시스템**. portfolio 진입=trading_coo(nxt73·daytrading58·limit_up16·morning14). NXT 진입엔 ★이미 BRAIN 레짐 게이트 존재(관망→금지)했으나 -12.51%=BRAIN이 breadth 못잡음.
+  - 신규 `data/market_breadth_today.py`: 오늘 breadth_state 조회(오늘 ledger market_context 우선·없으면 market_breadth 직접계산 fallback·read-only).
+  - `bot/trading_coo.py _job_nxt_paper_register`: BRAIN 게이트 직후 breadth 보조게이트 — BROAD_DOWN(상승≤40%) max_nxt_positions=0 보류·MIXED //2 축소·BROAD_UP/None 정상. ★max_nxt_positions(페이퍼 슬롯)만 조정=open_position/KIS/SAJANG 무접촉.
+  - 검증: ledger forward 승률 28→55%(VPS205 BROAD_UP) / ★6/26 폭락날(KOSPI-5.81%) breadth=BROAD_DOWN 12.4% 실측→게이트 보류 작동. T1 ★라이브격리 PASS(Crit0/High0·페이퍼전용 입증·3중 예외격리). Medium3(intent 미기록 등 관측정확도·라이브무관).
+  - ★다음=월부터 NXT 페이퍼 폭락날 진입보류→paper_portfolio 수익률 관측→효과시 daytrading/limit_up 확대→BRAIN에 breadth 통합 검토(라이브격리 정밀후). 한미충격도 시장레짐 보강 결합.
+
 ---
 
 ## ★ 내일 할 것 — 우선순위

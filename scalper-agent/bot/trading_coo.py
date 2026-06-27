@@ -2661,6 +2661,24 @@ class TradingCOO:
 
             logger.info(f"[C26] BRAIN {brain_regime}({brain_pct}%) → NXT 최대 {max_nxt_positions}종목")
 
+            # ── breadth 보조 게이트 (6/27 — ledger forward 승률 28→55% 검증·★페이퍼 전용·라이브 무접촉) ──
+            # BRAIN 레짐 위에 시장 폭(전종목 상승비율) 보강. max_nxt_positions(슬롯)만 조정.
+            # 게이트 실패해도 NXT 등록 안 죽게 try/except. open_position·KIS 주문 무변경.
+            try:
+                from data.market_breadth_today import get_today_breadth_state
+                b_state, b_pct = await asyncio.to_thread(get_today_breadth_state)
+                if b_state == "BROAD_DOWN":
+                    _orig = max_nxt_positions
+                    max_nxt_positions = 0
+                    logger.info(f"[C26] breadth BROAD_DOWN({b_pct}) → NXT 페이퍼 보류 {_orig}→0")
+                elif b_state == "MIXED":
+                    _orig = max_nxt_positions
+                    max_nxt_positions = max(0, max_nxt_positions // 2)
+                    logger.info(f"[C26] breadth MIXED({b_pct}) → NXT 페이퍼 축소 {_orig}→{max_nxt_positions}")
+                # BROAD_UP 또는 None(측정실패) → 정상 유지(보수적)
+            except Exception as bexc:  # noqa: BLE001
+                logger.warning(f"[C26] breadth 게이트 skip(무시): {bexc}")
+
             portfolio = PaperPortfolio()
             registered = []
 
