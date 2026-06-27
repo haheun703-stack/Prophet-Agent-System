@@ -103,6 +103,12 @@ def main():
          [PY, "tools/run_institution_accum_scan.py"], 300),
         ("⑪ catalyst 명분맥점 발굴",   # 6/24 명분 있는 끼 종목(상한가·3일10%+ → 재료·명분등급·점화맥점) record-only
          [PY, "tools/run_catalyst_scanner_daily.py"], 600),
+        ("⑫ 순위 스냅샷(6종)",   # 6/27 KIS 순위 6종(등락률/거래량/체결강도/상하한가/외인기관/야간선물) 날짜별 record-only 적재
+         [PY, "-c", "from data.ranking_snapshot_collector import collect_ranking_snapshots as f; print(f())"], 300),
+        ("⑬ 공매도 일별추이",   # 6/27 KIS 공매도(FHPST04830000) 변동성 급락 선행지표·record-only(pykrx 중단 대체)
+         [PY, "-c", "import collect_all as C; from data.flow_collector import collect_short_sale; collect_short_sale(C.get_universe_codes())"], 5400),
+        ("⑭ 신용잔고 일별추이",   # 6/27 KIS 신용(FHPST04760000) 반대매매 급락 선행지표·record-only (공매도와 분리=한쪽 실패 격리)
+         [PY, "-c", "import collect_all as C; from data.flow_collector import collect_credit_balance; collect_credit_balance(C.get_universe_codes())"], 5400),
     ]
 
     results = {}

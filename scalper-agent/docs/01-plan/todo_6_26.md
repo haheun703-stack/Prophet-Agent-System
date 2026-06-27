@@ -15,6 +15,17 @@
   - SQL `sql/20260625_dashboard_swing_paper_performance.sql` + 웹봇 요청 문서.
   - 4-Tier PASS(T1 95/100 매매무접촉·장부무손상 / T2 0건 / T3 VPS 6/25 −12.51%·today실현−180103 정합 / T4 Codex5 / T5 pre-commit).
 
+## 🚨 미해결 숙제 (사무실 최우선·6/26 사장님 지적) — NXT stale 의심
+
+사장님 6/26: "FLOWX NXT 한참 업데이트 안 됨 — 페이퍼 트레이닝 때문이냐?"
+★ **의심(자기 작업 사고 가능성)**: 6/25 `paper_performance`를 `upload_dashboard_swing` row에 추가 → 컬럼 없던 6/25~6/26오전 동안 upsert "does not exist" 에러 → graceful(paper_performance 제거 후 재시도)이 제대로 작동 안 했으면 **한국스윙 전체(NXT 포함) upload 실패 → NXT stale**.
+진단 미완료(Bash 일시 불가로 중단). ★ 사무실 들어가면 이것부터:
+1. `dashboard_swing` 최근 date/generated_at/nxt_signal — NXT 끊긴 시점이 6/25 paper 추가와 일치하나?
+2. `upload_swing.py` graceful(1834~1850) 재검증 — paper_performance만 제거하고 NXT 적재됐나, 아니면 첫 upsert 에러로 전체 실패했나?
+3. `nightwatch_report.json`(NXT 소스) mtime stale 여부 (NXT 생성 자체가 안 도는지)
+4. 깨졌으면 즉시 fix + 수동 upload로 NXT 복구 + 사장님께 보고
+※ 컬럼은 이제 추가됨(웹봇 e8877d8)이라 16:40 upload부터는 graceful 안 타고 정상일 것 — 하지만 6/25~26 stale **원인 규명**과 그동안 NXT 못 본 것 사과 필요.
+
 ## ✅ 6/26 완료분
 
 - **E·F·G catalyst 관측정확도** (commit ba5d692·push·VPS배포):
@@ -22,6 +33,17 @@
   - G `IGNITE_CHASE_MAX=25` 상한 통일 + `_maek_jeom` is_upper 우선 — 상한가 초입점화 오라벨 방지.
   - F `_find_next_candidates` AI 동음이의 — 조류독감(Avian Influenza)·축산질병 테마 제외.
   - 4-Tier PASS(T1 96/100 record-only무손상·is_upper동치성 정밀검증 / T2 0건 / T3 단위+VPS실증 장중모드감지·상한가추격위험유지 / T4 Codex5 / T5 pre-commit).
+
+## ✅ 6/27 완료분 — KIS 기초데이터 확장 1차
+
+- **★ KIS 기초데이터 확장 1차 (순위 6종 + 공매도/신용)** (사장님 6/27 "변동성 심하니 공매도·신용까지·쉽게 받게 머리써라"):
+  - 신규 `bot/kis_trader.py`: `fetch_daily_short_sale`(FHPST04830000)·`fetch_daily_credit_balance`(FHPST04760000) — KIS 공식 GitHub로 TR 검증(추측X), fetch_investor_daily 패턴 복제(requests 조회만).
+  - 신규 `data/ranking_snapshot_collector.py`: 순위 6종(등락률/거래량/체결강도/상하한가/외인기관/야간선물) → `data_store/ranking_snapshots/{kind}.csv` 날짜별 누적(record-only, is_trading_day 가드).
+  - `data/flow_collector.py`: `collect_short_sale`(short/{code}_short_bal.csv·data_verifier GREEN화)·`collect_credit_balance`(credit/ 신규)·`_collect_kis_daily` 공통헬퍼·`_kis_daily_to_df`. 구 pykrx 공매도 DEAD 표기. 스키마 불일치 시 KIS 신규로 자동교체.
+  - nightly ⑫순위·⑬공매도·⑭신용 배선(공매도/신용 분리=실패격리, 각 5400s).
+  - ★실측 확정(추측X): 공매도(ssts_cntg_qty·ssts_vol_rlim·acml_ssts_cntg_qty·avrg_prc), 신용(date=**deal_date**·종가=**stck_prpr**·whol_loan_rmnd_*·신규/상환/대주) — 신용 초기 0행을 실측으로 잡아 키 수정. 공매도 6/26 종가339500=daily 정합. 신용 최신 6/24(T+2 공시 정상).
+  - 4-Tier: T1 code-analyzer record-only PASS(주문/SAJANG/picks 0건·Critical0·High2→실측·timeout분리로 해소) / T2 0건 / T3 실측(공매도28행·신용30행·종가정합·휴장일skip·수집기100%) / T4·T5 커밋 pre-commit(Codex).
+  - 제외: 업종지수(이미 Naver). ★다음=며칠 적재→정합관측→사장님 승인후 매매연결(관측없이 flip금지). 2차=재무/ETF구성, 3차=호가/체결 실시간(인프라 선행).
 
 ---
 

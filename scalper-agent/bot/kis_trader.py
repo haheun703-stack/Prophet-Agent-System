@@ -719,6 +719,149 @@ class KISTrader:
             logger.error(f"투자자별 매매동향 조회 실패 {code}: {e}")
             return {"success": False, "message": str(e)}
 
+    def fetch_daily_short_sale(self, code: str, days: int = 40) -> dict:
+        """공매도 일별추이 (FHPST04830000) — KIS API.
+
+        KRX/pykrx 공매도 데이터 중단(2026-04~) 대체. 변동성 장 급락 선행지표.
+        엔드포인트: /uapi/domestic-stock/v1/quotations/daily-short-sale
+        output2 = 일별 배열. record-only 적재 전용(매매 무접촉).
+
+        Returns: {success, data: [{date, close, short_qty, short_amt, short_ratio, avg_price}]}
+        주: output2 실제 필드명은 첫 실행 raw 키 로깅으로 확정(KIS 표준 약어 기반 후보).
+        """
+        try:
+            broker = self._get_broker()
+            import requests
+            from datetime import datetime, timedelta
+
+            token = broker.access_token
+            if token.startswith("Bearer "):
+                token = token.replace("Bearer ", "")
+
+            headers = {
+                "content-type": "application/json; charset=utf-8",
+                "authorization": f"Bearer {token}",
+                "appkey": os.getenv("KIS_APP_KEY"),
+                "appsecret": os.getenv("KIS_APP_SECRET"),
+                "tr_id": "FHPST04830000",
+                "custtype": "P",
+            }
+            today = datetime.now()
+            params = {
+                "FID_COND_MRKT_DIV_CODE": "J",
+                "FID_INPUT_ISCD": code,
+                "FID_INPUT_DATE_1": (today - timedelta(days=days)).strftime("%Y%m%d"),
+                "FID_INPUT_DATE_2": today.strftime("%Y%m%d"),
+            }
+            base_url = "https://openapi.koreainvestment.com:9443"
+            resp = requests.get(
+                f"{base_url}/uapi/domestic-stock/v1/quotations/daily-short-sale",
+                headers=headers, params=params, timeout=10,
+            )
+            data = resp.json()
+            if data.get("rt_cd") != "0":
+                return {"success": False, "message": data.get("msg1", "API 오류")}
+
+            out2 = data.get("output2", []) or []
+            if out2 and not getattr(self, "_short_keys_logged", False):
+                logger.info(f"[SHORT] output2 첫행 키: {list(out2[0].keys())}")
+                self._short_keys_logged = True
+
+            rows = []
+            for item in out2:
+                d = item.get("stck_bsop_date", "")
+                if not d:
+                    continue
+                rows.append({
+                    "date": d,
+                    "close": _safe_int(item.get("stck_clpr", 0)),
+                    # 공매도(실측 확정 2026-06-27): 당일 체결수량/거래대금/거래량비중%,
+                    #   누적 공매도잔고수량, 공매도 평균가
+                    "short_qty": _safe_int(item.get("ssts_cntg_qty", 0)),
+                    "short_amt": _safe_int(item.get("ssts_tr_pbmn", 0)),
+                    "short_ratio": _safe_float(item.get("ssts_vol_rlim", 0)),
+                    "short_bal_qty": _safe_int(item.get("acml_ssts_cntg_qty", 0)),
+                    "avg_price": _safe_float(item.get("avrg_prc", 0)),
+                })
+            return {"success": True, "data": rows}
+
+        except Exception as e:
+            logger.error(f"공매도 일별추이 조회 실패 {code}: {e}")
+            return {"success": False, "message": str(e)}
+
+    def fetch_daily_credit_balance(self, code: str) -> dict:
+        """신용잔고 일별추이 (FHPST04760000) — KIS API.
+
+        변동성 장 반대매매 급락 선행지표. record-only 적재 전용(매매 무접촉).
+        엔드포인트: /uapi/domestic-stock/v1/quotations/daily-credit-balance
+        output = 일별 배열(KIS 페이지네이션 가능, 1페이지로 최근분 충분).
+
+        Returns: {success, data: [{date, close, credit_buy_qty, credit_buy_amt,
+                  credit_buy_rate, credit_sell_qty}]}
+        주: output 실제 필드명은 첫 실행 raw 키 로깅으로 확정.
+        """
+        try:
+            broker = self._get_broker()
+            import requests
+            from datetime import datetime
+
+            token = broker.access_token
+            if token.startswith("Bearer "):
+                token = token.replace("Bearer ", "")
+
+            headers = {
+                "content-type": "application/json; charset=utf-8",
+                "authorization": f"Bearer {token}",
+                "appkey": os.getenv("KIS_APP_KEY"),
+                "appsecret": os.getenv("KIS_APP_SECRET"),
+                "tr_id": "FHPST04760000",
+                "custtype": "P",
+            }
+            params = {
+                "FID_COND_MRKT_DIV_CODE": "J",
+                "FID_COND_SCR_DIV_CODE": "20476",
+                "FID_INPUT_ISCD": code,
+                "FID_INPUT_DATE_1": datetime.now().strftime("%Y%m%d"),
+            }
+            base_url = "https://openapi.koreainvestment.com:9443"
+            resp = requests.get(
+                f"{base_url}/uapi/domestic-stock/v1/quotations/daily-credit-balance",
+                headers=headers, params=params, timeout=10,
+            )
+            data = resp.json()
+            if data.get("rt_cd") != "0":
+                return {"success": False, "message": data.get("msg1", "API 오류")}
+
+            out = data.get("output", []) or []
+            if isinstance(out, dict):
+                out = [out]
+            if out and not getattr(self, "_credit_keys_logged", False):
+                logger.info(f"[CREDIT] output 첫행 키: {list(out[0].keys())}")
+                self._credit_keys_logged = True
+
+            rows = []
+            for item in out:
+                # 신용 응답은 영업일=deal_date, 종가=stck_prpr (공매도와 키 다름·실측 확정 2026-06-27)
+                d = item.get("deal_date", "")
+                if not d:
+                    continue
+                rows.append({
+                    "date": d,
+                    "close": _safe_int(item.get("stck_prpr", 0)),
+                    # 신용융자: 잔고주수/잔고금액/잔고율, 당일 신규/상환, 대주(공매도성) 잔고주수
+                    "credit_buy_qty": _safe_int(item.get("whol_loan_rmnd_stcn", 0)),
+                    "credit_buy_amt": _safe_int(item.get("whol_loan_rmnd_amt", 0)),
+                    "credit_buy_rate": _safe_float(item.get("whol_loan_rmnd_rate", 0)),
+                    "credit_new_qty": _safe_int(item.get("whol_loan_new_stcn", 0)),
+                    "credit_redeem_qty": _safe_int(item.get("whol_loan_rdmp_stcn", 0)),
+                    "loan_sell_qty": _safe_int(item.get("whol_stln_rmnd_stcn", 0)),
+                })
+            return {"success": True, "data": rows}
+
+        except Exception as e:
+            logger.error(f"신용잔고 일별추이 조회 실패 {code}: {e}")
+            return {"success": False, "message": str(e)}
+
     def fetch_open_orders(self) -> dict:
         """미체결 주문 조회"""
         try:

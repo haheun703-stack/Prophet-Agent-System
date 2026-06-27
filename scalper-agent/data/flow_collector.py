@@ -33,7 +33,8 @@ logger = logging.getLogger(__name__)
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data_store"
 FLOW_DIR = DATA_DIR / "flow"          # 수급 데이터
-SHORT_DIR = DATA_DIR / "short"        # 공매도 데이터
+SHORT_DIR = DATA_DIR / "short"        # 공매도 데이터 (KIS 일별추이로 채움 2026-06-27)
+CREDIT_DIR = DATA_DIR / "credit"      # 신용잔고 데이터 (KIS 일별추이 2026-06-27 신설)
 NAT_DIR = DATA_DIR / "nationality"    # 외국인 국적별 데이터
 NAVER_FRGN_URL = "https://finance.naver.com/item/frgn.naver"
 NAVER_HEADERS = {
@@ -48,6 +49,7 @@ NAVER_HEADERS = {
 def _ensure_dirs():
     FLOW_DIR.mkdir(parents=True, exist_ok=True)
     SHORT_DIR.mkdir(parents=True, exist_ok=True)
+    CREDIT_DIR.mkdir(parents=True, exist_ok=True)
     NAT_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -646,7 +648,117 @@ def _fetch_foreign_rate_kis_snapshot(base_url: str, headers: dict, code: str) ->
 
 
 # ============================================================
-#  2순위: 공매도 잔고 (pykrx - 현재 깨짐, 캐시 반환 모드)
+#  공매도/신용 일별추이 — KIS API (2026-06-27, pykrx/KRX 중단 대체)
+#  변동성 장 급락 선행지표. record-only 적재(매매 무접촉).
+# ============================================================
+
+def _kis_daily_to_df(rows: list) -> Optional[pd.DataFrame]:
+    """KIS 일별추이 dict 리스트 → date index DataFrame(yyyymmdd→datetime)."""
+    if not rows:
+        return None
+    df = pd.DataFrame(rows)
+    if "date" not in df.columns:
+        return None
+    df["date"] = pd.to_datetime(df["date"], format="%Y%m%d", errors="coerce")
+    df = df.dropna(subset=["date"]).set_index("date")
+    return df if len(df) else None
+
+
+def _collect_kis_daily(
+    codes: List[str],
+    cache_dir: Path,
+    suffix: str,
+    fetch_fn,
+    label: str,
+    force: bool = False,
+) -> Dict[str, pd.DataFrame]:
+    """KIS 종목별 일별추이 공통 수집 — 증분 캐시 병합(중복 keep=last, sort).
+
+    cache_dir/{code}_{suffix}.csv 에 저장. fetch_fn(code) -> {success, data:[{date,...}]}.
+    """
+    _ensure_dirs()
+    results = {}
+    fetched = failed = 0
+    for i, code in enumerate(codes):
+        if (i + 1) % 500 == 0 or i == 0:
+            print(f"    [{label}] [{i+1}/{len(codes)}] 수집중... (성공{fetched} 실패{failed})")
+        cache_file = cache_dir / f"{code}_{suffix}.csv"
+        try:
+            res = fetch_fn(code)
+            if not res or not res.get("success"):
+                failed += 1
+                continue
+            df_new = _kis_daily_to_df(res.get("data", []))
+            if df_new is None:
+                failed += 1
+                continue
+            if cache_file.exists():
+                try:
+                    old = pd.read_csv(cache_file, index_col=0, parse_dates=True)
+                    # 구 스키마(pykrx 공매도 잔재 등) 컬럼 불일치 시 → KIS 신규 스키마로 교체
+                    if set(old.columns) == set(df_new.columns):
+                        df = pd.concat([old, df_new])
+                        df = df[~df.index.duplicated(keep="last")].sort_index()
+                    else:
+                        df = df_new.sort_index()
+                except Exception:
+                    df = df_new.sort_index()
+            else:
+                df = df_new.sort_index()
+            df.to_csv(cache_file)
+            results[code] = df
+            fetched += 1
+            time.sleep(0.12)
+        except Exception as e:
+            logger.warning(f"[{label}] {code} 수집 실패: {e}")
+            failed += 1
+            continue
+    coverage = len(results) / len(codes) * 100 if codes else 0
+    print(f"  {label} 완료: 수집{fetched} 실패{failed} 저장{len(results)}/{len(codes)} ({coverage:.1f}%)")
+    return results
+
+
+def collect_short_sale(
+    codes: List[str],
+    months: int = 24,
+    force: bool = False,
+) -> Dict[str, pd.DataFrame]:
+    """공매도 일별추이 수집 — KIS API (FHPST04830000, pykrx 중단 대체 2026-06-27).
+
+    저장: data_store/short/{code}_short_bal.csv (date index)
+          — data_verifier DC-04가 기대하는 경로/형식과 동일(자동 GREEN화).
+    컬럼: close, short_qty, short_amt, short_ratio, avg_price
+    record-only(매매 무접촉).
+    """
+    from bot.kis_trader import KISTrader
+    trader = KISTrader()
+    return _collect_kis_daily(
+        codes, SHORT_DIR, "short_bal",
+        trader.fetch_daily_short_sale, "공매도", force,
+    )
+
+
+def collect_credit_balance(
+    codes: List[str],
+    months: int = 24,
+    force: bool = False,
+) -> Dict[str, pd.DataFrame]:
+    """신용잔고 일별추이 수집 — KIS API (FHPST04760000, 2026-06-27 신설).
+
+    저장: data_store/credit/{code}_credit_bal.csv (date index)
+    컬럼: close, credit_buy_qty, credit_buy_amt, credit_buy_rate, credit_sell_qty
+    record-only(매매 무접촉).
+    """
+    from bot.kis_trader import KISTrader
+    trader = KISTrader()
+    return _collect_kis_daily(
+        codes, CREDIT_DIR, "credit_bal",
+        trader.fetch_daily_credit_balance, "신용", force,
+    )
+
+
+# ============================================================
+#  [DEAD] 구 pykrx 공매도 (KRX 중단 2026-04~) — 위 collect_short_sale(KIS)로 대체
 # ============================================================
 
 def _try_pykrx_short_balance(codes: List[str], months: int) -> Dict[str, pd.DataFrame]:
