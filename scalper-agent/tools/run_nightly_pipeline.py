@@ -91,6 +91,8 @@ def main():
          [PY, "tools/run_paper_learning_daily.py"], 300),
         ("⑤-3 paper 규칙 연습장부",   # 6/19 — 학습 발견 규칙 가상적용(현행 vs 규칙적용 forward 비교·실선정변경0)
          [PY, "tools/run_paper_rule_shadow_daily.py"], 300),
+        ("⑤-4 paper 전용 포트폴리오 시뮬",   # 6/27 봇OFF여도 매일 — ledger기반 가상계좌 복리(현행 vs breadth게이트·MDD·record-only)
+         [PY, "-c", "from data.paper_sim_portfolio import build_paper_sim; print(build_paper_sim())"], 300),
         ("⑥ 수급 4종",
          [PY, "-c", "import collect_all as C; C.step2_supply_demand(C.get_universe_codes())"], 3600),
         ("⑦ 11주체",
