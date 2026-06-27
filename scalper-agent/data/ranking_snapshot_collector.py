@@ -55,7 +55,7 @@ def _append_snapshot(kind: str, rows: list, today: str, dedup_extra=None) -> int
     cache = SNAP_DIR / f"{kind}.csv"
     if cache.exists():
         try:
-            old = pd.read_csv(cache, dtype={"code": str})
+            old = pd.read_csv(cache, dtype={"code": str}, encoding="utf-8-sig")  # BOM 통일(멱등성 보호)
             df = pd.concat([old, df_new], ignore_index=True)
         except Exception as e:
             logger.warning(f"[RANKSNAP] {kind} 기존 csv 읽기 실패({e}) — 새로 생성")

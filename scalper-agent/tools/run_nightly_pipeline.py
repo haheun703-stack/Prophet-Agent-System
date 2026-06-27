@@ -109,6 +109,8 @@ def main():
          [PY, "-c", "import collect_all as C; from data.flow_collector import collect_short_sale; collect_short_sale(C.get_universe_codes())"], 5400),
         ("⑭ 신용잔고 일별추이",   # 6/27 KIS 신용(FHPST04760000) 반대매매 급락 선행지표·record-only (공매도와 분리=한쪽 실패 격리)
          [PY, "-c", "import collect_all as C; from data.flow_collector import collect_credit_balance; collect_credit_balance(C.get_universe_codes())"], 5400),
+        ("⑮ 한미충격 관측(kr_us_shock)",   # 6/27 정보봇 verdict(한국 vs 미국 시장충격) record-only 관측 누적·매매 0접촉(공매도/신용과 통합 리스크 후보)
+         [PY, "-c", "from data.kr_us_shock_observer import collect_kr_us_shock_observation as f; print(f())"], 120),
     ]
 
     results = {}

@@ -44,6 +44,14 @@
   - ★실측 확정(추측X): 공매도(ssts_cntg_qty·ssts_vol_rlim·acml_ssts_cntg_qty·avrg_prc), 신용(date=**deal_date**·종가=**stck_prpr**·whol_loan_rmnd_*·신규/상환/대주) — 신용 초기 0행을 실측으로 잡아 키 수정. 공매도 6/26 종가339500=daily 정합. 신용 최신 6/24(T+2 공시 정상).
   - 4-Tier: T1 code-analyzer record-only PASS(주문/SAJANG/picks 0건·Critical0·High2→실측·timeout분리로 해소) / T2 0건 / T3 실측(공매도28행·신용30행·종가정합·휴장일skip·수집기100%) / T4·T5 커밋 pre-commit(Codex).
   - 제외: 업종지수(이미 Naver). ★다음=며칠 적재→정합관측→사장님 승인후 매매연결(관측없이 flip금지). 2차=재무/ETF구성, 3차=호가/체결 실시간(인프라 선행).
+  - ★AWS 자동: VPS cron 평일 18:00 run_nightly_pipeline(⑫⑬⑭) + deploy_pull(17:45/06:00 git pull) 이미 존재. 73ca5e0 VPS 반영(deploy_pull 당김)+VPS 실측(순위6종·공매도99.7%·신용98.4%). 월 6/29 18:00부터 VPS 자동수집. 노트북도 동시 가동(이원화·KIS토큰 경합 여지는 모니터).
+
+- **★ 한미충격(kr_us_shock) 단타봇 record-only 관측 배선** (사장님 6/27 "기가막히게 진행"):
+  - 정보봇(JGIS)이 daily_intelligence.json에 kr_us_shock_summary(한국vs미국 시장충격 verdict·6/26 KR64.8>US33.3 "한국 더 취약") 공급 → 단타봇은 읽는 통로(premarket_risk_scanner 등 6곳)만 있고 이 필드는 안 꺼내씀(6/7 진단 통로분리 패턴).
+  - 신규 `data/kr_us_shock_observer.py`: jgis_intel_path()로 읽어 kr_us_shock_summary 추출 → data_store/kr_us_shock_observed.csv 누적. ★매매경로 0접촉(읽기+csv만)·graceful(필드없음 no_field skip)·휴장일 가드.
+  - nightly ⑮ 배선(record-only, 120s). premarket penalty 경로는 의도적 무접촉(진입게이트=②관측후 승인).
+  - 4-Tier: T1 code-analyzer PASS(record-only위반0·Crit0·High0 / M2 BOM 멱등성 1줄fix + ranking 동류fix) / T2 0건 / T3 mock 6/26 verdict 파싱정확·graceful·멱등성(2행누적+dedup) / T4·T5 커밋.
+  - ★다음=월 08:00 정보봇 공급 시작→nightly ⑮ 자동관측 누적→첫 공급분 키 일치 실측→며칠 관측→공매도/신용과 통합 리스크 게이트(②)는 사장님 승인후(관측없이 flip금지).
 
 ---
 
