@@ -727,7 +727,7 @@ class KISTrader:
         output2 = 일별 배열. record-only 적재 전용(매매 무접촉).
 
         Returns: {success, data: [{date, close, short_qty, short_amt, short_ratio, avg_price}]}
-        주: output2 실제 필드명은 첫 실행 raw 키 로깅으로 확정(KIS 표준 약어 기반 후보).
+        주: output2 필드명 = 2026-06-27 노트북+VPS 실측 확정(005930 등 실제값 적재 검증).
         """
         try:
             broker = self._get_broker()
@@ -798,7 +798,7 @@ class KISTrader:
 
         Returns: {success, data: [{date, close, credit_buy_qty, credit_buy_amt,
                   credit_buy_rate, credit_sell_qty}]}
-        주: output 실제 필드명은 첫 실행 raw 키 로깅으로 확정.
+        주: output 필드명 = 2026-06-27 노트북+VPS 실측 확정(deal_date/stck_prpr/whol_loan_* 검증).
         """
         try:
             broker = self._get_broker()

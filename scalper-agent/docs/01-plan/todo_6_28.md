@@ -41,6 +41,18 @@
 - 공매도/신용 기각 게이트 paper_rule_shadow 정리(반증기록 유지 vs 제거 — 노이즈).
 - kr_us_shock observer 첫 공급분 키 실측 후 파싱 확정. NXT 게이트 breadth 보류 intent 기록(추적).
 
+## ★ 6/27 전체검수 결과 (4관점) — 반영할 것
+
+- **종합 PASS**: 안전/라이브격리/버그·로직/SAJANG·영구룰 전부 PASS. Critical 0·라이브 영향 0·SAJANG 우회 0·불변식 충족. 배포 안전.
+- **High 2(공통, flip 전 해소)**:
+  - ① paper_sim `_stock_pnl` MFE 익절 낙관편향 = **버그 아님**(baseline/gated 동일편향·상대비교 유효·코드 note 해석금지 명시). → 1순위 OHLC 정밀화로 절대수익 신뢰화.
+  - ② KIS 공매도/신용 필드명 = **이미 노트북+VPS 실측 완료**(공매도 99.7%·신용 98.4% 실제값). docstring "추정" 표현만 "실측 확정"으로 정리함(6/27). 월요일 전체 적재 재확인만.
+- **슬러지(3순위 정리)**:
+  - flow_collector 데드함수 3 (`collect_short_balance`/`collect_short_volume`/`_try_pykrx_short_balance` — KRX중단). ★호출처(collect_all_flow 등) 있어 stub 유지 안전. **호출처를 collect_short_sale(KIS)로 교체** 필요.
+  - paper_rule_shadow 기각 게이트 4 = 반증기록 유지(주석 강화함 6/27).
+  - Kiwoom v1.0 726줄 = 경고표기됨. DEAD_KIWOOM.md 존재 확인.
+- **Medium**: ranking foreign_inst dedup이 code 필드 의존(fetch가 code 주는지 확인) / paper_gate_shock lru_cache stale(통합러너 시 주의) / credit FID 날짜범위 비대칭(1행만 쌓일 수 있음).
+
 ## 결정 대기 (사장님)
 
 - **봇 가동 여부** — 실매매·NXT 페이퍼 모두 봇 OFF라 멈춤. breadth 게이트 실효과는 봇 켜야(또는 페이퍼 전용 루프로 계속 검증).
