@@ -758,57 +758,11 @@ def collect_credit_balance(
 
 
 # ============================================================
-#  [DEAD] 구 pykrx 공매도 (KRX 중단 2026-04~) — 위 collect_short_sale(KIS)로 대체
+#  [DEAD stub] 구 pykrx 공매도/거래량 (KRX 중단 2026-04~) — collect_short_sale(KIS)로 대체.
+#  ※ _try_pykrx_short_balance(고아·pykrx probe 함수)는 6/30 제거(호출처 0 + KRX 무접촉 룰).
+#  아래 두 stub은 구 수집 스크립트(collect_all.py/run_backfill/universe_builder 등)가
+#  아직 import하므로 no-op({})로 유지 — 진짜 공매도는 collect_short_sale(KIS)이 담당.
 # ============================================================
-
-def _try_pykrx_short_balance(codes: List[str], months: int) -> Dict[str, pd.DataFrame]:
-    """pykrx 공매도 잔고 수집 시도 (깨져 있을 수 있음, 안전하게 실패)
-
-    pykrx API가 복구되면 자동으로 다시 수집됨.
-    Returns: {code: DataFrame} — 실패 시 빈 dict
-    """
-    try:
-        from pykrx import stock
-        from datetime import date, timedelta
-
-        today = date.today()
-        end_date = today.strftime("%Y%m%d")
-        start_date = (today - timedelta(days=months * 30)).strftime("%Y%m%d")
-
-        # 삼성전자 1건으로 API 상태 확인 (probe)
-        probe = stock.get_shorting_balance_by_date(
-            (today - timedelta(days=10)).strftime("%Y%m%d"),
-            end_date, "005930",
-        )
-        if probe.empty:
-            logger.info("[SHORT] pykrx 공매도 API 여전히 비정상 — 캐시 모드 유지")
-            return {}
-
-        logger.info("[SHORT] pykrx 공매도 API 복구 감지! 수집 시작...")
-        results = {}
-        fetched = 0
-        for code in codes[:50]:  # 최대 50종목 (속도 제한)
-            try:
-                df = stock.get_shorting_balance_by_date(start_date, end_date, code)
-                if not df.empty:
-                    results[code] = df
-                    fetched += 1
-                time.sleep(0.5)
-            except Exception:
-                continue
-
-        if fetched > 0:
-            logger.info(f"[SHORT] pykrx 공매도 수집 성공: {fetched}종목")
-            # 캐시 저장
-            for code, df in results.items():
-                cache_file = SHORT_DIR / f"{code}_short_bal.csv"
-                df.to_csv(cache_file)
-        return results
-
-    except Exception as e:
-        logger.debug(f"[SHORT] pykrx 시도 실패: {e}")
-        return {}
-
 
 def collect_short_balance(
     codes: List[str],
@@ -893,13 +847,11 @@ def collect_all_flow(
     fex_status = f"{len(foreign_exh)}종목" if foreign_exh else "실패"
     print(f"  → 투자자({inv_status}) + 소진율({fex_status}) 병렬 완료: {int(time.time()-t0)}초")
 
-    # 3. 공매도 잔고
-    print(f"\n[3/4] 공매도 잔고...")
-    short_bal = collect_short_balance(codes, months, force)
-
-    # 4. 공매도 거래량
-    print(f"\n[4/4] 공매도 거래량...")
-    short_vol = collect_short_volume(codes, months, force)
+    # 3+4. 공매도 — 진짜 KIS 공매도(collect_short_sale)는 nightly ⑬가 별도 수집(659s).
+    # 이 경로는 투자자 수급 복구 전용(_recover_investor_flow·5분 타임아웃)이라 공매도 제외.
+    # (이전: collect_short_balance/volume = KRX중단 no-op {} → 빈 dict 직접·동작 무변경)
+    short_bal = {}
+    short_vol = {}
 
     print(f"\n{'='*60}")
     print(f"  수급 데이터 수집 완료")
