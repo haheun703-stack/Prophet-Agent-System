@@ -91,6 +91,9 @@ DATA_DIRS = [
     "nationality/",    # 국적별 수급 (누적형 + 일별 스냅샷)
     "news_sentiment/", # 뉴스 감성분석
     "learning/",       # 학습 데이터 (insights, journal 등)
+    "short/",          # 공매도 잔고/거래량 (6/27 신설·7/1 sync 누락 fix — flow_market과 동일 패턴)
+    "credit/",         # 신용잔고 (6/27 신설·7/1 sync 누락 fix)
+    "ranking_snapshots/",  # KIS 순위 6종 스냅샷 (6/27 신설·7/1 sync 누락 fix)
 ]
 # ★ shadow/paper는 의도적 sync 제외 유지 (6/10 결정·S-2 덮어쓰기 교훈) — 6/12 판정은 VPS에서 직접.
 
