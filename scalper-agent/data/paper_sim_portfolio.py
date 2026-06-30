@@ -30,6 +30,8 @@ DAILY_DIR = Path(__file__).resolve().parent.parent / "data_store" / "daily"
 
 TOP_K = 7              # 매일 진입 종목 수(단타봇 09:15 5 + 14:50 2 가정)
 INVEST_RATIO = 0.7     # 자본 투입 비율(SAJANG 30% 현금보유 룰 반영)
+MEONGBUN_SRS_TH = 10.0  # 명분 근사 임계 — sector_rotation_score(섹터강도) 이상만 진입
+                        # (2순위 6/30 A: '명분 있는 끼' 대리지표. 진짜 catalyst 명분등급 결합은 B 축적 후)
 
 
 def _load_post_bars(ticker: str, entry_date: str, max_days: int = 5) -> list:
@@ -152,6 +154,12 @@ def build_paper_sim(save: bool = True) -> dict:
 
     base = simulate(cohorts, lambda c: True)
     gated = simulate(cohorts, lambda c: c.get("_breadth_state") == "BROAD_UP")
+    # 2순위(6/30 A): breadth(언제 사나=시장폭) + 명분근사(뭘 사나=sector_rotation_score 섹터강도 대리) 결합
+    gated_mb = simulate(
+        cohorts,
+        lambda c: c.get("_breadth_state") == "BROAD_UP"
+        and (c.get("sector_rotation_score") or 0) >= MEONGBUN_SRS_TH,
+    )
 
     out = {
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -159,13 +167,17 @@ def build_paper_sim(save: bool = True) -> dict:
         "config": {"top_k": TOP_K, "invest_ratio": INVEST_RATIO,
                    "stop_model": f"OHLC 정밀 트레일링(고점추적·순서보존·SL -{SAJANG.TRAILING_PCT}%·max_hold 5d) "
                                  f"+ CSV없으면 MFE/MAE 근사 fallback",
-                   "coverage": f"OHLC정밀 {n_ohlc}/{n_total}종목 (나머지 MFE근사 fallback)"},
+                   "coverage": f"OHLC정밀 {n_ohlc}/{n_total}종목 (나머지 MFE근사 fallback)",
+                   "meongbun_proxy": f"sector_rotation_score>={MEONGBUN_SRS_TH} (섹터강도=명분 근사·2순위 A)"},
         "baseline": base,
         "breadth_gated": gated,
+        "breadth_meongbun_gated": gated_mb,
         "note": "페이퍼 전용 가상 포트폴리오(record-only·봇무관·매일). 실주문0·라이브0. "
                 "OHLC 일봉 정밀 트레일링 적용(6/30 정밀화) — MFE/MAE 시간순서무시 낙관편향 제거. "
                 "단 미투입현금(invest_ratio 0.7 근사)·재진입은 아직 미반영 → 절대수익은 보수적 참고용, "
-                "baseline vs breadth_gated 상대비교가 본 신호(절대수익=생존편향·상대만 신뢰). "
+                "상대비교가 본 신호(절대수익=생존편향). "
+                "breadth_gated=시장폭(언제), breadth_meongbun_gated=시장폭+섹터강도(언제+뭘 근사·2순위 A 관측축적). "
+                "★명분근사=sector_rotation_score 대리 — 진짜 catalyst 명분등급 결합은 B 축적 후. "
                 "CSV 미존재 종목만 MFE/MAE 근사 fallback(_stock_pnl_mfe_approx).",
     }
     if save:
@@ -175,8 +187,9 @@ def build_paper_sim(save: bool = True) -> dict:
             logger.warning(f"[paper_sim] 저장 실패: {e}")
 
     logger.info(
-        f"[paper_sim] baseline {base['total_return_pct']}%(MDD{base['mdd_pct']}·승률{base['win_pct']}%) "
-        f"vs breadth {gated['total_return_pct']}%(MDD{gated['mdd_pct']}·승률{gated['win_pct']}%)"
+        f"[paper_sim] baseline {base['total_return_pct']}%(승{base['win_pct']}%) "
+        f"vs breadth {gated['total_return_pct']}%(승{gated['win_pct']}%) "
+        f"vs breadth+명분 {gated_mb['total_return_pct']}%(승{gated_mb['win_pct']}%·{gated_mb['trades']}거래)"
     )
     return out
 
@@ -191,7 +204,9 @@ if __name__ == "__main__":
     r = build_paper_sim()
     if r.get("cohorts"):
         b, g = r["baseline"], r["breadth_gated"]
+        m = r.get("breadth_meongbun_gated", {})
         print(f"\n=== 페이퍼 전용 가상 포트폴리오 ({r['cohorts']}일) ===")
-        print(f"현행:       누적 {b['total_return_pct']:+}% | MDD {b['mdd_pct']}% | 승률 {b['win_pct']}% | {b['trades']}거래")
-        print(f"breadth게이트: 누적 {g['total_return_pct']:+}% | MDD {g['mdd_pct']}% | 승률 {g['win_pct']}% | {g['trades']}거래")
-        print("\n★ record-only·봇무관·실주문0. MAE 손절근사 MVP.")
+        print(f"현행:         누적 {b['total_return_pct']:+}% | MDD {b['mdd_pct']}% | 승률 {b['win_pct']}% | {b['trades']}거래")
+        print(f"breadth:      누적 {g['total_return_pct']:+}% | MDD {g['mdd_pct']}% | 승률 {g['win_pct']}% | {g['trades']}거래")
+        print(f"breadth+명분: 누적 {m.get('total_return_pct')}% | 승률 {m.get('win_pct')}% | {m.get('trades')}거래")
+        print("\n★ record-only·봇무관·실주문0. OHLC 정밀 트레일링 + 명분근사(SRS) 관측.")
