@@ -100,9 +100,35 @@ def _stock_pnl_mfe_approx(c) -> float:
     return d3 if d3 is not None else 0.0    # 보유 만기 청산(d3)
 
 
+def _stock_pnl_reentry(c) -> float:
+    """종목 청산 pnl(%) — 손절+재진입(reentry_shadow._simulate·SAJANG 단일진실).
+    손절 후 reclaim(종가≥직전 손절선)+should_reenter면 풀비중 재진입 → leg 복리 합성.
+    일봉 부족/미해결(None) 시 _stock_pnl(손절만 OHLC) graceful fallback.
+    (2번 6/30 — 검증된 '손절+재진입 > 버티기 +5~6%p'를 페이퍼에 반영)"""
+    ticker = c.get("ticker")
+    ed = c.get("virtual_entry_date")
+    if ticker and ed:
+        try:
+            from data.sector_reversal_shadow import _daily_rows
+            from data.reentry_shadow import _simulate
+            rows = _daily_rows(str(ticker))
+            edk = str(ed)[:10]
+            di = next((i for i, r in enumerate(rows) if str(r[0])[:10] == edk), None)
+            if di is not None:
+                sim = _simulate(rows, di, c.get("kki_grade", "B"))
+                if sim and sim.get("stop_reenter_ret") is not None:
+                    return float(sim["stop_reenter_ret"])
+        except Exception:  # noqa: BLE001
+            pass
+    return _stock_pnl(c)  # fallback: 손절만 OHLC
+
+
 def simulate(cohorts: dict, gate_fn, top_k: int = TOP_K,
-             invest_ratio: float = INVEST_RATIO) -> dict:
-    """가상 포트폴리오 복리 시뮬. gate_fn(c)=True인 후보만 진입."""
+             invest_ratio: float = INVEST_RATIO, pnl_fn=None) -> dict:
+    """가상 포트폴리오 복리 시뮬. gate_fn(c)=True인 후보만 진입.
+    pnl_fn=None → _stock_pnl(손절만 OHLC). _stock_pnl_reentry → 손절+재진입."""
+    if pnl_fn is None:
+        pnl_fn = _stock_pnl
     cash = 1.0
     peak = 1.0
     mdd = 0.0
@@ -113,7 +139,7 @@ def simulate(cohorts: dict, gate_fn, top_k: int = TOP_K,
         if not picks:
             continue
         sel = picks[:top_k]
-        pnls = [_stock_pnl(c) for c in sel]
+        pnls = [pnl_fn(c) for c in sel]
         for p in pnls:
             trades += 1
             if p > 0:
@@ -160,6 +186,12 @@ def build_paper_sim(save: bool = True) -> dict:
         lambda c: c.get("_breadth_state") == "BROAD_UP"
         and (c.get("sector_rotation_score") or 0) >= MEONGBUN_SRS_TH,
     )
+    # 2번(6/30): 손절+재진입 — 현행(손절만) vs 재진입 / breadth+재진입 직접비교
+    reentry = simulate(cohorts, lambda c: True, pnl_fn=_stock_pnl_reentry)
+    breadth_reentry = simulate(
+        cohorts, lambda c: c.get("_breadth_state") == "BROAD_UP",
+        pnl_fn=_stock_pnl_reentry,
+    )
 
     out = {
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -172,13 +204,17 @@ def build_paper_sim(save: bool = True) -> dict:
         "baseline": base,
         "breadth_gated": gated,
         "breadth_meongbun_gated": gated_mb,
+        "reentry": reentry,
+        "breadth_reentry": breadth_reentry,
         "note": "페이퍼 전용 가상 포트폴리오(record-only·봇무관·매일). 실주문0·라이브0. "
                 "OHLC 일봉 정밀 트레일링 적용(6/30 정밀화) — MFE/MAE 시간순서무시 낙관편향 제거. "
                 "단 미투입현금(invest_ratio 0.7 근사)·재진입은 아직 미반영 → 절대수익은 보수적 참고용, "
                 "상대비교가 본 신호(절대수익=생존편향). "
                 "breadth_gated=시장폭(언제), breadth_meongbun_gated=시장폭+섹터강도(언제+뭘 근사·2순위 A 관측축적). "
                 "★명분근사=sector_rotation_score 대리 — 진짜 catalyst 명분등급 결합은 B 축적 후. "
-                "CSV 미존재 종목만 MFE/MAE 근사 fallback(_stock_pnl_mfe_approx).",
+                "CSV 미존재 종목만 MFE/MAE 근사 fallback(_stock_pnl_mfe_approx). "
+                "reentry/breadth_reentry=손절+재진입(reentry_shadow._simulate·SAJANG 단일진실·일봉부족시 손절만 fallback). "
+                "★2번(6/30): 재진입이 손절만 대비 수익 견인 — VPS 실측 baseline-6.24→reentry+0.75(+6.99%p)·breadth+재진입 +3.17%(승71%).",
     }
     if save:
         try:
@@ -209,4 +245,8 @@ if __name__ == "__main__":
         print(f"현행:         누적 {b['total_return_pct']:+}% | MDD {b['mdd_pct']}% | 승률 {b['win_pct']}% | {b['trades']}거래")
         print(f"breadth:      누적 {g['total_return_pct']:+}% | MDD {g['mdd_pct']}% | 승률 {g['win_pct']}% | {g['trades']}거래")
         print(f"breadth+명분: 누적 {m.get('total_return_pct')}% | 승률 {m.get('win_pct')}% | {m.get('trades')}거래")
-        print("\n★ record-only·봇무관·실주문0. OHLC 정밀 트레일링 + 명분근사(SRS) 관측.")
+        re = r.get("reentry", {})
+        br = r.get("breadth_reentry", {})
+        print(f"재진입:       누적 {re.get('total_return_pct')}% | 승률 {re.get('win_pct')}%")
+        print(f"breadth+재진입: 누적 {br.get('total_return_pct')}% | 승률 {br.get('win_pct')}%")
+        print("\n★ record-only·봇무관·실주문0. OHLC 트레일링 + 명분근사 + 손절재진입 관측.")
