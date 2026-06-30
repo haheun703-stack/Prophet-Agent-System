@@ -1,6 +1,12 @@
 # ⚠️ DEAD-KIWOOM — 데드코드 경고 (신규 세션/Codex 필독)
 
-> **6/26 작성 (슬러지 H).** 이 파일의 목적: 신규 세션/Codex/운영자가 **Kiwoom v1.0 데드코드를 진짜 라이브 봇으로 오인하는 것**(6/24 검수가 지목한 "최대 비용")을 막는다. **삭제가 아니라 격리/표기**다. git 이력에 보존됨.
+> **★ 6/30 1차 제거 완료 (사장님 "키움 필요없다·완전제거" 결정):**
+> `main.py` + `api/kiwoom_{constants,core,data,order,realtime}.py` 5개 + `api/__init__.py` **삭제**.
+> 라이브(`run_bot.py`·KIS·mojito) 무영향 — `from api`·`import main` 라이브 경로 0건 확인.
+> 다른 봇(quantum-master/jgis)도 키움 API 0건(jgis `KIWOOM*.csv`=키움자산운용 ETF 데이터지 API 아님).
+> git 이력에 보존되어 복원 가능. **2차 후보(아래 backtest/engine/strategies)는 라이브 공용 재확인 후 별도.**
+>
+> **6/26 작성 (슬러지 H).** 이 파일의 목적: 신규 세션/Codex/운영자가 **Kiwoom v1.0 데드코드를 진짜 라이브 봇으로 오인하는 것**(6/24 검수가 지목한 "최대 비용")을 막는다. git 이력에 보존됨.
 
 ---
 
