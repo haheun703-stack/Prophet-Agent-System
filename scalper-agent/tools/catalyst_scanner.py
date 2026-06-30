@@ -439,6 +439,17 @@ def scan_catalyst(top_n: int = 30, save: bool = True) -> dict:
         tmp = OUT.with_suffix(".tmp")
         tmp.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(OUT)
+        # B-1(6/30): 날짜별 아카이브 — catalyst 끼/명분 종목 축적(2주+ → forward 추적·breadth 결합 B-2용).
+        # 본 저장(catalyst_scan.json)과 독립·실패 격리(record-only, 본 동작 무영향).
+        try:
+            _date = str(result.get("timestamp", ""))[:10]  # YYYY-MM-DD
+            if _date:
+                _arch = BASE / "data_store" / "catalyst_archive"
+                _arch.mkdir(parents=True, exist_ok=True)
+                (_arch / f"catalyst_{_date}.json").write_text(
+                    json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass  # 아카이브 실패는 본 저장·스캔에 영향 0
     return result
 
 
