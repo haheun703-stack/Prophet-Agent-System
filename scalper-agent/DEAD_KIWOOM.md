@@ -53,7 +53,9 @@ tools/run_nightly_pipeline.py   ← 야간 데이터 파이프라인 (cron 18:00
 ---
 
 ## 다음 단계 (사장님 결정)
-- 이 README(표기)는 1차 안전 조치. **아카이브 디렉토리 격리**(파일 이동·git 복원가능)는 사장님 결정 후 별도 진행.
-- 격리 전 `backtest/backtester.py`·`risk/position_sizer.py`는 라이브 호출 여부 정밀 재확인 필요(Explore가 "조건부"로 분류).
+- ★ **6/30 2차 재확인 결과 (★Explore 오판 직접 교정)**: Explore가 "import 0건"이라 한 5개(daily_filter·body_hunter_v3·group_rotation·market_state·order_manager)가 **실제로는 키움 backtest·trading_engine·test에서 import됨** (직접 grep 검증으로 잡음 — 그대로 지웠으면 backtest 도구 import 깨질 뻔). 전부 "데드는 맞으나 키움/구 backtest와 거미줄 의존".
+- **완전 독립(import 0건) = `strategies/body_hunter.py` 1개뿐 → 6/30 제거 완료.**
+- 나머지 키움 덩어리(strategies: body_hunter_v3·daily_filter·group_rotation / engine: trading_engine·market_state·order_manager·portfolio·body_hunter_master / risk: risk_manager·position_sizer)는 키움/구 backtest(body_hunter_backtest·extended·real_data·real_5min·v2_vs_v3·rotation·paper_trader)와 **한 덩어리**. 제거하려면 backtest 20여개 중 **키움/구(데드) vs 라이브 도구(nightwatch·macd·momentum·supply 백테스트) 전수 분류 후 통째로** — `tools/daily_pick.py` 라이브 여부도 확인 필요. **별도 세션 정밀 작업**(서두르면 도구 상실/import 깨짐).
+- ★ `risk/risk_manager.py`는 이 문서 "살아있는 risk 3개"가 **오분류** — 실제 trading_engine(키움) 전용 데드. 단 라이브 매도는 auto_trader/kis_trader라 무관(매도 무손상).
 
-**불변식**: 이 작업은 표기만 — 봇 OFF·실주문 0·매도 무손상·라이브 코드 무변경.
+**불변식**: 봇 OFF·실주문 0·매도 무손상·라이브 코드 무변경.
