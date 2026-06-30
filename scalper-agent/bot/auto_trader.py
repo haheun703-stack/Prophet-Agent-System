@@ -6150,9 +6150,9 @@ class AutoTrader:
         """16:35 - NIGHTWATCH 최종 판단 + NXT 매수 결정"""
         if not is_trading_day():
             return
-        if self._auto_trade_disabled():
-            logger.info("[nightwatch_decide] AUTO_TRADE_DISABLED — skip")
-            return
+        # [6/30 record-only 분리] 종목 선정·리포트(run_nightwatch)는 봇 OFF여도 실행한다.
+        # 실주문(nxt_safe_buy)만 아래 자동매매 블록 직전에서 _auto_trade_disabled()로 차단.
+        # (이전: 여기서 봇 OFF면 통째 return → nightwatch_report.json 35일 미갱신 사고 — 6/30 사장님 지적)
 
         nw_cfg = self.config.get("nightwatch", {})
         if not nw_cfg.get("enabled", False):
@@ -6249,6 +6249,15 @@ class AutoTrader:
                 return
 
             # 자동매매 모드 - NXT 매수 실행
+            # [6/30 record-only 분리] 실주문은 봇 OFF면 여기서 차단한다.
+            # 종목 선정·리포트·텔레그램 알림은 위에서 이미 완료·저장되었다.
+            if self._auto_trade_disabled():
+                logger.info(
+                    "[nightwatch_decide] AUTO_TRADE_DISABLED — "
+                    "종목선정/리포트 완료, 실주문만 skip"
+                )
+                return
+
             for t in buy_targets:
                 code = t["code"]
                 name = t["name"]
