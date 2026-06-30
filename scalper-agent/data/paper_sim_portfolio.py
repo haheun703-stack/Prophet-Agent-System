@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import csv as _csv
 import json
 import logging
 from datetime import datetime
@@ -25,14 +26,67 @@ from data.sajang_rules import SAJANG
 logger = logging.getLogger("BH.PaperSim")
 
 OUT_PATH = Path(__file__).resolve().parent.parent / "data_store" / "paper_sim_portfolio.json"
+DAILY_DIR = Path(__file__).resolve().parent.parent / "data_store" / "daily"
 
 TOP_K = 7              # 매일 진입 종목 수(단타봇 09:15 5 + 14:50 2 가정)
 INVEST_RATIO = 0.7     # 자본 투입 비율(SAJANG 30% 현금보유 룰 반영)
 
 
+def _load_post_bars(ticker: str, entry_date: str, max_days: int = 5) -> list:
+    """daily/{ticker}.csv(한글헤더 날짜/시가/고가/저가/종가)에서
+    entry_date 다음 영업일부터 max_days개 OHLC 일봉을 시간순(오름차순)으로 반환.
+    파일 없거나 파싱 실패 시 빈 리스트(→ 호출부에서 MFE 근사 fallback)."""
+    p = DAILY_DIR / f"{ticker}.csv"
+    if not p.exists():
+        return []
+    ed = str(entry_date).replace("-", "")
+    rows = []
+    try:
+        with p.open(encoding="utf-8") as f:
+            for row in _csv.DictReader(f):
+                d = str(row.get("날짜", "")).replace("-", "")
+                if not d or d <= ed:
+                    continue
+                try:
+                    rows.append({
+                        "date": row.get("날짜"),
+                        "open": int(float(row.get("시가") or 0)),
+                        "high": int(float(row.get("고가") or 0)),
+                        "low": int(float(row.get("저가") or 0)),
+                        "close": int(float(row.get("종가") or 0)),
+                    })
+                except (ValueError, TypeError):
+                    continue
+    except Exception:  # noqa: BLE001
+        return []
+    rows.sort(key=lambda x: str(x["date"]).replace("-", ""))  # 시간순 보장
+    return rows[:max_days]
+
+
 def _stock_pnl(c) -> float:
-    """종목 트레일링 손절 근사 pnl(%). SAJANG 충실:
-    +TRAIL 고점 도달 → 고점-TRAIL 익절(이익 락인) / 그 전 MAE≤-TRAIL → 진입가-TRAIL 손절 / else d3 만기."""
+    """종목 청산 pnl(%) — OHLC 일봉 정밀 트레일링(고점추적·순서보존).
+    daily CSV가 있으면 simulate_trailing_with_ohlc로 진입가 대비 정밀 청산가를 산출
+    (MFE/MAE 시간순서 무시 낙관편향 제거). CSV 없거나 부족하면 MFE/MAE 근사 fallback."""
+    ticker = c.get("ticker")
+    ed = c.get("virtual_entry_date")
+    ep = c.get("virtual_entry_price")
+    if ticker and ed and ep and ep > 0:
+        post_bars = _load_post_bars(str(ticker), str(ed), max_days=5)
+        if post_bars:
+            from tools.portfolio_daily_simulator_5_24 import simulate_trailing_with_ohlc
+            sim = simulate_trailing_with_ohlc(
+                int(ep), post_bars,
+                max_hold_days=5, sl_pct=SAJANG.TRAILING_PCT / 100.0,
+            )
+            if sim.get("exited") and sim.get("exit_reason") != "no_data":
+                return float(sim.get("pnl_pct", 0.0))
+    return _stock_pnl_mfe_approx(c)
+
+
+def _stock_pnl_mfe_approx(c) -> float:
+    """MFE/MAE 근사 fallback(구 MVP). OHLC CSV 미존재/부족 종목 전용:
+    +TRAIL 고점 도달 → 고점-TRAIL 익절 / 그 전 MAE≤-TRAIL → -TRAIL 손절 / else d3 만기.
+    (★MFE/MAE 시간순서 무시 = 낙관편향. CSV 있으면 _stock_pnl이 OHLC 정밀로 대체)"""
     trail = SAJANG.TRAILING_PCT
     mfe = c.get("MFE")
     mae = c.get("MAE")
@@ -87,6 +141,15 @@ def build_paper_sim(save: bool = True) -> dict:
         logger.info("[paper_sim] 코호트 없음 — skip")
         return {"cohorts": 0}
 
+    # 검수 M2 투명화: OHLC 정밀 적용 vs MFE 근사 fallback 종목 수 카운트
+    n_total = n_ohlc = 0
+    for _picks in cohorts.values():
+        for _c in _picks:
+            n_total += 1
+            _tk, _ed, _ep = _c.get("ticker"), _c.get("virtual_entry_date"), _c.get("virtual_entry_price")
+            if _tk and _ed and _ep and _ep > 0 and _load_post_bars(str(_tk), str(_ed), 5):
+                n_ohlc += 1
+
     base = simulate(cohorts, lambda c: True)
     gated = simulate(cohorts, lambda c: c.get("_breadth_state") == "BROAD_UP")
 
@@ -94,13 +157,16 @@ def build_paper_sim(save: bool = True) -> dict:
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "cohorts": len(cohorts),
         "config": {"top_k": TOP_K, "invest_ratio": INVEST_RATIO,
-                   "stop_model": f"MAE<=-{SAJANG.TRAILING_PCT}%→손절 else forward_d3"},
+                   "stop_model": f"OHLC 정밀 트레일링(고점추적·순서보존·SL -{SAJANG.TRAILING_PCT}%·max_hold 5d) "
+                                 f"+ CSV없으면 MFE/MAE 근사 fallback",
+                   "coverage": f"OHLC정밀 {n_ohlc}/{n_total}종목 (나머지 MFE근사 fallback)"},
         "baseline": base,
         "breadth_gated": gated,
         "note": "페이퍼 전용 가상 포트폴리오(record-only·봇무관·매일). 실주문0·라이브0. "
-                "★절대수익 해석금지 — MFE익절 낙관편향+미투입현금 미반영으로 낙관됨. "
-                "baseline vs breadth_gated 상대비교 전용(절대수익=생존편향·상대만 신뢰). "
-                "MAE/MFE 손절근사 MVP(정밀 OHLC 트레일링·재진입은 다음 정밀화).",
+                "OHLC 일봉 정밀 트레일링 적용(6/30 정밀화) — MFE/MAE 시간순서무시 낙관편향 제거. "
+                "단 미투입현금(invest_ratio 0.7 근사)·재진입은 아직 미반영 → 절대수익은 보수적 참고용, "
+                "baseline vs breadth_gated 상대비교가 본 신호(절대수익=생존편향·상대만 신뢰). "
+                "CSV 미존재 종목만 MFE/MAE 근사 fallback(_stock_pnl_mfe_approx).",
     }
     if save:
         try:
