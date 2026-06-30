@@ -12,8 +12,6 @@
   (일봉 OHLC 정밀 트레일링/재진입은 다음 정밀화 — MVP는 ledger forward+MAE 근사.)
 사용법: python -m data.paper_sim_portfolio
 """
-from __future__ import annotations
-
 import csv as _csv
 import json
 import logging
@@ -192,6 +190,13 @@ def build_paper_sim(save: bool = True) -> dict:
         cohorts, lambda c: c.get("_breadth_state") == "BROAD_UP",
         pnl_fn=_stock_pnl_reentry,
     )
+    # 3중 결합(6/30): breadth(언제)+명분(뭘·섹터강도)+재진입(어떻게) — VPS실측 최고 +3.57%(승79%)
+    breadth_mb_reentry = simulate(
+        cohorts,
+        lambda c: c.get("_breadth_state") == "BROAD_UP"
+        and (c.get("sector_rotation_score") or 0) >= MEONGBUN_SRS_TH,
+        pnl_fn=_stock_pnl_reentry,
+    )
 
     out = {
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -206,6 +211,7 @@ def build_paper_sim(save: bool = True) -> dict:
         "breadth_meongbun_gated": gated_mb,
         "reentry": reentry,
         "breadth_reentry": breadth_reentry,
+        "breadth_meongbun_reentry": breadth_mb_reentry,
         "note": "페이퍼 전용 가상 포트폴리오(record-only·봇무관·매일). 실주문0·라이브0. "
                 "OHLC 일봉 정밀 트레일링 적용(6/30 정밀화) — MFE/MAE 시간순서무시 낙관편향 제거. "
                 "단 미투입현금(invest_ratio 0.7 근사)·재진입은 아직 미반영 → 절대수익은 보수적 참고용, "
@@ -249,4 +255,6 @@ if __name__ == "__main__":
         br = r.get("breadth_reentry", {})
         print(f"재진입:       누적 {re.get('total_return_pct')}% | 승률 {re.get('win_pct')}%")
         print(f"breadth+재진입: 누적 {br.get('total_return_pct')}% | 승률 {br.get('win_pct')}%")
+        bmr = r.get("breadth_meongbun_reentry", {})
+        print(f"★3중(breadth+명분+재진입): 누적 {bmr.get('total_return_pct')}% | 승률 {bmr.get('win_pct')}%")
         print("\n★ record-only·봇무관·실주문0. OHLC 트레일링 + 명분근사 + 손절재진입 관측.")
