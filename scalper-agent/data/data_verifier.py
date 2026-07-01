@@ -382,7 +382,7 @@ def _verify_sector_history(today: str) -> dict:
 
         # 최근 5거래일 구멍 검사
         try:
-            from utils.trading_calendar import is_trading_day
+            from data.trading_calendar import is_trading_day  # 7/1 검수: utils(없음)→data 정정(공휴일 오판 fix)
             _is_td = is_trading_day
         except Exception:
             _is_td = lambda d: d.weekday() < 5

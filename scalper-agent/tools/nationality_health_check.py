@@ -117,7 +117,7 @@ def _is_trading_day(d: date) -> bool:
     """간단 거래일 판정 (KST, 주말 제외, 공휴일은 trading_calendar 모듈 우선)."""
     try:
         sys.path.insert(0, str(PROJECT_DIR))
-        from utils.trading_calendar import is_trading_day as _is_td
+        from data.trading_calendar import is_trading_day as _is_td  # 7/1 검수: utils(없음)→data 정정(공휴일 오판 fix)
         return _is_td(d)
     except Exception:
         return d.weekday() < 5

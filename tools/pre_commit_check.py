@@ -110,6 +110,22 @@ RULES = [
         "severity": "HIGH",
         "exclude_files": ["sajang_rules.py", "test_"],
     },
+    {
+        "id": "RULE-008",
+        "name": "SL 하드코딩 — SAJANG 단일진실 우회 (7/1 전체검수 H1/H2 신설)",
+        "pattern": r'(?:stop_loss|[a-zA-Z_]*sl)\s*=\s*.*int\(.*\*\s*0\.9[0-9]',
+        "msg": (
+            "★ SL 하드코딩 = SAJANG 단일진실 우회 (7/1 전체검수 H1/H2) ★\n"
+            "         → sl = int(price * 0.9x) 리터럴 = SAJANG 미경유 손절선 (라이브 주문경로면 사고 위험)\n"
+            "         → 강제 권장: SAJANG.get_momentum_sl / get_reversal_breakeven_sl / get_normal_sl 등 헬퍼 경유\n"
+            "         → 근본: RULE-005~007이 TP/mode/entry_mode만 잡고 SL은 사각지대였음. MEDIUM(경고)—backtest/분석/picks는 정당 사용 가능하니 라이브 주문경로만 판단해 SAJANG화."
+        ),
+        "severity": "MEDIUM",
+        "exclude_files": ["sajang_rules.py", "test_", "backtester.py",
+                          "dynamic_target_backtest.py", "enhanced_backtest.py",
+                          "tomorrow_analysis.py", "limit_up_paper_trader.py",
+                          "paper_portfolio.py", "body_hunter_master.py"],
+    },
 ]
 
 

@@ -3536,7 +3536,7 @@ class AutoTrader:
                                 }
                                 # MOMENTUM: SL (-4.5%) — 4/8: -3.5%→-4.5% 완화 (변동성 여유)
                                 if watch.get("regime") == "MOMENTUM":
-                                    mtm_sl = int(cp * 0.955)
+                                    mtm_sl = SAJANG.get_momentum_sl(cp)  # 7/1 검수 H1: SAJANG 파생(구 int(cp*0.955))
                                     self._positions[code]["stop_loss"] = max(mtm_sl, watch["sl"])
                                 self._save_positions()
                                 try:
@@ -4810,7 +4810,7 @@ class AutoTrader:
                         )
                     else:
                         # 수익 중 → SL을 진입가로 올려 본전 확보 + TP 축소
-                        reversal_sl = max(entry, int(cp * 0.98))
+                        reversal_sl = SAJANG.get_reversal_breakeven_sl(entry, cp)  # 7/1 검수 H2: SAJANG 파생(구 max(entry,int(cp*0.98)))
                         old_sl = pos["stop_loss"]
                         if reversal_sl > old_sl:
                             pos["stop_loss"] = reversal_sl

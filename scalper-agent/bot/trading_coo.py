@@ -3636,6 +3636,15 @@ class TradingCOO:
         시총 1000억+ 종목 중 기관 3일+ 연속 순매수 종목을 감지,
         아직 급등 전(5일<15%)인 초기 매집 종목을 Supabase에 업로드.
         """
+        # ★ 7/1 전체검수 Fix4 — C40은 KRX(inst_accumulation_scan) 기반. 사장님 KRX 영구OFF(6/22 kill switch)
+        #   + 6/19 KRX-free 대체(nightly ⑩ institution_accum_scan)로 중복. KRX 차단 시 skip(중복/KRX룰위반 제거).
+        try:
+            from data.krx_gate import krx_enabled, krx_block_reason
+            if not krx_enabled():
+                logger.info(f"[C40] KRX 차단({krx_block_reason()}) — 기관매집(KRX판) skip · KRX-free는 nightly ⑩ 담당")
+                return {"inst_accumulation": "SKIP_KRX_OFF"}
+        except Exception:
+            pass
         try:
             from data.inst_accumulation_scan import scan_inst_accumulation
             from data.upload_inst_accumulation import upload_inst_accumulation

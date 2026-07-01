@@ -163,7 +163,7 @@ def detect_missing_dates(days_back: int = 10) -> list[str]:
     missing = []
     # 거래일 판정 (trading_calendar 사용)
     try:
-        from utils.trading_calendar import is_trading_day
+        from data.trading_calendar import is_trading_day  # 7/1 검수: utils(없음)→data 정정(공휴일 오판 fix)
         _is_td = is_trading_day
     except Exception:
         # 폴백: 주말만 제외

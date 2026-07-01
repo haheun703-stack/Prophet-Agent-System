@@ -45,6 +45,19 @@ def _recorded_dates() -> set:
         return set()
 
 
+def _loaded_dates() -> set:
+    """★ 7/1 전체검수 H3 — 005930 일봉에 실제 적재된 날짜 집합. ① fill 실패/미적재 시
+    shadow가 stale 데이터로 today를 기록→멱등키 고착되는 STALE 오염 방지(미적재일은 기록 skip)."""
+    f = BASE / "data_store" / "daily" / "005930.csv"
+    if not f.exists():
+        return set()
+    try:
+        lines = f.read_text(encoding="utf-8").strip().splitlines()[1:]
+        return {ln.split(",")[0] for ln in lines if ln}
+    except Exception:
+        return set()
+
+
 def run(max_days: int = 60) -> dict:
     """디바이스 시작일(가장 이른 기록일)~오늘 사이 미기록 거래일만 채움 + forward 갱신.
 
@@ -52,6 +65,7 @@ def run(max_days: int = 60) -> dict:
     """
     today = date.today()
     done = _recorded_dates()
+    loaded = _loaded_dates()  # ★ 7/1 검수 H3: fill 성공(일봉 적재) 전제 — 미적재일 기록 skip
     if done:
         try:
             anchor = min(datetime.strptime(x, "%Y-%m-%d").date() for x in done)
@@ -67,7 +81,7 @@ def run(max_days: int = 60) -> dict:
     while d <= today:
         if is_trading_day(d):
             ds = d.strftime("%Y-%m-%d")
-            if ds not in done:
+            if ds not in done and ds in loaded:  # ★ H3: 일봉 미적재일은 기록 skip(멱등키 고착 방지)
                 try:
                     r = build_shadow(ds)
                     built.append([ds, len(r.get("records", []))])

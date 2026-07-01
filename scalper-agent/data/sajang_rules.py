@@ -66,6 +66,10 @@ class SajangRules:
     # 실주문 0(limit_up_position_manager=paper-only·never order). 단일진실화로 하드코딩 0.955/-4.5 제거.
     LIMIT_UP_HARD_STOP_PCT: float = 4.5        # 상한가 D+0 hard_stop = 진입가 대비 -4.5%
 
+    # ★ 7/1 전체검수(H1/H2) — auto_trader 라이브 SL 하드코딩 SAJANG 파생화 (값 동일·동작 무변경)
+    MOMENTUM_SL_PCT: float = 4.5               # MOMENTUM 레짐 진입 SL = 진입가 -4.5% (구 int(cp*0.955))
+    REVERSAL_BREAKEVEN_SL_PCT: float = 2.0     # REVERSAL 방어 = max(본전, 현재가 -2%) (구 int(cp*0.98))
+
     # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     # ★ 5/25 영구 룰 B — 15:26 +10%+ 분할 매도
     # 영구 메모리: project_5_25_rule_b_15_26 (단타봇 자율 5/25 신설)
@@ -214,6 +218,16 @@ class SajangRules:
     def get_limit_up_hard_stop(cls, entry_price: float) -> int:
         """사장님 6/17 결정 — 상한가 D+0 진입가 대비 -4.5% hard_stop (paper-only)."""
         return int(entry_price * (1 - cls.LIMIT_UP_HARD_STOP_PCT / 100))
+
+    @classmethod
+    def get_momentum_sl(cls, entry_price: float) -> int:
+        """7/1 전체검수 H1 — MOMENTUM 레짐 SL = 진입가 -4.5% (구 하드코딩 int(cp*0.955) SAJANG 파생)."""
+        return int(entry_price * (1 - cls.MOMENTUM_SL_PCT / 100))
+
+    @classmethod
+    def get_reversal_breakeven_sl(cls, entry_price: float, current_price: float) -> int:
+        """7/1 전체검수 H2 — REVERSAL 방어 SL = max(본전, 현재가 -2%) (구 max(entry,int(cp*0.98)) SAJANG 파생)."""
+        return max(int(entry_price), int(current_price * (1 - cls.REVERSAL_BREAKEVEN_SL_PCT / 100)))
 
     @classmethod
     def is_limit_up_hard_stop_breached(cls, pnl_pct: float) -> bool:
