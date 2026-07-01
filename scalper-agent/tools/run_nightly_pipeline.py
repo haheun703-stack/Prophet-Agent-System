@@ -113,6 +113,8 @@ def main():
          [PY, "-c", "import collect_all as C; from data.flow_collector import collect_credit_balance; collect_credit_balance(C.get_universe_codes())"], 5400),
         ("⑮ 한미충격 관측(kr_us_shock)",   # 6/27 정보봇 verdict(한국 vs 미국 시장충격) record-only 관측 누적·매매 0접촉(공매도/신용과 통합 리스크 후보)
          [PY, "-c", "from data.kr_us_shock_observer import collect_kr_us_shock_observation as f; print(f())"], 120),
+        ("⑯ 클러스터 수확 페이퍼",   # 7/1 사장님 — 명분클러스터(호남 건설/전선) 후발주 릴레이 +5~8% 매일수확 forward 페이퍼. record-only·실주문0·picks/SAJANG/order 무접촉·한국스윙(FLOWX) 무접촉. 2~3주 누적→흑자 엣지 판정→승인후 라이브
+         [PY, "tools/cluster_harvest_paper.py"], 300),
     ]
 
     results = {}
