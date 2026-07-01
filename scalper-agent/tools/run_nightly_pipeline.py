@@ -16,7 +16,8 @@
   - 봇 OFF·매수 무접촉·실주문0·SAJANG 무변경(데이터/관측 전용, 검증된 진입점만 호출).
   - 각 단계 독립 try/except → 한 단계 실패해도 다음 진행. 어떤 예외도 exit 0.
   - 휴장일 skip. shadow/paper는 자체 멱등(기록된 날 skip).
-  - 노트북이 단타봇 데이터 메인(VPS는 구버전). OS task 18:00(StartWhenAvailable)로 호출.
+  - ★데이터 메인=VPS(AWS·cron 18:00). 노트북은 VPSSync(매일19:00)로 받기만·NightlyPipeline task Disabled.
+    (7/1 검수 H5 정정 — 구 "노트북=데이터메인" 표기는 역전된 옛정보였음.)
 """
 import sys
 import subprocess
