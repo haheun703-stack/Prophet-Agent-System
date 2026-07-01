@@ -26,11 +26,11 @@
 """
 
 import sys, os, argparse
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))  # tools/manual/ → scalper-agent
 
 from pathlib import Path
 from dotenv import load_dotenv
-load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
+load_dotenv(Path(__file__).resolve().parent.parent.parent.parent / ".env")  # tools/manual/ → repo root
 
 from bot.kis_trader import KISTrader, resolve_stock
 

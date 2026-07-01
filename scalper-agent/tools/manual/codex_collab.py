@@ -26,7 +26,7 @@ except Exception:  # pragma: no cover - Python 3.8 fallback only
     ZoneInfo = None  # type: ignore[assignment]
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # tools/manual/ → scalper-agent
 OPS_DIR = PROJECT_ROOT / "ops"
 INBOX_DIR = OPS_DIR / "codex_inbox"
 OUTBOX_DIR = OPS_DIR / "codex_outbox"

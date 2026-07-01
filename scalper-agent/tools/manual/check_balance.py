@@ -9,16 +9,16 @@ KIS 실계좌 잔고 확인 스크립트
 """
 
 import sys, os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))  # tools/manual/ → scalper-agent
 
 import json
 from pathlib import Path
 from dotenv import load_dotenv
-load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
+load_dotenv(Path(__file__).resolve().parent.parent.parent.parent / ".env")  # tools/manual/ → repo root
 
 from bot.kis_trader import KISTrader
 
-RISK_STATE_PATH = Path(__file__).resolve().parent.parent / "data_store" / "risk_state.json"
+RISK_STATE_PATH = Path(__file__).resolve().parent.parent.parent / "data_store" / "risk_state.json"  # tools/manual/ → scalper-agent
 
 
 def main():

@@ -20,7 +20,7 @@ from typing import Any
 
 TOOL_NAME = "audit_order_paths.py"
 TOOL_VERSION = "2"
-SCALPER_ROOT = Path(__file__).resolve().parents[1]
+SCALPER_ROOT = Path(__file__).resolve().parents[2]  # tools/manual/ → scalper-agent
 SCAN_DIRS = ("bot", "engine", "data", "api", "tools")
 GATE_REQUIRED_CHECKS = (
     "CHECK-1_paper_open_close_no_intent",
@@ -770,7 +770,7 @@ class TpSlMatchVisitor(ast.NodeVisitor):
 def check_6_fixed_tp_sl(sources: list[SourceFile]) -> dict[str, Any]:
     matches: list[dict[str, Any]] = []
     for source in sources:
-        if source.rel == "tools/audit_order_paths.py" or source.rel == "data/sajang_rules.py":
+        if source.rel == "tools/manual/audit_order_paths.py" or source.rel == "data/sajang_rules.py":
             continue
         visitor = TpSlMatchVisitor(source)
         visitor.visit(source.tree)
@@ -907,7 +907,7 @@ def _classify_check8(source: SourceFile) -> tuple[str, str]:
 def check_8_cash30_single_source(sources: list[SourceFile]) -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     for source in sources:
-        if source.rel == "tools/audit_order_paths.py" or source.rel == "data/sajang_rules.py":
+        if source.rel == "tools/manual/audit_order_paths.py" or source.rel == "data/sajang_rules.py":
             continue
         visitor = CashRuleVisitor(source)
         visitor.visit(source.tree)

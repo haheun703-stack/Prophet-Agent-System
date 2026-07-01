@@ -31,7 +31,7 @@ if sys.platform == "win32":
             try: s.reconfigure(encoding="utf-8", errors="replace")
             except: pass
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent  # tools/manual/ → scalper-agent
 sys.path.insert(0, str(ROOT))
 
 POSITIONS_PATH = ROOT / "data_store" / "positions.json"

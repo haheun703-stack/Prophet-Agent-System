@@ -42,7 +42,7 @@ BACKUP_DIR="$HOOK_DIR/_backup"
 REQUIRED=(
     "tools/pre_commit_check.py"
     "tools/codex_pre_commit.py"
-    "scalper-agent/tools/codex_auto_request.py"
+    "scalper-agent/tools/manual/codex_auto_request.py"
 )
 for rel in "${REQUIRED[@]}"; do
     if [ ! -f "$REPO_ROOT/$rel" ]; then
@@ -86,7 +86,7 @@ cat > "$HOOK_FILE" <<'HOOK_EOF'
 # Body Hunter v4 monorepo pre-commit hook
 # Stage 1: tools/pre_commit_check.py (static rules)
 # Stage 2: tools/codex_pre_commit.py (Codex review, optional)
-# Stage 3: scalper-agent/tools/codex_auto_request.py (always best-effort)
+# Stage 3: scalper-agent/tools/manual/codex_auto_request.py (always best-effort)
 #
 # This hook NEVER:
 #   - flips kill_switch / PAPER_ONLY
@@ -118,8 +118,8 @@ else
 fi
 
 # Stage 3 - auto Codex inbox (best-effort, never blocks)
-if [ -f "scalper-agent/tools/codex_auto_request.py" ]; then
-    PYTHONIOENCODING=utf-8 python scalper-agent/tools/codex_auto_request.py \
+if [ -f "scalper-agent/tools/manual/codex_auto_request.py" ]; then
+    PYTHONIOENCODING=utf-8 python scalper-agent/tools/manual/codex_auto_request.py \
         --agent scalper-agent --staged --from-hook || true
 fi
 
@@ -143,7 +143,7 @@ if [ "${1:-}" = "--verify" ]; then
         PY_BIN="python3"
     fi
     cd "$REPO_ROOT"
-    PYTHONIOENCODING=utf-8 "$PY_BIN" scalper-agent/tools/codex_auto_request.py \
+    PYTHONIOENCODING=utf-8 "$PY_BIN" scalper-agent/tools/manual/codex_auto_request.py \
         --agent scalper-agent --staged --always --no-checks --dry-run \
         | head -20
     echo ""

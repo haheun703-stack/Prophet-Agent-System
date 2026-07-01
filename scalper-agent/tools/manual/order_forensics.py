@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 
-SCALPER_ROOT = Path(__file__).resolve().parents[1]
+SCALPER_ROOT = Path(__file__).resolve().parents[2]  # tools/manual/ → scalper-agent
 REPO_ROOT = SCALPER_ROOT.parent
 RESULT_DIR = SCALPER_ROOT / "results" / "order_forensics"
 DEFAULT_TERMS = [

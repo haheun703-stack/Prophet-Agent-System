@@ -16,7 +16,7 @@ except Exception:  # pragma: no cover
     ZoneInfo = None  # type: ignore[assignment]
 
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent  # tools/manual/ → scalper-agent
 STATE_PATH = PROJECT_ROOT / "ops" / ".codex_auto_last.txt"
 
 RISK_ORDER = {"low": 0, "medium": 1, "high": 2, "critical": 3}
