@@ -7,7 +7,7 @@
 이를 매일 자동 검증해서 단타봇이 또 사고 안 치도록 자기 모니터링 시스템.
 
 검증 항목:
-  1. 보유 종목 룰 부합 (TP=0 / mode=swing / source=manual_president)
+  1. 보유 종목 룰 부합 (TP=0 / mode=swing / source=sync_auto_unknown)
   2. config.yaml 룰 부합 (entry_mode='pullback_3pct')
   3. 현금 30% 보유 (사장님 영구 룰)
   4. asset_pool 매수 종목 룰 부합
@@ -212,7 +212,7 @@ def audit_with_codex(self_audit_issues: List[Dict]) -> List[Dict]:
 
 검수 핵심:
 1. 단타봇이 놓친 사장님 영구 룰 위반 패턴 있는가?
-2. 보유 종목이 사장님 매수 보호 (manual_president / TP=0 / mode=swing) 정확 적용?
+2. 보유 종목이 사장님 매수 보호 (sync_auto_unknown / TP=0 / mode=swing) 정확 적용?
 3. 5/26 미친짓 패턴 (default off / TP+5% 잔존) 잠재 위험?
 4. 5/27 D+1 가동 시 사고 가능성?
 """

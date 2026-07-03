@@ -20,7 +20,6 @@
 영구 메모리: [incident_2026_05_26_dday_anger] + [feedback_3tier_review_rule]
 """
 import os
-import json
 import logging
 from pathlib import Path
 from typing import Optional
@@ -93,7 +92,7 @@ def codex_review_code(
 - LIMIT_UP_SPLIT_THRESHOLD=25.0 (5/25 룰 3)
 - D1_GAP_SELL_THRESHOLD=-7.0 (5/25 룰 C)
 - CASH_RESERVE_PCT=0.30 (★ 5/26 30% 현금 보유 ★)
-- SYNC_AUTO_SOURCE='manual_president' (사장님 매수 보호)
+- SYNC_AUTO_SOURCE='sync_auto_unknown' (출처불명 명시 — 추정라벨 금지·5/27 사장님)
 - 50/30/20 VWAP 분할 + 1차 시장가 폴백 (5/26 새 통찰)
 '''}
 

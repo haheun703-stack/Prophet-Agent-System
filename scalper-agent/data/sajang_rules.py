@@ -317,7 +317,7 @@ class SajangRules:
         return {
             "take_profit": cls.SYNC_AUTO_TP,         # 0 (트레일링만)
             "mode": cls.SYNC_AUTO_MODE,              # swing (D+0 청산 X)
-            "source": cls.SYNC_AUTO_SOURCE,          # manual_president (단타봇 트레일링 핸들링 OK)
+            "source": cls.SYNC_AUTO_SOURCE,          # sync_auto_unknown (출처불명·단타봇 트레일링 핸들링 OK)
             "stop_loss": cls.get_normal_sl(buy_price),
         }
 
