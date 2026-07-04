@@ -64,6 +64,11 @@ CORE_FILES = [
     "pension_ownership.json",
     "daytrading_picks.json",
     "flowx_swing.json",
+    "market_regime.json",          # 7/4 시장 레짐 게이트 (nightly ⑰)
+    "market_regime_history.json",  # 7/4 레짐 forward 자가검증 이력
+    "morning_briefing.json",       # 7/4 아침 브리핑 통합 (nightly ⑱)
+    "playbook_shadow.json",        # 7/4 플레이북 페이퍼 (nightly ⑲)
+    "cluster_harvest_paper.json",  # 7/1 클러스터 수확 페이퍼 (nightly ⑯)
 ]
 
 # 학습 데이터 (항상 동기화 — 일부 파일은 VPS에 없을 수 있음, 실패는 무시)
@@ -94,6 +99,8 @@ DATA_DIRS = [
     "short/",          # 공매도 잔고/거래량 (6/27 신설·7/1 sync 누락 fix — flow_market과 동일 패턴)
     "credit/",         # 신용잔고 (6/27 신설·7/1 sync 누락 fix)
     "ranking_snapshots/",  # KIS 순위 6종 스냅샷 (6/27 신설·7/1 sync 누락 fix)
+    "catalyst_archive/",   # 7/4 신설 — 명분끼 날짜별 아카이브(소문/뉴스 단계 forward 재료·VPS only였음)
+    "ticks/",              # 7/4 신설 — 전종목 ~20분 체결강도 스냅샷(플레이북 replay 원천·since_days 증분이라 부담 소)
 ]
 # ★ shadow/paper는 의도적 sync 제외 유지 (6/10 결정·S-2 덮어쓰기 교훈) — 6/12 판정은 VPS에서 직접.
 

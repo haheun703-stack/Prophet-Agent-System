@@ -118,6 +118,10 @@ def main():
          [PY, "tools/cluster_harvest_paper.py"], 300),
         ("⑰ 시장 레짐 게이트",   # 7/4 신설 — 전일 breadth≤0.45 회피신호(63일 검증된 유일 엣지)+지수 정배열 관측(사장님 6/7 숙제)+forward 자가검증. record-only·매수/매도/picks/SAJANG 무접촉. ④ ledger(당일 breadth) 이후 실행 필수
          [PY, "tools/run_market_regime_daily.py"], 120),
+        ("⑱ 아침 브리핑 통합",   # 7/4 사장님 "장 시작 전 뭘 봐야 하나" — 레짐⑰+릴레이③-4+명분끼⑪+클러스터⑯+픽을 한 장(read-only 통합·재계산0). 플레이북 힌트=관측 라벨. ⑰ 이후 실행
+         [PY, "tools/morning_briefing.py"], 60),
+        ("⑲ 플레이북 페이퍼",   # 7/4 사장님 "바둑 경우의 수" — ticks(~20분 해상도·전종목·체결강도) 결정적 replay: PB-A 추매단타(+5%도달→다음관측 진입)·PB-B 상한가D+1 스파이크. record-only·매수/매도/picks/SAJANG 무접촉
+         [PY, "tools/playbook_shadow.py"], 900),
     ]
 
     results = {}
