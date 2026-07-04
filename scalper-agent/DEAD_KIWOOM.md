@@ -1,5 +1,18 @@
 # ⚠️ DEAD-KIWOOM — 데드코드 제거 기록 + 라이브 오인 방지 (신규 세션/Codex 필독)
 
+> **★★ 7/4 정정 — 145 중 9개 오분류 복구 (tools 89 → 실제 데드 80) ★★**
+> 아래 9개는 데드 연구가 아니라 **라이브 의존**이었다. 7/2~7/3 이틀간
+> nightly ④ paper 3-Type 사망(ModuleNotFoundError)·단타 TOP픽(A12/C30) 미발행
+> (try/except가 삼켜 "완료"로 위장·json 7/1 박제)·breadth_today None 반환 후
+> 7/4 원본 그대로 복구(`git checkout a1560fe~1`·diff 0):
+> `rotation_paper_scan_6_6` `leader_prospective_scan_6_2` `price_structure_features_6_8`
+> `event_signal_hook_6_6` `market_breadth_6_8` `sector_etf_map` `sdart_shadow_record_6_3`
+> `leader_catalyst_deep_6_2` `leader_catalyst_extend_6_2`
+> **누락 원인**: tools/ 러너들이 sys.path 삽입 후 **무접두 sibling import**
+> (`from rotation_paper_scan_6_6 import`)를 써서 `tools.` 접두 grep 2중검증을 통과.
+> **교훈(5중확인)**: 정적 import + **무접두 sibling import** + 동적 문자열 디스패치
+> + VPS cron + 쉘 hook. import 그래프는 접두/무접두 양쪽 다 봐야 한다.
+
 > **★ 7/1 2차 제거 완료 (사장님 "키움 삭제"·commit a1560fe):**
 > 키움 데드 클러스터 + 데드 연구 **145개 삭제**. 라이브 import 0건 **2중 검증**(라이브 진입점
 > transitive closure 243파일 + belt-and-suspenders grep) 후 삭제. git 이력 보존(복원 가능).
