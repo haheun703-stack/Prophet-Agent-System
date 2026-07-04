@@ -25,6 +25,8 @@ from data.paper_learning import _flatten_ledger, _avg, LEDGER_DIR, _dedup_by_sto
 from data.paper_gate_shock import (
     keep_short_ratio_below, keep_short_surge_below, keep_credit_below,
 )
+# 7/4 검수 M1: D-1 게이트 임계 단일진실 = market_regime_gate.NO_GO_BREADTH (분산 방지)
+from data.market_regime_gate import NO_GO_BREADTH as _D1_NO_GO_BREADTH
 
 logger = logging.getLogger("BH.PaperRuleShadow")
 
@@ -84,6 +86,16 @@ RULES = [
         "desc": "breadth 빈값/BROAD_DOWN 제외 (약세장 회피)",
         "keep": lambda c: c.get("_breadth_state") not in ("", None, "BROAD_DOWN"),
     },
+    # ── 전일(D-1) breadth 게이트 (7/4 레짐검증 — 63거래일 실측) ──
+    # ★위 breadth 게이트 2개는 "당일" 값 = 장마감 후에야 앎 = 아침 적용 시 look-ahead(이론상한).
+    # 이 룰은 전일 값만 사용 = 구현가능. 검증: 전일 breadth≤0.45 → 익일 DOWN precision 51.6%
+    # (base 42.2%)·GO날 -3% 손절터치 26~28% 감소. UP 예측은 안 됨(회피 전용 엣지).
+    {
+        "name": "gate_d1_breadth45",
+        "desc": "전일 breadth≤0.45 진입 스킵 (D-1 데이터=구현가능·회피 전용, 7/4 검증)",
+        "keep": lambda c: not (c.get("_d1_breadth_pct") is not None
+                               and c["_d1_breadth_pct"] <= _D1_NO_GO_BREADTH),
+    },
 ]
 
 
@@ -107,7 +119,55 @@ def _cohorts() -> dict:
         picks = _dedup_by_stock(picks)
         if picks:
             out[date] = picks
+    # ── 7/4 레짐검증 후속: 전일(D-1) breadth 수치 부착 — 구현가능(look-ahead 0) 게이트용 ──
+    # 당일(_breadth_pct)은 장마감 후에야 아는 값 = 아침 적용 시 look-ahead(이론상한).
+    # ★7/4 검수 HIGH fix: "직전 코호트 날짜" 매핑은 폭락일(후보 0 → 코호트 탈락)을 건너뛰어
+    # 게이트가 가장 필요한 날 무력화(실측: 6/12의 전일값이 6/09 0.715로 잡힘·실제 6/10은 0.318).
+    # → trading_calendar로 진짜 직전 거래일을 구해 그 날짜 ledger(후보 유무 무관)를 직조회.
+    # 그 거래일 ledger 결측 = None = 보수적 통과.
+    bmap = _ledger_breadth_map()
+    for d in sorted(out):
+        prev_b = None
+        pd = _prev_trading_day(d)
+        if pd:
+            prev_b = bmap.get(pd)
+        for c in out[d]:
+            c["_d1_breadth_pct"] = prev_b
     return out
+
+
+def _ledger_breadth_map() -> dict:
+    """전체 ledger(후보 0인 날 포함)의 date → breadth_pct — D-1 직조회용."""
+    out = {}
+    if not LEDGER_DIR.exists():
+        return out
+    for f in sorted(LEDGER_DIR.glob("ledger_2026-*.json")):
+        if "_bc_only" in f.name:
+            continue
+        try:
+            led = json.loads(f.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            continue
+        d = led.get("date", f.stem.replace("ledger_", ""))
+        b = (led.get("market_context") or {}).get("breadth_pct")
+        if b is not None:
+            out[d] = b
+    return out
+
+
+def _prev_trading_day(d: str):
+    """d의 직전 거래일 (trading_calendar 재사용·최대 10일 역탐색). 실패 시 None."""
+    try:
+        from datetime import date as _date, timedelta as _td
+        from data.trading_calendar import is_trading_day
+        x = _date.fromisoformat(str(d)[:10])
+        for _ in range(10):
+            x -= _td(days=1)
+            if is_trading_day(x):
+                return x.isoformat()
+    except Exception:  # noqa: BLE001
+        return None
+    return None
 
 
 def _port(picks: list) -> dict:

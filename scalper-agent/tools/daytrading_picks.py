@@ -435,6 +435,30 @@ def load_ewy_signal() -> dict:
     return {"ewy_1d": 0, "ewy_5d": 0, "ks200_1d": 0, "ks200_5d": 0, "source": "none"}
 
 
+def load_market_regime() -> dict | None:
+    """시장 레짐 라벨 로드 (7/4 신설 — data/market_regime_gate.py 산출물 read-only).
+
+    발행 JSON에 표시만 하는 정보 라벨 — picks 배열·필터·정렬·점수 무접촉(record-only).
+    NO_GO(전일 breadth≤0.45)만 검증된 회피 신호. GO=상승예측 아님. 파일 없으면 None(graceful)."""
+    p = BASE / "data_store" / "market_regime.json"
+    if not p.exists():
+        return None
+    try:
+        lt = (json.loads(p.read_text(encoding="utf-8")).get("latest") or {})
+        k = ((lt.get("index_proxy") or {}).get("kospi_069500") or {})
+        return {
+            "regime": lt.get("regime"),
+            "based_on": lt.get("based_on"),
+            "applies_to": lt.get("applies_to"),
+            "breadth_pct": (lt.get("breadth") or {}).get("breadth_pct"),
+            "kospi_above_ma20": k.get("above_ma20"),
+            "kospi_stacked_bull": k.get("stacked_bull"),
+            "note": "정보 라벨(record-only) — NO_GO만 검증된 회피 신호·GO는 상승예측 아님",
+        }
+    except Exception:
+        return None
+
+
 def apply_daytrading_filters(
     candidates: list[dict],
     universe: dict,
@@ -834,6 +858,7 @@ def main():
             "updated": datetime.now().isoformat(),
             "mode": args.mode,
             "ewy_signal": ewy_signal,
+            "market_regime": load_market_regime(),  # 7/4 정보 라벨 — picks/필터/점수 무접촉
             "config": {
                 "scan_top": args.scan_top,
                 "top_large": args.top_large,

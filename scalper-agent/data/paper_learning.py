@@ -37,7 +37,9 @@ _PULLBACK_RE = re.compile(r"pullback\s+(-?\d+\.?\d*)%")
 
 def _flatten_ledger(ledger: dict) -> list:
     """ledger candidates(dict A/B/C) → 평탄화 + breadth_state 부착."""
-    breadth = (ledger.get("market_context") or {}).get("breadth_state", "")
+    mc = ledger.get("market_context") or {}
+    breadth = mc.get("breadth_state", "")
+    breadth_pct = mc.get("breadth_pct")  # 7/4 레짐검증 — 수치(전일값 매핑은 rule_shadow._cohorts)
     out = []
     cands = ledger.get("candidates") or {}
     iters = cands.values() if isinstance(cands, dict) else [cands]
@@ -47,6 +49,7 @@ def _flatten_ledger(ledger: dict) -> list:
                 if isinstance(c, dict):
                     c = dict(c)
                     c["_breadth_state"] = breadth
+                    c["_breadth_pct"] = breadth_pct
                     out.append(c)
     return out
 

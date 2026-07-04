@@ -42,7 +42,36 @@ MIN_CLUSTER = 3          # 인프라 상한가 >=3 = 명분 클러스터 hot
 FOLLOW_LO, FOLLOW_HI = 0.0, 12.0   # 후발주 = D일 0~+12%(아직 안 터짐 = 맥점)
 LIMIT_UP_CHG = 29.0
 
+# 7/4 레짐검증 게이트 (record-only 병렬 코호트 — 기존 summary/필드 100% 불변·additive만)
+# decide_day(결정일) breadth≤0.45 → 익일 진입 스킵 코호트. decide_day 마감 데이터 = look-ahead 0.
+# ★임계 단일진실 = data/market_regime_gate.py NO_GO_BREADTH(0.45) — 이 파일은 단독실행
+# 스크립트(sys.path 무의존)라 로컬 상수 유지. 저쪽 변경 시 여기도 동기 필수(검수 M1).
+GATE_BREADTH = 0.45
+
 _daily_cache = {}
+_breadth_cache = {}
+
+
+def _breadth_of_day(d):
+    """decide_day의 breadth_pct — nightly ④ ledger의 market_context 재사용 (없으면 None)."""
+    if d in _breadth_cache:
+        return _breadth_cache[d]
+    v = None
+    try:
+        p = DS / "paper_3type" / f"ledger_{d}.json"
+        if p.exists():
+            mc = (json.loads(p.read_text(encoding="utf-8")).get("market_context") or {})
+            v = mc.get("breadth_pct")
+    except Exception:  # noqa: BLE001
+        v = None
+    _breadth_cache[d] = v
+    return v
+
+
+def _gate_pass(decide_day):
+    """게이트 통과 여부 — breadth 미상(None)은 보수적 통과(게이트 미작동)."""
+    b = _breadth_of_day(decide_day)
+    return not (b is not None and b <= GATE_BREADTH)
 
 
 def _load_daily(code):
@@ -169,7 +198,10 @@ def run(tp=DEF_TP, sl=DEF_SL, hold=DEF_HOLD, k=DEF_K, save=True):
             if ret is not None:
                 closed.append({"decide_day": pos["decide_day"], "entry_day": pos["entry_day"],
                                "exit_day": D, "code": pos["code"], "name": pos["name"],
-                               "ret": round(ret, 2), "why": why})
+                               "ret": round(ret, 2), "why": why,
+                               # 7/4 additive — 게이트 코호트 주석(기존 7필드 불변)
+                               "decide_breadth": _breadth_of_day(pos["decide_day"]),
+                               "gate_pass": _gate_pass(pos["decide_day"])})
             else:
                 still.append(pos)
         open_pos = still
@@ -196,16 +228,33 @@ def run(tp=DEF_TP, sl=DEF_SL, hold=DEF_HOLD, k=DEF_K, save=True):
         "open_now": len(open_pos),
         "pending_next": len(pending),
     }
+    # 7/4 additive — 게이트 코호트(결정일 breadth≤0.45 스킵) 병렬 요약.
+    # 트레이드가 완전 독립(자본 제약·상호작용 0)이라 부분집합 집계 = 게이트 시뮬과 수학적 동치.
+    g_rets = [t["ret"] for t in closed if t.get("gate_pass")]
+    g_wins = [r for r in g_rets if r > 0]
+    summary_gated = {
+        "trades": len(g_rets),
+        "win_pct": round(len(g_wins) / len(g_rets) * 100, 1) if g_rets else 0.0,
+        "avg_ret": round(sum(g_rets) / len(g_rets), 2) if g_rets else 0.0,
+        "sum_ret": round(sum(g_rets), 1),
+        "skipped_by_gate": len(rets) - len(g_rets),
+        "breadth_coverage": sum(1 for t in closed if t.get("decide_breadth") is not None),
+        "gate_rule": f"decide_day breadth<={GATE_BREADTH} 스킵 (7/4 레짐검증·회피 전용·미상=통과)",
+    }
     result = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "params": {"tp": tp, "sl": sl, "hold": hold, "k": k,
                    "cluster": "infra(건설/전선/전력)", "min_cluster": MIN_CLUSTER},
         "summary": summary,
+        "summary_gated": summary_gated,
         "closed_trades": closed,
-        "pending_entries": [{"code": c, "name": nm, "decide_day": dd, "chg_decide": ch}
+        "pending_entries": [{"code": c, "name": nm, "decide_day": dd, "chg_decide": ch,
+                             "decide_breadth": _breadth_of_day(dd),
+                             "gate_pass": _gate_pass(dd)}
                             for c, nm, dd, ch in pending],
         "daily_log": daily_log[-10:],
-        "note": "record-only / 매수·매도·picks·SAJANG·order 무접촉 / 관측 없이 flip 금지 / 한국스윙 무접촉",
+        "note": "record-only / 매수·매도·picks·SAJANG·order 무접촉 / 관측 없이 flip 금지 / 한국스윙 무접촉"
+                " / 7/4 게이트 코호트=병렬 기록(summary 불변·additive)",
     }
     if save:
         tmp = OUT.with_suffix(".tmp")

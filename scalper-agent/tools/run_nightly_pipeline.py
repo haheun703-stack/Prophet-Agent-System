@@ -116,6 +116,8 @@ def main():
          [PY, "-c", "from data.kr_us_shock_observer import collect_kr_us_shock_observation as f; print(f())"], 120),
         ("⑯ 클러스터 수확 페이퍼",   # 7/1 사장님 — 명분클러스터(호남 건설/전선) 후발주 릴레이 +5~8% 매일수확 forward 페이퍼. record-only·실주문0·picks/SAJANG/order 무접촉·한국스윙(FLOWX) 무접촉. 2~3주 누적→흑자 엣지 판정→승인후 라이브
          [PY, "tools/cluster_harvest_paper.py"], 300),
+        ("⑰ 시장 레짐 게이트",   # 7/4 신설 — 전일 breadth≤0.45 회피신호(63일 검증된 유일 엣지)+지수 정배열 관측(사장님 6/7 숙제)+forward 자가검증. record-only·매수/매도/picks/SAJANG 무접촉. ④ ledger(당일 breadth) 이후 실행 필수
+         [PY, "tools/run_market_regime_daily.py"], 120),
     ]
 
     results = {}

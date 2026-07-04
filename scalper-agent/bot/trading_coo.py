@@ -3236,10 +3236,16 @@ class TradingCOO:
             picks = picks_a + picks_b
 
             # JSON 저장
+            try:  # 7/4 시장 레짐 정보 라벨 — picks/필터/점수 무접촉(record-only)·실패 시 None
+                from tools.daytrading_picks import load_market_regime
+                _mkt_regime = load_market_regime()
+            except Exception:  # noqa: BLE001
+                _mkt_regime = None
             out = {
                 "updated": datetime.now().isoformat(),
                 "mode": mode,
                 "ewy_signal": ewy_signal,
+                "market_regime": _mkt_regime,
                 "picks": picks,
             }
             try:

@@ -98,11 +98,115 @@ def _stock_pnl_mfe_approx(c) -> float:
     return d3 if d3 is not None else 0.0    # 보유 만기 청산(d3)
 
 
+# ── 7/4 진실회복: 재진입 kki 버그 fix ──────────────────────────────
+# 종전: _simulate(rows, di, c.get("kki_grade", "B")) — ledger 후보에 kki_grade 필드가 없어
+# 항상 "B"(SAJANG._KKI_GRADE_RANK에 없는 값=rank 0)가 전달 → should_reenter 항상 False
+# → "재진입" 코호트가 실제 재진입 0회(실체=보유 3일 단축 청산 모델)였음.
+# fix: 진입일 기준 끼를 일봉에서 직접 계산(SAJANG.kki_grade·score_kki 단일진실 재사용,
+# early_variant_shadow와 동일 입력 구성·consecutive_limit=0 단순화 동일). 계산 불가 시
+# SLUGGISH(재진입 불허=보수적)로 종전 실효 동작과 동일하게 fallback.
+
+_UNIVERSE_CAP: dict | None = None
+_KKI_CACHE: dict = {}
+# 7/4 검수 fix: 재진입 코호트 4개가 같은 후보를 재평가해도 (ticker,진입일) 고유 단위로만
+# 집계(set/dict) — 종전 int 누적은 최대 4배 인플레이션이었음. _simulate는 결정적이라
+# 같은 키의 n_reentries는 항상 동일값(dict 덮어쓰기 안전).
+_REENTRY_STATS = {"sims": set(), "with_reentry": set(), "reentries": {},
+                  "kki_computed": set(), "kki_fallback": set()}
+
+
+def _reset_reentry_stats():
+    _REENTRY_STATS["sims"] = set()
+    _REENTRY_STATS["with_reentry"] = set()
+    _REENTRY_STATS["reentries"] = {}
+    _REENTRY_STATS["kki_computed"] = set()
+    _REENTRY_STATS["kki_fallback"] = set()
+
+
+def _reentry_stats_out() -> dict:
+    return {
+        "unique_evaluated": len(_REENTRY_STATS["sims"]),
+        "unique_with_reentry": len(_REENTRY_STATS["with_reentry"]),
+        "total_reentries": sum(_REENTRY_STATS["reentries"].values()),
+        "kki_computed": len(_REENTRY_STATS["kki_computed"]),
+        "kki_fallback": len(_REENTRY_STATS["kki_fallback"]),
+    }
+
+
+def _cap_억(ticker: str) -> float:
+    """universe.json 시총(억) — 회전율(kki F3)용. 없으면 0(보수적)."""
+    global _UNIVERSE_CAP
+    if _UNIVERSE_CAP is None:
+        try:
+            u = json.loads((DAILY_DIR.parent / "universe.json").read_text(encoding="utf-8"))
+            _UNIVERSE_CAP = {k: float(v.get("cap_억") or 0) for k, v in u.items()}
+        except Exception:  # noqa: BLE001
+            _UNIVERSE_CAP = {}
+    return _UNIVERSE_CAP.get(str(ticker), 0.0)
+
+
+def _kki_grade_at(ticker: str, entry_date: str) -> str | None:
+    """진입일 기준 끼 등급 — daily CSV(OHLCV)만으로 SAJANG 단일진실 재계산.
+    바 부족(<22)/파일 없음 → None (호출부에서 SLUGGISH 보수 처리)."""
+    key = (str(ticker), str(entry_date)[:10])
+    if key in _KKI_CACHE:
+        return _KKI_CACHE[key]
+    grade = None
+    try:
+        from data.limit_up_scanner import LimitUpStock, score_kki, count_surge_limit_days
+        from data.watchlist_continuation import _atr_pct
+        p = DAILY_DIR / f"{ticker}.csv"
+        if p.exists():
+            # 7/4 검수 fix: 행 단위 원자 파싱(전 필드 성공 시에만 동시 append) + 날짜 정렬 —
+            # 종전 dates 선append는 손상 행 1개로 이후 전체 인덱스가 조용히 어긋나는 잠복 결함.
+            bars = []
+            with p.open(encoding="utf-8") as f:
+                for row in _csv.DictReader(f):
+                    try:
+                        d = str(row.get("날짜", ""))[:10]
+                        h = float(row.get("고가") or 0)
+                        lo = float(row.get("저가") or 0)
+                        cl = float(row.get("종가") or 0)
+                        v = float(row.get("거래량") or 0)
+                    except (ValueError, TypeError):
+                        continue
+                    if d:
+                        bars.append((d, h, lo, cl, v))
+            bars.sort(key=lambda x: x[0])
+            dates = [b[0] for b in bars]
+            highs = [b[1] for b in bars]
+            lows = [b[2] for b in bars]
+            closes = [b[3] for b in bars]
+            vols = [b[4] for b in bars]
+            edk = str(entry_date)[:10]
+            i = next((k for k in range(len(dates) - 1, -1, -1) if dates[k] == edk), None)
+            if i is not None and i >= 21:
+                atrp = _atr_pct(highs, lows, closes, i)
+                surge, limit = count_surge_limit_days(closes[:i + 1])
+                h0, l0, c0, v0 = highs[i], lows[i], closes[i], vols[i]
+                cs = (c0 - l0) / (h0 - l0) if h0 > l0 else 0.5
+                vma = sum(vols[i - 20:i]) / 20.0
+                volx = v0 / vma if vma > 0 else 0.0
+                tv_억 = c0 * v0 / 1e8
+                cap = _cap_억(ticker)
+                st = LimitUpStock(
+                    code=str(ticker), name="", close=int(c0),
+                    volume_ratio=round(volx, 2), trading_value_억=round(tv_억, 1),
+                    turnover_pct=round(tv_억 / cap * 100, 2) if cap else 0.0,
+                    close_strength=round(cs, 3), consecutive_limit=0,
+                )
+                grade = SAJANG.kki_grade(score_kki(st, atrp, surge, limit))
+    except Exception:  # noqa: BLE001
+        grade = None
+    _KKI_CACHE[key] = grade
+    return grade
+
+
 def _stock_pnl_reentry(c) -> float:
     """종목 청산 pnl(%) — 손절+재진입(reentry_shadow._simulate·SAJANG 단일진실).
     손절 후 reclaim(종가≥직전 손절선)+should_reenter면 풀비중 재진입 → leg 복리 합성.
-    일봉 부족/미해결(None) 시 _stock_pnl(손절만 OHLC) graceful fallback.
-    (2번 6/30 — 검증된 '손절+재진입 > 버티기 +5~6%p'를 페이퍼에 반영)"""
+    끼 등급은 진입일 기준 실계산(_kki_grade_at·7/4 fix). 계산 불가 시 SLUGGISH(재진입 불허).
+    일봉 부족/미해결(None) 시 _stock_pnl(손절만 OHLC) graceful fallback."""
     ticker = c.get("ticker")
     ed = c.get("virtual_entry_date")
     if ticker and ed:
@@ -113,8 +217,19 @@ def _stock_pnl_reentry(c) -> float:
             edk = str(ed)[:10]
             di = next((i for i, r in enumerate(rows) if str(r[0])[:10] == edk), None)
             if di is not None:
-                sim = _simulate(rows, di, c.get("kki_grade", "B"))
+                key = (str(ticker), edk)
+                kg = c.get("kki_grade") or _kki_grade_at(str(ticker), edk)
+                if kg:
+                    _REENTRY_STATS["kki_computed"].add(key)
+                else:
+                    _REENTRY_STATS["kki_fallback"].add(key)
+                sim = _simulate(rows, di, kg or "SLUGGISH")
                 if sim and sim.get("stop_reenter_ret") is not None:
+                    _REENTRY_STATS["sims"].add(key)
+                    nre = int(sim.get("n_reentries") or 0)
+                    if nre > 0:
+                        _REENTRY_STATS["with_reentry"].add(key)
+                        _REENTRY_STATS["reentries"][key] = nre
                     return float(sim["stop_reenter_ret"])
         except Exception:  # noqa: BLE001
             pass
@@ -176,7 +291,12 @@ def build_paper_sim(save: bool = True) -> dict:
             if _tk and _ed and _ep and _ep > 0 and _load_post_bars(str(_tk), str(_ed), 5):
                 n_ohlc += 1
 
+    # 7/4 진실회복: 재진입 통계 리셋(끼 실계산 fix 검증용 — build마다 초기화·고유키 집계)
+    _reset_reentry_stats()
+
     base = simulate(cohorts, lambda c: True)
+    # ★7/4 정직 라벨: 아래 breadth/명분 게이트는 "당일(D0) 종가" 값 = 장마감 후에야 아는 정보.
+    # T0_CLOSE(당일종가 진입) 프레임 안에서만 정합 — 아침 진입에 매핑하면 look-ahead(이론상한).
     gated = simulate(cohorts, lambda c: c.get("_breadth_state") == "BROAD_UP")
     # 2순위(6/30 A): breadth(언제 사나=시장폭) + 명분근사(뭘 사나=sector_rotation_score 섹터강도 대리) 결합
     gated_mb = simulate(
@@ -190,13 +310,26 @@ def build_paper_sim(save: bool = True) -> dict:
         cohorts, lambda c: c.get("_breadth_state") == "BROAD_UP",
         pnl_fn=_stock_pnl_reentry,
     )
-    # 3중 결합(6/30): breadth(언제)+명분(뭘·섹터강도)+재진입(어떻게) — VPS실측 최고 +3.57%(승79%)
+    # 3중 결합(6/30): breadth(언제)+명분(뭘·섹터강도)+재진입(어떻게)
     breadth_mb_reentry = simulate(
         cohorts,
         lambda c: c.get("_breadth_state") == "BROAD_UP"
         and (c.get("sector_rotation_score") or 0) >= MEONGBUN_SRS_TH,
         pnl_fn=_stock_pnl_reentry,
     )
+
+    # ── 7/4 신설: 전일(D-1) breadth 게이트 = 구현가능판(look-ahead 0) ──
+    # 레짐검증(63거래일): 전일 breadth≤0.45 → 익일 DOWN precision 51.6%(base 42.2%)·
+    # -3% 손절터치 26~28% 감소. UP 예측은 안 됨 → 이 게이트는 "회피 전용" 엣지.
+    # 임계 단일진실 = market_regime_gate.NO_GO_BREADTH (검수 M1)
+    from data.market_regime_gate import NO_GO_BREADTH as _d1_th
+
+    def _d1_gate(c):
+        b = c.get("_d1_breadth_pct")
+        return not (b is not None and b <= _d1_th)
+
+    d1_gated = simulate(cohorts, _d1_gate)
+    d1_reentry = simulate(cohorts, _d1_gate, pnl_fn=_stock_pnl_reentry)
 
     out = {
         "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -212,15 +345,21 @@ def build_paper_sim(save: bool = True) -> dict:
         "reentry": reentry,
         "breadth_reentry": breadth_reentry,
         "breadth_meongbun_reentry": breadth_mb_reentry,
+        "d1_breadth_gated": d1_gated,
+        "d1_breadth_reentry": d1_reentry,
+        "reentry_stats": _reentry_stats_out(),
         "note": "페이퍼 전용 가상 포트폴리오(record-only·봇무관·매일). 실주문0·라이브0. "
-                "OHLC 일봉 정밀 트레일링 적용(6/30 정밀화) — MFE/MAE 시간순서무시 낙관편향 제거. "
-                "단 미투입현금(invest_ratio 0.7 근사)·재진입은 아직 미반영 → 절대수익은 보수적 참고용, "
-                "상대비교가 본 신호(절대수익=생존편향). "
-                "breadth_gated=시장폭(언제), breadth_meongbun_gated=시장폭+섹터강도(언제+뭘 근사·2순위 A 관측축적). "
-                "★명분근사=sector_rotation_score 대리 — 진짜 catalyst 명분등급 결합은 B 축적 후. "
-                "CSV 미존재 종목만 MFE/MAE 근사 fallback(_stock_pnl_mfe_approx). "
-                "reentry/breadth_reentry=손절+재진입(reentry_shadow._simulate·SAJANG 단일진실·일봉부족시 손절만 fallback). "
-                "★2번(6/30): 재진입이 손절만 대비 수익 견인 — VPS 실측 baseline-6.24→reentry+0.75(+6.99%p)·breadth+재진입 +3.17%(승71%).",
+                "OHLC 일봉 정밀 트레일링(6/30) — MFE/MAE 낙관편향 제거. invest_ratio 0.7 근사. "
+                "절대수익은 보수적 참고용, 상대비교가 본 신호(절대수익=생존편향). "
+                "★7/4 정직 라벨: breadth_gated/breadth_meongbun_*는 D0(당일종가) 정보 게이트 = "
+                "T0_CLOSE 프레임 한정 정합·아침 진입 매핑 시 look-ahead → '이론상한'으로만 읽을 것. "
+                "구현가능판은 d1_breadth_*(전일 breadth≤0.45 스킵·look-ahead 0·회피 전용 엣지, "
+                "7/4 레짐검증 63거래일: DOWN precision 51.6% vs base 42.2%·손절터치 -26~28%·UP예측 불가). "
+                "★7/4 재진입 fix: 종전 kki_grade 미존재→'B'→should_reenter 항상 False(재진입 0회) 버그 수정 — "
+                "진입일 끼를 일봉에서 실계산(SAJANG 단일진실). reentry_stats로 실제 재진입 횟수 투명 공개. "
+                "종전 '재진입 +6.99%p' 주장은 재진입 아닌 보유3일 단축 효과였음(기록 정정). "
+                "명분근사=sector_rotation_score 대리(D0값) — 진짜 catalyst 명분등급 결합은 B 축적 후. "
+                "CSV 미존재 종목만 MFE/MAE 근사 fallback(_stock_pnl_mfe_approx).",
     }
     if save:
         try:
@@ -256,5 +395,13 @@ if __name__ == "__main__":
         print(f"재진입:       누적 {re.get('total_return_pct')}% | 승률 {re.get('win_pct')}%")
         print(f"breadth+재진입: 누적 {br.get('total_return_pct')}% | 승률 {br.get('win_pct')}%")
         bmr = r.get("breadth_meongbun_reentry", {})
-        print(f"★3중(breadth+명분+재진입): 누적 {bmr.get('total_return_pct')}% | 승률 {bmr.get('win_pct')}%")
-        print("\n★ record-only·봇무관·실주문0. OHLC 트레일링 + 명분근사 + 손절재진입 관측.")
+        print(f"★3중(breadth+명분+재진입): 누적 {bmr.get('total_return_pct')}% | 승률 {bmr.get('win_pct')}% (D0정보=이론상한)")
+        d1g = r.get("d1_breadth_gated", {})
+        d1r = r.get("d1_breadth_reentry", {})
+        rs = r.get("reentry_stats", {})
+        print(f"★구현가능 D-1게이트:  누적 {d1g.get('total_return_pct')}% | 승률 {d1g.get('win_pct')}% | {d1g.get('trades')}거래")
+        print(f"★구현가능 D-1+재진입: 누적 {d1r.get('total_return_pct')}% | 승률 {d1r.get('win_pct')}% | {d1r.get('trades')}거래")
+        print(f"재진입 실통계(고유 종목·진입일): 평가 {rs.get('unique_evaluated')}건 중 재진입 발생 "
+              f"{rs.get('unique_with_reentry')}건 (총 {rs.get('total_reentries')}회 / "
+              f"끼 실계산 {rs.get('kki_computed')}·fallback {rs.get('kki_fallback')})")
+        print("\n★ record-only·봇무관·실주문0. D0 게이트=이론상한 / d1_*=구현가능판(7/4 정직화).")
