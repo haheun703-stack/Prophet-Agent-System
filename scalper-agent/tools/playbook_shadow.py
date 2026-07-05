@@ -228,6 +228,12 @@ def run(days_limit=None, save=True) -> dict:
             "all": _summarize(a_trades),
             "strength_gate": _summarize(a_trades, "strength_gate"),
             "regime_gate": _summarize(a_trades, "regime_gate"),
+            # 7/4 그리드 실측(69일·net 0.2% 비용 차감): 강도 단조개선·오전 우위.
+            # 정제판(오전 10시前 신호+강도200+·TP5/SL3)만 net 양(+0.132%/건·승49%·합+270.7%p).
+            # → 정식 관측 코호트로 고정, forward 매일 자가검증. flip은 사장님 결정.
+            "refined_am_st200": _summarize(
+                [t for t in a_trades
+                 if t["strength_at_signal"] >= 200 and t["signal_time"] <= "10:00:00"]),
             "recent_trades": a_trades[-40:],
         },
         "pb_b_limitup_d1": {
@@ -277,6 +283,7 @@ if __name__ == "__main__":
             print(f"PB-A 추매단타     전체: {_fmt(a['all'])}")
             print(f"                강도게이트: {_fmt(a['strength_gate'])}")
             print(f"                레짐게이트: {_fmt(a['regime_gate'])}")
+            print(f"                ★정제판(오전+강도200): {_fmt(a.get('refined_am_st200', {}))}")
             print(f"PB-B 상한가D+1   전체: {_fmt(b['all'])}")
             print(f"                강도게이트: {_fmt(b['strength_gate'])}")
             print(f"                레짐게이트: {_fmt(b['regime_gate'])}")
