@@ -124,6 +124,8 @@ def main():
          [PY, "tools/morning_briefing.py"], 60),
         ("⑲ 플레이북 페이퍼",   # 7/4 사장님 "바둑 경우의 수" — ticks(~20분 해상도·전종목·체결강도) 결정적 replay: PB-A 추매단타(+5%도달→다음관측 진입)·PB-B 상한가D+1 스파이크. record-only·매수/매도/picks/SAJANG 무접촉
          [PY, "tools/playbook_shadow.py"], 900),
+        ("⑳ 산출물 신선도 자가검증",   # 7/7 전체검수 fix — 핵심 산출물 오늘날짜 검증(완료위장 방지·stale이면 이 스텝이 ⚠) + DataVerifier 재실행(장전 박제 해소·fill 후 진실). read-only·매매 무접촉
+         [PY, "tools/run_nightly_freshness_check.py"], 300),
     ]
 
     results = {}

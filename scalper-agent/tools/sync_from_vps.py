@@ -69,6 +69,7 @@ CORE_FILES = [
     "morning_briefing.json",       # 7/4 아침 브리핑 통합 (nightly ⑱)
     "playbook_shadow.json",        # 7/4 플레이북 페이퍼 (nightly ⑲)
     "cluster_harvest_paper.json",  # 7/1 클러스터 수확 페이퍼 (nightly ⑯)
+    "catalyst_scan.json",          # 7/7 검수 M-4 fix — ⑪ 산출·⑱ 입력(노트북 3주 stale 실측·flow_market 6/11 계열 재발)
 ]
 
 # 학습 데이터 (항상 동기화 — 일부 파일은 VPS에 없을 수 있음, 실패는 무시)

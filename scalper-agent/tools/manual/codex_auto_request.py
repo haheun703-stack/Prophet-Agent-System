@@ -236,9 +236,22 @@ def scoped_repo_state(files: list[str], staged: bool) -> dict[str, object]:
     }
 
 
+def _prune_old_inbox(directory: Path, keep_days: int = 30) -> None:
+    """7/7 전체검수 D5: 30일+ inbox 자동 정리 — 무한 누적 방지 (실패는 무시·요청 생성 무영향)."""
+    try:
+        import time
+        cutoff = time.time() - keep_days * 86400
+        for old in directory.glob("*.json"):
+            if old.stat().st_mtime < cutoff:
+                old.unlink()
+    except Exception:
+        pass
+
+
 def write_unique_json(stem: str, payload: dict[str, object]) -> Path:
     directory = PROJECT_ROOT / "ops" / "codex_inbox"
     directory.mkdir(parents=True, exist_ok=True)
+    _prune_old_inbox(directory)   # 커밋마다 30일+ 자동 정리 (D5 보존정책)
     encoded = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
     for index in range(100):
         suffix = "" if index == 0 else f"-{index:02d}"

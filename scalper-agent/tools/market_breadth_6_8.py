@@ -30,6 +30,7 @@ def market_breadth(c2p, asof, load_daily, find_index_asof):
     up3 = down3 = lu = ld = nh = nl = 0
     turnovers = []                          # (code, name, 거래대금_억)
     scanned = 0
+    fresh = 0    # 7/7 검수 H-2: 사용 행 날짜==asof (fill 실패 시 어제 행으로 계산되는 침묵 오염 감지)
     for code, p in c2p.items():
         try:
             d = load_daily(p)
@@ -42,6 +43,8 @@ def market_breadth(c2p, asof, load_daily, find_index_asof):
         if c <= 0 or pc <= 0:
             continue
         scanned += 1
+        if d[i][0] == asof:
+            fresh += 1
         chg = (c / pc - 1) * 100
         if chg > 0.05:
             up += 1
@@ -85,6 +88,10 @@ def market_breadth(c2p, asof, load_daily, find_index_asof):
         "turnover_top10": [{"code": cd, "name": nm, "억": round(t, 1)} for cd, nm, t in top],
         "turnover_top10_share": round(top10_share, 3) if top10_share is not None else None,
         "total_turnover_억": round(total_turn, 1),
+        # 7/7 검수 H-2 fix: asof 당일 행 비율 — fill 미완료일에 어제 데이터로 계산된
+        # breadth가 무표식으로 ledger에 박히는 것 방지(하류: 레짐⑰은 stale이면 UNKNOWN 처리)
+        "fresh_ratio": round(fresh / scanned, 3) if scanned else None,
+        "breadth_stale": bool(scanned and (fresh / scanned) < 0.5),
     }
 
 
@@ -116,6 +123,12 @@ def selftest():
     synth2 = dict(synth); synth2["DDD"] = [("2026-06-03", 100, 100, 100, 100, 1), ("2026-06-04", 100, 105, 100, 104, 1)]
     r2 = market_breadth({k: k for k in synth2}, "2026-06-04", lambda p: synth2[p], fake_idx)
     ok.append(("T7 3/4 상승 → BROAD_UP", r2["advancers"] == 3 and r2["breadth_state"] == "BROAD_UP"))
+    # 7/7 H-2: 당일 행 정상 → fresh 1.0·stale False / fill 미완료(어제 행 사용) → stale True
+    ok.append(("T8 당일 행 → fresh_ratio 1.0·stale False",
+               r["fresh_ratio"] == 1.0 and r["breadth_stale"] is False))
+    r3 = market_breadth(c2p, "2026-06-05", fake_load, fake_idx)   # 06-05 행 없음 → 전부 06-04 행
+    ok.append(("T9 fill 미완료일 → fresh_ratio 0.0·stale True",
+               r3["fresh_ratio"] == 0.0 and r3["breadth_stale"] is True))
     print("market_breadth 셀프테스트:")
     for nme, p in ok:
         print(f"  [{'PASS' if p else 'FAIL'}] {nme}")

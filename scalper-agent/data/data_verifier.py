@@ -171,31 +171,11 @@ def _verify_minute_5min(today: str) -> dict:
 
 
 def _verify_nationality(today: str) -> dict:
-    """KRX 국적별 수급 — T+1 허용 (어제까지 OK) + 스냅샷 카운트"""
-    if not NATIONALITY_DIR.exists():
-        return {"status": "FAIL", "reason": "nationality 디렉터리 없음"}
-    files = list(NATIONALITY_DIR.glob("nationality_*.csv"))
-    if not files:
-        return {"status": "FAIL", "reason": "nationality 파일 없음"}
-    # 가장 최근 파일의 수정일 확인
-    latest_mtime = max(_file_mtime_date(f) or "1900-01-01" for f in files)
-    yesterday = (date.fromisoformat(today) - timedelta(days=1)).isoformat()
+    """KRX 국적별 — 6/22 KRX kill switch 이후 점검 제외 (7/7 검수 M-2 fix).
 
-    # 스냅샷 카운트 (TOP200 수집 검증)
-    today_short = today.replace("-", "")
-    yesterday_short = yesterday.replace("-", "")
-    snap_today = len(list(NATIONALITY_DIR.glob(f"*_{today_short}.csv")))
-    snap_yesterday = len(list(NATIONALITY_DIR.glob(f"*_{yesterday_short}.csv")))
-    snap_count = max(snap_today, snap_yesterday)
-
-    if latest_mtime >= today or latest_mtime >= yesterday:
-        result = {"status": "PASS", "latest": latest_mtime, "snapshots": snap_count}
-        if latest_mtime >= yesterday and latest_mtime < today:
-            result["note"] = "T+1 데이터"
-        if snap_count < 10:
-            result["warning"] = f"스냅샷 {snap_count}건 (TOP200 미수집 의심)"
-        return result
-    return {"status": "FAIL", "reason": f"최신 파일 날짜: {latest_mtime}", "latest": latest_mtime, "snapshots": snap_count}
+    절대룰: 기초데이터 점검은 KIS 채널만·nationality는 표에서 제외.
+    매일 FAIL 노이즈가 박제·sync되던 것을 SKIP으로 정직화(수집 재개 제안 아님)."""
+    return {"status": "SKIP", "reason": "KRX kill switch 정상 (점검 제외·절대룰)"}
 
 
 def _verify_short_selling(today: str) -> dict:
@@ -308,27 +288,88 @@ def _verify_consensus() -> dict:
 
 
 def _verify_etf_daily(today: str) -> dict:
-    """ETF 일봉 데이터 — etf_daily/ 디렉토리 존재 + 파일 개수 + 신선도"""
-    etf_dir = STORE_DIR / "etf_daily"
-    if not etf_dir.exists():
-        return {"status": "FAIL", "reason": "etf_daily/ 디렉토리 없음"}
+    """ETF 일봉(pykrx) — KRX kill switch로 갱신 중단 = 정상 (7/7 검수 M-2 fix).
 
-    csv_files = list(etf_dir.glob("*.csv"))
-    if len(csv_files) < 10:
-        return {"status": "PARTIAL", "reason": f"ETF CSV {len(csv_files)}개 (최소 10개 필요)"}
+    매일 FAIL 노이즈 정직화. 레짐 프록시(069500/229200)는 KIS daily/ 사용이라 무관."""
+    return {"status": "SKIP", "reason": "KRX kill switch 정상 (pykrx 중단·점검 제외)"}
 
-    # 최근 24시간 이내 업데이트 확인
-    fresh = 0
-    for f in csv_files:
-        mtime = _file_mtime_date(f)
-        if mtime and mtime >= today:
-            fresh += 1
 
-    if fresh >= 10:
-        return {"status": "PASS", "total_files": len(csv_files), "fresh_today": fresh}
-    elif fresh > 0:
-        return {"status": "PARTIAL", "reason": f"오늘 업데이트 {fresh}/{len(csv_files)}개", "total_files": len(csv_files)}
-    return {"status": "FAIL", "reason": "오늘 업데이트 없음", "total_files": len(csv_files)}
+def _kis_last_date(path: Path) -> Optional[str]:
+    """KIS 채널 CSV 마지막 행 날짜 (YYYYMMDD → YYYY-MM-DD 정규화)."""
+    d = _get_last_csv_date(path)
+    if d and len(d) == 8 and d.isdigit():
+        return f"{d[:4]}-{d[4:6]}-{d[6:]}"
+    return d
+
+
+def _evening() -> bool:
+    """저녁 수집(nightly ⑫⑬) 완료 기대 시각 이후인지 — 장전 박제 노이즈 방지용."""
+    return datetime.now().hour >= 19
+
+
+def _verify_short_kis(today: str) -> dict:
+    """KIS 공매도(⑬·6/27 신설) — 저녁 19시 전엔 전일분 정상(수집=nightly)."""
+    if not SHORT_DIR.exists():
+        return {"status": "SKIP", "reason": "short/ 디렉터리 없음"}
+    dates = [d for d in (_kis_last_date(SHORT_DIR / f"{c}_short_bal.csv")
+                         for c in _load_universe_codes(5)) if d]
+    if not dates:
+        return {"status": "FAIL", "reason": "샘플 파일 없음"}
+    best = max(dates)
+    if best >= today:
+        return {"status": "PASS", "latest": best}
+    if not _evening():
+        return {"status": "PASS", "latest": best, "note": "T-1 (저녁 수집 전)"}
+    return {"status": "FAIL", "reason": f"최신 {best} — 저녁 수집 후에도 미갱신", "latest": best}
+
+
+def _verify_credit_kis(today: str) -> dict:
+    """KIS 신용잔고(⑭·6/27 신설) — 구조적 T+2~3 지연이 정상 → 7일 이내 PASS."""
+    credit_dir = STORE_DIR / "credit"
+    if not credit_dir.exists():
+        return {"status": "SKIP", "reason": "credit/ 디렉터리 없음"}
+    dates = [d for d in (_kis_last_date(credit_dir / f"{c}_credit_bal.csv")
+                         for c in _load_universe_codes(5)) if d]
+    if not dates:
+        return {"status": "FAIL", "reason": "샘플 파일 없음"}
+    best = max(dates)
+    try:
+        lag = (date.fromisoformat(today) - date.fromisoformat(best)).days
+    except ValueError:
+        return {"status": "FAIL", "reason": f"날짜 파싱 실패: {best}"}
+    if lag <= 7:
+        return {"status": "PASS", "latest": best, "note": f"T+{lag} (KIS 구조적 지연 정상)"}
+    return {"status": "FAIL", "reason": f"최신 {best} ({lag}일 지연 — 구조적 범위 초과)", "latest": best}
+
+
+def _verify_ranking_kis(today: str) -> dict:
+    """KIS 순위 스냅샷(⑫·6/27 신설) — volume.csv 마지막 행 날짜."""
+    p = STORE_DIR / "ranking_snapshots" / "volume.csv"
+    if not p.exists():
+        return {"status": "SKIP", "reason": "ranking_snapshots/volume.csv 없음"}
+    best = _kis_last_date(p)
+    if not best:
+        return {"status": "FAIL", "reason": "마지막 행 날짜 없음"}
+    if best >= today:
+        return {"status": "PASS", "latest": best}
+    if not _evening():
+        return {"status": "PASS", "latest": best, "note": "T-1 (저녁 수집 전)"}
+    return {"status": "FAIL", "reason": f"최신 {best} — 저녁 수집 후에도 미갱신", "latest": best}
+
+
+def _verify_flow_market(today: str) -> dict:
+    """KIS 시장 11주체(flow_market) — kospi_investor.csv 마지막 행 날짜."""
+    p = STORE_DIR / "flow_market" / "kospi_investor.csv"
+    if not p.exists():
+        return {"status": "SKIP", "reason": "flow_market/kospi_investor.csv 없음"}
+    best = _kis_last_date(p)
+    if not best:
+        return {"status": "FAIL", "reason": "마지막 행 날짜 없음"}
+    if best >= today:
+        return {"status": "PASS", "latest": best}
+    if not _evening():
+        return {"status": "PASS", "latest": best, "note": "T-1 (장중/수집 전)"}
+    return {"status": "FAIL", "reason": f"최신 {best} — 저녁 수집 후에도 미갱신", "latest": best}
 
 
 def _verify_nightwatch(today: str) -> dict:
@@ -516,7 +557,11 @@ CHECKLIST = {
     "tv_scanner":     {"description": "거래대금 스캐너",         "priority": PRIORITY_HIGH},      # 16:45+ 추천 파이프라인에서 생성
     "brain_report":   {"description": "Market Brain 리포트",    "priority": PRIORITY_HIGH},      # 16:45+ 추천 파이프라인에서 생성
     # minute_candles / minute_5min — 비활성화 (2026-04-04): C1 분봉 수집 비활성화로 항상 FAIL → 제거
-    "nationality":    {"description": "KRX 국적별 수급",       "priority": PRIORITY_HIGH},
+    "nationality":    {"description": "KRX 국적별 수급",       "priority": PRIORITY_LOW},   # 7/7: kill switch 정상 → SKIP 고정(절대룰)
+    "short_kis":      {"description": "KIS 공매도 잔고",        "priority": PRIORITY_MEDIUM},  # 7/7 신설 (⑬)
+    "credit_kis":     {"description": "KIS 신용잔고(지연)",     "priority": PRIORITY_LOW},     # 7/7 신설 (⑭·T+2~3 정상)
+    "ranking_kis":    {"description": "KIS 순위 스냅샷 6종",    "priority": PRIORITY_MEDIUM},  # 7/7 신설 (⑫)
+    "flow_market":    {"description": "KIS 시장 11주체",        "priority": PRIORITY_MEDIUM},  # 7/7 신설
     "nightwatch":     {"description": "NIGHTWATCH 리포트",     "priority": PRIORITY_HIGH},
     "sector_history": {"description": "섹터 히스토리",          "priority": PRIORITY_HIGH},
     # sector_relay — 비활성화 (2026-04-11): 자동 저장 로직 없음, sector_history가 대체
@@ -565,6 +610,10 @@ class DataVerifier:
         details["brain_report"] = _verify_brain_report(t)
         # minute_candles / minute_5min — 비활성화 (C1 제거)
         details["nationality"] = _verify_nationality(t)
+        details["short_kis"] = _verify_short_kis(t)
+        details["credit_kis"] = _verify_credit_kis(t)
+        details["ranking_kis"] = _verify_ranking_kis(t)
+        details["flow_market"] = _verify_flow_market(t)
         details["nightwatch"] = _verify_nightwatch(t)
         details["sector_history"] = _verify_sector_history(t)
         # sector_relay — 비활성화 (sector_history가 대체)

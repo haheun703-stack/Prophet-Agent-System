@@ -189,7 +189,10 @@ def build_briefing(save=True) -> dict:
     }
     if save:
         try:
-            OUT.write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
+            # 7/7 검수 L-2 fix: 원자쓰기(20:30 노트북 scp와 겹칠 때 torn-read 방지)
+            tmp = OUT.with_suffix(".tmp")
+            tmp.write_text(json.dumps(out, ensure_ascii=False, indent=1), encoding="utf-8")
+            tmp.replace(OUT)
         except Exception as e:  # noqa: BLE001
             print(f"[morning_briefing] 저장 실패(무시): {e}")
     return out

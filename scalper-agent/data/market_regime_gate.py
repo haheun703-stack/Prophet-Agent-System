@@ -108,6 +108,11 @@ def _breadth_of(asof: str) -> dict | None:
         mc = (json.loads(p.read_text(encoding="utf-8")).get("market_context") or {})
         if mc.get("breadth_pct") is None:
             return None
+        if mc.get("breadth_stale"):
+            # 7/7 검수 H-2 fix: fill 미완료일의 breadth(어제 데이터 기반)는 레짐 판정에
+            # 쓰지 않음 — UNKNOWN(보수적 통과)이 정직. 가드③이 유효 레코드 덮어쓰기도 방지.
+            logger.warning(f"[market_regime] {asof} ledger breadth_stale — 판정 제외(UNKNOWN)")
+            return None
         return {
             "breadth_pct": mc.get("breadth_pct"),
             "breadth_state": mc.get("breadth_state"),
@@ -274,12 +279,18 @@ def build_regime(asof: str | None = None, save: bool = True) -> dict:
     }
     if save:
         try:
-            HISTORY_PATH.write_text(
+            # 7/7 전체검수 M-1 fix: 원자쓰기(tmp+replace) — history는 재생성 불가 forward
+            # 자가검증 누산기라 쓰기 중 종료 시 전량 소실 방지 필수(⑪-2/catalyst 패턴 통일)
+            h_tmp = HISTORY_PATH.with_suffix(".tmp")
+            h_tmp.write_text(
                 json.dumps({"records": records,
                             "updated_at": record["generated_at"]},
                            ensure_ascii=False, indent=1), encoding="utf-8")
-            OUT_PATH.write_text(json.dumps(out, ensure_ascii=False, indent=1),
-                                encoding="utf-8")
+            h_tmp.replace(HISTORY_PATH)
+            o_tmp = OUT_PATH.with_suffix(".tmp")
+            o_tmp.write_text(json.dumps(out, ensure_ascii=False, indent=1),
+                             encoding="utf-8")
+            o_tmp.replace(OUT_PATH)
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[market_regime] 저장 실패: {e}")
 

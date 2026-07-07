@@ -446,8 +446,10 @@ def scan_catalyst(top_n: int = 30, save: bool = True) -> dict:
             if _date:
                 _arch = BASE / "data_store" / "catalyst_archive"
                 _arch.mkdir(parents=True, exist_ok=True)
-                (_arch / f"catalyst_{_date}.json").write_text(
-                    json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+                # 7/7 검수 M-1 fix: 원자쓰기 — 도중 kill 시 손상 아카이브가 ⑪-2 라벨을 영구 결번시키는 것 방지
+                _atmp = _arch / f"catalyst_{_date}.json.tmp"
+                _atmp.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+                _atmp.replace(_arch / f"catalyst_{_date}.json")
         except Exception:
             pass  # 아카이브 실패는 본 저장·스캔에 영향 0
     return result
