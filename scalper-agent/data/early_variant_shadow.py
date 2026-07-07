@@ -224,9 +224,9 @@ def build_early_shadow(asof: str | None = None, save: bool = True) -> dict:
             key = (rec["date"], rec["code"], rec["variant"])
             if key in idx:
                 old = data["records"][idx[key]]
-                # 기존 forward/관측 보존 (라벨만 재계산)
+                # 기존 forward/관측 보존 (라벨만 재계산) — meongbun_grade는 ⑪-2 라벨러 부착분 보존(7/7)
                 for fld in ("forward_d1", "forward_d3", "forward_d5", "mfe", "mae",
-                            "would_stop_day", "holding_days", "verdict"):
+                            "would_stop_day", "holding_days", "verdict", "meongbun_grade"):
                     rec[fld] = old.get(fld)
                 data["records"][idx[key]] = rec
             else:

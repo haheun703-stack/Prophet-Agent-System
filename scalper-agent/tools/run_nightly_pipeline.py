@@ -106,6 +106,8 @@ def main():
          [PY, "tools/run_institution_accum_scan.py"], 300),
         ("⑪ catalyst 명분맥점 발굴",   # 6/24 명분 있는 끼 종목(상한가·3일10%+ → 재료·명분등급·점화맥점) record-only
          [PY, "tools/run_catalyst_scanner_daily.py"], 600),
+        ("⑪-2 명분 라벨(shadow 결합)",   # 7/7 사장님 "오를 근거 있는 종목 순·잡주X" — catalyst_archive 명분등급을 early/reentry shadow에 additive 부착 + MIN_KKI 병렬 코호트 요약(record-only·라벨/요약만·룰변경0·⑪ 이후 필수)
+         [PY, "tools/run_meongbun_label_daily.py"], 120),
         ("⑫ 순위 스냅샷(6종)",   # 6/27 KIS 순위 6종(등락률/거래량/체결강도/상하한가/외인기관/야간선물) 날짜별 record-only 적재
          [PY, "-c", "from data.ranking_snapshot_collector import collect_ranking_snapshots as f; print(f())"], 300),
         ("⑬ 공매도 일별추이",   # 6/27 KIS 공매도(FHPST04830000) 변동성 급락 선행지표·record-only(pykrx 중단 대체)
