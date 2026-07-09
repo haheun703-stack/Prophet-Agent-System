@@ -29,6 +29,11 @@ v1 구현 플레이북 (ticks 결정적 replay — data_store/ticks/YYYYMMDD/{co
   D-1 정보만 사용(look-ahead 0·7/4 D0 정정 교훈). 라벨 불가(아카이브 없음·일봉 부족)는
   미라벨=코호트 제외로 정직 처리(coverage에 노출). 기존 필드/요약 무수정.
 
+7/9 매매원칙 지시서 관찰 백테스트 (docs/01-plan/TRADING_PRINCIPLES_단타봇_7_9.md):
+  규칙2(추격 상한)·규칙3(서킷브레이커 streak/일일한도)·규칙4b(섹터 쿨다운)를 정제판
+  거래 이력으로 '발동됐을 것' 정량화 → pb_a_momentum.principles_7_9. 차단 0·기록만
+  (지시서 롤아웃 1~2단계 병합) — 활성화는 검증기준(규칙당 20회+) 통과 후 사장님 결정.
+
 ★ 안전 불변식: record-only(data_store/playbook_shadow.json 기록만)·읽기전용 입력·
   매수/매도/picks/SAJANG/주문 0접촉·관측 없이 flip 금지(라이브 연결=사장님 결정).
 사용: python tools/playbook_shadow.py [--days N(최근 N거래일만)]
@@ -62,6 +67,13 @@ REFINED_STRENGTH = 200.0     # 정제판: 신호행 체결강도 하한 (7/4 그
 REFINED_CUTOFF = "10:00:00"  # 정제판: 오전 신호만
 KKI_OK = ("HUNTABLE", "EXPLOSIVE")   # 끼 축 통과 등급(SAJANG 서열 상위 2)
 MEONGBUN_OK = ("강", "중")           # 명분 축 통과 = meongbun_grade 상위 2(강/중 — 보통/약/무명분 제외)
+
+# ── 7/9 매매원칙 지시서 관찰 백테스트 (docs/01-plan/TRADING_PRINCIPLES_단타봇_7_9.md) ──
+# 관찰 전용 — 차단 0·기록만. 파라미터는 지시서 시작값(정답 아님·데이터로 조정).
+CHASE_MAX = 8.0          # 규칙2: 신호 시점 당일 등락률 상한 후보
+CB_STREAK = 3            # 규칙3: 연속 손절 발동 임계
+CB_DAILY_LIMITS = (-6.0, -9.0)   # 규칙3: 일일 누적 %p 발동 후보(동일가중 프록시)
+SECTOR_COOLDOWN_N = 3    # 규칙4b: 동일 섹터 당일 손절 누적 발동 임계
 
 
 def _read_ticks(day: str, code: str) -> list:
@@ -301,6 +313,122 @@ def _stack_cohorts(a_trades: list) -> dict:
     }
 
 
+# ── 7/9 매매원칙 지시서 관찰 백테스트 헬퍼 (record-only — 차단 0·기록만) ──
+
+def _sector_map() -> dict:
+    """universe.json → {code: sector}. 실패 시 빈 dict(섹터 시뮬 skip)."""
+    try:
+        u = json.loads((DS / "universe.json").read_text(encoding="utf-8"))
+        return {k: (v.get("sector") or "") for k, v in u.items()}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _chase_bands(ref: list) -> dict:
+    """규칙2 — 신호 시점 등락률 대역별 성적(추격 상한 CHASE_MAX 검증).
+    주의: 지시서 2b(5분 기울기)는 ~20분 관측 해상도로 검증 불가(정직 미포함)."""
+    bands = [(5, 6), (6, 7), (7, 8), (8, 10), (10, 999)]
+    out = {f"chg_{lo}~{hi if hi < 999 else ''}": _summarize(
+        [t for t in ref if lo <= t.get("signal_chg", 0) < hi]) for lo, hi in bands}
+    out["under_chase_max"] = _summarize(
+        [t for t in ref if t.get("signal_chg", 0) < CHASE_MAX])
+    out["over_chase_max"] = _summarize(
+        [t for t in ref if t.get("signal_chg", 0) >= CHASE_MAX])
+    return out
+
+
+def _cb_sim(ref: list, mode: str, streak: int = CB_STREAK, limit: float = -6.0) -> dict:
+    """규칙3 — 서킷브레이커 '발동됐을 것' 시뮬. 발동 이후 당일 잔여 진입=차단분.
+    streak: 연속 SL n회(TP=리셋·EOD=중립) / loss: 실현 %p 누적 ≤ limit(동일가중 프록시).
+    차단분 합이 음수 = 서킷브레이커가 살렸을 손실."""
+    by_day = {}
+    for t in ref:
+        by_day.setdefault(t["date"], []).append(t)
+    blocked, days_triggered = [], 0
+    for day in sorted(by_day):
+        trades = by_day[day]
+        closed = sorted((t for t in trades if t.get("exit_time")),
+                        key=lambda x: x["exit_time"])
+        trig, run, cum = None, 0, 0.0
+        for t in closed:
+            if mode == "streak":
+                if t["why"] == "SL":
+                    run += 1
+                elif t["why"] == "TP":
+                    run = 0
+                if run >= streak:
+                    trig = t["exit_time"]
+                    break
+            else:
+                cum += t["ret"]
+                if cum <= limit:
+                    trig = t["exit_time"]
+                    break
+        if trig is None:
+            continue
+        days_triggered += 1
+        blocked.extend(t for t in trades if t["entry_time"] > trig)
+    out = _summarize(blocked)
+    out["days_triggered"] = days_triggered
+    return out
+
+
+def _sector_cooldown_sim(ref: list, smap: dict, n: int = SECTOR_COOLDOWN_N,
+                         all_days: list = None) -> dict:
+    """규칙4b — 동일 섹터 당일 SL n회 누적 → 해당 섹터 당일 잔여+익일 진입 차단 시뮬.
+    익일 = 전 ticked 거래일 기준(all_days) — 정제판 거래 없는 날을 건너뛰면 쿨다운이
+    과확장되어 절감액 상향 편향(Tier1 MEDIUM fix). 미지정 시 ref 날짜 fallback."""
+    days_sorted = sorted(all_days) if all_days else sorted({t["date"] for t in ref})
+    nxt = dict(zip(days_sorted[:-1], days_sorted[1:]))
+    by_day = {}
+    for t in ref:
+        by_day.setdefault(t["date"], []).append(t)
+    blocked, trigger_events = {}, 0
+    for day in days_sorted:
+        sl_cnt, trig = {}, {}
+        # all_days 기준 순회 — 정제판 거래 0인 거래일 존재(.get 필수·KeyError 방지)
+        for t in sorted((x for x in by_day.get(day, []) if x["why"] == "SL"),
+                        key=lambda x: x["exit_time"]):
+            sec = smap.get(t["code"])
+            if not sec:
+                continue
+            sl_cnt[sec] = sl_cnt.get(sec, 0) + 1
+            if sl_cnt[sec] == n:
+                trig[sec] = t["exit_time"]
+        trigger_events += len(trig)
+        for sec, tt in trig.items():
+            for t in by_day.get(day, []):
+                if smap.get(t["code"]) == sec and t["entry_time"] > tt:
+                    blocked[(t["date"], t["code"], t["entry_time"])] = t
+            for t in by_day.get(nxt.get(day, ""), []):
+                if smap.get(t["code"]) == sec:
+                    blocked[(t["date"], t["code"], t["entry_time"])] = t
+    out = _summarize(list(blocked.values()))
+    out["trigger_events"] = trigger_events
+    return out
+
+
+def _principles_7_9(a_trades: list, all_days: list = None) -> dict:
+    """지시서 규칙2/3/4b 관찰 백테스트 — 정제판 기준(유일 net+ 후보 = 의사결정 대상).
+    예외 시 {} 반환(Tier1 LOW fix) — 관측 블록 실패가 전체 산출 저장을 막지 않게 격리."""
+    try:
+        ref = [t for t in a_trades if _is_refined(t)]
+        smap = _sector_map()
+        cb = {"streak3": _cb_sim(ref, "streak")}
+        for lim in CB_DAILY_LIMITS:
+            cb[f"daily_{lim:+.0f}p"] = _cb_sim(ref, "loss", limit=lim)
+        return {
+            "rule2_chase": _chase_bands(ref),
+            "rule3_circuit_breaker": cb,
+            "rule4b_sector_cooldown": _sector_cooldown_sim(ref, smap, all_days=all_days),
+            "note": "관찰 전용(차단 0·발동됐을 것 정량화만). 동일가중 %p 프록시·"
+                    "규칙2b(5분 기울기)는 ~20분 해상도로 검증 불가. 차단분 합이 음수="
+                    "규칙이 살렸을 손실. 활성화=검증기준 통과+사장님 결정.",
+        }
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def run(days_limit=None, save=True) -> dict:
     if not TICKS.exists():
         return {"error": "ticks 없음 (VPS 전용 자산 — VPS에서 실행)"}
@@ -345,6 +473,9 @@ def run(days_limit=None, save=True) -> dict:
             # stack3_any=레짐∧(끼 or 명분='오를 근거')·strict=전부∧.
             # 명분 아카이브(⑪) 시작 전 날짜는 미라벨=코호트 제외(coverage 참조).
             "stack_7_9": _stack_cohorts(a_trades),
+            # 7/9 매매원칙 지시서(01-plan/TRADING_PRINCIPLES_단타봇_7_9.md) 규칙2/3/4b
+            # 관찰 백테스트 — 차단 0·'발동됐을 것' 정량화만(롤아웃 1~2단계 병합).
+            "principles_7_9": _principles_7_9(a_trades, all_days=days_sorted),
             "recent_trades": a_trades[-40:],
         },
         "pb_b_limitup_d1": {
@@ -404,6 +535,16 @@ if __name__ == "__main__":
                 cv = st.get("coverage", {})
                 print(f"                라벨 커버리지: 정제판 {cv.get('refined_total', 0)}건 중 "
                       f"끼 {cv.get('kki_labeled', 0)}·명분 {cv.get('meongbun_labeled', 0)}")
+            pr = a.get("principles_7_9", {})
+            if pr:
+                r2 = pr.get("rule2_chase", {})
+                print(f"원칙2 추격: <{int(CHASE_MAX)}% {_fmt(r2.get('under_chase_max', {}))}")
+                print(f"           ≥{int(CHASE_MAX)}% {_fmt(r2.get('over_chase_max', {}))}")
+                for k, v in pr.get("rule3_circuit_breaker", {}).items():
+                    print(f"원칙3 CB[{k}]: 발동 {v.get('days_triggered', 0)}일 · "
+                          f"차단분 {_fmt(v)}")
+                sc = pr.get("rule4b_sector_cooldown", {})
+                print(f"원칙4b 섹터쿨다운: 발동 {sc.get('trigger_events', 0)}회 · 차단분 {_fmt(sc)}")
             print(f"PB-B 상한가D+1   전체: {_fmt(b['all'])}")
             print(f"                강도게이트: {_fmt(b['strength_gate'])}")
             print(f"                레짐게이트: {_fmt(b['regime_gate'])}")
