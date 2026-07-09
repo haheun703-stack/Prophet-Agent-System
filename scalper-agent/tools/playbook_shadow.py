@@ -23,6 +23,12 @@ v1 구현 플레이북 (ticks 결정적 replay — data_store/ticks/YYYYMMDD/{co
 ②진입도 신호 다음 관측행이라 실전(초 단위)보다 불리한 체결 가정=보수적.
 ③ticks에 간헐 price=0 불량행 → 필터.
 
+7/9 3축 결합 관측 (사장님 승인): PB-A 정제판(오전10시前+강도200+) 거래에 전일(D-1)
+  마감 기준 끼/명분 라벨을 additive 부착 → 레짐×끼×명분 스택 코호트 성적을
+  pb_a_momentum.stack_7_9 에 기여도 분해로 기록. 세 라벨 전부 진입 시점에 알 수 있던
+  D-1 정보만 사용(look-ahead 0·7/4 D0 정정 교훈). 라벨 불가(아카이브 없음·일봉 부족)는
+  미라벨=코호트 제외로 정직 처리(coverage에 노출). 기존 필드/요약 무수정.
+
 ★ 안전 불변식: record-only(data_store/playbook_shadow.json 기록만)·읽기전용 입력·
   매수/매도/picks/SAJANG/주문 0접촉·관측 없이 flip 금지(라이브 연결=사장님 결정).
 사용: python tools/playbook_shadow.py [--days N(최근 N거래일만)]
@@ -34,10 +40,13 @@ from datetime import datetime
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
+if str(BASE) not in sys.path:
+    sys.path.insert(0, str(BASE))   # 7/9: 끼 단일진실(_kki_grade_at) 재사용용
 DS = BASE / "data_store"
 TICKS = DS / "ticks"
 LEDGER_DIR = DS / "paper_3type"
 OUT = DS / "playbook_shadow.json"
+ARCHIVE_DIR = DS / "catalyst_archive"   # 명분 라벨 원천(⑪ 산출·읽기전용)
 
 # 파라미터 (관측용 — 라이브 승격 시 사장님 결정+SAJANG 등재)
 TP_PCT = 5.0            # 사장님 "5~8% 먹고 나온다" 하단
@@ -47,6 +56,12 @@ SIGNAL_CUTOFF = "14:30:00"   # 이후 신호는 진입 제외(청산 시간 부�
 LIMITUP_PCT = 29.0      # PB-B: D0 마지막 관측 등락률 >= 29 = 상한가 마감 근사
 STRENGTH_GATE = 100.0   # 체결강도 코호트 임계
 REGIME_BREADTH = 0.45   # 단일진실=data/market_regime_gate.NO_GO_BREADTH (단독스크립트라 로컬·동기 필수)
+
+# ── 7/9 3축 결합 관측 (사장님 승인) — 정제판 기준 + D-1 라벨 ──
+REFINED_STRENGTH = 200.0     # 정제판: 신호행 체결강도 하한 (7/4 그리드 실측 net+ 유일 구간)
+REFINED_CUTOFF = "10:00:00"  # 정제판: 오전 신호만
+KKI_OK = ("HUNTABLE", "EXPLOSIVE")   # 끼 축 통과 등급(SAJANG 서열 상위 2)
+MEONGBUN_OK = ("강", "중")           # 명분 축 통과 = meongbun_grade 상위 2(강/중 — 보통/약/무명분 제외)
 
 
 def _read_ticks(day: str, code: str) -> list:
@@ -197,6 +212,95 @@ def _summarize(trades: list, gate_key=None) -> dict:
     }
 
 
+# ── 7/9 3축 결합 관측 헬퍼 (record-only·additive — 기존 필드/요약 무수정) ──
+
+def _is_refined(t: dict) -> bool:
+    """PB-A 정제판(7/4 실측 net+ 유일 구간): 오전 10시前 신호 + 신호행 체결강도 200+."""
+    return (t.get("strength_at_signal", 0) >= REFINED_STRENGTH
+            and t.get("signal_time", "99") <= REFINED_CUTOFF)
+
+
+def _meongbun_map() -> dict:
+    """catalyst_archive → {date(YYYY-MM-DD): {code: 명분등급(강/중/약/무명분)}}.
+    ⑪ 산출물 읽기전용 — 디렉터리/파일 없으면 빈 dict(미라벨 유지)."""
+    out = {}
+    if not ARCHIVE_DIR.exists():
+        return out
+    for f in sorted(ARCHIVE_DIR.glob("catalyst_*.json")):
+        try:
+            d = json.loads(f.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            continue
+        codes = {}
+        for it in d.get("items", []) or []:
+            c = it.get("code")
+            if c:
+                codes[c] = it.get("meongbun_grade") or "무명분"
+        out[f.stem.replace("catalyst_", "")] = codes
+    return out
+
+
+def _kki_d1_fn(code: str, d1_iso: str):
+    """전일(D-1) 마감 기준 끼 등급 — paper_sim_portfolio._kki_grade_at 재사용
+    (SAJANG.kki_grade/score_kki 단일진실·(code,date) 캐시). 실패 시 None(미라벨=보수)."""
+    try:
+        from data.paper_sim_portfolio import _kki_grade_at
+        return _kki_grade_at(code, d1_iso)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _label_stack(a_trades: list, prev_iso: dict, arch: dict, kki_fn=_kki_d1_fn) -> None:
+    """정제판 거래에만 D-1 라벨 additive 부착(kki_d1/meongbun_d1) — look-ahead 0.
+    meongbun: D-1 아카이브 있는데 미수록='비수록'(명분끼 후보 아니었음) / 아카이브 없음=None.
+    D-1 미상(첫 관측일)=None. 비정제 거래는 무수정(필드 자체 미부착)."""
+    for t in a_trades:
+        if not _is_refined(t):
+            continue
+        d1 = prev_iso.get(t.get("date"))
+        if not d1:
+            t["kki_d1"] = None
+            t["meongbun_d1"] = None
+            continue
+        t["kki_d1"] = kki_fn(t["code"], d1)
+        t["meongbun_d1"] = (arch[d1].get(t["code"], "비수록") if d1 in arch else None)
+
+
+def _stack_cohorts(a_trades: list) -> dict:
+    """3축 스택 코호트 성적 — 전부 정제판의 부분집합(기여도 분해)·빈도(trades/day) 포함."""
+    ref = [t for t in a_trades if _is_refined(t)]
+
+    def _pack(sel: list) -> dict:
+        s = _summarize(sel)
+        days = {t["date"] for t in sel}
+        s["days_with_trades"] = len(days)
+        s["trades_per_day"] = round(len(sel) / len(days), 1) if days else 0.0
+        return s
+
+    def _kki_ok(t):
+        return t.get("kki_d1") in KKI_OK
+
+    def _mb_ok(t):
+        return t.get("meongbun_d1") in MEONGBUN_OK
+
+    def _rg(t):
+        return bool(t.get("regime_gate"))
+
+    return {
+        "refined": _pack(ref),
+        "refined_x_regime": _pack([t for t in ref if _rg(t)]),
+        "refined_x_kki": _pack([t for t in ref if _kki_ok(t)]),
+        "refined_x_meongbun": _pack([t for t in ref if _mb_ok(t)]),
+        "stack3_any": _pack([t for t in ref if _rg(t) and (_kki_ok(t) or _mb_ok(t))]),
+        "stack3_strict": _pack([t for t in ref if _rg(t) and _kki_ok(t) and _mb_ok(t)]),
+        "coverage": {
+            "refined_total": len(ref),
+            "kki_labeled": sum(1 for t in ref if t.get("kki_d1") is not None),
+            "meongbun_labeled": sum(1 for t in ref if t.get("meongbun_d1") is not None),
+        },
+    }
+
+
 def run(days_limit=None, save=True) -> dict:
     if not TICKS.exists():
         return {"error": "ticks 없음 (VPS 전용 자산 — VPS에서 실행)"}
@@ -213,6 +317,11 @@ def run(days_limit=None, save=True) -> dict:
         day_trades = _pb_a_day(day, codes, regime_ok, b)
         a_trades.extend(day_trades)
         daily_log.append({"date": day, "pb_a_signals": len(day_trades)})
+
+    # 7/9 3축 결합: 정제판 거래에 D-1 끼/명분 라벨 부착(additive·look-ahead 0)
+    prev_iso = {day: f"{p[:4]}-{p[4:6]}-{p[6:]}"
+                for day, p in zip(days_sorted[1:], days_sorted[:-1])}
+    _label_stack(a_trades, prev_iso, _meongbun_map())
 
     b_trades = _pb_b_trades(_pb_b_pairs(days_sorted), days_sorted, bmap)
 
@@ -231,9 +340,11 @@ def run(days_limit=None, save=True) -> dict:
             # 7/4 그리드 실측(69일·net 0.2% 비용 차감): 강도 단조개선·오전 우위.
             # 정제판(오전 10시前 신호+강도200+·TP5/SL3)만 net 양(+0.132%/건·승49%·합+270.7%p).
             # → 정식 관측 코호트로 고정, forward 매일 자가검증. flip은 사장님 결정.
-            "refined_am_st200": _summarize(
-                [t for t in a_trades
-                 if t["strength_at_signal"] >= 200 and t["signal_time"] <= "10:00:00"]),
+            "refined_am_st200": _summarize([t for t in a_trades if _is_refined(t)]),
+            # 7/9 3축 결합(사장님 승인): 정제판 × D-1 레짐/끼/명분 — 기여도 분해.
+            # stack3_any=레짐∧(끼 or 명분='오를 근거')·strict=전부∧.
+            # 명분 아카이브(⑪) 시작 전 날짜는 미라벨=코호트 제외(coverage 참조).
+            "stack_7_9": _stack_cohorts(a_trades),
             "recent_trades": a_trades[-40:],
         },
         "pb_b_limitup_d1": {
@@ -284,6 +395,15 @@ if __name__ == "__main__":
             print(f"                강도게이트: {_fmt(a['strength_gate'])}")
             print(f"                레짐게이트: {_fmt(a['regime_gate'])}")
             print(f"                ★정제판(오전+강도200): {_fmt(a.get('refined_am_st200', {}))}")
+            st = a.get("stack_7_9", {})
+            if st:
+                print(f"                3축 ×레짐: {_fmt(st.get('refined_x_regime', {}))}")
+                print(f"                3축 ×끼(HUNTABLE+): {_fmt(st.get('refined_x_kki', {}))}")
+                print(f"                3축 ×명분(강/중): {_fmt(st.get('refined_x_meongbun', {}))}")
+                print(f"                ★3축 완성판(레짐∧[끼or명분]): {_fmt(st.get('stack3_any', {}))}")
+                cv = st.get("coverage", {})
+                print(f"                라벨 커버리지: 정제판 {cv.get('refined_total', 0)}건 중 "
+                      f"끼 {cv.get('kki_labeled', 0)}·명분 {cv.get('meongbun_labeled', 0)}")
             print(f"PB-B 상한가D+1   전체: {_fmt(b['all'])}")
             print(f"                강도게이트: {_fmt(b['strength_gate'])}")
             print(f"                레짐게이트: {_fmt(b['regime_gate'])}")
