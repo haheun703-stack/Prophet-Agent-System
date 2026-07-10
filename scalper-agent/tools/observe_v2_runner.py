@@ -121,10 +121,19 @@ def run_once(day: str = None, send=None, no_tg: bool = False) -> int:
     if not is_trading_day(date.today()) and day is None:
         print("[observe_v2] 휴장일 — skip")
         return 0
-    day = day or date.today().strftime("%Y%m%d")
+    today = date.today().strftime("%Y%m%d")
+    # 7/10 검수 L1 fix: 과거일 스캔은 dry-run — 라이브 intent 파일 오염·오알림 금지
+    if day and day != today:
+        n = len(_scan_v2_signals(day))
+        print(f"[observe_v2] {day} dry-run(과거일) — 신호 {n}건·기록/알림 없음")
+        return 0
+    day = day or today
     if not (pb.TICKS / day).exists():
         print(f"[observe_v2] ticks/{day} 없음 (VPS 전용·수집 전) — skip")
         return 0
+    # 7/10 검수 M-2 fix: 노트북(win32)은 분석 전용 — sync된 ticks로 오실행해도 알림 금지
+    if sys.platform == "win32":
+        no_tg = True
     now_hms = datetime.now().strftime("%H:%M:%S")
     try:
         state = json.loads(INTENTS_PATH.read_text(encoding="utf-8"))
@@ -231,6 +240,7 @@ def run_compare(day: str = None) -> int:
         hist = []
     hist = [h for h in hist if h.get("date") != day]   # 재실행 멱등
     hist.append(dict(result, intents=state.get("intents", {})))
+    hist.sort(key=lambda h: h.get("date", ""))         # 날짜순 트림(백필 시 최근일 보호)
     _atomic_write(HISTORY_PATH, hist[-HISTORY_KEEP:])
     lat = result["latency_sec"]
     print(f"[observe_v2] {day} 대조 — {result['verdict']}: "

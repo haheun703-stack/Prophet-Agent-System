@@ -58,6 +58,7 @@ scalper-agent/**/*.log
 prophet-agent/results/
 scalper-agent/_evening_log.txt
 scalper-agent/tools/scan_result*.txt
+scalper-agent/tools/_trash_7_7/
 scalper-agent/backtest/tomorrow_report.txt
 scalper-agent/backtest/tomorrow_analysis.py
 scalper-agent/backtest/fetch_today.py

@@ -88,6 +88,18 @@ def run() -> int:
         if not ok:
             stale.append(name)
 
+    # 조건부 hard check (7/10 검수 M-1 fix): 장중 OBSERVE intent가 오늘자로 존재하면
+    # ⑲-2 대조도 오늘자여야 함 — --compare 예외 삼킴(exit 0)의 완료위장을 여기서 적발.
+    # intent 없는 날(가동 전·휴장·cron 미동작)은 판정 제외(오탐 방지).
+    intents_date = _json_field(STORE / "observe_v2_intents.json", "date")
+    if intents_date and intents_date == today.replace("-", ""):   # intent 포맷=YYYYMMDD
+        cmp_date = _json_field(STORE / "observe_v2_compare.json", "date")
+        ok = (cmp_date == intents_date)
+        print(f"[freshness] ⑲-2 observe_compare: {cmp_date or '(없음)'} "
+              f"{'OK' if ok else '⚠ STALE (intent 있는 날 대조 부재=⑲-2 예외 의심)'}")
+        if not ok:
+            stale.append("⑲-2 observe_compare")
+
     # soft check (매일 갱신이 보장 안 되는 것 — 정보만)
     for name, path, key in (("③-2 early(soft)", STORE / "early_variant_shadow.json", "updated_at"),
                             ("③-3 reentry(soft)", STORE / "reentry_shadow.json", "updated_at")):

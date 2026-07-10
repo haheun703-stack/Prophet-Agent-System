@@ -207,16 +207,23 @@ def _pb_b_trades(pairs: list, days_sorted: list, bmap: dict):
     return trades
 
 
+COST_RT = 0.2   # 왕복 비용 %/건 (7/4 그리드 실측과 동일 축 — net 수치용)
+
+
 def _summarize(trades: list, gate_key=None) -> dict:
+    """★ avg_ret/sum_ret/win_pct = GROSS(비용 미차감). flip 판단은 net_avg_ret 축으로
+    (7/10 검수 M2 fix — gross를 net 인용 수치와 오독하는 낙관편향 차단)."""
     sel = [t for t in trades if (t.get(gate_key) if gate_key else True)]
     rets = [t["ret"] for t in sel]
     if not rets:
         return {"trades": 0}
     wins = sum(1 for r in rets if r > 0)
+    avg = sum(rets) / len(rets)
     return {
         "trades": len(rets),
         "win_pct": round(100 * wins / len(rets), 1),
-        "avg_ret": round(sum(rets) / len(rets), 2),
+        "avg_ret": round(avg, 2),
+        "net_avg_ret": round(avg - COST_RT, 2),   # 왕복비용 차감 — 의사결정 축
         "sum_ret": round(sum(rets), 1),
         "tp": sum(1 for t in sel if t["why"] == "TP"),
         "sl": sum(1 for t in sel if t["why"] == "SL"),

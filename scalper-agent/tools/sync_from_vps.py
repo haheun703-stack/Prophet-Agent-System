@@ -70,6 +70,9 @@ CORE_FILES = [
     "playbook_shadow.json",        # 7/4 플레이북 페이퍼 (nightly ⑲)
     "cluster_harvest_paper.json",  # 7/1 클러스터 수확 페이퍼 (nightly ⑯)
     "catalyst_scan.json",          # 7/7 검수 M-4 fix — ⑪ 산출·⑱ 입력(노트북 3주 stale 실측·flow_market 6/11 계열 재발)
+    "observe_v2_intents.json",     # 7/10 검수 HIGH fix — OBSERVE 장중 intent (동일 누락 패턴 3번째 재발 차단)
+    "observe_v2_compare.json",     # 7/10 — ⑲-2 실시간↔최종 대조 (소액 라이브 전환 판정 증거)
+    "observe_v2_history.json",     # 7/10 — 대조 90일 누적 (판정은 이 히스토리로)
 ]
 
 # 학습 데이터 (항상 동기화 — 일부 파일은 VPS에 없을 수 있음, 실패는 무시)

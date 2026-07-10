@@ -241,9 +241,10 @@ def _prune_old_inbox(directory: Path, keep_days: int = 30) -> None:
     try:
         import time
         cutoff = time.time() - keep_days * 86400
-        for old in directory.glob("*.json"):
-            if old.stat().st_mtime < cutoff:
-                old.unlink()
+        for pattern in ("*.json", "*.md"):   # 7/10 검수: md 확장자 갭 fix (10건 영구 미소거)
+            for old in directory.glob(pattern):
+                if old.stat().st_mtime < cutoff:
+                    old.unlink()
     except Exception:
         pass
 
