@@ -119,7 +119,7 @@
 
 ---
 
-## 🚀 5/26 D-Day 가동 흐름
+## 🚀 봇 재가동 시 하루 흐름 (5/26 설계 — ★현재 봇 OFF·실주문 0, 재가동 시 기준표★)
 
 | 시각 | 동작 | 핵심 |
 |------|------|------|
@@ -134,7 +134,8 @@
 ## 🔗 VPS / 인프라
 
 - **VPS**: AWS Lightsail `13.209.153.221` (ubuntu, 24/7 systemd)
-- **SSH 키**: `D:\Prophet_Agent_System_예언자\_tmp_zips\lightsail_60gb.pem`
+- **SSH 키**: `D:\Prophet_Agent_System_예언자\_tmp_zips\lightsail_60gb.pem` (★이동 금지 — VPSSync·세션 접속이 이 경로 참조)
+- **★ 데이터 메인 = VPS (7/1 확정)** — 노트북은 VPSSync(매일 20:30) 수신 미러. 신규 nightly 산출물은 sync CORE_FILES + ⑳ freshness 등록을 작성 시점에 같이 (누락 3회 재발 교훈)
 - **봇 서비스**: `bodyhunter-bot.service` (systemd)
 - **재시작 안전 윈도우**: 08:00~09:00 / 20:00 이후 / 23:30~06:00
 - 자세히: `memory/reference_vps_access.md`
@@ -143,12 +144,12 @@
 
 ## 📚 영구 메모리 인덱스
 
-- 작업환경: `memory/user_work_environment.md` (노트북 1대 이동)
+- 작업환경: `memory/user_work_environment.md` (노트북=작업 단말·데이터 메인=VPS)
 - 사장님 사명: `memory/feedback_70eok_trader_mission.md` (1년 70억)
 - 박사 사명: `memory/feedback_stock_master_promise.md`
 - 외부 지식 검증: `memory/feedback_verify_external_knowledge.md`
 - 데이터 검증: `memory/feedback_data_integrity_in_every_check.md`
-- ★ 3-Tier 검수: `memory/feedback_3tier_review_rule.md` (5/25 신설) ★
+- ★ 4-Tier 검수: `memory/feedback_3tier_review_rule.md` (5/25 신설·5/26 Tier4 Codex 추가 — 파일명만 3tier 시절 표기) ★
 
 ---
 
@@ -176,10 +177,11 @@
 
 - **한 줄**: "명분 있는 끼 종목을, 맥점에서 사서, -3% 타이트하게 자르되 추세 살아있으면 재진입하고, 줄 때 먹는다."
 - **데이터 검증(5/31, Codex 없이)**: ①-3% 타이트손절 유지(넓히기 기각) ②손절+재진입>MDD견디기(+5~6%p) ③끼↑→수익 단조(高끼=수익원). 절대수익은 생존편향 → 상대비교만 신뢰.
-- **현재 구현**: 4단 종목선정 **shadow 브릭1~4 완료**(끼·시나리오·명분게이트 계산·기록·로그만, **picks 불변**, 게이트 8/8, 32테스트). 재진입 룰 **설계완료·미구현**.
-- ★ **다음 = 봇 가동→shadow 관측→브릭5 flip(선정 변경=사장님 결정+관측 필요)→재진입 구현→라이브 숙제→paper.** 관측 없이 flip 금지(검증 전 가동 사고 재발). ★
-- 안전: 봇 OFF 유지 / 매도 무손상 / 게이트 8/8 / SAJANG 단일진실 / No Intent No Order.
+- **현행 (7/10 갱신)**: 재진입은 **ticks 정밀검증 FAIL(7/7)로 라이브 보류**(일봉 수치는 해상도 착시 — flip 근거 금지). 검증된 수익 축 = **PB-A 정제판 v2**(오전10시前+체결강도200+·추격<8% — 74일 2,050건 승55% avg +0.55% gross)·레짐 회피 게이트(스윙 전용 — PB-A엔 역효과, 7/10 재확인).
+- **OBSERVE 단계 진행 중 (7/10 사장님 승인)**: v2 실시간 관측 러너 cron 가동(평일 09~10시·실주문 0) → 7/13(월) 첫 실전 → 대조 통과 시 **7/15경 소액 라이브 사장님 결정**. 안전핀(일일 -6%p CB·섹터 쿨다운·추격<8)은 라이브 시 SAJANG 등재 후 적용.
+- ★ 관측 없이 flip 금지(검증 전 가동 사고 재발 방지) — 라이브 전환은 언제나 사장님 결정. ★
+- 안전: 봇 OFF 유지 / 매도 무손상 / SAJANG 단일진실 / No Intent No Order.
 
 ---
 
-**Last updated**: 2026-05-31 (매매 스타일 데이터 검증 + 4단 shadow 구현 + 운영 조언서 신설)
+**Last updated**: 2026-07-10 (사실 현행화: 데이터 메인=VPS·봇 OFF 명시·4-Tier 표기 통일·v2/OBSERVE 현행 반영 — 룰 무변경)
