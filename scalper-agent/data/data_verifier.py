@@ -58,19 +58,48 @@ PRIORITY_LOW = "LOW"
 #  유니버스 로더 (랜덤 샘플링용)
 # ═══════════════════════════════════════════
 
-def _load_universe_codes(n: int = 10) -> List[str]:
-    """유니버스에서 n개 랜덤 샘플 코드 반환"""
+def _all_universe_codes() -> List[str]:
+    """universe.json 전체 코드(샘플링 전). 로드 실패 시 []."""
     uni_path = STORE_DIR / "universe.json"
     if not uni_path.exists():
         return []
     try:
         data = json.loads(uni_path.read_text("utf-8"))
-        codes = list(data.keys()) if isinstance(data, dict) else []
-        if len(codes) <= n:
-            return codes
-        return random.sample(codes, n)
+        return list(data.keys()) if isinstance(data, dict) else []
     except Exception:
         return []
+
+
+def _load_universe_codes(n: int = 10) -> List[str]:
+    """유니버스에서 n개 랜덤 샘플 코드 반환"""
+    codes = _all_universe_codes()
+    if len(codes) <= n:
+        return codes
+    return random.sample(codes, n)
+
+
+def _load_active_codes(n: int, today: str, max_scan: int = 300) -> List[str]:
+    """오늘 거래된 활성 종목(daily 마지막 행 == today)만 n개 랜덤 반환.
+
+    상폐·거래정지 종목은 daily·investor·short 3채널이 동반 정지(KIS 미제공=정상)라
+    universe.json(6/22 박제)에 남아 있어도 daily가 stale → 여기서 자동 제외된다.
+    이로써 투자자 수급 검증이 죽은 종목을 밟아 뜨던 랜덤 PARTIAL 오탐을 원천 차단(7/13 사장님 지시).
+    반대로 daily는 today인데 investor만 stale인 '진짜 수집 실패'는 여전히 표본에 포함돼 잡힌다.
+
+    max_scan: today 매칭 종목이 0인 상황(장전 A0가 오늘 daily 수집 전 호출·전종목 미수집)에
+    전 유니버스(~2600) daily 풀스캔을 방지하는 상한. 활성 비율이 정상(≈99.8%)이면 수 개 읽고
+    끝나 무영향이고, 재앙 상황(활성<3%)에서만 300개 캡 후 부족분 반환 → 상위에서 FAIL 판정."""
+    codes = _all_universe_codes()
+    if not codes:
+        return []
+    random.shuffle(codes)
+    active: List[str] = []
+    for c in codes[:max_scan]:
+        if _get_last_csv_date(DAILY_DIR / f"{c}.csv") == today:
+            active.append(c)
+            if len(active) >= n:
+                break
+    return active
 
 
 def _get_last_csv_date(csv_path: Path) -> Optional[str]:
@@ -126,10 +155,17 @@ def _verify_daily_ohlcv(today: str) -> dict:
 
 
 def _verify_investor_flow(today: str) -> dict:
-    """투자자 수급 CSV — 랜덤 10종목 마지막 행 날짜 == today"""
-    codes = _load_universe_codes(10)
+    """투자자 수급 CSV — 활성 종목(daily 오늘자) 랜덤 10 마지막 행 == today.
+
+    상폐·정지 종목(daily도 stale=KIS 미제공 정상)은 _load_active_codes가 표본에서
+    자동 제외 → 6/22 박제 universe.json의 죽은 종목을 밟던 랜덤 PARTIAL 오탐 차단(7/13).
+    daily는 today인데 investor만 stale이면 여전히 ok 미가산 → 진짜 수집 실패는 잡힌다."""
+    codes = _load_active_codes(10, today)
     if not codes:
-        return {"status": "FAIL", "reason": "유니버스 로드 실패", "checked": 0, "ok": 0}
+        # 거래일에 활성 종목 0 = daily 전종목 미수집/유니버스 로드 실패 (기존 시맨틱 유지: FAIL).
+        # 이 경우 daily_ohlcv(CRITICAL)도 함께 FAIL로 잡히는 안전망이 존재.
+        return {"status": "FAIL", "reason": "활성 종목 0 (유니버스 로드 실패/전종목 미수집)",
+                "checked": 0, "ok": 0}
     ok = 0
     for code in codes:
         csv_path = FLOW_DIR / f"{code}_investor.csv"
