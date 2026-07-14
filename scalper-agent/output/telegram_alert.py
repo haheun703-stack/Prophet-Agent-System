@@ -6,7 +6,7 @@ Telegram Alert - 텔레그램 알림
 
 import os
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 logger = logging.getLogger('Scalper.Telegram')
 
@@ -91,18 +91,24 @@ class TelegramAlert:
         )
         self._send(msg)
 
-    def send_report(self, report_text: str):
-        """긴 리포트 전송 (4D 디스크법 등) - 자동 분할"""
+    def send_report(self, report_text: str) -> bool:
+        """긴 리포트 전송 (4D 디스크법 등) - 자동 분할.
+
+        모든 청크 전송 성공 시 True, 하나라도 실패/미설정 시 False (7/14 검수 M-1 —
+        호출자가 발송 실패를 감지해 silent failure를 막게 함)."""
         if not self.enabled:
-            return
+            return False
 
         # 4096자 제한 → 자동 분할
         chunks = self._split_message(report_text)
+        all_ok = True
         for i, chunk in enumerate(chunks):
-            self._send(chunk)
+            if not self._send(chunk):
+                all_ok = False
             if i < len(chunks) - 1:
                 import time
                 time.sleep(0.5)  # 순서 보장
+        return all_ok
 
     def _split_message(self, text: str) -> List[str]:
         """텔레그램 4096자 제한에 맞춰 분할 (구분선 기준)"""
@@ -124,12 +130,15 @@ class TelegramAlert:
 
         return chunks
 
-    def _send(self, message: str):
+    def _send(self, message: str) -> bool:
+        """전송 성공 시 True. 미설정/실패 시 False (호출자가 실패 감지 가능·7/14 검수 M-1).
+
+        반환값 추가는 하위호환 — 기존 호출자(send_trade 등)는 반환값을 무시하므로 동작 무변경."""
         if not self.enabled:
-            return
+            return False
         if not self.bot_token or self.bot_token.startswith("YOUR_"):
             logger.info(f"[Telegram 미설정] {message[:80]}...")
-            return
+            return False
         try:
             import requests
             url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
@@ -140,7 +149,9 @@ class TelegramAlert:
             resp = requests.post(url, json=payload, timeout=15)
             if resp.status_code == 200:
                 logger.debug("텔레그램 전송 완료")
-            else:
-                logger.warning(f"텔레그램 전송 실패: {resp.status_code}")
+                return True
+            logger.warning(f"텔레그램 전송 실패: {resp.status_code}")
+            return False
         except Exception as e:
             logger.warning(f"텔레그램 에러: {e}")
+            return False

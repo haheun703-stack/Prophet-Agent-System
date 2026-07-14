@@ -204,9 +204,17 @@ def collect_investor_flow(
     for code in codes:
         cache_file = FLOW_DIR / f"{code}_investor.csv"
         if not force and cache_file.exists():
-            cached = pd.read_csv(cache_file, index_col=0, parse_dates=True)
-            if len(cached) > 0:
-                last_date = cached.index[-1].strftime("%Y-%m-%d")
+            # 0바이트/손상 캐시 방어(foreign_exh 534-541과 동일 원리) — 무가드 read_csv는
+            # EmptyDataError/파싱실패를 상위로 전파해 investor 스레드 전체(~2600종목) 유실(7/14 검수 M).
+            if cache_file.stat().st_size == 0:
+                cache_file.unlink()
+            else:
+                try:
+                    cached = pd.read_csv(cache_file, index_col=0, parse_dates=True)
+                    last_date = cached.index[-1].strftime("%Y-%m-%d") if len(cached) > 0 else None
+                except Exception:
+                    cache_file.unlink()
+                    last_date = None
                 if last_date == today_str:
                     # 장마감 후 → 확정값, 캐시 신뢰
                     # 장중/장전 → 5분 이내 수집한 캐시만 신뢰

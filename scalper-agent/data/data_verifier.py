@@ -19,7 +19,6 @@ Usage:
     python data/data_verifier.py --detail     # 상세 출력
 """
 
-import csv
 import json
 import logging
 import os
@@ -140,7 +139,13 @@ def _file_mtime_date(path: Path) -> Optional[str]:
 # ═══════════════════════════════════════════
 
 def _verify_daily_ohlcv(today: str) -> dict:
-    """일봉 OHLCV CSV — 랜덤 10종목 마지막 행 날짜 == today"""
+    """일봉 OHLCV CSV — 랜덤 10종목 마지막 행 날짜 == today (비율 임계).
+
+    죽은 종목(상폐·정지)이 universe.json(6/22 박제)에 ~3.4% 잔존 → 랜덤 표본에 섞이면
+    '전원 today' 기준은 3회 중 1회꼴로 거짓 PARTIAL(7/14 검수 실측 29.5%). dead 2개까지
+    허용하는 비율 임계로 오탐 차단하되, 진짜 부분수집 실패(다수 stale)는 PARTIAL/FAIL로 잡음.
+    investor_flow(_load_active_codes)와 달리 daily는 활성 판별의 앵커라 활성필터 치환은
+    순환논리 → 비율 임계 방식 채택(독립 판정 유지·7/14 검수 High fix)."""
     codes = _load_universe_codes(10)
     if not codes:
         return {"status": "FAIL", "reason": "유니버스 로드 실패", "checked": 0, "ok": 0}
@@ -150,8 +155,14 @@ def _verify_daily_ohlcv(today: str) -> dict:
         last_date = _get_last_csv_date(csv_path)
         if last_date == today:
             ok += 1
-    status = "PASS" if ok == len(codes) else ("PARTIAL" if ok > 0 else "FAIL")
-    return {"status": status, "checked": len(codes), "ok": ok}
+    n = len(codes)
+    if ok >= n - 2:        # dead 노이즈(상폐·정지 최대 2개) 허용 — 오탐 29.5%→~0.3%
+        status = "PASS"
+    elif ok >= n // 2:
+        status = "PARTIAL"
+    else:
+        status = "FAIL"
+    return {"status": status, "checked": n, "ok": ok}
 
 
 def _verify_investor_flow(today: str) -> dict:
@@ -176,74 +187,12 @@ def _verify_investor_flow(today: str) -> dict:
     return {"status": status, "checked": len(codes), "ok": ok}
 
 
-def _verify_minute_candles(today: str) -> dict:
-    """1분봉 CSV — 랜덤 5종목 마지막 행 날짜 == today"""
-    codes = _load_universe_codes(5)
-    if not codes:
-        return {"status": "FAIL", "reason": "유니버스 로드 실패", "checked": 0, "ok": 0}
-    ok = 0
-    for code in codes:
-        csv_path = MIN1_DIR / f"{code}.csv"
-        last_date = _get_last_csv_date(csv_path)
-        if last_date == today:
-            ok += 1
-    status = "PASS" if ok == len(codes) else ("PARTIAL" if ok > 0 else "FAIL")
-    return {"status": status, "checked": len(codes), "ok": ok}
-
-
-def _verify_minute_5min(today: str) -> dict:
-    """5분봉 CSV — 랜덤 5종목 마지막 행 날짜 == today"""
-    codes = _load_universe_codes(5)
-    if not codes:
-        return {"status": "FAIL", "reason": "유니버스 로드 실패", "checked": 0, "ok": 0}
-    ok = 0
-    for code in codes:
-        csv_path = MIN5_DIR / f"{code}.csv"
-        last_date = _get_last_csv_date(csv_path)
-        if last_date == today:
-            ok += 1
-    status = "PASS" if ok == len(codes) else ("PARTIAL" if ok > 0 else "FAIL")
-    return {"status": status, "checked": len(codes), "ok": ok}
-
-
 def _verify_nationality(today: str) -> dict:
     """KRX 국적별 — 6/22 KRX kill switch 이후 점검 제외 (7/7 검수 M-2 fix).
 
     절대룰: 기초데이터 점검은 KIS 채널만·nationality는 표에서 제외.
     매일 FAIL 노이즈가 박제·sync되던 것을 SKIP으로 정직화(수집 재개 제안 아님)."""
     return {"status": "SKIP", "reason": "KRX kill switch 정상 (점검 제외·절대룰)"}
-
-
-def _verify_short_selling(today: str) -> dict:
-    """공매도 잔고 — DC-04: 0개면 SKIP, 14일+ stale이면 SKIP (pykrx 깨짐)"""
-    # DC-04: SHORT_DIR에 파일이 0개면 pykrx 깨짐으로 인한 미배포
-    if not SHORT_DIR.exists() or len(list(SHORT_DIR.glob("*_short_bal.csv"))) == 0:
-        return {"status": "SKIP", "reason": "공매도 데이터 미배포 (pykrx API 깨짐)"}
-    codes = _load_universe_codes(5)
-    if not codes:
-        return {"status": "FAIL", "reason": "유니버스 로드 실패"}
-    ok = 0
-    latest_dates = []
-    for code in codes:
-        csv_path = SHORT_DIR / f"{code}_short_bal.csv"
-        last_date = _get_last_csv_date(csv_path)
-        if last_date:
-            latest_dates.append(last_date)
-            if last_date >= today:
-                ok += 1
-    if ok >= 3:
-        return {"status": "PASS", "checked": len(codes), "ok": ok}
-    # pykrx API 깨짐 → 14일+ stale이면 SKIP (매일 FAIL 노이즈 방지)
-    if latest_dates:
-        best = max(latest_dates)
-        try:
-            days_stale = (date.fromisoformat(today) - date.fromisoformat(best)).days
-            if days_stale > 14:
-                return {"status": "SKIP", "reason": f"pykrx API 깨짐 ({days_stale}일 경과)", "latest": best}
-        except Exception:
-            pass
-    status = "PARTIAL" if ok > 0 else "FAIL"
-    return {"status": status, "checked": len(codes), "ok": ok}
 
 
 def _verify_news_sentiment(today: str) -> dict:
@@ -491,22 +440,6 @@ def _verify_sector_history(today: str) -> dict:
         return {"status": "PASS", "latest": latest, "total_dates": len(dates)}
     except Exception as e:
         return {"status": "FAIL", "reason": str(e)}
-
-
-def _verify_sector_relay(today: str) -> dict:
-    """섹터/그룹 릴레이 — 시그널 기록에서 오늘 실행 확인"""
-    # _job_record_signals에서 생성되는 시그널 CSV 확인
-    today_short = today.replace("-", "")
-    signal_csv = SIGNALS_DIR / f"{today_short}.csv"
-    if signal_csv.exists():
-        return {"status": "PASS", "file": signal_csv.name}
-    # signals 디렉터리의 최신 파일 확인
-    if SIGNALS_DIR.exists():
-        csvs = sorted(SIGNALS_DIR.glob("2*.csv"))
-        if csvs:
-            latest = csvs[-1].stem
-            return {"status": "FAIL", "reason": f"최신 시그널: {latest}", "latest": latest}
-    return {"status": "FAIL", "reason": "시그널 파일 없음"}
 
 
 def _verify_guardian(today: str) -> dict:

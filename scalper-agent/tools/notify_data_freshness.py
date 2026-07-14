@@ -92,14 +92,12 @@ def build_summary(result: dict, today: str) -> str:
 
     daily_st = d["daily_ohlcv"]["status"]
     inv_st = d["investor_flow"]["status"]
-    # 종가: daily PARTIAL이어도 활성종목 수급검증(investor PASS)이 종가 today를 이미 입증
-    #        → 상폐 랜덤샘플 오탐을 요약 레벨에서 흡수(근본 fix는 내일 TODO 2번).
+    # 종가: daily_ohlcv가 비율임계(dead 2개 허용)로 상폐 랜덤샘플 오탐을 자체 흡수(7/14 검수 High fix).
+    #        따라서 여기서 요약 레벨 흡수 없이 상태 그대로 표기 — PARTIAL/FAIL은 진짜 부분수집 실패(M-2 fix).
     if daily_st == "PASS":
         daily_line = "✅ 종가(OHLCV)"
-    elif daily_st == "PARTIAL" and inv_st == "PASS":
-        daily_line = "✅ 종가(OHLCV)  활성종목 정상·상폐샘플 제외"
     else:
-        daily_line = f"{_MARK.get(daily_st, '❓')} 종가(OHLCV)"
+        daily_line = f"{_MARK.get(daily_st, '❓')} 종가(OHLCV)  {d['daily_ohlcv'].get('ok', '')}/{d['daily_ohlcv'].get('checked', '')}"
 
     fx = _foreign_exh_status(today)
 
@@ -121,7 +119,7 @@ def build_summary(result: dict, today: str) -> str:
     ]
 
     core_ok = (
-        daily_st in ("PASS", "PARTIAL")
+        daily_st == "PASS"
         and inv_st == "PASS"
         and d["flow_market"]["status"] == "PASS"
         and d["short_kis"]["status"] == "PASS"
@@ -131,7 +129,7 @@ def build_summary(result: dict, today: str) -> str:
         lines.append("✅ 핵심 채널 모두 정상 — 실주문 0·페이퍼")
     else:
         bad = []
-        if daily_st == "FAIL" or (daily_st == "PARTIAL" and inv_st != "PASS"):
+        if daily_st != "PASS":
             bad.append("종가")
         if inv_st != "PASS":
             bad.append("투자자수급")
@@ -187,9 +185,11 @@ def main():
     if not tg.enabled:
         print("[notify] 텔레그램 미설정(토큰 없음) — 발송 스킵", file=sys.stderr)
         return 1
-    tg.send_report(msg)
-    print("\n[notify] 텔레그램 발송 완료")
-    return 0
+    if tg.send_report(msg):
+        print("\n[notify] 텔레그램 발송 완료")
+        return 0
+    print("[notify] 텔레그램 발송 실패 — 사장님 미수신 가능(토큰/네트워크 확인)", file=sys.stderr)
+    return 1
 
 
 if __name__ == "__main__":

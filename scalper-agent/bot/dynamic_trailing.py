@@ -26,6 +26,8 @@ import logging
 from dataclasses import dataclass
 from typing import Dict, Literal, Optional, Sequence
 
+from data.sajang_rules import SAJANG  # 단일진실 — trail/activation 하드코딩 3.0 제거(7/14 검수 High)
+
 logger = logging.getLogger(__name__)
 
 
@@ -128,8 +130,9 @@ def decide_trailing(
     # ★ 5/25 사장님 영구 룰 ★ 모든 zone 고점 -3% 일관
     # 13-B 동적 (-3/-5/-7/-10) + 13-E 상한가 직전 (-12/-15) ★ 폐기 ★
     # 사장님: "-7%, -10%, -12%, -15%까지 회귀를 놔둘 필요가 있냐"
-    trail = 3.0
-    activation = 3.0
+    # ★ SAJANG 단일진실 참조(7/14 검수 High) — 하드코딩 3.0 제거·룰 변경 시 drift 방지. 현재 값 동일(3.0).
+    trail = SAJANG.TRAILING_PCT
+    activation = SAJANG.TRAILING_ACTIVATION_PCT
 
     if strength == "limit_up_imminent":
         # 상한가 +25%+ — limit_up_split_sell 모듈에서 처리 (참고용 reason만)
