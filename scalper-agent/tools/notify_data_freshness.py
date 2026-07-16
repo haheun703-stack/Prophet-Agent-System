@@ -30,6 +30,14 @@ BASE_DIR = Path(__file__).resolve().parent.parent  # scalper-agent/
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
+# cron 환경엔 셸 export가 없어 config.yaml의 ${TELEGRAM_*} 해석이 빈 값 → 발송 실패
+# (7/15 20:10 실측). collect_daily.py와 동일 관례로 프로젝트 루트 .env 로드(없으면 무시).
+try:
+    from dotenv import load_dotenv
+    load_dotenv(BASE_DIR.parent / ".env")
+except Exception:
+    pass
+
 # 이모지 포함 출력 — 로케일이 UTF-8이 아닌 환경(win32 cp949·C locale cron)에서도 안전.
 # cron은 `-X utf8`로도 실행하나 이중 방어(7/10 win32 no_tg 교훈과 동일 취지).
 try:
@@ -41,6 +49,7 @@ from data.data_verifier import (  # noqa: E402
     DataVerifier,
     _load_active_codes,
     _get_last_csv_date,
+    _csv_has_date,
     FLOW_DIR,
 )
 from output.telegram_alert import TelegramAlert  # noqa: E402
@@ -69,10 +78,11 @@ def _foreign_exh_status(today: str) -> dict:
     ok = 0
     latest = None
     for c in codes:
-        d = _get_last_csv_date(FLOW_DIR / f"{c}_foreign_exh.csv")
+        p = FLOW_DIR / f"{c}_foreign_exh.csv"
+        d = _get_last_csv_date(p)
         if d:
             latest = d if latest is None else max(latest, d)
-            if d == today:
+            if _csv_has_date(p, today):  # 소급(--date) 검증에도 안전 (7/16 fix)
                 ok += 1
     if ok >= len(codes) - 1:
         status = "PASS"

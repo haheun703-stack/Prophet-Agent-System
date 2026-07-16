@@ -131,6 +131,12 @@
 
 ---
 
+## 📅 매일 업무 루틴 (7/16 사장님 지시 — 영구)
+
+- **세션 시작 = 아침 루틴 수행**: `scalper-agent/docs/checklist/DAILY_ROUTINE.md` A1~A8 (전일 기초데이터 소급 실측·nightly 완주·20:10 발송 성공·observe 가동·봇 안전·미러·업무일지)
+- **매일 업무일지**: `scalper-agent/docs/journal/ops/YYYY-MM-DD.md` — 체크 결과 + 개선점 각주 + **자기성찰 4문항**(잘한 것/미흡/교훈→메모리/내일 적용 1가지)
+- **개선점 각주 백로그**(DAILY_ROUTINE.md §4) 매일 최소 1건 소진 — "매일 개선해나가는 단타봇"
+
 ## 🔗 VPS / 인프라
 
 - **VPS**: AWS Lightsail `13.209.153.221` (ubuntu, 24/7 systemd)
@@ -184,4 +190,4 @@
 
 ---
 
-**Last updated**: 2026-07-10 (사실 현행화: 데이터 메인=VPS·봇 OFF 명시·4-Tier 표기 통일·v2/OBSERVE 현행 반영 — 룰 무변경)
+**Last updated**: 2026-07-16 (매일 업무루틴·자기성찰 체계 신설 — 7/16 사장님 지시. 룰 무변경)

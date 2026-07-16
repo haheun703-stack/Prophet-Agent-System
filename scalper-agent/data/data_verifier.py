@@ -78,7 +78,7 @@ def _load_universe_codes(n: int = 10) -> List[str]:
 
 
 def _load_active_codes(n: int, today: str, max_scan: int = 300) -> List[str]:
-    """오늘 거래된 활성 종목(daily 마지막 행 == today)만 n개 랜덤 반환.
+    """오늘 거래된 활성 종목(daily 꼬리 5행에 today 행 존재)만 n개 랜덤 반환.
 
     상폐·거래정지 종목은 daily·investor·short 3채널이 동반 정지(KIS 미제공=정상)라
     universe.json(6/22 박제)에 남아 있어도 daily가 stale → 여기서 자동 제외된다.
@@ -94,11 +94,34 @@ def _load_active_codes(n: int, today: str, max_scan: int = 300) -> List[str]:
     random.shuffle(codes)
     active: List[str] = []
     for c in codes[:max_scan]:
-        if _get_last_csv_date(DAILY_DIR / f"{c}.csv") == today:
+        if _csv_has_date(DAILY_DIR / f"{c}.csv", today):
             active.append(c)
             if len(active) >= n:
                 break
     return active
+
+
+def _csv_has_date(csv_path: Path, target: str, tail_rows: int = 5) -> bool:
+    """CSV 마지막 tail_rows행 안에 target 날짜 행이 존재하는지.
+
+    '마지막 행 == target' 비교는 장중 placeholder(당일 0값 행)나 이후 날짜 행이
+    붙는 순간 과거일 소급 검증(--date)이 깨진다(7/16 실측: 7/15 investor가
+    아침 재검증에서 10/10→0/10 착시). 당일 저녁 정규 검증에선
+    마지막 행 == target ⟹ 포함이므로 기존 판정과 동일하다."""
+    if not csv_path.exists():
+        return False
+    try:
+        with open(csv_path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        for line in reversed(lines[-tail_rows:]):
+            s = line.strip()
+            if not s:
+                continue
+            if s.split(",")[0].strip()[:10] == target:
+                return True
+        return False
+    except Exception:
+        return False
 
 
 def _get_last_csv_date(csv_path: Path) -> Optional[str]:
@@ -139,7 +162,7 @@ def _file_mtime_date(path: Path) -> Optional[str]:
 # ═══════════════════════════════════════════
 
 def _verify_daily_ohlcv(today: str) -> dict:
-    """일봉 OHLCV CSV — 랜덤 10종목 마지막 행 날짜 == today (비율 임계).
+    """일봉 OHLCV CSV — 랜덤 10종목 꼬리 5행에 today 행 존재 (비율 임계).
 
     죽은 종목(상폐·정지)이 universe.json(6/22 박제)에 ~3.4% 잔존 → 랜덤 표본에 섞이면
     '전원 today' 기준은 3회 중 1회꼴로 거짓 PARTIAL(7/14 검수 실측 29.5%). dead 2개까지
@@ -151,9 +174,7 @@ def _verify_daily_ohlcv(today: str) -> dict:
         return {"status": "FAIL", "reason": "유니버스 로드 실패", "checked": 0, "ok": 0}
     ok = 0
     for code in codes:
-        csv_path = DAILY_DIR / f"{code}.csv"
-        last_date = _get_last_csv_date(csv_path)
-        if last_date == today:
+        if _csv_has_date(DAILY_DIR / f"{code}.csv", today):
             ok += 1
     n = len(codes)
     if ok >= n - 2:        # dead 노이즈(상폐·정지 최대 2개) 허용 — 오탐 29.5%→~0.3%
@@ -166,7 +187,7 @@ def _verify_daily_ohlcv(today: str) -> dict:
 
 
 def _verify_investor_flow(today: str) -> dict:
-    """투자자 수급 CSV — 활성 종목(daily 오늘자) 랜덤 10 마지막 행 == today.
+    """투자자 수급 CSV — 활성 종목(daily 오늘자) 랜덤 10 꼬리 5행에 today 행 존재.
 
     상폐·정지 종목(daily도 stale=KIS 미제공 정상)은 _load_active_codes가 표본에서
     자동 제외 → 6/22 박제 universe.json의 죽은 종목을 밟던 랜덤 PARTIAL 오탐 차단(7/13).
@@ -179,9 +200,7 @@ def _verify_investor_flow(today: str) -> dict:
                 "checked": 0, "ok": 0}
     ok = 0
     for code in codes:
-        csv_path = FLOW_DIR / f"{code}_investor.csv"
-        last_date = _get_last_csv_date(csv_path)
-        if last_date == today:
+        if _csv_has_date(FLOW_DIR / f"{code}_investor.csv", today):
             ok += 1
     status = "PASS" if ok == len(codes) else ("PARTIAL" if ok > 0 else "FAIL")
     return {"status": status, "checked": len(codes), "ok": ok}
