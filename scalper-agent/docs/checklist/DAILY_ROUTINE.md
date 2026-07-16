@@ -16,7 +16,7 @@
 | A2 | **nightly 파이프라인 완주 확인** | VPS: `tail logs/nightly.log` | `요약: N/N 성공` + ⑳ freshness "완료위장 없음" |
 | A3 | **어제 20:10 텔레그램 발송 성공 확인** | VPS: `tail logs/notify_freshness.log` | `[notify] 텔레그램 발송 완료` (실패 문구 발견 시 즉시 원인 추적) |
 | A4 | **OBSERVE v2 러너 가동 확인** (평일 09~10시) | VPS: `tail logs/observe_v2.log` + intents date | 오늘 날짜 로그 존재·intents date=오늘 |
-| A5 | **⑲-2 대조 결과 확인** (라이브 판정 증거 누적) | nightly.log의 `[observe_v2] 대조` 라인 | PASS (miss 0·phantom 0) |
+| A5 | **⑲-2 대조 + ⑲-3 페이퍼 성과 확인** (라이브 판정 증거 누적) | nightly.log의 `[observe_v2] 대조`·`[v2_paper]` 라인 | 대조 PASS (miss 0·phantom 0)·전일 정산 존재·승률/수익금 추이 |
 | A6 | **봇 서비스·안전 불변식** | VPS: `systemctl is-active bodyhunter-bot` | active + 실매매 OFF(PAPER_ONLY)·실주문 0 |
 | A7 | **로컬 미러 신선도** (VPSSync 수신 확인) | 로컬: `tail -1 data_store/daily/005930.csv` | 전일 행 존재 |
 | A8 | **업무일지 작성 시작** | `docs/journal/ops/오늘.md` 생성 | A1~A7 결과 표 기록 + 전일 각주 이월 |
@@ -55,6 +55,8 @@
 - **[F-6]** (7/16) **VPS `_staging/`·`_upload/`·`from-jgis` 소규모 확인 후 정리** (7/14 잔여).
 - **[F-7]** (7/16) **foreign_exh ⚠️ 8/10 소표본 관용 임계 검토** (7/14 LOW 잔여 — 현재 9/10, 10/10 관측 중이라 급하지 않음).
 - **[F-8]** (7/16) **아침 루틴 A1~A7 원커맨드 스크립트화** (`tools/daily_ops_check.py`, read-only) — 수동 ssh 7번 → 1번. 검수 후 도입 (MED).
+- **[F-9]** (7/16) **7/13(폭락장) ticks 유효행 8% — 수집기 장애 원인 규명** — 09:24 이후 전행 price=0(봇 1분 폴링이 폭락장에서 멈춤/스로틀 의심). 폭락장=가장 데이터가 필요한 날. 재발 시 ⑲/⑲-3 판정 불능 (MED).
+- **[F-10]** (7/16) **섹터 쿨다운을 ⑲-3 페이퍼에 결합** — 7/10 사전합의 안전핀 중 유일 미리허설(섹터맵 필요). 라이브 전 필수 (MED).
 
 ## §5. 자기성찰 템플릿 (매일 업무일지 마지막 섹션)
 

@@ -99,6 +99,16 @@ def run() -> int:
               f"{'OK' if ok else '⚠ STALE (intent 있는 날 대조 부재=⑲-2 예외 의심)'}")
         if not ok:
             stale.append("⑲-2 observe_compare")
+        # ⑲-3 페이퍼 장부(7/16) — intent 있는 날은 당일 정산도 있어야 함 (동일 완료위장 방어)
+        try:
+            led = json.loads((STORE / "observe_v2_paper_ledger.json").read_text(encoding="utf-8"))
+            ok3 = intents_date in (led.get("days") or {})
+        except Exception:
+            ok3 = False
+        print(f"[freshness] ⑲-3 v2_paper_ledger: "
+              f"{'OK' if ok3 else '⚠ STALE (intent 있는 날 정산 부재=⑲-3 예외 의심)'}")
+        if not ok3:
+            stale.append("⑲-3 v2_paper_ledger")
 
     # soft check (매일 갱신이 보장 안 되는 것 — 정보만)
     for name, path, key in (("③-2 early(soft)", STORE / "early_variant_shadow.json", "updated_at"),
