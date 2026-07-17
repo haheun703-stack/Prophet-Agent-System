@@ -436,10 +436,25 @@ def _principles_7_9(a_trades: list, all_days: list = None) -> dict:
         return {}
 
 
+def _is_trading_day_dir(name: str) -> bool:
+    """ticks/{YYYYMMDD} dir이 실제 거래일인지 — 휴장일 스테일 dir 제외.
+
+    7/17 제헌절 실측: 캘린더 누락 상태로 봇이 휴장일에 폴링하면 전일 종가 박제
+    (가격·거래량 고정) dir이 생기고, 전량 replay가 이를 유령 거래로 삼킨다.
+    파싱/캘린더 실패 시 True(기존 동작 보수 유지)."""
+    try:
+        from data.trading_calendar import is_trading_day
+        from datetime import date as _d
+        return is_trading_day(_d(int(name[:4]), int(name[4:6]), int(name[6:8])))
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def run(days_limit=None, save=True) -> dict:
     if not TICKS.exists():
         return {"error": "ticks 없음 (VPS 전용 자산 — VPS에서 실행)"}
-    days_sorted = sorted(d.name for d in TICKS.iterdir() if d.is_dir())
+    days_sorted = sorted(d.name for d in TICKS.iterdir()
+                         if d.is_dir() and _is_trading_day_dir(d.name))
     if days_limit:
         days_sorted = days_sorted[-int(days_limit):]
     bmap = _ledger_breadth_map()

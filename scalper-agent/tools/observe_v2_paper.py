@@ -64,6 +64,18 @@ BACKFILL_FROM = "20260713" # 첫 실전 가동일 — 7/10 사후 스모크(late
 _WD = "월화수목금토일"
 
 
+def _is_trading_yyyymmdd(day: str) -> bool:
+    """YYYYMMDD가 거래일인지 — 휴장일 스테일 intents/ticks의 장부 유입 차단(7/17 Tier1 Med fix).
+
+    --daily뿐 아니라 --settle/--backfill 수동 경로도 대칭 방어(⑲ replay 필터와 동일 원리).
+    파싱/캘린더 실패 시 True(기존 동작 보수 유지)."""
+    try:
+        from data.trading_calendar import is_trading_day
+        return is_trading_day(date(int(day[:4]), int(day[4:6]), int(day[6:8])))
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def _atomic_write(path: Path, data) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -223,7 +235,8 @@ def _send(msg: str, no_tg: bool) -> None:
         return
     try:
         from verifiers._common import send_telegram
-        send_telegram(msg)
+        if not send_telegram(msg):   # 반환 False = silent 실패 — 가시화(7/14 M-1 원리·7/17 fix)
+            print("[v2_paper] 텔레그램 발송 실패 — 사장님 미수신 가능(토큰/네트워크 확인)")
     except Exception as e:  # noqa: BLE001
         print(f"[v2_paper] 텔레그램 실패(장부는 완료): {e}")
 
@@ -254,6 +267,9 @@ def main() -> int:
             hist = []
         for h in hist:
             hd = h.get("date", "")
+            if not _is_trading_yyyymmdd(hd):
+                print(f"[v2_paper] {hd} 휴장일(스테일 의심) — 백필 제외")
+                continue
             if hd >= BACKFILL_FROM and hd not in led.get("days", {}):
                 rec = settle_day(hd, h.get("intents", {}) or {})
                 save_day(rec)
@@ -263,6 +279,9 @@ def main() -> int:
         return 0
 
     if args.settle or args.daily:
+        if not _is_trading_yyyymmdd(day):
+            print(f"[v2_paper] {day} 휴장일 — 정산 제외(스테일 유입 차단)")
+            return 0
         if not (pb.TICKS / day).exists():
             print(f"[v2_paper] ticks/{day} 없음 — 정산 불가·skip")
             return 0
