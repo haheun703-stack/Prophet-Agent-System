@@ -74,6 +74,7 @@ CORE_FILES = [
     "observe_v2_compare.json",     # 7/10 — ⑲-2 실시간↔최종 대조 (소액 라이브 전환 판정 증거)
     "observe_v2_history.json",     # 7/10 — 대조 90일 누적 (판정은 이 히스토리로)
     "observe_v2_paper_ledger.json",  # 7/16 — v2 페이퍼 장부(승률/수익금 누적·라이브 판정 증거) — 작성 시점 sync 등록(누락 3회 재발 교훈)
+    "universe.json",               # 7/17 [F-1] — prune 도구 도입으로 갱신 자산화(6/22 박제 해제) → 미러 동기화 대상
 ]
 
 # 학습 데이터 (항상 동기화 — 일부 파일은 VPS에 없을 수 있음, 실패는 무시)

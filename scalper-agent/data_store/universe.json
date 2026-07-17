@@ -4069,17 +4069,6 @@
     "per": 77.8,
     "pbr": 2.19
   },
-  "496320": {
-    "name": "본시스템즈",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "기타",
-    "cap_억": 10393,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 0.0
-  },
   "108320": {
     "name": "LX세미콘",
     "market": "KOSPI",
@@ -5565,17 +5554,6 @@
     "per": 0.0,
     "pbr": 0.0
   },
-  "001570": {
-    "name": "금양",
-    "market": "KOSPI",
-    "suffix": ".KS",
-    "mkt_code": "J",
-    "sector": "화학",
-    "cap_억": 6332,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 1.38
-  },
   "001530": {
     "name": "DI동일",
     "market": "KOSPI",
@@ -5718,17 +5696,6 @@
     "volume": 124494,
     "per": 19.0,
     "pbr": 1.93
-  },
-  "006380": {
-    "name": "카프로",
-    "market": "KOSPI",
-    "suffix": ".KS",
-    "mkt_code": "J",
-    "sector": "화학",
-    "cap_억": 6185,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 8.06
   },
   "005420": {
     "name": "코스모화학",
@@ -6477,17 +6444,6 @@
     "volume": 58213,
     "per": 0.0,
     "pbr": 20.18
-  },
-  "230360": {
-    "name": "에코마케팅",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "일반서비스",
-    "cap_억": 4962,
-    "volume": 24745,
-    "per": 30.3,
-    "pbr": 2.14
   },
   "004690": {
     "name": "삼천리",
@@ -9811,17 +9767,6 @@
     "per": 2.1,
     "pbr": 0.33
   },
-  "309710": {
-    "name": "아이티켐",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "제약",
-    "cap_억": 2684,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 4.02
-  },
   "226320": {
     "name": "잇츠한불",
     "market": "KOSPI",
@@ -9920,17 +9865,6 @@
     "volume": 96183,
     "per": 7.1,
     "pbr": 0.48
-  },
-  "182400": {
-    "name": "엔케이젠바이오텍코리아",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "제약",
-    "cap_억": 2654,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 37.07
   },
   "079960": {
     "name": "동양이엔피",
@@ -10130,17 +10064,6 @@
     "per": 17.4,
     "pbr": 0.5
   },
-  "121800": {
-    "name": "비덴트",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "전기전자",
-    "cap_억": 2563,
-    "volume": 0,
-    "per": 29.1,
-    "pbr": 0.4
-  },
   "255220": {
     "name": "SG",
     "market": "KOSDAQ",
@@ -10184,17 +10107,6 @@
     "volume": 3543393,
     "per": 0.0,
     "pbr": 0.54
-  },
-  "377460": {
-    "name": "큐에이드",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "일반서비스",
-    "cap_억": 2531,
-    "volume": 0,
-    "per": 19.8,
-    "pbr": 4.46
   },
   "013890": {
     "name": "지누스",
@@ -11538,17 +11450,6 @@
     "per": 14.9,
     "pbr": 0.69
   },
-  "380540": {
-    "name": "옵티코어",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "전기전자",
-    "cap_억": 2066,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 8.95
-  },
   "073010": {
     "name": "케이에스피",
     "market": "KOSDAQ",
@@ -12121,17 +12022,6 @@
     "per": 13.2,
     "pbr": 0.91
   },
-  "016790": {
-    "name": "현대사료",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "음식료",
-    "cap_억": 1873,
-    "volume": 0,
-    "per": 43.2,
-    "pbr": 2.45
-  },
   "000520": {
     "name": "삼일제약",
     "market": "KOSPI",
@@ -12648,17 +12538,6 @@
     "volume": 178099,
     "per": 0.0,
     "pbr": 1.86
-  },
-  "000300": {
-    "name": "DH오토넥스",
-    "market": "KOSPI",
-    "suffix": ".KS",
-    "mkt_code": "J",
-    "sector": "운송장비",
-    "cap_억": 1740,
-    "volume": 0,
-    "per": 41.6,
-    "pbr": 4.81
   },
   "462520": {
     "name": "조선내화",
@@ -13430,17 +13309,6 @@
     "per": 0.0,
     "pbr": 3.87
   },
-  "066410": {
-    "name": "버킷스튜디오",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "통신",
-    "cap_억": 1596,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 1.21
-  },
   "089470": {
     "name": "HDC현대EP",
     "market": "KOSPI",
@@ -13451,17 +13319,6 @@
     "volume": 96632,
     "per": 3.9,
     "pbr": 0.36
-  },
-  "046070": {
-    "name": "코다코",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "운송장비",
-    "cap_억": 1591,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 11.62
   },
   "217820": {
     "name": "원익피앤이",
@@ -14838,17 +14695,6 @@
     "per": 0.0,
     "pbr": 14.43
   },
-  "269620": {
-    "name": "시스웍",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "의료정밀",
-    "cap_억": 1320,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 0.0
-  },
   "205100": {
     "name": "엑셈",
     "market": "KOSDAQ",
@@ -15277,17 +15123,6 @@
     "volume": 110353,
     "per": 106.0,
     "pbr": 0.61
-  },
-  "036690": {
-    "name": "코맥스",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "전기전자",
-    "cap_억": 1256,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 4.56
   },
   "066310": {
     "name": "큐에스아이",
@@ -15872,17 +15707,6 @@
     "per": 35.0,
     "pbr": 0.69
   },
-  "041590": {
-    "name": "플래스크",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "건설",
-    "cap_억": 1160,
-    "volume": 0,
-    "per": 395.0,
-    "pbr": 2.8
-  },
   "337930": {
     "name": "젝시믹스",
     "market": "KOSDAQ",
@@ -16300,17 +16124,6 @@
     "volume": 11580,
     "per": 47.0,
     "pbr": 2.94
-  },
-  "011810": {
-    "name": "STX",
-    "market": "KOSPI",
-    "suffix": ".KS",
-    "mkt_code": "J",
-    "sector": "유통",
-    "cap_억": 1094,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 0.0
   },
   "066700": {
     "name": "테라젠이텍스",
@@ -16895,17 +16708,6 @@
     "per": 6.1,
     "pbr": 0.74
   },
-  "119650": {
-    "name": "KC코트렐",
-    "market": "KOSPI",
-    "suffix": ".KS",
-    "mkt_code": "J",
-    "sector": "기계장비",
-    "cap_억": 1007,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 1.97
-  },
   "094940": {
     "name": "푸른기술",
     "market": "KOSDAQ",
@@ -17037,17 +16839,6 @@
     "volume": 13857,
     "per": 0.0,
     "pbr": 0.0
-  },
-  "246720": {
-    "name": "아스타",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "제약",
-    "cap_억": 994,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 9.98
   },
   "265560": {
     "name": "영화테크",
@@ -17280,17 +17071,6 @@
     "per": 9.1,
     "pbr": 0.41
   },
-  "066790": {
-    "name": "씨씨에스",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "오락문화",
-    "cap_억": 972,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 3.55
-  },
   "439580": {
     "name": "블루엠텍",
     "market": "KOSDAQ",
@@ -17356,17 +17136,6 @@
     "volume": 165141,
     "per": 13.8,
     "pbr": 0.76
-  },
-  "068240": {
-    "name": "다원시스",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "전기전자",
-    "cap_억": 965,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 0.0
   },
   "004840": {
     "name": "DRB동일",
@@ -17576,17 +17345,6 @@
     "volume": 56306,
     "per": 6.0,
     "pbr": 0.66
-  },
-  "002210": {
-    "name": "동성제약",
-    "market": "KOSPI",
-    "suffix": ".KS",
-    "mkt_code": "J",
-    "sector": "제약",
-    "cap_억": 940,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 1.02
   },
   "137950": {
     "name": "제이씨케미칼",
@@ -18622,17 +18380,6 @@
     "per": 0.0,
     "pbr": 0.0
   },
-  "049180": {
-    "name": "셀루메드",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "제약",
-    "cap_억": 839,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 6.59
-  },
   "055490": {
     "name": "테이팩스",
     "market": "KOSPI",
@@ -18654,17 +18401,6 @@
     "volume": 761649,
     "per": 807.0,
     "pbr": 1.39
-  },
-  "183490": {
-    "name": "엔지켐생명과학",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "제약",
-    "cap_억": 837,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 0.54
   },
   "004440": {
     "name": "삼일씨엔에스",
@@ -18875,17 +18611,6 @@
     "per": 5.8,
     "pbr": 0.68
   },
-  "175250": {
-    "name": "아이큐어",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "화학",
-    "cap_억": 815,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 3.08
-  },
   "109080": {
     "name": "옵티시스",
     "market": "KOSDAQ",
@@ -18963,17 +18688,6 @@
     "per": 54.1,
     "pbr": 0.93
   },
-  "412540": {
-    "name": "제일엠앤에스",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "기계장비",
-    "cap_억": 810,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 0.0
-  },
   "100220": {
     "name": "비상교육",
     "market": "KOSPI",
@@ -19050,17 +18764,6 @@
     "volume": 853845,
     "per": 0.0,
     "pbr": 2.79
-  },
-  "001470": {
-    "name": "삼부토건",
-    "market": "KOSPI",
-    "suffix": ".KS",
-    "mkt_code": "J",
-    "sector": "건설",
-    "cap_억": 796,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 0.0
   },
   "102370": {
     "name": "케이옥션",
@@ -19986,17 +19689,6 @@
     "per": 15.5,
     "pbr": 0.63
   },
-  "234920": {
-    "name": "자이글",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "전기전자",
-    "cap_억": 718,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 3.71
-  },
   "099410": {
     "name": "동방선기",
     "market": "KOSDAQ",
@@ -20337,17 +20029,6 @@
     "volume": 13764,
     "per": 0.0,
     "pbr": 0.44
-  },
-  "073640": {
-    "name": "테라사이언스",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "금속",
-    "cap_억": 695,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 2.31
   },
   "456570": {
     "name": "아이엠지티",
@@ -21174,17 +20855,6 @@
     "per": 10.4,
     "pbr": 0.47
   },
-  "001840": {
-    "name": "이화공영",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "건설",
-    "cap_억": 625,
-    "volume": 0,
-    "per": 16.9,
-    "pbr": 4.03
-  },
   "004410": {
     "name": "서울식품",
     "market": "KOSPI",
@@ -21204,17 +20874,6 @@
     "sector": "기타",
     "cap_억": 623,
     "volume": 98178,
-    "per": 0.0,
-    "pbr": 0.0
-  },
-  "294090": {
-    "name": "이오플로우",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "의료정밀",
-    "cap_억": 622,
-    "volume": 0,
     "per": 0.0,
     "pbr": 0.0
   },
@@ -21680,17 +21339,6 @@
     "per": 0.0,
     "pbr": 1.88
   },
-  "099520": {
-    "name": "DGI",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "전기전자",
-    "cap_억": 581,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 2.52
-  },
   "066670": {
     "name": "디티씨",
     "market": "KOSDAQ",
@@ -21821,17 +21469,6 @@
     "cap_억": 574,
     "volume": 15785,
     "per": 0.0,
-    "pbr": 0.0
-  },
-  "245620": {
-    "name": "EDGC",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "일반서비스",
-    "cap_억": 574,
-    "volume": 0,
-    "per": 2.0,
     "pbr": 0.0
   },
   "219420": {
@@ -22065,17 +21702,6 @@
     "per": 12.8,
     "pbr": 1.0
   },
-  "340930": {
-    "name": "유일에너테크",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "기계장비",
-    "cap_억": 555,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 1.1
-  },
   "459550": {
     "name": "알트",
     "market": "KOSDAQ",
@@ -22207,17 +21833,6 @@
     "volume": 3674,
     "per": 0.0,
     "pbr": 0.0
-  },
-  "217480": {
-    "name": "에스디생명공학",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "화학",
-    "cap_억": 547,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 1.86
   },
   "050110": {
     "name": "캠시스",
@@ -22372,17 +21987,6 @@
     "volume": 73113,
     "per": 0.0,
     "pbr": 1.43
-  },
-  "002410": {
-    "name": "범양건영",
-    "market": "KOSPI",
-    "suffix": ".KS",
-    "mkt_code": "J",
-    "sector": "건설",
-    "cap_억": 531,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 0.0
   },
   "100660": {
     "name": "서암기계공업",
@@ -22681,17 +22285,6 @@
     "per": 8.0,
     "pbr": 0.26
   },
-  "096610": {
-    "name": "알에프세미",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "전기전자",
-    "cap_억": 515,
-    "volume": 0,
-    "per": 30.3,
-    "pbr": 3.58
-  },
   "031310": {
     "name": "아이즈비전",
     "market": "KOSDAQ",
@@ -22780,17 +22373,6 @@
     "per": 0.0,
     "pbr": 0.66
   },
-  "020760": {
-    "name": "일진디스플",
-    "market": "KOSPI",
-    "suffix": ".KS",
-    "mkt_code": "J",
-    "sector": "전기전자",
-    "cap_억": 509,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 1.63
-  },
   "057540": {
     "name": "옴니시스템",
     "market": "KOSDAQ",
@@ -22856,17 +22438,6 @@
     "volume": 25157,
     "per": 7.8,
     "pbr": 0.92
-  },
-  "393970": {
-    "name": "대진첨단소재",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "화학",
-    "cap_억": 504,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 0.8
   },
   "052460": {
     "name": "아이크래프트",
@@ -23132,17 +22703,6 @@
     "per": 2.0,
     "pbr": 0.48
   },
-  "257990": {
-    "name": "나우코스",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "기타",
-    "cap_억": 483,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 0.0
-  },
   "340440": {
     "name": "세림B&G",
     "market": "KOSDAQ",
@@ -23220,17 +22780,6 @@
     "per": 0.0,
     "pbr": 2.03
   },
-  "082660": {
-    "name": "코스나인",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "화학",
-    "cap_억": 478,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 2.16
-  },
   "403490": {
     "name": "우듬지팜",
     "market": "KOSDAQ",
@@ -23263,17 +22812,6 @@
     "volume": 6491,
     "per": 201.7,
     "pbr": 0.52
-  },
-  "418250": {
-    "name": "시큐레터",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "IT서비스",
-    "cap_억": 476,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 13.05
   },
   "002290": {
     "name": "삼일기업공사",
@@ -23329,17 +22867,6 @@
     "volume": 68099,
     "per": 89.7,
     "pbr": 0.98
-  },
-  "023440": {
-    "name": "제이스코홀딩스",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "금속",
-    "cap_억": 469,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 0.85
   },
   "002920": {
     "name": "유성기업",
@@ -23439,17 +22966,6 @@
     "volume": 915230,
     "per": 0.0,
     "pbr": 0.92
-  },
-  "069460": {
-    "name": "대호에이엘",
-    "market": "KOSPI",
-    "suffix": ".KS",
-    "mkt_code": "J",
-    "sector": "금속",
-    "cap_억": 463,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 0.56
   },
   "129890": {
     "name": "앱코",
@@ -23693,17 +23209,6 @@
     "per": 25.6,
     "pbr": 1.21
   },
-  "005030": {
-    "name": "부산주공",
-    "market": "KOSPI",
-    "suffix": ".KS",
-    "mkt_code": "J",
-    "sector": "운송장비",
-    "cap_억": 450,
-    "volume": 0,
-    "per": 22.1,
-    "pbr": 1.98
-  },
   "083550": {
     "name": "케이엠",
     "market": "KOSDAQ",
@@ -23803,17 +23308,6 @@
     "per": 0.0,
     "pbr": 0.87
   },
-  "074610": {
-    "name": "이엔플러스",
-    "market": "KOSPI",
-    "suffix": ".KS",
-    "mkt_code": "J",
-    "sector": "기계장비",
-    "cap_억": 448,
-    "volume": 0,
-    "per": 46.0,
-    "pbr": 2.64
-  },
   "032960": {
     "name": "동일기연",
     "market": "KOSDAQ",
@@ -23901,17 +23395,6 @@
     "volume": 109931,
     "per": 0.0,
     "pbr": 2.09
-  },
-  "288330": {
-    "name": "파라택시스코리아",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "일반서비스",
-    "cap_억": 441,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 1.01
   },
   "336060": {
     "name": "웨이버스",
@@ -24386,17 +23869,6 @@
     "per": 0.0,
     "pbr": 0.46
   },
-  "019490": {
-    "name": "엑시큐어하이트론",
-    "market": "KOSPI",
-    "suffix": ".KS",
-    "mkt_code": "J",
-    "sector": "전기전자",
-    "cap_억": 413,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 3.34
-  },
   "109820": {
     "name": "진매트릭스",
     "market": "KOSDAQ",
@@ -24506,17 +23978,6 @@
     "volume": 61385,
     "per": 13.7,
     "pbr": 0.57
-  },
-  "017040": {
-    "name": "광명전기",
-    "market": "KOSPI",
-    "suffix": ".KS",
-    "mkt_code": "J",
-    "sector": "전기전자",
-    "cap_억": 403,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 6.47
   },
   "200350": {
     "name": "아티스트스튜디오",
@@ -24649,17 +24110,6 @@
     "volume": 68120,
     "per": 15.6,
     "pbr": 0.3
-  },
-  "064090": {
-    "name": "인크레더블버즈",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "유통",
-    "cap_억": 396,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 0.59
   },
   "025440": {
     "name": "DH오토웨어",
@@ -25299,17 +24749,6 @@
     "per": 0.0,
     "pbr": 0.32
   },
-  "196490": {
-    "name": "디에이테크놀로지",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "기계장비",
-    "cap_억": 362,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 0.0
-  },
   "288980": {
     "name": "모아데이타",
     "market": "KOSDAQ",
@@ -25409,17 +24848,6 @@
     "per": 13.8,
     "pbr": 0.76
   },
-  "284620": {
-    "name": "카이노스메드",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "일반서비스",
-    "cap_억": 359,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 31.06
-  },
   "019570": {
     "name": "플루토스",
     "market": "KOSDAQ",
@@ -25475,17 +24903,6 @@
     "per": 69.3,
     "pbr": 0.3
   },
-  "068940": {
-    "name": "셀피글로벌",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "전기전자",
-    "cap_억": 357,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 3.44
-  },
   "130500": {
     "name": "GH신소재",
     "market": "KOSDAQ",
@@ -25518,17 +24935,6 @@
     "volume": 0,
     "per": 0.0,
     "pbr": 0.78
-  },
-  "263050": {
-    "name": "유틸렉스",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "제약",
-    "cap_억": 353,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 2.31
   },
   "013720": {
     "name": "THE CUBE&",
@@ -25981,17 +25387,6 @@
     "per": 0.0,
     "pbr": 0.76
   },
-  "495810": {
-    "name": "유비씨",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "기타",
-    "cap_억": 328,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 0.0
-  },
   "900070": {
     "name": "글로벌에스엠",
     "market": "KOSDAQ",
@@ -26168,17 +25563,6 @@
     "per": 22.9,
     "pbr": 0.2
   },
-  "210120": {
-    "name": "캔버스엔",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "오락문화",
-    "cap_억": 319,
-    "volume": 333171,
-    "per": 0.0,
-    "pbr": 3.19
-  },
   "252500": {
     "name": "세화피앤씨",
     "market": "KOSDAQ",
@@ -26288,17 +25672,6 @@
     "volume": 21396,
     "per": 167.7,
     "pbr": 0.42
-  },
-  "258830": {
-    "name": "세종메디칼",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "의료정밀",
-    "cap_억": 312,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 1.2
   },
   "101000": {
     "name": "KS인더스트리",
@@ -26552,17 +25925,6 @@
     "volume": 1,
     "per": 0.0,
     "pbr": 0.0
-  },
-  "246250": {
-    "name": "에스엘에스바이오",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "일반서비스",
-    "cap_억": 302,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 3.88
   },
   "227610": {
     "name": "아우딘퓨쳐스",
@@ -27202,17 +26564,6 @@
     "per": 7.5,
     "pbr": 0.51
   },
-  "043220": {
-    "name": "티에스넥스젠",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "기계장비",
-    "cap_억": 272,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 1.55
-  },
   "007770": {
     "name": "한일화학",
     "market": "KOSDAQ",
@@ -27411,17 +26762,6 @@
     "per": 0.0,
     "pbr": 0.43
   },
-  "005110": {
-    "name": "한창",
-    "market": "KOSPI",
-    "suffix": ".KS",
-    "mkt_code": "J",
-    "sector": "유통",
-    "cap_억": 264,
-    "volume": 0,
-    "per": 0.4,
-    "pbr": 1.53
-  },
   "003495": {
     "name": "대한항공우",
     "market": "KOSPI",
@@ -27476,17 +26816,6 @@
     "volume": 14473,
     "per": 0.0,
     "pbr": 0.77
-  },
-  "143210": {
-    "name": "핸즈코퍼레이션",
-    "market": "KOSPI",
-    "suffix": ".KS",
-    "mkt_code": "J",
-    "sector": "운송장비",
-    "cap_억": 262,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 0.28
   },
   "372800": {
     "name": "아이티아이즈",
@@ -27917,17 +27246,6 @@
     "per": 0.0,
     "pbr": 0.69
   },
-  "009310": {
-    "name": "참엔지니어링",
-    "market": "KOSPI",
-    "suffix": ".KS",
-    "mkt_code": "J",
-    "sector": "기계장비",
-    "cap_억": 233,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 0.28
-  },
   "191410": {
     "name": "육일씨엔에쓰",
     "market": "KOSDAQ",
@@ -27949,17 +27267,6 @@
     "volume": 0,
     "per": 0.0,
     "pbr": 0.0
-  },
-  "065150": {
-    "name": "대산F&B",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "유통",
-    "cap_억": 231,
-    "volume": 0,
-    "per": 2.7,
-    "pbr": 0.95
   },
   "353190": {
     "name": "휴럼",
@@ -28225,17 +27532,6 @@
     "per": 0.0,
     "pbr": 0.61
   },
-  "080720": {
-    "name": "한국유니온제약",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "제약",
-    "cap_억": 215,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 0.0
-  },
   "018620": {
     "name": "우진비앤지",
     "market": "KOSDAQ",
@@ -28323,17 +27619,6 @@
     "volume": 2098,
     "per": 0.0,
     "pbr": 0.57
-  },
-  "230980": {
-    "name": "비유테크놀러지",
-    "market": "KOSDAQ",
-    "suffix": ".KQ",
-    "mkt_code": "Q",
-    "sector": "IT서비스",
-    "cap_억": 213,
-    "volume": 0,
-    "per": 0.0,
-    "pbr": 10.9
   },
   "240600": {
     "name": "유진테크놀로지",
