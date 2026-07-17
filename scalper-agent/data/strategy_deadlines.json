@@ -1,0 +1,74 @@
+{
+  "note": "전략 데드라인 대장 (7/17 사장님 승인 — '전략에 데드라인 = 진짜 진화'). 기계 단일진실. 운영 룰은 docs/checklist/STRATEGY_DEADLINES.md. 데드라인 도래 = 판정 보고 의무·폐기/연장 결정은 사장님. metric이 있으면 checker가 데이터에서 자동 평가.",
+  "strategies": [
+    {
+      "id": "S-1",
+      "name": "PB-A v2 페이퍼(⑲-3)",
+      "start": "2026-07-13",
+      "deadline": "2026-07-31",
+      "criteria": "순누적 net 플러스 전환 (보조기준: 실측↔74일 백테스트 갭 — 주말 분석으로 확정)",
+      "metric": "v2_paper_cum_net",
+      "op": ">",
+      "threshold": 0,
+      "on_fail": "폐기 → 교체후보: v2 강화판(강도 상향·시간대 축소)·명분(⑪-2) 게이트 결합판",
+      "status": "active"
+    },
+    {
+      "id": "S-2",
+      "name": "⑯ 클러스터 수확 페이퍼",
+      "start": "2026-07-01",
+      "deadline": "2026-07-24",
+      "criteria": "forward 흑자 (원 설계 '2~3주 판정')",
+      "metric": "cluster_sum_ret",
+      "op": ">",
+      "threshold": 0,
+      "on_fail": "theme_relay 결합 재설계 또는 폐기",
+      "status": "active"
+    },
+    {
+      "id": "S-3",
+      "name": "③-4 테마 릴레이 shadow",
+      "start": "2026-06-22",
+      "deadline": "2026-07-21",
+      "criteria": "원 설계 '2주+ 관측 후 flip 판정' — 기한 4주 초과, 판정 보고",
+      "metric": null,
+      "on_fail": "S-2와 통합 또는 폐기",
+      "status": "active"
+    },
+    {
+      "id": "S-4",
+      "name": "③-2 early variant shadow",
+      "start": "2026-06-16",
+      "deadline": "2026-07-21",
+      "criteria": "단독 유지 가치 재판정 (6/18 중간판정: 진짜 게이트=재진입)",
+      "metric": null,
+      "on_fail": "폐기 (재진입 조건부 부활 시 흡수)",
+      "status": "active"
+    },
+    {
+      "id": "S-5",
+      "name": "6월 장기 shadow 일괄 (3-Type B/C·SDART·leader_momentum·sector_reversal 등)",
+      "start": "2026-06-01",
+      "deadline": "2026-07-21",
+      "criteria": "유지 가치 전수조사 (판정 자료로 쓰인 적 있는가) — 없으면 nightly 제외 제안",
+      "metric": null,
+      "on_fail": "nightly 제외 (기록 보존·재개 가능)",
+      "status": "active"
+    }
+  ],
+  "hold": [
+    {
+      "id": "H-1",
+      "name": "③-3 재진입 라이브",
+      "reason": "7/7 ticks 정밀검증 FAIL (일봉 수치는 해상도 착시)",
+      "resume_condition": "ticks 정밀 도구 재실행 통과 (8월 초 재검토)"
+    },
+    {
+      "id": "H-2",
+      "name": "⑰ 레짐 게이트",
+      "reason": "PB-A엔 역효과 (7/10 재확인) — 스윙 전용 관측",
+      "resume_condition": "스윙 전략 실전화 시 재판정"
+    }
+  ],
+  "judgments": []
+}

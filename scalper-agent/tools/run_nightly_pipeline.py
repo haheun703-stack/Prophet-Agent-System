@@ -128,6 +128,8 @@ def main():
          [PY, "tools/observe_v2_runner.py", "--compare"], 600),
         ("⑲-3 v2 페이퍼 장부",   # 7/16 사장님 "페이퍼로 승률·수익금부터" — 장중 intent를 최종 ticks로 페이퍼 정산(⑲ replay 동일규약·CB -6%p 리허설) → 누적 승률/수익금 장부+텔레그램. record-only·실주문 0·주문/SAJANG/picks 무접촉
          [PY, "tools/observe_v2_paper.py", "--daily"], 300),
+        ("⑲-4 전략 데드라인 체크",   # 7/17 사장님 "전략에 데드라인=진짜 진화" — 대장(data/strategy_deadlines.json) D-day+기준 자동평가, D-3 이내/초과만 텔레그램. 자동 폐기 없음(판정 보고 의무·결정=사장님). read-only
+         [PY, "tools/strategy_deadline_check.py", "--notify"], 120),
         ("⑳ 산출물 신선도 자가검증",   # 7/7 전체검수 fix — 핵심 산출물 오늘날짜 검증(완료위장 방지·stale이면 이 스텝이 ⚠) + DataVerifier 재실행(장전 박제 해소·fill 후 진실). read-only·매매 무접촉
          [PY, "tools/run_nightly_freshness_check.py"], 300),
     ]

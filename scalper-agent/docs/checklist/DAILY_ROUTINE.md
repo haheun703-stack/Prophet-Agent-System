@@ -20,6 +20,7 @@
 | A6 | **봇 서비스·안전 불변식** | VPS: `systemctl is-active bodyhunter-bot` | active + 실매매 OFF(PAPER_ONLY)·실주문 0 |
 | A7 | **로컬 미러 신선도** (VPSSync 수신 확인) | 로컬: `tail -1 data_store/daily/005930.csv` | 전일 행 존재 |
 | A8 | **업무일지 작성 시작** | `docs/journal/ops/오늘.md` 생성 | A1~A7 결과 표 기록 + 전일 각주 이월 |
+| A9 | **전략 데드라인 대장 확인** (7/17 신설) | `docs/checklist/STRATEGY_DEADLINES.md` | D-3부터 카운트다운 표기·도래 시 판정 보고 의무. **보고 첫 줄 = 스코어보드(누적 수익금·승률)** |
 
 **이상 발견 시**: 즉시 fix(자율 권한 내) 또는 §4 각주에 등재. 큰 결정은 사장님 보고.
 

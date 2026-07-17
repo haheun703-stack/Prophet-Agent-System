@@ -133,7 +133,8 @@
 
 ## 📅 매일 업무 루틴 (7/16 사장님 지시 — 영구)
 
-- **세션 시작 = 아침 루틴 수행**: `scalper-agent/docs/checklist/DAILY_ROUTINE.md` A1~A8 (전일 기초데이터 소급 실측·nightly 완주·20:10 발송 성공·observe 가동·봇 안전·미러·업무일지)
+- **세션 시작 = 아침 루틴 수행**: `scalper-agent/docs/checklist/DAILY_ROUTINE.md` A1~A9 (전일 기초데이터 소급 실측·nightly 완주·20:10 발송 성공·observe 가동·봇 안전·미러·업무일지·전략 데드라인 대장)
+- **★ 전략 데드라인 대장 (7/17 사장님 승인 — "데드라인=진짜 진화")**: `data/strategy_deadlines.json` + `tools/strategy_deadline_check.py`(nightly ⑲-4 자동). 데드라인 없는 전략 등록 금지·도래 시 판정 보고 의무·폐기/연장 결정=사장님. **보고 첫 줄 = 스코어보드(누적 수익금·승률)**
 - **매일 업무일지**: `scalper-agent/docs/journal/ops/YYYY-MM-DD.md` — 체크 결과 + 개선점 각주 + **자기성찰 4문항**(잘한 것/미흡/교훈→메모리/내일 적용 1가지)
 - **개선점 각주 백로그**(DAILY_ROUTINE.md §4) 매일 최소 1건 소진 — "매일 개선해나가는 단타봇"
 
