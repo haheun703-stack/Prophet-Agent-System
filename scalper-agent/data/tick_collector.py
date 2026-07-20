@@ -50,6 +50,8 @@ class TickCollector:
     def __init__(self):
         self._broker = None
         self._prev_volume: Dict[str, int] = {}  # 이전 거래량 (체결량 계산용)
+        self._last_api_error: Optional[str] = None   # 사이클 요약 로그용(7/20 사고 fix)
+        self._api_fail: int = 0                      # 사이클 내 API 거부 건수
 
     def _get_broker(self):
         if self._broker is not None:
@@ -96,9 +98,23 @@ class TickCollector:
                 f"{base}/uapi/domestic-stock/v1/quotations/inquire-price",
                 headers=h1, params=common_params, timeout=5,
             )
-            d1 = r1.json().get("output", {})
+            # ★ 7/13·7/20 사고 fix — KIS는 레이트리밋·토큰만료를 HTTP 200 + rt_cd!=0 으로 준다.
+            # 예외가 안 나므로 기존 코드는 output 결손을 price=0으로 기록했고, poll_once는
+            # 이를 '성공'으로 집계했다(오늘 로그 "2530/2531 성공"인데 전 종목 0). 조용한 오염 =
+            # ⑲/⑲-3 판정 증거가 통째로 무의미해지는 사고 → 거부는 거부로 인식하고 행을 쓰지 않는다.
+            j1 = r1.json()
+            if j1.get("rt_cd") not in ("0", 0, None):
+                self._last_api_error = f"{j1.get('msg_cd', '')} {str(j1.get('msg1', ''))[:40]}".strip()
+                self._api_fail += 1
+                return None
+            d1 = j1.get("output") or {}
 
-            price = int(d1.get("stck_prpr", 0))
+            price = int(d1.get("stck_prpr", 0) or 0)
+            if price <= 0:
+                # output 결손/휴장 스냅샷 — 0 기록은 신호·청산 시뮬을 오염시킨다(가격 0 행 금지)
+                self._last_api_error = self._last_api_error or "output 결손(price=0)"
+                self._api_fail += 1
+                return None
             change = int(d1.get("prdy_vrss", 0))
             # 하락이면 음수 처리
             sign = d1.get("prdy_vrss_sign", "0")
@@ -159,6 +175,8 @@ class TickCollector:
         save_dir = _ensure_dir(today)
 
         ok = 0
+        self._api_fail = 0
+        self._last_api_error = None
         for i, code in enumerate(codes):
             row = self._fetch_snapshot(code)
             if row is None:
@@ -177,6 +195,12 @@ class TickCollector:
             ok += 1
             time.sleep(0.05)  # 종목 간 대기 (rate limit)
 
+        # 사이클 건강도 가시화 — 조용한 실패 금지(7/20 사고: 전 종목 0인데 '성공' 집계)
+        if self._api_fail:
+            share = 100 * self._api_fail / max(len(codes), 1)
+            level = logger.error if share >= 50 else logger.warning
+            level(f"[tick] API 거부 {self._api_fail}/{len(codes)}종목 ({share:.0f}%) "
+                  f"— 최근 사유: {self._last_api_error or '미상'} (해당 행 미기록)")
         return ok
 
     def run_market_hours(self, codes: list, interval_sec: int = 60):
