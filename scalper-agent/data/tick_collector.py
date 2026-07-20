@@ -47,6 +47,11 @@ class TickCollector:
         "tick_volume",   # 체결량 (구간거래량)
     ]
 
+    # 장애 escalation 임계 (7/20 사고 fix — 자기증폭 차단 + 토큰만료 복구)
+    FAIL_BACKOFF_AT = 50      # 연속 실패 n건마다 백오프
+    FAIL_BACKOFF_SEC = 10     # 백오프 길이
+    FAIL_RESET_AT = 150       # 연속 실패 n건 = 토큰/세션 계열 의심 → broker 재생성 1회
+
     def __init__(self):
         self._broker = None
         self._prev_volume: Dict[str, int] = {}  # 이전 거래량 (체결량 계산용)
@@ -75,14 +80,24 @@ class TickCollector:
         2. 체결 (FHKST01010300): 체결강도, 체결량
         3. 호가 (FHKST01010200): 매도호가1, 매수호가1
         """
-        broker = self._get_broker()
-        base = broker.base_url
-        common_headers = {
-            "content-type": "application/json; charset=utf-8",
-            "authorization": broker.access_token,
-            "appKey": broker.api_key,
-            "appSecret": broker.api_secret,
-        }
+        # ★ broker 획득은 try 밖이라 예외가 poll_once까지 전파 → 폴링 스레드 사망.
+        # 원래는 세션 1회 생성이라 사실상 안전했으나, 7/20 fix로 장애 시 재생성(토큰 재발급)을
+        # 하게 되면서 '재발급 실패 = 루프 사망' 경로가 생겼다 → 여기서 격리(자체 모의검증 발견).
+        try:
+            broker = self._get_broker()
+            base = broker.base_url
+            common_headers = {
+                "content-type": "application/json; charset=utf-8",
+                "authorization": broker.access_token,
+                "appKey": broker.api_key,
+                "appSecret": broker.api_secret,
+            }
+        except Exception as e:  # noqa: BLE001
+            self._broker = None          # 다음 종목에서 재시도
+            self._last_api_error = f"broker 준비 실패: {str(e)[:40]}"
+            self._api_fail += 1
+            logger.warning(f"[tick] broker 준비 실패 — 다음 종목에서 재시도: {str(e)[:80]}")
+            return None
         common_params = {
             "fid_cond_mrkt_div_code": "J",
             "fid_input_iscd": code,
@@ -177,10 +192,27 @@ class TickCollector:
         ok = 0
         self._api_fail = 0
         self._last_api_error = None
+        streak = 0          # 연속 실패 — 레이트리밋/토큰만료 escalation 판단
+        reset_done = False  # 사이클당 broker 재발급 1회 (토큰 만료 복구)
         for i, code in enumerate(codes):
             row = self._fetch_snapshot(code)
             if row is None:
+                # ★ 실패 경로도 성공 경로와 동일 페이싱. early return이 _fetch_snapshot의
+                # sleep 2회를 건너뛰므로, 여기서 쉬지 않으면 장애 중 요청 속도가 오히려
+                # ~3배로 뛰어 레이트리밋을 자기증폭시킨다(7/20 fix 1차본의 결함).
+                time.sleep(0.05)
+                streak += 1
+                if streak in (self.FAIL_BACKOFF_AT, self.FAIL_BACKOFF_AT * 2):
+                    logger.warning(f"[tick] 연속 실패 {streak}건 — {self.FAIL_BACKOFF_SEC}s 백오프 "
+                                   f"(사유: {self._last_api_error or '미상'})")
+                    time.sleep(self.FAIL_BACKOFF_SEC)
+                if streak >= self.FAIL_RESET_AT and not reset_done:
+                    # 토큰 만료 계열이면 재발급 없이는 하루 종일 0 수집 — 1회 재생성 시도
+                    logger.error(f"[tick] 연속 실패 {streak}건 — broker 재생성(토큰 재발급) 시도")
+                    self._broker = None
+                    reset_done = True
                 continue
+            streak = 0
 
             # CSV에 append
             csv_path = save_dir / f"{code}.csv"
