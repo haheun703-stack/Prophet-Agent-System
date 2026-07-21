@@ -33,8 +33,9 @@
       "criteria": "원 설계 '2주+ 관측 후 flip 판정' — 기한 4주 초과, 판정 보고",
       "metric": null,
       "on_fail": "S-2와 통합 또는 폐기",
-      "status": "reported",
-      "reported": "2026-07-21"
+      "status": "dropped_strategy",
+      "reported": "2026-07-21",
+      "decision": "2026-07-21 사장님 승인 — 단타봇 매매 전략 후보에서 폐기 확정. 단 nightly ③-4 스텝은 유지: theme_relay_shadow.json이 웹봇 한국스윙 매매포인트(사장님 지시·theme_trading_points→upload_swing)와 ⑱ 아침 브리핑의 데이터 소스 → 제거 시 그 기능 사망(의존성 추적 확인). 라이브 매매 승격 후보에서만 제외."
     },
     {
       "id": "S-4",
@@ -44,8 +45,9 @@
       "criteria": "단독 유지 가치 재판정 (6/18 중간판정: 진짜 게이트=재진입)",
       "metric": null,
       "on_fail": "폐기 (재진입 조건부 부활 시 흡수)",
-      "status": "reported",
-      "reported": "2026-07-21"
+      "status": "dropped_strategy",
+      "reported": "2026-07-21",
+      "decision": "2026-07-21 사장님 승인 — early 단독 전략 폐기 확정(forward 전구간 음수). 단 nightly ③-2 스텝은 유지: run_reentry_shadow가 early_variant_shadow.json 후보를 소비(③-3 재진입=H-1 보류·8월 초 재검토)하고 ⑪-2 명분 라벨이 부착됨. 재진입이 폐기되면 그때 ③-2도 함께 제거."
     },
     {
       "id": "S-5",
@@ -55,8 +57,20 @@
       "criteria": "유지 가치 전수조사 (판정 자료로 쓰인 적 있는가) — 없으면 nightly 제외 제안",
       "metric": null,
       "on_fail": "nightly 제외 (기록 보존·재개 가능)",
-      "status": "reported",
-      "reported": "2026-07-21"
+      "status": "dropped_strategy",
+      "reported": "2026-07-21",
+      "decision": "2026-07-21 사장님 승인 — 전략 후보에서 폐기 확정. leader_momentum=nightly 스텝 이미 없음(제거 불요). sdart·3-Type B/C=④ paper_3type ledger에 A/B/C로 통합돼 ⑤/⑤-2/⑤-4 학습의 입력 → 제거 시 paper 학습 붕괴로 유지. sector_reversal=forward 보유 → S-6로 분리·정식 판정 대상 승격."
+    },
+    {
+      "id": "S-6",
+      "name": "sector_reversal shadow (S-5에서 분리·forward 보유)",
+      "start": "2026-06-09",
+      "deadline": "2026-08-07",
+      "criteria": "forward_d1/d3/d5로 status_5d(HOT/WARMING/RELAY 등) 라벨별 엣지 유무 정식 판정",
+      "metric": null,
+      "on_fail": "폐기 (nightly ③ 제외) 또는 게이트 결합",
+      "status": "active",
+      "note": "S-5 판정 중 forward 보유 확인돼 승격. 다음 심판 8/7."
     }
   ],
   "hold": [
@@ -80,7 +94,7 @@
       "verdict": "판정 설계 결함 + 리더 forward 음수",
       "evidence": "155건 전부 relay_leader_group=T (대조군 0건) → relay 유무 대조 자체가 불가능한 채로 4주 관측. 리더 forward d1 avg -0.55%(승43.3%)·d3 avg -2.21%(승31.4%) 음수.",
       "recommendation": "폐기 (대조군 부재로 4주치 판정 불가·재설계하려면 relay=F 대조군 배선 후 재시작이라 사실상 새 전략)",
-      "decision": null
+      "decision": "2026-07-21 사장님 승인·전략 폐기. nightly ③-4는 웹봇 매매포인트 종속으로 유지(의존성 확인)."
     },
     {
       "id": "S-4",
@@ -88,7 +102,7 @@
       "verdict": "엣지 없음 (forward 전 구간 음수)",
       "evidence": "early 189건 d1 -3.8%(승27.0%)·d3 -3.28%(승34.1%) / strict 41건 d1 -8.04%(승12.2%)·d3 -1.98%(승38.9%). early가 strict보다 d1 우위이나 둘 다 손실. verdict 필드 230건 전부 미기입. 6/18 중간판정('진짜 게이트=재진입')을 forward가 재확인.",
       "recommendation": "폐기 (재진입 조건부 부활 시 흡수 — 원 on_fail대로. 재진입 자체는 H-1로 8월 초 재검토)",
-      "decision": null
+      "decision": "2026-07-21 사장님 승인·전략 폐기. nightly ③-2는 재진입(H-1) 후보 생성기 종속으로 유지."
     },
     {
       "id": "S-5",
@@ -96,7 +110,7 @@
       "verdict": "6~7주 관측했으나 flip 판정에 쓰인 적 0회",
       "evidence": "sector_reversal(120건)만 forward_d1/d3/d5 보유 → 그나마 정식 판정 가능. 3-Type B/C·SDART·leader_momentum은 record-only 라벨만. 전부 6월부터 판정 근거로 인용된 이력 없음.",
       "recommendation": "3-Type B/C·SDART·leader_momentum은 nightly 제외(기록 보존·재개 가능) / sector_reversal은 forward 있으니 별도 정식 판정 대상(S-6 신규 데드라인)으로 승격 검토",
-      "decision": null
+      "decision": "2026-07-21 사장님 승인·전략 폐기. 단 sdart·3-Type B/C는 ④ paper 학습 ledger 종속으로 유지·leader_momentum 이미 미배선. sector_reversal은 S-6로 승격(8/7 판정)."
     }
   ]
 }
