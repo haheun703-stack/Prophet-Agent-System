@@ -33,7 +33,8 @@
       "criteria": "원 설계 '2주+ 관측 후 flip 판정' — 기한 4주 초과, 판정 보고",
       "metric": null,
       "on_fail": "S-2와 통합 또는 폐기",
-      "status": "active"
+      "status": "reported",
+      "reported": "2026-07-21"
     },
     {
       "id": "S-4",
@@ -43,7 +44,8 @@
       "criteria": "단독 유지 가치 재판정 (6/18 중간판정: 진짜 게이트=재진입)",
       "metric": null,
       "on_fail": "폐기 (재진입 조건부 부활 시 흡수)",
-      "status": "active"
+      "status": "reported",
+      "reported": "2026-07-21"
     },
     {
       "id": "S-5",
@@ -53,7 +55,8 @@
       "criteria": "유지 가치 전수조사 (판정 자료로 쓰인 적 있는가) — 없으면 nightly 제외 제안",
       "metric": null,
       "on_fail": "nightly 제외 (기록 보존·재개 가능)",
-      "status": "active"
+      "status": "reported",
+      "reported": "2026-07-21"
     }
   ],
   "hold": [
@@ -70,5 +73,30 @@
       "resume_condition": "스윙 전략 실전화 시 재판정"
     }
   ],
-  "judgments": []
+  "judgments": [
+    {
+      "id": "S-3",
+      "judged": "2026-07-21",
+      "verdict": "판정 설계 결함 + 리더 forward 음수",
+      "evidence": "155건 전부 relay_leader_group=T (대조군 0건) → relay 유무 대조 자체가 불가능한 채로 4주 관측. 리더 forward d1 avg -0.55%(승43.3%)·d3 avg -2.21%(승31.4%) 음수.",
+      "recommendation": "폐기 (대조군 부재로 4주치 판정 불가·재설계하려면 relay=F 대조군 배선 후 재시작이라 사실상 새 전략)",
+      "decision": null
+    },
+    {
+      "id": "S-4",
+      "judged": "2026-07-21",
+      "verdict": "엣지 없음 (forward 전 구간 음수)",
+      "evidence": "early 189건 d1 -3.8%(승27.0%)·d3 -3.28%(승34.1%) / strict 41건 d1 -8.04%(승12.2%)·d3 -1.98%(승38.9%). early가 strict보다 d1 우위이나 둘 다 손실. verdict 필드 230건 전부 미기입. 6/18 중간판정('진짜 게이트=재진입')을 forward가 재확인.",
+      "recommendation": "폐기 (재진입 조건부 부활 시 흡수 — 원 on_fail대로. 재진입 자체는 H-1로 8월 초 재검토)",
+      "decision": null
+    },
+    {
+      "id": "S-5",
+      "judged": "2026-07-21",
+      "verdict": "6~7주 관측했으나 flip 판정에 쓰인 적 0회",
+      "evidence": "sector_reversal(120건)만 forward_d1/d3/d5 보유 → 그나마 정식 판정 가능. 3-Type B/C·SDART·leader_momentum은 record-only 라벨만. 전부 6월부터 판정 근거로 인용된 이력 없음.",
+      "recommendation": "3-Type B/C·SDART·leader_momentum은 nightly 제외(기록 보존·재개 가능) / sector_reversal은 forward 있으니 별도 정식 판정 대상(S-6 신규 데드라인)으로 승격 검토",
+      "decision": null
+    }
+  ]
 }
