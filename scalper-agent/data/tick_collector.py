@@ -178,6 +178,10 @@ class TickCollector:
             return row
 
         except Exception as e:
+            # 네트워크 예외(timeout/conn)도 실패로 집계 — 안 하면 전종목 timeout 시 사이클
+            # 요약이 침묵(0/2500인데 경고 없음)한다(7/21 검수 관점2 D·"조용한 실패 금지").
+            self._api_fail += 1
+            self._last_api_error = f"네트워크 예외: {str(e)[:40]}"
             logger.warning(f"[{code}] 스냅샷 실패: {e}")
             return None
 
@@ -202,7 +206,9 @@ class TickCollector:
                 # ~3배로 뛰어 레이트리밋을 자기증폭시킨다(7/20 fix 1차본의 결함).
                 time.sleep(0.05)
                 streak += 1
-                if streak in (self.FAIL_BACKOFF_AT, self.FAIL_BACKOFF_AT * 2):
+                # 연속 실패 FAIL_BACKOFF_AT건'마다' 백오프(50·100·150…) — 기존 (50,100)만
+                # 발동은 151+ 무백오프 질주를 남겼다(7/21 검수 관점2 C).
+                if streak % self.FAIL_BACKOFF_AT == 0:
                     logger.warning(f"[tick] 연속 실패 {streak}건 — {self.FAIL_BACKOFF_SEC}s 백오프 "
                                    f"(사유: {self._last_api_error or '미상'})")
                     time.sleep(self.FAIL_BACKOFF_SEC)

@@ -115,6 +115,14 @@ def build_summary(result: dict, today: str) -> str:
         v = d[key].get("latest", "")
         return v or ""
 
+    # ticks(장중 체결 스냅샷) — 판정 원천. 7/21 F-15: 그간 요약 사각이라 7/20 오염이
+    # 초록불로 위장됐다. SKIP(win32·VPS전용 부재)은 표시 생략, PASS/FAIL만 노출.
+    tk = d.get("ticks", {})
+    tk_st = tk.get("status", "SKIP")
+    tk_line = None
+    if tk_st != "SKIP":
+        tk_line = f"{_MARK.get(tk_st, '❓')} 장중틱(판정원천) {tk.get('usable_pct', '')}%"
+
     lines = [
         head,
         "━━━━━━━━━━━━━━━━",
@@ -125,8 +133,10 @@ def build_summary(result: dict, today: str) -> str:
         f"{_MARK.get(fx['status'], '❓')} 외국인소진율  {fx['latest'] or '-'} ({fx['ok']}/{fx['checked']})",
         f"{_MARK.get(d['credit_kis']['status'], '❓')} 신용잔고    {_latest('credit_kis')}"
         + ("  T+지연 정상" if d['credit_kis']['status'] == 'PASS' else ""),
-        "━━━━━━━━━━━━━━━━",
     ]
+    if tk_line:
+        lines.append(tk_line)
+    lines.append("━━━━━━━━━━━━━━━━")
 
     core_ok = (
         daily_st == "PASS"
@@ -134,6 +144,7 @@ def build_summary(result: dict, today: str) -> str:
         and d["flow_market"]["status"] == "PASS"
         and d["short_kis"]["status"] == "PASS"
         and fx["status"] in ("PASS", "PARTIAL")
+        and tk_st in ("PASS", "SKIP")   # FAIL이면 판정 원천 죽음 → 초록불 금지(F-15)
     )
     if core_ok:
         lines.append("✅ 핵심 채널 모두 정상 — 실주문 0·페이퍼")
@@ -149,6 +160,8 @@ def build_summary(result: dict, today: str) -> str:
             bad.append("공매도")
         if fx["status"] == "STALE":
             bad.append("외국인소진율")
+        if tk_st == "FAIL":
+            bad.append("장중틱(판정원천)")
         lines.append(f"⚠️ 확인 필요: {', '.join(bad) or '세부 채널'}")
 
     lines.append("🤖 자동발송 · 터미널 불필요")

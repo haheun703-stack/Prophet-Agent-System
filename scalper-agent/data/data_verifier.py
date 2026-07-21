@@ -311,6 +311,49 @@ def _evening() -> bool:
     return datetime.now().hour >= 19
 
 
+def _verify_ticks(today: str) -> dict:
+    """장중 체결 스냅샷(ticks) 건강도 — 7/21 F-15 fix(검증 사각 해소).
+
+    ticks는 ⑲ replay·⑲-3 페이퍼·러너의 판정 원천인데 지금까지 어떤 검증기도 보지
+    않아 7/20 조용한 오염(19% 결손)을 저녁 알림이 초록불로 위장했다. 건강도 판정은
+    playbook_shadow.ticks_health 단일진실 위임(재구현 금지).
+    노트북(win32)은 ticks dir 부재 = VPS 전용 자산이라 SKIP(오FAIL 방지)."""
+    import sys as _sys
+    try:
+        import tools.playbook_shadow as _pb  # noqa: E402
+    except Exception:
+        try:
+            _sys.path.insert(0, str(BASE_DIR / "tools"))
+            import playbook_shadow as _pb  # type: ignore
+        except Exception as e:  # noqa: BLE001
+            return {"status": "SKIP", "reason": f"playbook_shadow 로드 실패: {e}"}
+    day = today.replace("-", "")
+    if not (_pb.TICKS / day).exists():
+        # ★ win32(노트북)=VPS 전용 자산 부재라 SKIP. 그러나 VPS에서 거래일 dir이 아예
+        #   없으면 = 수집기 자체 미가동 → SKIP으로 초록불 위장 금지, FAIL(Tier1 M-1).
+        if _sys.platform == "win32":
+            return {"status": "SKIP", "reason": "ticks 없음 (win32 분석기·VPS 전용)"}
+        try:
+            from data.trading_calendar import is_trading_day
+            if is_trading_day(date.fromisoformat(today)):
+                return {"status": "FAIL", "reason": "ticks dir 총부재 (거래일 수집기 미가동 의심)"}
+        except Exception:  # noqa: BLE001
+            pass
+        return {"status": "SKIP", "reason": "ticks 없음 (휴장/수집 전)"}
+    h = _pb.ticks_health(day)
+    if not h:
+        return {"status": "SKIP", "reason": "건강도 판정 불가"}
+    v = h.get("verdict")
+    if v == "OK":
+        return {"status": "PASS", "usable_pct": h.get("usable_pct"), "last_med": h.get("last_med")}
+    if v in ("BROKEN", "TRUNCATED"):
+        # 판정 원천이 죽었다 = 저녁 요약이 절대 '전부 정상' 초록불이면 안 됨
+        return {"status": "FAIL", "verdict": v, "usable_pct": h.get("usable_pct"),
+                "last_med": h.get("last_med"),
+                "reason": f"ticks {v} (사용가능 {h.get('usable_pct')}%·마감 {h.get('last_med')})"}
+    return {"status": "UNKNOWN", "verdict": v}
+
+
 def _verify_short_kis(today: str) -> dict:
     """KIS 공매도(⑬·6/27 신설) — 저녁 19시 전엔 전일분 정상(수집=nightly)."""
     if not SHORT_DIR.exists():
@@ -550,6 +593,7 @@ CHECKLIST = {
     "credit_kis":     {"description": "KIS 신용잔고(지연)",     "priority": PRIORITY_LOW},     # 7/7 신설 (⑭·T+2~3 정상)
     "ranking_kis":    {"description": "KIS 순위 스냅샷 6종",    "priority": PRIORITY_MEDIUM},  # 7/7 신설 (⑫)
     "flow_market":    {"description": "KIS 시장 11주체",        "priority": PRIORITY_MEDIUM},  # 7/7 신설
+    "ticks":          {"description": "장중 체결 스냅샷(판정 원천)", "priority": PRIORITY_HIGH},  # 7/21 F-15: 검증 사각 해소
     "nightwatch":     {"description": "NIGHTWATCH 리포트",     "priority": PRIORITY_HIGH},
     "sector_history": {"description": "섹터 히스토리",          "priority": PRIORITY_HIGH},
     # sector_relay — 비활성화 (2026-04-11): 자동 저장 로직 없음, sector_history가 대체
@@ -602,6 +646,7 @@ class DataVerifier:
         details["credit_kis"] = _verify_credit_kis(t)
         details["ranking_kis"] = _verify_ranking_kis(t)
         details["flow_market"] = _verify_flow_market(t)
+        details["ticks"] = _verify_ticks(t)   # 7/21 F-15: 판정 원천 검증(그간 사각)
         details["nightwatch"] = _verify_nightwatch(t)
         details["sector_history"] = _verify_sector_history(t)
         # sector_relay — 비활성화 (sector_history가 대체)

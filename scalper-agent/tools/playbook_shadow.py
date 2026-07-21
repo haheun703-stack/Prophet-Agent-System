@@ -75,6 +75,56 @@ CB_STREAK = 3            # 규칙3: 연속 손절 발동 임계
 CB_DAILY_LIMITS = (-6.0, -9.0)   # 규칙3: 일일 누적 %p 발동 후보(동일가중 프록시)
 SECTOR_COOLDOWN_N = 3    # 규칙4b: 동일 섹터 당일 손절 누적 발동 임계
 
+# ── ticks 건강도 단일진실 (7/20 사고 + 7/21 전체검수 F-15/F-16) ──
+# ticks를 소비하는 판정(⑲ replay·⑲-3 페이퍼·러너)이 죽은 날을 '신호 없던 날'로 오독하면
+# 판정 증거(승률·수익금)가 조용히 오염된다. 이 함수가 유일 판정처 — observe_v2_paper·
+# data_verifier·notify·⑳ freshness 전부 이걸 호출(재구현 금지).
+TICKS_MIN_ROWS = 3          # 청산 시뮬 성립 최소 행수(신호행+다음 관측행)
+TICKS_HEALTH_SAMPLE = 40    # 결정적 표본 크기(정렬 후 균등 추출)
+TICKS_BROKEN_PCT = 50.0     # usable 비율 하한
+TICKS_MIN_FILES = 100       # 유니버스 대비 극소 = 전면 장애(파일 미생성 위장 차단)
+TICKS_COVERAGE_MIN = "14:00:00"  # 표본 마지막관측 중앙값 하한 — 오후 결손(정오죽음) 차단(F-16)
+
+
+def ticks_health(day: str):
+    """그날 ticks가 체결/청산 시뮬에 쓸 수 있는 상태인지 — ★단일진실★.
+
+    verdict: OK=정상 / BROKEN=전면 장애(파일 미생성·usable<50%) /
+             TRUNCATED=오후 결손(usable는 높아도 마지막관측 중앙값이 이른 날·F-16).
+    BROKEN·TRUNCATED = 판정 증거에서 제외해야 하는 날. 실패 시 None(판정 보류).
+    """
+    try:
+        d = TICKS / day
+        files = sorted(d.glob("*.csv")) if d.exists() else []
+        if len(files) < TICKS_MIN_FILES:
+            return {"sample": len(files), "usable_pct": 0.0, "last_med": None,
+                    "verdict": "BROKEN", "reason": "파일 미생성/극소 (전면 수집장애)"}
+        step = max(1, len(files) // TICKS_HEALTH_SAMPLE)
+        sample = files[::step][:TICKS_HEALTH_SAMPLE]
+        usable = 0
+        last_times = []
+        for f in sample:
+            rows = _read_ticks(day, f.stem)
+            if len(rows) >= TICKS_MIN_ROWS:
+                usable += 1
+            if rows:
+                last_times.append(rows[-1][0])   # 마지막 관측 시각
+        pct = round(100 * usable / len(sample), 1)
+        last_times.sort()
+        last_med = last_times[len(last_times) // 2] if last_times else None
+        if pct < TICKS_BROKEN_PCT:
+            verdict = "BROKEN"
+        elif last_med is not None and last_med < TICKS_COVERAGE_MIN:
+            # usable은 높아도(오전 데이터 충분) 오후가 통째로 결손 = 청산이 정오 EOD로
+            # 조기 마감돼 수익률 분포 오염 + 유효일 위장(F-16·7/6 11:17 실측).
+            verdict = "TRUNCATED"
+        else:
+            verdict = "OK"
+        return {"sample": len(sample), "usable_pct": pct, "last_med": last_med,
+                "verdict": verdict}
+    except Exception:  # noqa: BLE001
+        return None
+
 
 def _read_ticks(day: str, code: str) -> list:
     """ticks/{day}/{code}.csv → [(time, price, chg_rate, strength)] price>0만, 시간순."""

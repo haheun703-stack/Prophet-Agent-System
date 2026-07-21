@@ -27,6 +27,8 @@ from pathlib import Path
 BASE = Path(__file__).resolve().parent.parent
 if str(BASE) not in sys.path:
     sys.path.insert(0, str(BASE))
+if str(BASE / "tools") not in sys.path:
+    sys.path.insert(0, str(BASE / "tools"))   # observe_v2_paper 단일진실 위임용(F-17)
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")
@@ -39,16 +41,14 @@ ALERT_DDAY = 3   # D-3부터 알림
 
 
 def _v2_paper_cum_net():
-    """⑲-3 페이퍼 장부 순누적 %p + 승률 (스코어보드 겸용)."""
-    led = json.loads((DS / "observe_v2_paper_ledger.json").read_text(encoding="utf-8"))
-    n = wins = 0
-    cum = 0.0
-    for d in led.get("days", {}).values():
-        s = d.get("summary", {})
-        n += s.get("n", 0)
-        wins += s.get("wins", 0)
-        cum += s.get("sum_net", 0) or 0
-    return round(cum, 2), n, (round(100 * wins / n, 1) if n else None)
+    """⑲-3 페이퍼 장부 ★유효일★ 순누적 %p + 승률 (스코어보드·S-1 자동판정 겸용).
+
+    7/21 F-17 fix: observe_v2_paper._cum 단일진실 위임 → valid_sum(BROKEN·TRUNCATED·
+    미정산일 제외)을 씀. 기존엔 raw all-days 합이라 페이퍼 리포트("유효 기준")와
+    S-1 판정 숫자가 어긋났다. 이제 두 도구가 같은 valid 숫자로 S-1을 판정한다."""
+    from observe_v2_paper import _load_ledger, _cum
+    c = _cum(_load_ledger())
+    return c["valid_sum"], c["valid_n"], c["valid_win_rate"]
 
 
 def _cluster_sum_ret():
@@ -94,9 +94,10 @@ def main() -> int:
     except Exception:  # noqa: BLE001
         NOTIONAL_KRW = 300_000
     try:
-        cum, n, wr = _v2_paper_cum_net()
+        cum, n, wr = _v2_paper_cum_net()   # ★유효일 기준(ticks OK만·F-17)
         krw = int(cum / 100 * NOTIONAL_KRW)
-        score = f"📊 페이퍼 스코어보드: 누적 {n}건 승률 {wr or 0}% 순누적 {cum:+.2f}%p ({krw:+,}원/30만·건)"
+        score = (f"📊 페이퍼 스코어보드(유효일): {n}건 승률 {wr or 0}% "
+                 f"순누적 {cum:+.2f}%p ({krw:+,}원/30만·건)")
     except Exception:  # noqa: BLE001
         score = "📊 페이퍼 스코어보드: 장부 없음"
     lines = [score, "⏰ 전략 데드라인 대장"]

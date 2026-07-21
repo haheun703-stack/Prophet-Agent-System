@@ -60,14 +60,9 @@ NOTIONAL_KRW = 300_000     # 수익금 환산 명목(종목당) — trade_runtim
 CB_DAILY_PCT = pb.CB_DAILY_LIMITS[0]   # -6.0 — 7/10 사전합의 안전핀(pb 단일진실·principles_7_9 검증값)
 CAP_VIEW_N = 5             # 일일 건수 상한 '시나리오 뷰' (실제 상한은 사장님 결정 보류)
 LEDGER_KEEP = 180          # 장부 보존 일수
-# ticks 건강도 (7/20 수집장애 사고 fix) — 청산 시뮬은 신호행 '다음' 관측행이 있어야 성립.
-# 수집이 죽은 날은 대부분 파일이 2행 이하로 끝나 체결 0건이 되는데, 그걸 '신호 없던 날'과
-# 구분하지 않으면 판정 증거(승률·수익금)가 조용히 오염된다(7/13·7/20 실측 유효행 8%).
-TICKS_MIN_ROWS = 3
-TICKS_HEALTH_SAMPLE = 40
-TICKS_BROKEN_PCT = 50.0
-TICKS_MIN_FILES = 100      # 유니버스 ~2500 대비 극소 = 전면 장애(파일 미생성 위장 차단)
 BACKFILL_FROM = "20260713" # 첫 실전 가동일 — 7/10 사후 스모크(latency ~7h)는 장부 제외
+# ticks 오염일 verdict(판정 증거 제외 대상) — 단일진실 pb.ticks_health와 동기(7/21 F-15/16)
+TICKS_BAD = ("BROKEN", "TRUNCATED")
 _WD = "월화수목금토일"
 
 
@@ -84,26 +79,8 @@ def _is_trading_yyyymmdd(day: str) -> bool:
 
 
 def _ticks_health(day: str):
-    """그날 ticks가 체결/청산 시뮬에 쓸 수 있는 상태인지 — 결정적 표본(정렬 후 균등 추출).
-
-    verdict=BROKEN = 수집 장애일(판정 증거로 쓰면 안 되는 날). 실패 시 None(판정 보류)."""
-    try:
-        d = pb.TICKS / day
-        files = sorted(d.glob("*.csv")) if d.exists() else []
-        # 파일 자체가 없거나 극소 = 1번째 사이클부터 죽은 전면 장애. None(판정보류)로 두면
-        # broken_days에 안 잡혀 "정상 0건 날"로 위장된다 — 게다가 price=0 행 미기록 fix로
-        # 파일 미생성 확률이 올라갔다(7/20 Tier1 M-2).
-        if len(files) < TICKS_MIN_FILES:
-            return {"sample": len(files), "usable_pct": 0.0, "verdict": "BROKEN",
-                    "reason": "파일 미생성/극소 (전면 수집장애)"}
-        step = max(1, len(files) // TICKS_HEALTH_SAMPLE)
-        sample = files[::step][:TICKS_HEALTH_SAMPLE]
-        usable = sum(1 for f in sample if len(pb._read_ticks(day, f.stem)) >= TICKS_MIN_ROWS)
-        pct = round(100 * usable / len(sample), 1)
-        return {"sample": len(sample), "usable_pct": pct,
-                "verdict": "OK" if pct >= TICKS_BROKEN_PCT else "BROKEN"}
-    except Exception:  # noqa: BLE001
-        return None
+    """ticks 건강도 — 단일진실 pb.ticks_health 위임(7/21 F-15: 재구현 금지·정오죽음 축 포함)."""
+    return pb.ticks_health(day)
 
 
 def _atomic_write(path: Path, data) -> None:
@@ -215,16 +192,22 @@ def _cum(led: dict) -> dict:
     sum_net = cap_sum = 0.0
     cap_n = cap_w = cb_days = broken_days = 0
     vn = vwins = 0
-    vsum = 0.0                      # 유효일(수집 정상)만의 집계 — 판정은 이 숫자로
+    vsum = 0.0                      # 유효일(verdict OK만)의 집계 — 판정은 이 숫자로
+    valid_days = unknown_days = 0   # OK일 수 / ticks_health 미기입(pre-7/20 미정산·B 누출 fix)
     for d in days.values():
         s = d.get("summary", {})
-        broken = (s.get("ticks_health") or {}).get("verdict") == "BROKEN"
-        if broken:
-            broken_days += 1        # 수집장애일 — 판정 시 표본에서 제외해야 하는 날
-        else:
+        verdict = (s.get("ticks_health") or {}).get("verdict")
+        # ★유효일 = verdict가 명시적 OK인 날만. BROKEN/TRUNCATED(수집장애)와
+        #   None(구 장부·재정산 필요)은 전부 제외 → 판정 증거 오염 차단(7/21 F-16·B).
+        if verdict == "OK":
+            valid_days += 1
             vn += s.get("n", 0)
             vwins += s.get("wins", 0)
             vsum += s.get("sum_net", 0) or 0
+        elif verdict in TICKS_BAD:
+            broken_days += 1        # 수집장애일(BROKEN·TRUNCATED)
+        else:
+            unknown_days += 1       # 미정산(--settle 재정산 필요)
         n += s.get("n", 0)
         wins += s.get("wins", 0)
         sum_net += s.get("sum_net", 0) or 0
@@ -238,8 +221,8 @@ def _cum(led: dict) -> dict:
             "avg_net": round(sum_net / n, 3) if n else None,
             "krw": int(sum_net / 100 * NOTIONAL_KRW),
             "cap_sum": round(cap_sum, 2), "cap_n": cap_n, "cap_w": cap_w,
-            "cb_days": cb_days, "broken_days": broken_days,
-            "valid_days": len(days) - broken_days, "valid_n": vn, "valid_wins": vwins,
+            "cb_days": cb_days, "broken_days": broken_days, "unknown_days": unknown_days,
+            "valid_days": valid_days, "valid_n": vn, "valid_wins": vwins,
             "valid_sum": round(vsum, 2),
             "valid_win_rate": round(100 * vwins / vn, 1) if vn else None,
             "valid_krw": int(vsum / 100 * NOTIONAL_KRW)}
@@ -256,8 +239,9 @@ def build_report(day: str) -> str:
         s = d["summary"]
         day_krw = int((s.get("sum_net") or 0) / 100 * NOTIONAL_KRW)
         th = s.get("ticks_health") or {}
-        if th.get("verdict") == "BROKEN":
-            lines.append(f"{int(m)}/{int(dd)}({wd}) 🚨 ticks 수집장애 "
+        if th.get("verdict") in TICKS_BAD:
+            kind = "수집장애" if th.get("verdict") == "BROKEN" else f"오후결손(마감 {th.get('last_med')})"
+            lines.append(f"{int(m)}/{int(dd)}({wd}) 🚨 ticks {kind} "
                          f"(사용가능 {th.get('usable_pct')}%) — 체결 {s['n']}건은 "
                          f"'신호 없음'이 아니라 데이터 결손·판정 표본 제외 대상")
         else:
@@ -266,17 +250,18 @@ def build_report(day: str) -> str:
                          + (" · 🚨CB -6%p 발동" if s["cb_triggered"] else ""))
     else:
         lines.append(f"{int(m)}/{int(dd)}({wd}) 정산 없음 (신호 0/휴장)")
-    lines.append(f"누적 {c['days']}일 {c['n']}건 · 승률 {c['win_rate'] or 0}% · "
-                 f"평균 {c['avg_net'] or 0:+.3f}%p/건 · 순누적 {c['sum_net']:+.2f}%p")
-    lines.append(f"30만원/건 환산 누적 {c['krw']:+,}원 (왕복비용 0.2% 차감)")
+    # ★ 헤드라인 = 유효일(ticks OK) 기준 = S-1 판정 숫자(7/17 "첫 줄=숫자"·F-17 정합·Tier1 L-2).
+    #   all-days(오염 포함)는 낙관편향이라 참고로 강등.
+    lines.append(f"★유효 {c['valid_days']}일 {c['valid_n']}건 · 승률 {c['valid_win_rate'] or 0}% · "
+                 f"순누적 {c['valid_sum']:+.2f}%p ({c['valid_krw']:+,}원) ← S-1 판정 기준")
+    if c["broken_days"] or c["unknown_days"]:
+        extra = f"·미정산 {c['unknown_days']}일(재정산 필요)" if c["unknown_days"] else ""
+        lines.append(f"  (수집장애 {c['broken_days']}일 제외{extra} · 전체 {c['days']}일 "
+                     f"{c['n']}건 순 {c['sum_net']:+.2f}%p 참고)")
     cap_wr = round(100 * c["cap_w"] / c["cap_n"], 1) if c["cap_n"] else 0
     lines.append(f"[상한 {CAP_VIEW_N}건/일 뷰] {c['cap_n']}건 승률 {cap_wr}% 누적 {c['cap_sum']:+.2f}%p")
     if c["cb_days"]:
         lines.append(f"CB 발동일 누적 {c['cb_days']}일")
-    if c["broken_days"]:
-        lines.append(f"⚠ ticks 수집장애일 {c['broken_days']}일 제외 — "
-                     f"★유효 {c['valid_days']}일 {c['valid_n']}건 · 승률 {c['valid_win_rate'] or 0}% · "
-                     f"순 {c['valid_sum']:+.2f}%p ({c['valid_krw']:+,}원) ← S-1 판정 기준")
     lines.append("라이브 전환은 사장님 결정 — 관측 없이 flip 금지")
     return "\n".join(lines)
 

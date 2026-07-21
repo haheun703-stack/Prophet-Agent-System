@@ -110,6 +110,23 @@ def run() -> int:
         if not ok3:
             stale.append("⑲-3 v2_paper_ledger")
 
+    # ticks 판정원천 건강도 (7/21 F-15) — 거래일이면 항상 확인. BROKEN/TRUNCATED = 그날
+    # ⑲/⑲-3 판정 증거 오염 → nightly 요약에 ⚠ 노출로 사장님이 저녁에 인지(그간 사각).
+    try:
+        import sys as _sys
+        _sys.path.insert(0, str(BASE / "tools"))
+        import playbook_shadow as _pb  # type: ignore
+        _day = today.replace("-", "")
+        # win32(노트북)은 ticks 미동기 → false STALE 방지 위해 건너뜀(L-1). ⑳은 VPS 전용이라 무해.
+        if _sys.platform != "win32" and (_pb.TICKS / _day).exists():
+            _tv = (_pb.ticks_health(_day) or {}).get("verdict")
+            if _tv is not None:
+                print(f"[freshness] ⑲ ticks_health: {_tv}")
+                if _tv in ("BROKEN", "TRUNCATED"):
+                    stale.append(f"ticks_{_tv}")
+    except Exception as e:  # noqa: BLE001
+        print(f"[freshness] ⑲ ticks_health 확인 실패(무시): {e}")
+
     # soft check (매일 갱신이 보장 안 되는 것 — 정보만)
     for name, path, key in (("③-2 early(soft)", STORE / "early_variant_shadow.json", "updated_at"),
                             ("③-3 reentry(soft)", STORE / "reentry_shadow.json", "updated_at")):
