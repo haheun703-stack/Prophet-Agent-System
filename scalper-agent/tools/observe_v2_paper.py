@@ -234,9 +234,12 @@ def _cum(led: dict) -> dict:
         n += s.get("n", 0)
         wins += s.get("wins", 0)
         sum_net += s.get("sum_net", 0) or 0
-        cap_sum += s.get(f"cap{CAP_VIEW_N}_sum_net", 0) or 0
-        cap_n += s.get(f"cap{CAP_VIEW_N}_n", 0)
-        cap_w += s.get(f"cap{CAP_VIEW_N}_wins", 0)
+        # all-days 상한 집계(참고 전용)도 동일하게 trades 직접 계산 — 파일 안에
+        # 박제 키 의존을 하나도 남기지 않는다(H-1이 어느 줄에도 재발하지 않게).
+        _acap = (d.get("trades") or [])[:CAP_VIEW_N]
+        cap_sum += sum((t.get("net") or 0) for t in _acap)
+        cap_n += len(_acap)
+        cap_w += sum(1 for t in _acap if (t.get("net") or 0) > 0)
         cb_days += 1 if s.get("cb_triggered") else 0
     return {"days": len(days), "n": n, "wins": wins,
             "win_rate": round(100 * wins / n, 1) if n else None,
@@ -280,9 +283,13 @@ def build_report(day: str) -> str:
         else:
             # 일일 표기도 상한 기준을 주 수치로 — 헤드라인(누적)과 단위를 맞춘다.
             # 전 신호 합산은 실행 불가능 수치라 괄호 참고로만(7/23 사장님 확정).
-            cn = s.get(f"cap{CAP_VIEW_N}_n", 0)
-            cs = s.get(f"cap{CAP_VIEW_N}_sum_net", 0) or 0
-            cw = s.get(f"cap{CAP_VIEW_N}_wins", 0)
+            # _cum과 동일하게 원본 trades에서 직접 계산 — 박제 키(cap{N}_*)를 쓰면
+            # CAP_VIEW_N 변경 시 이 줄만 0건으로 나와 헤드라인과 모순된 메시지가
+            # 사장님께 발송된다(H-1을 _cum에서만 막으면 여기가 남는다·7/23 재점검 적발).
+            _dcap = (d.get("trades") or [])[:CAP_VIEW_N]
+            cn = len(_dcap)
+            cs = round(sum((t.get("net") or 0) for t in _dcap), 2)   # 반올림 後 환산(L-4 규약)
+            cw = sum(1 for t in _dcap if (t.get("net") or 0) > 0)
             cap_krw = int(cs / 100 * NOTIONAL_KRW)
             lines.append(f"{int(m)}/{int(dd)}({wd}) 체결 {cn}건(상한) · 승 {cw} · "
                          f"순합 {cs:+.2f}%p ({cap_krw:+,}원)"
