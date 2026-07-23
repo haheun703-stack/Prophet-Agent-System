@@ -19,7 +19,16 @@
   신호시각 순 최종손익 누적은 미실현 손실을 미리 아는 격이라 오차단).
   추격<8%·오전10시前·체결강도200+ = v2 신호 정의에 내장(러너/pb 단일진실).
   섹터 쿨다운은 후속(DAILY_ROUTINE §4 각주 — 섹터맵 결합 필요).
-  일일 건수 상한은 미확정(사장님 결정 보류) — CAP_VIEW_N건 시나리오를 병행 집계만.
+  ★ 일일 건수 상한 = CAP_VIEW_N건 (7/23 사장님 확정 — 판정 기준으로 승격).
+    근거: 무제한 합산은 사장님 영구 자금 룰로 실행 불가능(SAJANG.CASH_RESERVE_PCT
+    30% 현금보유 + BUDGET_MODE split_cash / top_k). 7/22 실측에서 무제한 -244.15%p
+    vs 상한 +3.34%p로 부호가 반대라(7/15도 반대) 지표 선택이 곧 판정 —
+    실행 가능한 쪽을 기준으로 삼는다.
+    ⚠ 상한값 5의 근거 정정(7/23 Tier1 M-2): 봇 설계 상한은 09:15 top_k 3 +
+    14:50 top_k 2 = 5종목/일이지만, v2 신호는 pb.REFINED_CUTOFF("10:00:00") 하드
+    필터라 14:50 트랜치를 채울 수 없다 → **v2만 놓고 보면 실행 가능 상한은 3**.
+    5 유지 = 더 보수적(불리한) 쪽 선택이며(실측 cap3 -6.16%p < cap5 -10.78%p,
+    즉 5가 성적이 더 나쁨 → 유리한 지표 고르기 아님), 3으로의 정정은 사장님 결정.
 
 ★★★ 안전 불변식 ★★★
 - 실주문 0. 주문/계좌 API 0접촉 — 페이퍼 장부(JSON) 기록과 텔레그램 보고뿐.
@@ -58,7 +67,8 @@ LEDGER_PATH = DS / "observe_v2_paper_ledger.json"
 
 NOTIONAL_KRW = 300_000     # 수익금 환산 명목(종목당) — trade_runtime_config live_limits 기본 단위
 CB_DAILY_PCT = pb.CB_DAILY_LIMITS[0]   # -6.0 — 7/10 사전합의 안전핀(pb 단일진실·principles_7_9 검증값)
-CAP_VIEW_N = 5             # 일일 건수 상한 '시나리오 뷰' (실제 상한은 사장님 결정 보류)
+CAP_VIEW_N = 5             # ★일일 건수 상한 = S-1 판정 기준(7/23 사장님 확정). 근거는 docstring
+MIN_JUDGE_N = 10           # 이 미만이면 '판정 유예' 표기 — 무표본(수집장애)과 '측정 0' 구분(7/23 M-3)
 LEDGER_KEEP = 180          # 장부 보존 일수
 BACKFILL_FROM = "20260713" # 첫 실전 가동일 — 7/10 사후 스모크(latency ~7h)는 장부 제외
 # ticks 오염일 verdict(판정 증거 제외 대상) — 단일진실 pb.ticks_health와 동기(7/21 F-15/16)
@@ -193,6 +203,8 @@ def _cum(led: dict) -> dict:
     cap_n = cap_w = cb_days = broken_days = 0
     vn = vwins = 0
     vsum = 0.0                      # 유효일(verdict OK만)의 집계 — 판정은 이 숫자로
+    vcap_n = vcap_w = 0
+    vcap_sum = 0.0                  # ★유효일 × 상한 CAP_VIEW_N건 = S-1 판정 기준(7/23 사장님 확정)
     valid_days = unknown_days = 0   # OK일 수 / ticks_health 미기입(pre-7/20 미정산·B 누출 fix)
     for d in days.values():
         s = d.get("summary", {})
@@ -204,6 +216,17 @@ def _cum(led: dict) -> dict:
             vn += s.get("n", 0)
             vwins += s.get("wins", 0)
             vsum += s.get("sum_net", 0) or 0
+            # 상한 뷰도 반드시 '유효일만' 누적 — all-days로 두면 수집장애일 체결이
+            # 판정 기준에 누출된다(7/21 F-16과 동일 오염 경로·승격과 함께 차단).
+            # ★요약의 cap{N}_* 박제 키가 아니라 원본 trades에서 직접 계산한다(7/23 Tier1 H-1):
+            #   박제 키를 쓰면 CAP_VIEW_N을 바꾸는 순간 과거 전 일자가 조회 miss→0이 되어
+            #   스코어보드가 "0건 +0.00%p"로 조용히 붕괴하고, S-1이 ❌미달로 자동 평가된다
+            #   (= 데이터 부재가 전략 폐기 근거로 위장 — 완료위장과 동일 계열).
+            #   trades는 장부에 전량 보존(CB 필터 적용 후)되므로 상수 변경에 면역.
+            _cap = (d.get("trades") or [])[:CAP_VIEW_N]
+            vcap_n += len(_cap)
+            vcap_w += sum(1 for t in _cap if (t.get("net") or 0) > 0)
+            vcap_sum += sum((t.get("net") or 0) for t in _cap)
         elif verdict in TICKS_BAD:
             broken_days += 1        # 수집장애일(BROKEN·TRUNCATED)
         else:
@@ -220,12 +243,22 @@ def _cum(led: dict) -> dict:
             "sum_net": round(sum_net, 2),
             "avg_net": round(sum_net / n, 3) if n else None,
             "krw": int(sum_net / 100 * NOTIONAL_KRW),
+            # ⚠ cap_*(all-days)는 수집장애일 포함 = 참고 전용. 판정엔 절대 쓰지 말 것
+            #    — 판정 기준은 아래 valid_cap_*(F-16 오염 경로와 동일한 함정).
             "cap_sum": round(cap_sum, 2), "cap_n": cap_n, "cap_w": cap_w,
             "cb_days": cb_days, "broken_days": broken_days, "unknown_days": unknown_days,
             "valid_days": valid_days, "valid_n": vn, "valid_wins": vwins,
             "valid_sum": round(vsum, 2),
             "valid_win_rate": round(100 * vwins / vn, 1) if vn else None,
-            "valid_krw": int(vsum / 100 * NOTIONAL_KRW)}
+            # 반올림 後 %p에서 환산 — valid_cap_krw와 규약 통일(L-4·F-17 씨앗 제거)
+            "valid_krw": int(round(vsum, 2) / 100 * NOTIONAL_KRW),
+            # ★S-1 판정 기준(7/23 사장님 확정) = 유효일 × 상한 CAP_VIEW_N건
+            # krw는 반드시 '반올림된 %p'에서 환산 — 부동소수 누적분이 남으면 데드라인
+            # 체커(=round된 값 사용)와 원화가 1원 어긋난다(F-17 '두 도구 불일치' 재발 방지).
+            "valid_cap_n": vcap_n, "valid_cap_wins": vcap_w,
+            "valid_cap_sum": round(vcap_sum, 2),
+            "valid_cap_win_rate": round(100 * vcap_w / vcap_n, 1) if vcap_n else None,
+            "valid_cap_krw": int(round(vcap_sum, 2) / 100 * NOTIONAL_KRW)}
 
 
 def build_report(day: str) -> str:
@@ -245,21 +278,35 @@ def build_report(day: str) -> str:
                          f"(사용가능 {th.get('usable_pct')}%) — 체결 {s['n']}건은 "
                          f"'신호 없음'이 아니라 데이터 결손·판정 표본 제외 대상")
         else:
-            lines.append(f"{int(m)}/{int(dd)}({wd}) 체결 {s['n']}건 · 승 {s['wins']}"
-                         f"({s['win_rate'] or 0}%) · 순합 {s['sum_net']:+.2f}%p ({day_krw:+,}원)"
+            # 일일 표기도 상한 기준을 주 수치로 — 헤드라인(누적)과 단위를 맞춘다.
+            # 전 신호 합산은 실행 불가능 수치라 괄호 참고로만(7/23 사장님 확정).
+            cn = s.get(f"cap{CAP_VIEW_N}_n", 0)
+            cs = s.get(f"cap{CAP_VIEW_N}_sum_net", 0) or 0
+            cw = s.get(f"cap{CAP_VIEW_N}_wins", 0)
+            cap_krw = int(cs / 100 * NOTIONAL_KRW)
+            lines.append(f"{int(m)}/{int(dd)}({wd}) 체결 {cn}건(상한) · 승 {cw} · "
+                         f"순합 {cs:+.2f}%p ({cap_krw:+,}원)"
                          + (" · 🚨CB -6%p 발동" if s["cb_triggered"] else ""))
+            lines.append(f"  (전 신호 {s['n']}건 합산 {s['sum_net']:+.2f}%p "
+                         f"({day_krw:+,}원) — 자금룰상 실행 불가·참고)")
     else:
         lines.append(f"{int(m)}/{int(dd)}({wd}) 정산 없음 (신호 0/휴장)")
-    # ★ 헤드라인 = 유효일(ticks OK) 기준 = S-1 판정 숫자(7/17 "첫 줄=숫자"·F-17 정합·Tier1 L-2).
-    #   all-days(오염 포함)는 낙관편향이라 참고로 강등.
-    lines.append(f"★유효 {c['valid_days']}일 {c['valid_n']}건 · 승률 {c['valid_win_rate'] or 0}% · "
-                 f"순누적 {c['valid_sum']:+.2f}%p ({c['valid_krw']:+,}원) ← S-1 판정 기준")
+    # ★ 헤드라인 = 유효일(ticks OK) × 일일 상한 CAP_VIEW_N건 = S-1 판정 숫자.
+    #   7/17 "첫 줄=숫자" + 7/21 F-16/17(유효일만) + 7/23 사장님 확정(상한 승격)의 합.
+    #   전 신호 합산은 자금룰상 실행 불가능(30% 현금보유·split_cash top_k)이라 참고로 강등.
+    # 문구 주의(L-2): '유효N일 × 상한M' 곱셈으로 읽히면 신호 5건 미만인 유효일이
+    # 생기는 순간 산수가 안 맞는다("숫자가 틀렸다"로 보임) → '적용'으로 표기.
+    lines.append(f"★유효 {c['valid_days']}일 · 상한 {CAP_VIEW_N}건/일 적용 {c['valid_cap_n']}건 · "
+                 f"승률 {c['valid_cap_win_rate'] or 0}% · 순누적 {c['valid_cap_sum']:+.2f}%p "
+                 f"({c['valid_cap_krw']:+,}원) ← S-1 판정 기준")
+    # 무표본(수집장애 연속)과 '측정했는데 0'을 구분 — 전자를 전략 실패로 오판하지 않게(M-3)
+    if c["valid_cap_n"] < MIN_JUDGE_N:
+        lines.append(f"  ⚠ 표본 {c['valid_cap_n']}건 < {MIN_JUDGE_N}건 — 판정 유예 권고"
+                     f"(수집장애로 유효일이 줄면 '무표본'이 ❌미달로 위장됨)")
+    lines.append(f"  (참고·전 신호 합산 {c['valid_n']}건 {c['valid_sum']:+.2f}%p — 실행 불가 수치)")
     if c["broken_days"] or c["unknown_days"]:
         extra = f"·미정산 {c['unknown_days']}일(재정산 필요)" if c["unknown_days"] else ""
-        lines.append(f"  (수집장애 {c['broken_days']}일 제외{extra} · 전체 {c['days']}일 "
-                     f"{c['n']}건 순 {c['sum_net']:+.2f}%p 참고)")
-    cap_wr = round(100 * c["cap_w"] / c["cap_n"], 1) if c["cap_n"] else 0
-    lines.append(f"[상한 {CAP_VIEW_N}건/일 뷰] {c['cap_n']}건 승률 {cap_wr}% 누적 {c['cap_sum']:+.2f}%p")
+        lines.append(f"  (수집장애 {c['broken_days']}일 제외{extra} · 전체 {c['days']}일 기록 보유)")
     if c["cb_days"]:
         lines.append(f"CB 발동일 누적 {c['cb_days']}일")
     lines.append("라이브 전환은 사장님 결정 — 관측 없이 flip 금지")

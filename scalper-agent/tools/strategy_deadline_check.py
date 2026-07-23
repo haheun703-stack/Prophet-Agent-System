@@ -41,14 +41,19 @@ ALERT_DDAY = 3   # D-3부터 알림
 
 
 def _v2_paper_cum_net():
-    """⑲-3 페이퍼 장부 ★유효일★ 순누적 %p + 승률 (스코어보드·S-1 자동판정 겸용).
+    """⑲-3 페이퍼 장부 ★유효일 × 일일 상한★ 순누적 %p + 승률 (스코어보드·S-1 겸용).
 
-    7/21 F-17 fix: observe_v2_paper._cum 단일진실 위임 → valid_sum(BROKEN·TRUNCATED·
+    7/21 F-17 fix: observe_v2_paper._cum 단일진실 위임 → valid_*(BROKEN·TRUNCATED·
     미정산일 제외)을 씀. 기존엔 raw all-days 합이라 페이퍼 리포트("유효 기준")와
-    S-1 판정 숫자가 어긋났다. 이제 두 도구가 같은 valid 숫자로 S-1을 판정한다."""
+    S-1 판정 숫자가 어긋났다. 이제 두 도구가 같은 valid 숫자로 S-1을 판정한다.
+
+    ★7/23 사장님 확정: 판정 기준 = valid_cap_*(일일 상한 CAP_VIEW_N=5건). 전 신호
+    합산(valid_sum)은 사장님 영구 자금 룰(30% 현금보유·split_cash top_k 3+2)상
+    실행 불가능한 수치라 참고로 강등 — 7/22 실측에서 두 지표의 부호가 반대였다
+    (무제한 -244.15%p vs 상한 +3.34%p). 지표 선택이 곧 판정이므로 실행 가능한 쪽."""
     from observe_v2_paper import _load_ledger, _cum
     c = _cum(_load_ledger())
-    return c["valid_sum"], c["valid_n"], c["valid_win_rate"]
+    return c["valid_cap_sum"], c["valid_cap_n"], c["valid_cap_win_rate"]
 
 
 def _cluster_sum_ret():
@@ -90,13 +95,14 @@ def main() -> int:
 
     # ── 스코어보드 (보고 첫 줄 = 숫자 — 7/17 약속) ──
     try:
-        from observe_v2_paper import NOTIONAL_KRW   # 단일진실(장부와 동일 명목·Tier1 L1)
+        # 단일진실(장부와 동일 명목·상한·Tier1 L1) — 하드코딩 이중정의 금지
+        from observe_v2_paper import NOTIONAL_KRW, CAP_VIEW_N
     except Exception:  # noqa: BLE001
-        NOTIONAL_KRW = 300_000
+        NOTIONAL_KRW, CAP_VIEW_N = 300_000, 5
     try:
-        cum, n, wr = _v2_paper_cum_net()   # ★유효일 기준(ticks OK만·F-17)
+        cum, n, wr = _v2_paper_cum_net()   # ★유효일 × 일일 상한(ticks OK만·F-17·7/23 확정)
         krw = int(cum / 100 * NOTIONAL_KRW)
-        score = (f"📊 페이퍼 스코어보드(유효일): {n}건 승률 {wr or 0}% "
+        score = (f"📊 페이퍼 스코어보드(유효일·상한{CAP_VIEW_N}건/일): {n}건 승률 {wr or 0}% "
                  f"순누적 {cum:+.2f}%p ({krw:+,}원/30만·건)")
     except Exception:  # noqa: BLE001
         score = "📊 페이퍼 스코어보드: 장부 없음"
