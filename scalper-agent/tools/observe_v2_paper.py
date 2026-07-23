@@ -99,14 +99,31 @@ def _atomic_write(path: Path, data) -> None:
     tmp.replace(path)
 
 
-def _load_ledger() -> dict:
+class LedgerLoadError(Exception):
+    """장부 파일은 존재하는데 파싱/스키마 실패 — 이 상태로 저장하면 과거 전량 소실."""
+
+
+def _load_ledger(strict: bool = False) -> dict:
+    """장부 로드. strict=True(저장 경로)는 '파일 부재'와 '파싱 실패'를 구분한다.
+
+    7/23 Tier1 M-1: 기존엔 파싱 실패도 조용히 {"days": {}}를 돌려줬고, save_day가
+    그걸 받아 오늘 1일치만 남기고 **과거 전량을 경고 없이 덮어썼다**. 그러면 다음날
+    스코어보드는 "유효 1일"이 되고 S-1은 그 1일로 판정된다 — H-1이 막으려던
+    '증거 부재 → 조용한 0 → ❌미달 위장'과 정확히 같은 실패 모드이고, HISTORY_KEEP(90일)
+    밖은 재정산조차 불가라 복구가 안 된다. 저장 경로에서만 예외로 승격해 쓰기를 막는다.
+    """
+    if not LEDGER_PATH.exists():
+        return {"days": {}}            # 정상 초회(파일 없음) — 빈 장부로 시작 OK
     try:
         led = json.loads(LEDGER_PATH.read_text(encoding="utf-8"))
         if isinstance(led, dict) and isinstance(led.get("days"), dict):
             return led
-    except Exception:  # noqa: BLE001
-        pass
-    return {"days": {}}
+        raise ValueError("스키마 불일치(days가 dict 아님)")
+    except Exception as e:  # noqa: BLE001
+        if strict:
+            raise LedgerLoadError(str(e)) from e
+        print(f"[v2_paper] ⚠ 장부 파싱 실패({e}) — 읽기 경로는 빈 장부로 진행(저장은 차단됨)")
+        return {"days": {}}
 
 
 def _intents_for(day: str):
@@ -176,17 +193,28 @@ def settle_day(day: str, intents: dict) -> dict:
         "cb_trigger_time": trig,
         "skipped_cb": sum(1 for s in skipped if s["reason"] == "cb"),
         "skipped_no_fill": sum(1 for s in skipped if s["reason"] == "no_fill"),
-        f"cap{CAP_VIEW_N}_sum_net": round(sum(t["net"] for t in cap), 2),
-        f"cap{CAP_VIEW_N}_wins": sum(1 for t in cap if t["net"] > 0),
-        f"cap{CAP_VIEW_N}_n": len(cap),
+        # 상한 집계는 **고정 키명 + 상한값 stamp**로 기록한다(7/23 Tier1 (d)·M-5).
+        # 옛 방식 f"cap{N}_*"는 CAP_VIEW_N을 바꾸는 순간 장부에 cap5_*(과거)와
+        # cap3_*(신규)가 혼재해, 사람이 JSON을 보거나 신규 도구가 cap5_를 grep하면
+        # 과거일만 잡히고 신규일은 miss = H-1 재발. 코드가 읽지 않아도 통로는 남는다.
+        "cap_sum_net": round(sum(t["net"] for t in cap), 2),
+        "cap_wins": sum(1 for t in cap if t["net"] > 0),
+        "cap_n": len(cap),
         "ticks_health": _ticks_health(day),   # BROKEN = 수집장애일(판정 증거 제외 대상)
+        # 박제값의 vintage — 임계/비용 상수를 바꾸면 과거일은 소급되지 않으므로
+        # 어느 세대 규약으로 계산된 값인지 남긴다(M-5·mixed-vintage 조용한 오독 차단).
+        "params": {"cap_limit": CAP_VIEW_N, "cb_daily_pct": CB_DAILY_PCT,
+                   "cost_rt": pb.COST_RT},
     }
     return {"date": day, "trades": trades, "skipped": skipped, "summary": summary,
             "settled_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 
 
 def save_day(rec: dict) -> None:
-    led = _load_ledger()
+    # strict — 파싱 실패 시 예외로 중단(과거 전량 소실 차단·7/23 Tier1 M-1).
+    # 예외는 main 최상위에서 출력되고 그날 정산이 장부에 없으므로 ⑳ freshness가
+    # ⑲-3 STALE로 적발한다(조용한 성공 위장 대신 표면화).
+    led = _load_ledger(strict=True)
     led["days"][rec["date"]] = rec
     days = sorted(led["days"])[-LEDGER_KEEP:]
     led["days"] = {d: led["days"][d] for d in days}
@@ -206,9 +234,17 @@ def _cum(led: dict) -> dict:
     vcap_n = vcap_w = 0
     vcap_sum = 0.0                  # ★유효일 × 상한 CAP_VIEW_N건 = S-1 판정 기준(7/23 사장님 확정)
     valid_days = unknown_days = 0   # OK일 수 / ticks_health 미기입(pre-7/20 미정산·B 누출 fix)
+    torn_days = []                  # trades↔summary.n 불일치일(증거 훼손 — 판정 제외)
     for d in days.values():
         s = d.get("summary", {})
         verdict = (s.get("ticks_health") or {}).get("verdict")
+        # ★M-2(7/23 Tier1): 판정선은 trades에, 참고선은 summary.n/sum_net에 의존한다.
+        #   둘이 어긋나면(장부 슬리밍·부분 sync·수동 편집) 판정만 조용히 0이 되고
+        #   참고선은 "304건 +15.29%p"를 그대로 출력해 자기모순 메시지가 된다.
+        #   → 불일치일은 유효일에서 제외하고 표면화한다(H-1의 본질=증거 부재의 은폐 차단).
+        if verdict == "OK" and len(d.get("trades") or []) != (s.get("n") or 0):
+            torn_days.append(d.get("date", "?"))
+            verdict = "TORN"        # OK도 BAD도 아닌 제3상태 → unknown으로 분류
         # ★유효일 = verdict가 명시적 OK인 날만. BROKEN/TRUNCATED(수집장애)와
         #   None(구 장부·재정산 필요)은 전부 제외 → 판정 증거 오염 차단(7/21 F-16·B).
         if verdict == "OK":
@@ -250,6 +286,7 @@ def _cum(led: dict) -> dict:
             #    — 판정 기준은 아래 valid_cap_*(F-16 오염 경로와 동일한 함정).
             "cap_sum": round(cap_sum, 2), "cap_n": cap_n, "cap_w": cap_w,
             "cb_days": cb_days, "broken_days": broken_days, "unknown_days": unknown_days,
+            "torn_days": torn_days,   # trades↔n 불일치일 — 발견 시 반드시 표면화(M-2)
             "valid_days": valid_days, "valid_n": vn, "valid_wins": vwins,
             "valid_sum": round(vsum, 2),
             "valid_win_rate": round(100 * vwins / vn, 1) if vn else None,
@@ -280,6 +317,12 @@ def build_report(day: str) -> str:
             lines.append(f"{int(m)}/{int(dd)}({wd}) 🚨 ticks {kind} "
                          f"(사용가능 {th.get('usable_pct')}%) — 체결 {s['n']}건은 "
                          f"'신호 없음'이 아니라 데이터 결손·판정 표본 제외 대상")
+        elif th.get("verdict") != "OK":
+            # M-3(7/23 Tier1): verdict None(구 장부·ticks_health 예외)은 TICKS_BAD에
+            # 안 걸려 정상 분기로 새고, 그런데 _cum은 unknown으로 헤드라인에서 제외한다
+            # → "방금 정산했는데 미정산" 자기모순 메시지. 정상 분기는 OK일 때만 진입.
+            lines.append(f"{int(m)}/{int(dd)}({wd}) ⚠ ticks 건강도 미확인 — 체결 {s['n']}건, "
+                         f"판정 표본 제외(--settle 재정산 필요)")
         else:
             # 일일 표기도 상한 기준을 주 수치로 — 헤드라인(누적)과 단위를 맞춘다.
             # 전 신호 합산은 실행 불가능 수치라 괄호 참고로만(7/23 사장님 확정).
@@ -292,10 +335,15 @@ def build_report(day: str) -> str:
             cw = sum(1 for t in _dcap if (t.get("net") or 0) > 0)
             cap_krw = int(cs / 100 * NOTIONAL_KRW)
             lines.append(f"{int(m)}/{int(dd)}({wd}) 체결 {cn}건(상한) · 승 {cw} · "
-                         f"순합 {cs:+.2f}%p ({cap_krw:+,}원)"
-                         + (" · 🚨CB -6%p 발동" if s["cb_triggered"] else ""))
-            lines.append(f"  (전 신호 {s['n']}건 합산 {s['sum_net']:+.2f}%p "
-                         f"({day_krw:+,}원) — 자금룰상 실행 불가·참고)")
+                         f"순합 {cs:+.2f}%p ({cap_krw:+,}원)")
+            # M-4(7/23 Tier1): CB 배지를 상한 수치 옆에 붙이면 "안전핀이 저 수치를
+            # 지켰다"로 오독된다. 실측상 CB 트리거(exit_time 기준·09:47~10:45)는 상한
+            # 5건의 진입(09:21~09:41)보다 늦어 4개 발동일 전부 상한 수치에 영향 0.
+            # CB는 '전 신호' 기준 리허설이므로 참고선에 붙인다(정합은 F-19).
+            lines.append(f"  (참고·전 신호 {s['n']}건 합산 {s['sum_net']:+.2f}%p "
+                         f"({day_krw:+,}원) — 자금룰상 실행 불가"
+                         + (" · 🚨CB -6%p 발동(전 신호 기준·상한 수치엔 미적용)"
+                            if s["cb_triggered"] else "") + ")")
     else:
         lines.append(f"{int(m)}/{int(dd)}({wd}) 정산 없음 (신호 0/휴장)")
     # ★ 헤드라인 = 유효일(ticks OK) × 일일 상한 CAP_VIEW_N건 = S-1 판정 숫자.
@@ -310,7 +358,11 @@ def build_report(day: str) -> str:
     if c["valid_cap_n"] < MIN_JUDGE_N:
         lines.append(f"  ⚠ 표본 {c['valid_cap_n']}건 < {MIN_JUDGE_N}건 — 판정 유예 권고"
                      f"(수집장애로 유효일이 줄면 '무표본'이 ❌미달로 위장됨)")
-    lines.append(f"  (참고·전 신호 합산 {c['valid_n']}건 {c['valid_sum']:+.2f}%p — 실행 불가 수치)")
+    lines.append(f"  (참고·실행 불가 수치 — 전 신호 합산 {c['valid_n']}건 {c['valid_sum']:+.2f}%p)")
+    # M-2 표면화: 증거 훼손일은 조용히 판정에서 빠지면 안 된다(H-1 본질과 동일)
+    if c["torn_days"]:
+        lines.append(f"  🚨 증거 훼손 {len(c['torn_days'])}일 판정 제외 "
+                     f"({', '.join(c['torn_days'][:5])}) — trades↔n 불일치·재정산 필요")
     if c["broken_days"] or c["unknown_days"]:
         extra = f"·미정산 {c['unknown_days']}일(재정산 필요)" if c["unknown_days"] else ""
         lines.append(f"  (수집장애 {c['broken_days']}일 제외{extra} · 전체 {c['days']}일 기록 보유)")
