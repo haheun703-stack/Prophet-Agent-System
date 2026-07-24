@@ -77,7 +77,8 @@ def run() -> int:
         ("⑱ morning_briefing", _json_field(STORE / "morning_briefing.json",
                                            "generated_at", "based_on", "timestamp")),
         ("⑲ playbook_shadow", _json_field(STORE / "playbook_shadow.json", "timestamp")),
-        ("⑯ cluster_harvest", _json_field(STORE / "cluster_harvest_paper.json", "timestamp")),
+        # ⑯ cluster_harvest — 7/24 S-2 판정으로 nightly 제거(엣지 없음 확정). 장부는
+        #   판정 근거로 동결 보존하므로 신선도 검사 대상에서 빼야 한다(안 그러면 영구 stale 경보).
         ("⑪ catalyst_archive", today if (STORE / "catalyst_archive" / f"catalyst_{today}.json").exists() else ""),
     ]
     stale = []

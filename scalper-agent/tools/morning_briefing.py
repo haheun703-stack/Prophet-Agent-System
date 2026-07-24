@@ -10,7 +10,7 @@
   ⑰ market_regime.json           — 다음 거래일 레짐(NO_GO/CAUTION/GO)+지수 정배열
   ③-4 theme_relay_shadow.json    — 테마별 릴레이 단계(대장주/소부장·바통터치)
   ⑪ catalyst_scan.json           — 명분 있는 끼(★관측후보/★★소문매수)+선행 후보
-  ⑯ cluster_harvest_paper.json   — 내일 시가 진입 예정(pending)+게이트 여부
+  (⑯ cluster_harvest_paper.json — 7/24 S-2 판정으로 입력에서 제외·엣지 없음 확정)
   daytrading_picks.json           — 최신 발행 픽(참고)
   scalper_open_gate.json          — (있으면) 간밤 미국장 오버레이 — 아침 08:45 갱신됨 주의
 
@@ -103,15 +103,9 @@ def _catalyst_block():
     return {"timestamp": r.get("timestamp"), "watch": watch[:10], "preemptive": nxt}
 
 
-def _cluster_block():
-    r = _load("cluster_harvest_paper.json")
-    if not r:
-        return None
-    return {
-        "pending_entries": r.get("pending_entries") or [],
-        "summary": r.get("summary"),
-        "summary_gated": r.get("summary_gated"),
-    }
+# _cluster_block() 제거 — 7/24 S-2 판정(엣지 없음)으로 ⑯이 nightly에서 빠졌다.
+# 장부는 판정 근거로 동결되므로 그대로 읽으면 브리핑이 매일 아침 '고정된 과거'를
+# 오늘의 진입 예정처럼 표시하게 된다(7/17 휴장일 스테일 스냅샷과 같은 계열의 함정).
 
 
 def _picks_block():
@@ -171,7 +165,6 @@ def build_briefing(save=True) -> dict:
     regime = _regime_block()
     relay = _relay_block()
     catalyst = _catalyst_block()
-    cluster = _cluster_block()
     picks = _picks_block()
     open_gate = _open_gate_block()
     out = {
@@ -181,7 +174,6 @@ def build_briefing(save=True) -> dict:
         "open_gate_overlay": open_gate,
         "theme_relay": relay,
         "catalyst": catalyst,
-        "cluster_pending": cluster,
         "daytrading_picks": picks,
         "playbook_hints": _playbook_hints(regime, catalyst),
         "note": "아침 정찰 한 장(record-only·read-only 통합). 플레이북 힌트=관측 라벨 — "
@@ -220,10 +212,6 @@ def format_text(b: dict) -> str:
     for w in (ca.get("watch") or [])[:5]:
         L.append(f"명분끼 {w.get('name')}({w.get('code')}): {w.get('verdict')} / "
                  f"{w.get('grade')} / {w.get('news_stage')} / {w.get('maek_jeom')}")
-    cl = (b.get("cluster_pending") or {}).get("pending_entries") or []
-    for p in cl:
-        L.append(f"클러스터 오늘 시가진입 예정: {p.get('name')}({p.get('code')}) "
-                 f"게이트{'통과' if p.get('gate_pass') else '★스킵'}")
     for h in b.get("playbook_hints") or []:
         L.append(f"▶ {h}")
     L.append("(record-only 정찰 — 매매 연결 아님)")

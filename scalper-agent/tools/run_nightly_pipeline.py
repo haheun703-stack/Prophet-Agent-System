@@ -116,8 +116,12 @@ def main():
          [PY, "-c", "import collect_all as C; from data.flow_collector import collect_credit_balance; collect_credit_balance(C.get_universe_codes())"], 5400),
         ("⑮ 한미충격 관측(kr_us_shock)",   # 6/27 정보봇 verdict(한국 vs 미국 시장충격) record-only 관측 누적·매매 0접촉(공매도/신용과 통합 리스크 후보)
          [PY, "-c", "from data.kr_us_shock_observer import collect_kr_us_shock_observation as f; print(f())"], 120),
-        ("⑯ 클러스터 수확 페이퍼",   # 7/1 사장님 — 명분클러스터(호남 건설/전선) 후발주 릴레이 +5~8% 매일수확 forward 페이퍼. record-only·실주문0·picks/SAJANG/order 무접촉·한국스윙(FLOWX) 무접촉. 2~3주 누적→흑자 엣지 판정→승인후 라이브
-         [PY, "tools/cluster_harvest_paper.py"], 300),
+        # ⑯ 클러스터 수확 페이퍼 — 7/24 S-2 D-DAY 판정으로 제거(사장님 승인).
+        #   폐기 근거: 재설계(동적 클러스터)로 신호일 4→46일까지 늘려 백테스트했으나
+        #   6/12/24개월 전 구간 미달(12개월 113건 승률 26.5% -105.13%p)이고, 결정적으로
+        #   대조군(클러스터 밖 동일필터)과 건당 -0.930 vs -0.928로 차이가 없었다
+        #   = "명분 클러스터 소속"이라는 정보에 엣지 없음. 판정 도구·근거는
+        #   tools/cluster_v2_backtest.py + data/strategy_deadlines.json judgments에 보존.
         ("⑰ 시장 레짐 게이트",   # 7/4 신설 — 전일 breadth≤0.45 회피신호(63일 검증된 유일 엣지)+지수 정배열 관측(사장님 6/7 숙제)+forward 자가검증. record-only·매수/매도/picks/SAJANG 무접촉. ④ ledger(당일 breadth) 이후 실행 필수
          [PY, "tools/run_market_regime_daily.py"], 120),
         ("⑱ 아침 브리핑 통합",   # 7/4 사장님 "장 시작 전 뭘 봐야 하나" — 레짐⑰+릴레이③-4+명분끼⑪+클러스터⑯+픽을 한 장(read-only 통합·재계산0). 플레이북 힌트=관측 라벨. ⑰ 이후 실행
