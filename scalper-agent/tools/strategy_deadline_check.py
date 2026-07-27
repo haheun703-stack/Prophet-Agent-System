@@ -62,10 +62,20 @@ def _cluster_sum_ret():
 
 
 def _eval_metric(metric: str):
-    """metric 이름 → 현재값. 미지원/실패 시 None(수동 판정)."""
+    """metric 이름 → 현재값. 미지원/실패/무표본 시 None(수동 판정).
+
+    ★7/27 검수 M2: 무표본(ticks 수집장애로 유효일 0)이면 _v2_paper_cum_net의
+    valid_cap_sum=0.0인데, 그대로 돌리면 _pass(0.0, ">", 0)=False → 데드라인 행이
+    S-1을 "현재 +0.00 ❌미달"로 출력해 '데이터 없음'을 '전략 실패'로 위장한다
+    (H-1 = 증거 부재 → 조용한 0 → ❌미달). observe_v2_paper.build_report는
+    valid_cap_n < MIN_JUDGE_N이면 '판정 유예'로 표기하는데(observe_v2_paper.py),
+    데드라인 체커만 그 가드가 없어 두 표면이 어긋났다. 여기서 표본 부족을 None으로
+    흘려 '(평가 불가 — 수동 판정)'으로 일치시킨다."""
     try:
         if metric == "v2_paper_cum_net":
-            return _v2_paper_cum_net()[0]
+            from observe_v2_paper import MIN_JUDGE_N
+            cum, n, _wr = _v2_paper_cum_net()
+            return None if n < MIN_JUDGE_N else cum
         if metric == "cluster_sum_ret":
             return _cluster_sum_ret()
     except Exception:  # noqa: BLE001
