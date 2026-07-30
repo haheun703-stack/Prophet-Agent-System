@@ -57,6 +57,15 @@ def _calc_bonus(rank: int, etf_count: int) -> Tuple[float, str]:
 def load_etf_leader_map(max_age_days: int = 35) -> Dict[str, dict]:
     """Supabase scalper_etf_leader_picks에서 최신 base_date TOP 30 조회.
 
+    ★★★ 7/30 전체검수 P0 — 이 보너스는 **영구 비활성 상태**다(선정 점수 기여 0). ★★★
+      · 생산자 `tools/refresh_etf_leaders.py`·`etf_leader_pipeline.py`가 **KRX 의존**이라
+        6/22 KRX 전역 kill switch(사장님 절대 룰) 하에서 갱신 불가 → 7/1 Fix5(a1560fe)에서 삭제됨.
+      · 소비자(`data/morning_recommendation.py:1228·1945`)는 살아 있어서 매일 호출되지만,
+        Supabase 최신 base_date가 5월이라 아래 max_age_days 가드에서 `{}` 반환 = 가산 0.
+      · VPS cron(토요일 refresh)은 매주 "No such file"로 실패하고 있었음 → 7/30 cron 라인 제거.
+      · **복구는 KRX 절대 룰 위반이라 불가.** 선정 로직에서 `etf_leader_sc`를 완전히 걷어낼지는
+        사장님 결정 사항(현재 항상 0이라 매매 무해 — 죽은 가산항으로 남아 있음).
+
     Args:
         max_age_days: 데이터 신선도 한계 (기본 35일 — 월 1회 갱신 가정)
 

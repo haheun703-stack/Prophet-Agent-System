@@ -194,7 +194,10 @@ def main():
             print(f"[notify] {today} 휴장일 — 미발송")
             return 0
 
-    result = DataVerifier(today).verify_all()
+    # ★ 7/30 M-1 — 소급(--date)·dry-run은 상태 파일을 쓰지 않는다(전일자 되돌려쓰기 차단).
+    # 정규 20:10 실행(당일·발송)만 data_verify_result.json을 갱신.
+    _save = not (args.dry_run or args.date)
+    result = DataVerifier(today, save_result=_save).verify_all()
     msg = build_summary(result, today)
 
     print(msg)

@@ -626,8 +626,10 @@ RETRY_MAP = {
 class DataVerifier:
     """장마감 후 데이터 파이프라인 검증기"""
 
-    def __init__(self, today: str = None):
+    def __init__(self, today: str = None, save_result: bool = True):
         self.today = today or date.today().isoformat()
+        # save_result=False = 판정만 반환(상태 파일 무접촉). 소급 검증·dry-run 전용 — 7/30 M-1
+        self._save_result = bool(save_result)
 
     def verify_all(self) -> dict:
         """전체 데이터 소스 검증"""
@@ -707,6 +709,13 @@ class DataVerifier:
         )
 
         # ── 결과 파일 자동 저장 (atomic write) ──
+        # ★ 7/30 전체검수 M-1 — 소급 검증(--date 전일)이 이 파일을 전일자로 되돌려 쓰던 문제.
+        # 아침 루틴 A1이 매일 `--dry-run --date <전일>`을 돌리므로, 09:3x부터 18:00 nightly까지
+        # 파일 내용이 '전일 판정'인데 mtime은 오늘 = 7/7에 ⑳로 고친 "장전 박제" 착시의 재도입.
+        # save_result=False면 판정만 반환하고 상태 파일은 건드리지 않는다(읽기전용 검증).
+        if not self._save_result:
+            logger.info("[DataVerifier] save_result=False — 상태 파일 미갱신(읽기전용 검증)")
+            return result
         out_path = STORE_DIR / "data_verify_result.json"
         tmp_path = out_path.with_suffix(".tmp")
         try:

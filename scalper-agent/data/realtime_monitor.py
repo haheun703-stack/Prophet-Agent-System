@@ -12,7 +12,7 @@
 
 결정 엔진:
   - 긴급: price ≤ SL → FULL_SELL
-  - 트레일링: 수익 5%+ → SL=진입가 / 10%+ → 트레일링 3%
+  - 트레일링: SAJANG 단일진실 — +3% 도달 시 본절 확보 + 고점 -3% 트레일링 (7/30 fix)
   - AI 점수 기반: HOLD / PARTIAL_SELL / FULL_SELL
 """
 
@@ -106,9 +106,29 @@ class RealtimeMonitor:
         # 설정값
         pm = self._config.get("premove", {})
         bot = self._config.get("bot", {})
-        self._breakeven_pct = bot.get("trailing_breakeven_pct", 5.0)
-        self._trailing_start_pct = bot.get("trailing_start_pct", 10.0)
-        self._trailing_distance_pct = bot.get("trailing_distance_pct", 3.0)
+        # ★ 7/30 전체검수 HIGH-1 — SAJANG 단일진실 복원 (5/25 사고·7/14 dynamic_trailing과 동일 패턴).
+        # 종전: config.yaml bot.trailing_* (본전 +5% / 트레일링 시작 +10% / 거리 3%)를 읽어
+        # SAJANG(+3% 활성·본전확보·고점 -3%)을 우회했다. 이 값들이 표시용이 아니라 _update_trailing →
+        # pos.current_sl → _decide "SL 히트" → liquidate_one 으로 이어지는 **실매도 트리거**라,
+        # 라이브 flip 시 사장님 영구 룰과 다른 거리로 매도됐다(활성 +10% = 그 전 구간 트레일링 부재).
+        # config 값은 폴백으로만 유지(SAJANG 임포트 실패 시). 값 방향은 더 보수적(보호 강화).
+        try:
+            from data.sajang_rules import SAJANG
+            self._breakeven_pct = SAJANG.TRAILING_ACTIVATION_PCT
+            self._trailing_start_pct = SAJANG.TRAILING_ACTIVATION_PCT
+            self._trailing_distance_pct = SAJANG.TRAILING_PCT
+            self._sajang_ok = True
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"[RTM] SAJANG 임포트 실패 — config 폴백 사용: {exc}")
+            self._breakeven_pct = bot.get("trailing_breakeven_pct", 5.0)
+            self._trailing_start_pct = bot.get("trailing_start_pct", 10.0)
+            self._trailing_distance_pct = bot.get("trailing_distance_pct", 3.0)
+            self._sajang_ok = False
+        # ★ AI 점수 기반 부분익절 임계는 트레일링과 **별개 축**이라 분리 보존.
+        # _breakeven_pct를 SAJANG(3.0)으로 내리면서 _decide의 "모멘텀 약화 + 수익 N% → 50% 익절"
+        # 발동선까지 5.0→3.0으로 끌려가는 부수효과가 생겼다. 그 분기는 사장님 룰(트레일링 only)에
+        # 없는 별도 로직이므로 fix 범위를 트레일링에 국한하고 기존 값(config·기본 5.0)을 유지한다.
+        self._partial_profit_pct = bot.get("trailing_breakeven_pct", 5.0)
 
         # API 장애 감지
         self._consecutive_failures = 0
@@ -394,22 +414,24 @@ class RealtimeMonitor:
     # ── 트레일링 스탑 ──
 
     def _update_trailing(self, pos: PositionState, current_price: int):
-        """트레일링 스탑 로직
-        - 수익 5%+ → SL = 진입가 (본절 확보)
-        - 수익 10%+ → SL = 고점 * (1 - trailing_distance)
+        """트레일링 스탑 로직 — ★ SAJANG 단일진실 (7/30 검수 HIGH-1 fix)
+        - +TRAILING_ACTIVATION_PCT(3%) 도달 → SL = 진입가 (본절 확보)
+        - 동일 임계 이후 → SL = 고점 × (1 - TRAILING_PCT/100) = 고점 -3%
+        - SL은 ratchet(단조 상승)만 — 하락 시 유지(보호 약화 금지)
+        ※ 종전 5%/10% 값은 config.yaml에서 왔고 사장님 룰을 우회했다(실매도 트리거).
         """
         if current_price > pos.high_since_entry:
             pos.high_since_entry = current_price
 
         pnl_pct = (current_price - pos.entry_price) / pos.entry_price * 100
 
-        # 1단계: 본절 확보 (수익 5%+)
+        # 1단계: 본절 확보 (SAJANG TRAILING_ACTIVATION_PCT=+3% 도달 시 — 7/30 HIGH-1 fix)
         if pnl_pct >= self._breakeven_pct and not pos.breakeven_activated:
             pos.current_sl = pos.entry_price
             pos.breakeven_activated = True
             logger.info(f"[{pos.code}] 본절 SL 발동: SL={pos.entry_price:,} (수익 {pnl_pct:.1f}%)")
 
-        # 2단계: 트레일링 (수익 10%+)
+        # 2단계: 트레일링 (SAJANG 고점 -3% 일관 — 활성도 +3%)
         if pnl_pct >= self._trailing_start_pct:
             trailing_sl = int(pos.high_since_entry * (1 - self._trailing_distance_pct / 100))
             if trailing_sl > pos.current_sl:
@@ -464,7 +486,8 @@ class RealtimeMonitor:
             return "HOLD", f"적절한 흐름 (AI:{realtime_score:.0f})"
 
         elif realtime_score >= 30:
-            if pnl_pct >= self._breakeven_pct:
+            # 트레일링 임계(_breakeven_pct=SAJANG 3.0)와 분리된 부분익절 축 — 7/30 fix
+            if pnl_pct >= self._partial_profit_pct:
                 return "PARTIAL_SELL", f"모멘텀 약화 + 수익 {pnl_pct:.1f}% (50% 이익실현)"
             return "HOLD", f"모멘텀 약화, 관망 (AI:{realtime_score:.0f})"
 

@@ -436,9 +436,12 @@ premove:
 
   # AI 실시간 모니터
   realtime_monitor: true
-  trailing_breakeven_pct: 5.0    # 본절 SL 발동 수익률(%)
-  trailing_start_pct: 10.0       # 트레일링 시작 수익률(%)
-  trailing_distance_pct: 3.0     # 트레일링 거리(%)
+  # ★ 7/30 검수 HIGH-1 — 트레일링 실값은 data/sajang_rules.py SAJANG이 단일진실.
+  #   아래 start/distance 2키는 **SAJANG import 실패 시 폴백 전용**(정상 운영 중 no-op).
+  #   고쳐도 트레일링 거동은 안 바뀜 — 바꾸려면 SAJANG.TRAILING_PCT/ACTIVATION_PCT를 수정.
+  trailing_breakeven_pct: 5.0    # ★ 여전히 유효: _decide의 AI 부분익절 임계(트레일링과 별개 축)
+  trailing_start_pct: 10.0       # (폴백 전용) 트레일링 시작 — 실값 SAJANG.TRAILING_ACTIVATION_PCT=3.0
+  trailing_distance_pct: 3.0     # (폴백 전용) 트레일링 거리 — 실값 SAJANG.TRAILING_PCT=3.0
 
 # --- NIGHTWATCH NXT 야간매매 ---
 nightwatch:

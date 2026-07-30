@@ -77,6 +77,7 @@ def run(max_days: int = 60) -> dict:
         anchor = today - timedelta(days=max_days)
 
     built = []
+    empty = []          # ★ 7/30 H-2 — 0건(섹터 후보 없음)은 '적재'가 아니라 '결손'으로 분리
     d = anchor
     while d <= today:
         if is_trading_day(d):
@@ -84,7 +85,13 @@ def run(max_days: int = 60) -> dict:
             if ds not in done and ds in loaded:  # ★ H3: 일봉 미적재일은 기록 skip(멱등키 고착 방지)
                 try:
                     r = build_shadow(ds)
-                    built.append([ds, len(r.get("records", []))])
+                    n = len(r.get("records", []))
+                    # build_shadow는 후보 0건이면 save 없이 반환하므로 done에 안 들어가고
+                    # 매일 같은 날을 재시도한다. 이를 "신규 N일 적재"로 찍으면 진척으로
+                    # 오독된다(7/29까지 4일이 3일 연속 '신규'로 보고됨 — 7/20 "성공 카운트≠
+                    # 성공 증거"의 재현형). 여기서는 카운트를 분리해 정직하게 표기만 한다
+                    # (데이터·판정 분모 무접촉 — 결손 원인 규명은 별건 F-31).
+                    (built if n > 0 else empty).append([ds, n])
                 except Exception as e:
                     print(f"[shadow_runner] build {ds} 실패(무시): {e}")
         d += timedelta(days=1)
@@ -95,12 +102,14 @@ def run(max_days: int = 60) -> dict:
     except Exception as e:
         print(f"[shadow_runner] update_forward 실패(무시): {e}")
 
+    warn = (f" / ⚠결손 {len(empty)}일 {[x[0] for x in empty]}(후보 0건 — 매일 재시도 중)"
+            if empty else "")
     print(
         f"[shadow_runner] {today.strftime('%Y-%m-%d')} 적재 — "
-        f"신규 {len(built)}일 {built} / forward {filled}건 / 기존 {len(done)}일 "
+        f"신규 {len(built)}일 {built} / forward {filled}건 / 기존 {len(done)}일{warn} "
         f"(봇OFF·매수 무접촉·관측 전용)"
     )
-    return {"today": today.strftime("%Y-%m-%d"), "built": built,
+    return {"today": today.strftime("%Y-%m-%d"), "built": built, "empty": empty,
             "forward_filled": filled, "already_recorded": len(done)}
 
 

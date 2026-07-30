@@ -164,18 +164,27 @@ def _hold_returns(rows, di: int):
 
 
 # ───────────────────────── 적재 (멱등, record-only) ─────────────────────────
+class ShadowLoadError(Exception):
+    """장부 파싱 실패 — 덮어쓰기 금지 신호 (7/30 검수 H-1)."""
+
+
 def _load() -> dict:
+    # ★ 7/30 H-1 — 파싱 실패 삼키기 제거(124KB 관측 이력 전량 소실 통로) + 원자쓰기
     if SHADOW_OUT.exists():
         try:
             return json.loads(SHADOW_OUT.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+        except Exception as e:  # noqa: BLE001
+            raise ShadowLoadError(
+                f"{SHADOW_OUT.name} 파싱 실패 — 덮어쓰기 중단(관측 이력 보호): {e}"
+            ) from e
     return {"records": [], "note": "재진입 룰 shadow 시뮬레이션(관측 전용, 매수/매도 무접촉)"}
 
 
 def _save(data: dict) -> None:
     data["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    SHADOW_OUT.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp = SHADOW_OUT.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(SHADOW_OUT)
 
 
 def _load_early_records() -> list:

@@ -92,6 +92,17 @@ def _make_price_response(current_price):
     return {"success": True, "current_price": current_price}
 
 
+def _setup_trading_day():
+    """거래일 가정 — 7/30 Tier1 HIGH-2.
+
+    hard_kill/queue가 `data.trading_calendar.is_trading_day()`(실제 date.today())를
+    함수-로컬 import로 보므로, 패치 없이 주말·공휴일에 돌리면 in_market=False가 되어
+    단정이 FAIL하고 **실제 data_store/pending_sells.json이 오염**된다. 원본 모듈을 패치
+    (함수-로컬 import라 bot.position_safety.is_trading_day 패치는 무효).
+    """
+    return patch("data.trading_calendar.is_trading_day", return_value=True)
+
+
 # ============================================================
 # TestSyncPositions — KIS ↔ 메모리 동기화
 # ============================================================
@@ -212,10 +223,18 @@ class TestEnforceSL(unittest.TestCase):
 class TestHardKillCheck(unittest.TestCase):
 
     def _setup_market_hours(self):
-        """정규장 시간 가정 (10:30 KST)."""
+        """정규장 시간 가정 (10:30 KST).
+
+        ★ 7/30 Tier1 재검수 HIGH-2 — 시각만 mock하면 안 된다. hard_kill/queue가
+        `data.trading_calendar.is_trading_day()`(실제 date.today())를 함수-로컬 import로
+        보므로, 주말·공휴일에 이 테스트를 돌리면 `in_market=False`가 되어 ①단정 FAIL
+        ②**실제 `data_store/pending_sells.json`에 테스트 종목이 기록**된다(라이브 상태파일 오염).
+        함수-로컬 import라 `bot.position_safety.is_trading_day` 패치는 무효 → 원본 모듈을 패치.
+        """
         from datetime import datetime
         return patch("bot.position_safety.datetime", wraps=datetime,
                      **{"now.return_value": datetime(2026, 5, 22, 10, 30)})
+
 
     def test_06_hard_kill_below_threshold(self):
         """[로킷헬스케어 -15.4% 재현] -5% 초과 → 시장가 강제 매도."""
@@ -232,7 +251,7 @@ class TestHardKillCheck(unittest.TestCase):
         trader.trader.fetch_price.return_value = _make_price_response(52100)
         trader.trader.sell_market.return_value = {"success": True, "order_no": "TEST123"}
 
-        with self._setup_market_hours():
+        with self._setup_market_hours(), _setup_trading_day():
             with patch("data.trade_journal.log_sell"):
                 killed = trader.hard_kill_check(kill_pct=0.05, dry_run=False)
 
@@ -254,7 +273,7 @@ class TestHardKillCheck(unittest.TestCase):
         ])
         trader.trader.fetch_price.return_value = _make_price_response(12241)
 
-        with self._setup_market_hours():
+        with self._setup_market_hours(), _setup_trading_day():
             killed = trader.hard_kill_check(kill_pct=0.05, dry_run=False)
 
         trader.trader.sell_market.assert_not_called()
@@ -274,7 +293,7 @@ class TestHardKillCheck(unittest.TestCase):
         ])
         trader.trader.fetch_price.return_value = _make_price_response(52100)
 
-        with self._setup_market_hours():
+        with self._setup_market_hours(), _setup_trading_day():
             killed = trader.hard_kill_check(kill_pct=0.05, dry_run=True)
 
         trader.trader.sell_market.assert_not_called()
@@ -306,7 +325,7 @@ class TestCriticalProtection(unittest.TestCase):
         ])
         trader.trader.fetch_price.return_value = _make_price_response(52100)
 
-        with self._setup_market_hours():
+        with self._setup_market_hours(), _setup_trading_day():
             trader.hard_kill_check(kill_pct=0.05, dry_run=False)
 
         trader.trader.sell_market.assert_not_called()
@@ -323,7 +342,7 @@ class TestCriticalProtection(unittest.TestCase):
         ])
         trader.trader.fetch_price.return_value = _make_price_response(90000)
 
-        with self._setup_market_hours():
+        with self._setup_market_hours(), _setup_trading_day():
             trader.hard_kill_check(kill_pct=0.05, dry_run=False)
 
         trader.trader.sell_market.assert_not_called()
@@ -343,7 +362,7 @@ class TestCriticalProtection(unittest.TestCase):
         ])
         trader.trader.fetch_price.return_value = _make_price_response(90000)
 
-        with self._setup_market_hours():
+        with self._setup_market_hours(), _setup_trading_day():
             trader.hard_kill_check(kill_pct=0.05, dry_run=False)
 
         trader.trader.sell_market.assert_not_called()

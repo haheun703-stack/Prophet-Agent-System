@@ -254,7 +254,10 @@ def main():
             xs.append(day_sig_count[d])
             ys.append(sum(by_day_base[d]) / len(by_day_base[d]))
     rho = _rank_corr(xs, ys)
-    terc = sorted(zip(xs, ys))
+    # ★ 7/30 검수 HIGH-2 — sorted(zip(xs,ys))는 동률 n_sig를 2차키 ys(성적)로 정렬해
+    # 3분위 경계가 동률 그룹 내부에서 갈리면 "1분위=동률 중 최악·3분위=동률 중 최선"이 되어
+    # 신호밀도와 무관한 인위적 단조성을 만든다. 밀도만 키로(stable → 날짜순 타이브레이크).
+    terc = sorted(zip(xs, ys), key=lambda p: p[0])
     n3 = len(terc) // 3
     buckets = [terc[:n3], terc[n3:2 * n3], terc[2 * n3:]] if n3 else []
     f28 = {"days": len(xs), "spearman": rho,

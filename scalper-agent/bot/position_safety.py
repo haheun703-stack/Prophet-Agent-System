@@ -398,8 +398,18 @@ def hard_kill_check(
     """
     try:
         # 정규장 시간 체크 (박사 개선 #3)
+        # ★ 7/30 전체검수 HIGH-2 — 시각만 보고 거래일을 안 봐서, 휴장일 09:00~15:30이면
+        # in_market=True가 되어 박제(전 거래일) 시세로 sell_market 즉시 매도 경로로 갔다.
+        # 7/17 제헌절 유령신호와 동형(휴장일 스테일 스냅샷은 신호처럼 생겼다). 거래일 아니면
+        # in_market=False → 장외 큐 등록(다음 정규장 시초) = 안전 방향. 캘린더 실패 시도 보수적으로 False.
         now_time = datetime.now().time()
-        in_market = KST_MARKET_OPEN <= now_time <= KST_MARKET_CLOSE
+        try:
+            from data.trading_calendar import is_trading_day
+            _is_td = is_trading_day()
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"[HARD_KILL] 거래일 판정 실패 — 장외 취급(큐 등록): {exc}")
+            _is_td = False
+        in_market = _is_td and (KST_MARKET_OPEN <= now_time <= KST_MARKET_CLOSE)
 
         kis_balance = self.trader.fetch_balance()
         if not kis_balance or not kis_balance.get("success"):
@@ -608,7 +618,23 @@ def process_pending_sells(self):
             return
 
         # 정규장 시간 체크 (안전망)
+        # ★ 7/30 Tier1 재검수 HIGH-1 — hard_kill에 거래일 가드를 넣자 실패 모드가 여기로 이동했다.
+        # hard_kill이 휴장일에 "즉시 매도" 대신 "큐 등록"을 하게 됐는데, 이 소비자는 시각만 보고
+        # 거래일을 안 봤다. `run_daily(_job_process_pending_sells, 09:01)`은 days= 필터가 없어
+        # 매 캘린더일 발화 → 휴장일 09:01에 박제 시세로 sell_market 시도(7/17 제헌절 동형).
+        # 두 지점의 규약을 동일하게 맞춰야 fix가 완결된다. 캘린더 실패 시도 스킵(보수).
         now_time = datetime.now().time()
+        try:
+            from data.trading_calendar import is_trading_day
+            _is_td = is_trading_day()
+        except Exception as exc:  # noqa: BLE001
+            logger.error(f"[QUEUE] 거래일 판정 실패 — 큐 처리 스킵(보수): {exc}")
+            _is_td = False
+        if not _is_td:
+            logger.warning(
+                f"[QUEUE] 비거래일 호출 — 큐 처리 스킵 (대기: {len(pending)}종·다음 거래일 09:01 재시도)"
+            )
+            return
         if not (KST_MARKET_OPEN <= now_time <= KST_MARKET_CLOSE):
             logger.warning(
                 f"[QUEUE] 정규장 외 호출 — 큐 처리 스킵 (대기: {len(pending)}종)"

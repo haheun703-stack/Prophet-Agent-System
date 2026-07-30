@@ -66,18 +66,32 @@ def _turnover(code: str, asof: str) -> float:
     return 0.0
 
 
+class ShadowLoadError(Exception):
+    """장부 파싱 실패 — 덮어쓰기 금지 신호 (7/30 검수 H-1)."""
+
+
 def _load() -> dict:
+    """★ 7/30 전체검수 H-1 — 파싱 실패를 삼키면 다음 _save가 과거 관측을 전량 소실시킨다.
+    (기존: except pass → {"records": []} 반환 → 오늘 1일치만 남기고 33일 무경보 삭제.)
+    observe_v2_paper의 LedgerLoadError strict 패턴(7/23 M-1)을 이식 — 파일이 있는데 못 읽으면
+    예외로 올려 호출부가 중단하게 한다. S-6 판정(8/7) 증거는 이 파일 하나뿐."""
     if SHADOW_OUT.exists():
         try:
             return json.loads(SHADOW_OUT.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+        except Exception as e:  # noqa: BLE001
+            raise ShadowLoadError(
+                f"{SHADOW_OUT.name} 파싱 실패 — 덮어쓰기 중단(관측 이력 보호): {e}"
+            ) from e
     return {"records": [], "note": "sector reversal shadow (관측 전용, 매수 무접촉)"}
 
 
 def _save(data: dict) -> None:
+    """원자 쓰기 — 92KB 직접 write는 재부팅·OOM·06:00 재시작과 겹치면 파일이 잘린다
+    (7/7에 원자쓰기 3건 적용 시 ③/③-2/③-3이 빠졌음 — 7/30 H-1로 보완)."""
     data["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    SHADOW_OUT.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp = SHADOW_OUT.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(SHADOW_OUT)
 
 
 def build_shadow(asof: str, save: bool = True) -> dict:
