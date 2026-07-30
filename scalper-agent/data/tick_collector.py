@@ -25,6 +25,30 @@ logger = logging.getLogger("BH.TickCollector")
 DATA_DIR = Path(__file__).resolve().parent.parent / "data_store" / "ticks"
 
 
+def _safe_int(v, default=0):
+    """KIS는 정수 필드에 "55710.28" 같은 소수 문자열을 줄 때가 있다(5/19 사장님 fix·
+    realtime_monitor와 동일 패턴). 파싱 실패를 '네트워크 예외'로 오진하지 않기 위한 가드."""
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_float(v, default=0.0):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def _refused(resp, j) -> bool:
+    """KIS 거부 판정 — 레이트리밋·토큰만료는 HTTP 200 + rt_cd!="0"로 온다.
+    rt_cd 부재(게이트웨이 오류 바디)도 거부로 취급(레포 관례 str(rt_cd)!="0" 엄격 판정)."""
+    if getattr(resp, "status_code", 200) != 200:
+        return True
+    return str(j.get("rt_cd")) != "0"
+
+
 def _ensure_dir(today: str):
     d = DATA_DIR / today
     d.mkdir(parents=True, exist_ok=True)
@@ -56,7 +80,8 @@ class TickCollector:
         self._broker = None
         self._prev_volume: Dict[str, int] = {}  # 이전 거래량 (체결량 계산용)
         self._last_api_error: Optional[str] = None   # 사이클 요약 로그용(7/20 사고 fix)
-        self._api_fail: int = 0                      # 사이클 내 API 거부 건수
+        self._api_fail: int = 0                      # hard 거부(행 미기록) 종목 수
+        self._api_soft: int = 0                      # soft 거부(필드 결손 기록) 종목 수 — M1
 
     def _get_broker(self):
         if self._broker is not None:
@@ -118,25 +143,26 @@ class TickCollector:
             # 이를 '성공'으로 집계했다(오늘 로그 "2530/2531 성공"인데 전 종목 0). 조용한 오염 =
             # ⑲/⑲-3 판정 증거가 통째로 무의미해지는 사고 → 거부는 거부로 인식하고 행을 쓰지 않는다.
             j1 = r1.json()
-            if j1.get("rt_cd") not in ("0", 0, None):
-                self._last_api_error = f"{j1.get('msg_cd', '')} {str(j1.get('msg1', ''))[:40]}".strip()
+            if _refused(r1, j1):
+                # r1 거부 = price 없음 → 행 자체 불성립(hard fail·행 미기록)
+                self._last_api_error = f"r1 {j1.get('msg_cd', '')} {str(j1.get('msg1', ''))[:40]}".strip()
                 self._api_fail += 1
                 return None
             d1 = j1.get("output") or {}
 
-            price = int(d1.get("stck_prpr", 0) or 0)
+            price = _safe_int(d1.get("stck_prpr"))
             if price <= 0:
                 # output 결손/휴장 스냅샷 — 0 기록은 신호·청산 시뮬을 오염시킨다(가격 0 행 금지)
                 self._last_api_error = self._last_api_error or "output 결손(price=0)"
                 self._api_fail += 1
                 return None
-            change = int(d1.get("prdy_vrss", 0))
+            change = _safe_int(d1.get("prdy_vrss"))
             # 하락이면 음수 처리
             sign = d1.get("prdy_vrss_sign", "0")
             if sign in ("5", "4"):  # 하한/하락
                 change = -abs(change)
-            change_rate = float(d1.get("prdy_ctrt", 0))
-            volume = int(d1.get("acml_vol", 0))
+            change_rate = _safe_float(d1.get("prdy_ctrt"))
+            volume = _safe_int(d1.get("acml_vol"))
 
             row["price"] = price
             row["change"] = change
@@ -146,10 +172,22 @@ class TickCollector:
             # 체결량 = 현재 거래량 - 이전 거래량
             prev_vol = self._prev_volume.get(code, 0)
             tick_vol = volume - prev_vol if prev_vol > 0 else 0
-            self._prev_volume[code] = volume
             row["tick_volume"] = tick_vol
 
             time.sleep(0.05)
+
+            # ★ M1 fix (Tier1 검수 반영 재설계) — r2/r3 거부는 soft-fail:
+            # 행을 버리지 않고 해당 필드만 공란("")으로 기록한다.
+            #  · 무가드(종전)의 문제: 거부인데 strength=0.0 기록 = '멀쩡해 보이는 오염행'
+            #    (v2 신호필터 원천 오염·7/20 사고 자매).
+            #  · 행 폐기(1차 설계)의 문제: ticks CSV에서 ask1/bid1을 읽는 소비자는 0인데
+            #    (유일 판독기 playbook_shadow._read_ticks = time/price/change_rate/strength만)
+            #    모두가 쓰는 price 관측까지 버려져 스로틀 오후 집중 시 멀쩡한 날이
+            #    TRUNCATED로 판정 유효일에서 통째 탈락(반대 방향 과교정).
+            #  · 공란은 판독기에서 0으로 강제되어(신호 false-negative만 발생·오진입 없음)
+            #    보수적이며, 원본 CSV에선 정상 0.0과 구분돼 감사 가능.
+            # soft는 백오프 미발동 — 실제 스로틀 스톰이면 r1도 거부돼 hard 경로가 건다.
+            soft = False
 
             # 2) 체결 - 체결강도
             h2 = {**common_headers, "tr_id": "FHKST01010300"}
@@ -157,11 +195,17 @@ class TickCollector:
                 f"{base}/uapi/domestic-stock/v1/quotations/inquire-ccnl",
                 headers=h2, params=common_params, timeout=5,
             )
-            d2_list = r2.json().get("output", [])
-            if d2_list:
-                row["strength"] = float(d2_list[0].get("tday_rltv", 0))
+            j2 = r2.json()
+            if _refused(r2, j2):
+                self._last_api_error = f"r2 {j2.get('msg_cd', '')} {str(j2.get('msg1', ''))[:40]}".strip()
+                row["strength"] = ""     # 미상 — 정상 0.0(무체결)과 구분해 기록
+                soft = True
             else:
-                row["strength"] = 0.0
+                d2_list = j2.get("output") or []
+                if isinstance(d2_list, list) and d2_list:
+                    row["strength"] = _safe_float(d2_list[0].get("tday_rltv"))
+                else:
+                    row["strength"] = 0.0   # rt_cd=0 + 빈 output(장초 무체결 등) = 정상
 
             time.sleep(0.05)
 
@@ -171,10 +215,21 @@ class TickCollector:
                 f"{base}/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn",
                 headers=h3, params=common_params, timeout=5,
             )
-            d3 = r3.json().get("output1", {})
-            row["ask1"] = int(d3.get("askp1", 0))
-            row["bid1"] = int(d3.get("bidp1", 0))
+            j3 = r3.json()
+            if _refused(r3, j3):
+                self._last_api_error = f"r3 {j3.get('msg_cd', '')} {str(j3.get('msg1', ''))[:40]}".strip()
+                row["ask1"] = ""
+                row["bid1"] = ""
+                soft = True
+            else:
+                d3 = j3.get("output1") or {}
+                # ask1/bid1=0 자체는 상·하한가에서 정상이라 값 가드는 없음(rt_cd 거부만 구분)
+                row["ask1"] = _safe_int(d3.get("askp1"))
+                row["bid1"] = _safe_int(d3.get("bidp1"))
 
+            if soft:
+                self._api_soft += 1
+            self._prev_volume[code] = volume
             return row
 
         except Exception as e:
@@ -195,6 +250,7 @@ class TickCollector:
 
         ok = 0
         self._api_fail = 0
+        self._api_soft = 0
         self._last_api_error = None
         streak = 0          # 연속 실패 — 레이트리밋/토큰만료 escalation 판단
         reset_done = False  # 사이클당 broker 재발급 1회 (토큰 만료 복구)
@@ -234,11 +290,13 @@ class TickCollector:
             time.sleep(0.05)  # 종목 간 대기 (rate limit)
 
         # 사이클 건강도 가시화 — 조용한 실패 금지(7/20 사고: 전 종목 0인데 '성공' 집계)
-        if self._api_fail:
+        # hard=행 미기록(r1 거부·price 결손·예외) / soft=필드 결손 기록(r2/r3 거부 — M1)
+        if self._api_fail or self._api_soft:
             share = 100 * self._api_fail / max(len(codes), 1)
             level = logger.error if share >= 50 else logger.warning
-            level(f"[tick] API 거부 {self._api_fail}/{len(codes)}종목 ({share:.0f}%) "
-                  f"— 최근 사유: {self._last_api_error or '미상'} (해당 행 미기록)")
+            level(f"[tick] API 거부 hard {self._api_fail}(행 미기록) / "
+                  f"soft {self._api_soft}(strength·호가 공란 기록) / {len(codes)}종목 "
+                  f"— 최근 사유: {self._last_api_error or '미상'}")
         return ok
 
     def run_market_hours(self, codes: list, interval_sec: int = 60):
