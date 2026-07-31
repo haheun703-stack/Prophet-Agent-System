@@ -96,6 +96,8 @@
 - **[F-43]** (7/30 검수) **확실히 죽은 12파일 + Windows 런처 13개 격리** — 5중 확인 완료분(backtest/etf_leader 5·full_period_backtest·daily_collector·pension_finance_scan·cluster_harvest_paper(S-2 폐기)·day_trade_bot(6/4 채택금지)·_archive_dead_code_7_27 잔여). Windows 작업 실측 238개 중 **`BodyHunter_VPSSync`만 Ready**, 나머지 Disabled = 데이터 메인 VPS 전환 잔재. `_archive_dead_code_7_30/` 격리 이동(삭제 X) (LOW).
 - **[F-44]** (7/30 검수) **`reentry_ticks_precision_7_7.py:57` ticks 판독 클론이 시간 정렬 안 함** — 정본 `pb._read_ticks`는 `out.sort()` 하는데 이 클론은 자체 DictReader·정렬 없음. **7/7 재진입 FAIL 판정을 낸 도구**라 정합성 확인 필요(판정 수치 변동 시 사장님 보고) (MED).
 - **[F-45]** (7/30 검수) **장중 시간 정의 불일치** — `verifiers/flow_monitor.py:27`(09:00~15:30) vs `bot/auto_trader.py:745`(09:00~15:20). 시간 파싱이 4계열 난립(정본 없음)·`auto_trader`의 동일 `async def _send` 클로저 **15곳 복제**(같은 파일에 `_alert()` 이미 존재)·CSV 로더 7중(정본 `csv_loader.CSVLoader`는 외부 importer 0=죽은 정본)·미사용 import 137건(핵심 생산 파일 12개는 깨끗). 점진 수렴 (LOW).
+- **[F-47]** (7/31 Tier1 L-4) **A4가 "러너 가동·ticks 부재"를 "러너 정지"로 오진단** — `daily_ops_check` A4는 `누적 N` 라인으로 판정하는데, 러너는 정상 가동했지만 `ticks/{day}`가 끝내 안 생긴 날은 `ticks/{ymd} 없음 — skip` 라인만 남아 "러너 정지 의심"으로 표기된다. **경보 자체는 옳고**(둘 다 이상) 원인 문구만 틀린다. skip 라인도 스캔해 두 상태를 분기 (LOW).
+- **[F-48]** (7/31 Tier1 인접관찰) **nightly 스텝 실패 시 stdout 증거 소실** — `run_nightly_pipeline.py:53`이 rc≠0일 때 **stderr 꼬리만** 로깅한다. 그런데 `run_nightly_freshness_check.py`(⑳)는 STALE 목록을 전부 **stdout**에 찍고 exit 1 하므로, **⑳이 완료위장을 적발한 날 nightly.log엔 `⚠ ⑳ … exit=1 |` 뒤가 빈 줄로만 남고 무엇이 stale인지 사라진다**. 아침 점검 A2는 FAIL을 내지만 원인을 못 전달한다. rc≠0일 때 stdout 꼬리도 함께 보존 (MED — 완료위장 적발의 증거 계층).
 - **[F-13]** (7/17) **universe 재편입 파이프** — prune 도구는 제거만 함. 거래재개 종목(1~4주 정지군 포함)·신규상장 추가는 KIS 마스터/순위 API 결합 별도 설계 필요 (LOW·월 1회 prune 재실행 시 함께 검토).
 
 ## §5. 자기성찰 템플릿 (매일 업무일지 마지막 섹션)
@@ -115,5 +117,5 @@
 
 ---
 
-**Last updated**: 2026-07-16 (신설 — 7/16 사장님 지시)
+**Last updated**: 2026-07-31 (아침 루틴 A1~A6·A9 **무인화** — 평일 08:30 cron·[F-8]+[F-29] 완료. 매매 룰 무변경)
 **불변식**: 실매매 OFF·실주문 0·매도 무손상·KRX 무접촉·SAJANG 단일진실·관측 없이 flip 금지
