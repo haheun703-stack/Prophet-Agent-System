@@ -50,7 +50,13 @@ def run_step(name, cmd, timeout):
         if r.returncode == 0:
             _log(f"✅ {name} 완료 ({el:.0f}s) | {tail_s[:160]}")
             return True
-        _log(f"⚠ {name} exit={r.returncode} ({el:.0f}s) | {(r.stderr or '')[-180:].strip()}")
+        # ★ 7/31 전체검수 [F-48] — 실패 경로가 stderr만 남겨 **실패 사유가 소실**됐다.
+        # ⑳(완료위장 자가검증)은 STALE 목록을 stdout에 찍고 exit 1 하므로, 방어선이
+        # 발동한 날 로그엔 `⚠ ⑳ … exit=1 |` 뒤가 비어 "무엇이 stale인지" 증거가 없었다.
+        # stdout 꼬리를 함께 보존한다(아침 점검 A2의 진단력이 여기에 달려 있다).
+        _out = " ".join(tail[-3:])[-200:].strip()
+        _err = (r.stderr or "")[-160:].strip()
+        _log(f"⚠ {name} exit={r.returncode} ({el:.0f}s) | out: {_out} || err: {_err}")
         return False
     except subprocess.TimeoutExpired:
         _log(f"⚠ {name} TIMEOUT ({timeout}s)")

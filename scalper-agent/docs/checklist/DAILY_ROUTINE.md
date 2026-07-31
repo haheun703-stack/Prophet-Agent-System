@@ -98,6 +98,43 @@
 - **[F-45]** (7/30 검수) **장중 시간 정의 불일치** — `verifiers/flow_monitor.py:27`(09:00~15:30) vs `bot/auto_trader.py:745`(09:00~15:20). 시간 파싱이 4계열 난립(정본 없음)·`auto_trader`의 동일 `async def _send` 클로저 **15곳 복제**(같은 파일에 `_alert()` 이미 존재)·CSV 로더 7중(정본 `csv_loader.CSVLoader`는 외부 importer 0=죽은 정본)·미사용 import 137건(핵심 생산 파일 12개는 깨끗). 점진 수렴 (LOW).
 - **[F-47]** (7/31 Tier1 L-4) **A4가 "러너 가동·ticks 부재"를 "러너 정지"로 오진단** — `daily_ops_check` A4는 `누적 N` 라인으로 판정하는데, 러너는 정상 가동했지만 `ticks/{day}`가 끝내 안 생긴 날은 `ticks/{ymd} 없음 — skip` 라인만 남아 "러너 정지 의심"으로 표기된다. **경보 자체는 옳고**(둘 다 이상) 원인 문구만 틀린다. skip 라인도 스캔해 두 상태를 분기 (LOW).
 - **[F-48]** (7/31 Tier1 인접관찰) **nightly 스텝 실패 시 stdout 증거 소실** — `run_nightly_pipeline.py:53`이 rc≠0일 때 **stderr 꼬리만** 로깅한다. 그런데 `run_nightly_freshness_check.py`(⑳)는 STALE 목록을 전부 **stdout**에 찍고 exit 1 하므로, **⑳이 완료위장을 적발한 날 nightly.log엔 `⚠ ⑳ … exit=1 |` 뒤가 빈 줄로만 남고 무엇이 stale인지 사라진다**. 아침 점검 A2는 FAIL을 내지만 원인을 못 전달한다. rc≠0일 때 stdout 꼬리도 함께 보존 (MED — 완료위장 적발의 증거 계층).
+### ★ 7/31 전체검수(5관점) 신규 등재 — F-49~F-69
+
+> 4건은 당일 fix 완료(휴장일 가드 2·SAJANG 파생 3·A5 오진·스코어보드 위장·F-48). 아래는 잔여.
+> **[사장님]** 표시 = 매매 동작이 실제로 바뀌므로 단타봇 자율 권한 밖.
+
+**A. 데이터·검증 계층 (관점3)**
+- **[F-49]** (7/31) **수급 검증이 placeholder 행을 성공으로 집계 (미탐·7/20 사고의 자매 통로)** — `data_verifier._csv_has_date`(:104-124)가 **첫 컬럼 날짜 문자열만** 비교. VPS 실측: 7/31 행 보유 572개 중 **61개(10.7%)가 수급 전부 0**. 정직한 지표(`flow/_last_update.json`의 `data_through`·`investor_real`)가 **이미 생산 중인데 검증기가 안 본다**(실측 `date=7/31 / data_through=7/30 / investor 2531 vs investor_real 2526`). fix=`supply_analyzer._trim_trailing_placeholder_rows` 재사용 + `data_through` 교차검증 (HIGH).
+- **[F-50]** (7/31) **16:00 이후 캐시 무조건 신뢰 → placeholder 하루 동결** — `flow_collector.py:206-228`이 "오늘 날짜 행 존재"만 보고 재수집 스킵. 장전 0값 행이 있으면 C3·nightly ⑥ 양쪽 스킵 → EOD 확정치 영영 미수집인데 [F-49] 때문에 PASS (HIGH).
+- **[F-51]** (7/31) **⑳의 데이터 재검증이 어떤 판정에도 반영 안 됨** — `run_nightly_freshness_check.py:64-70`의 재검증 예외·`critical_failures`가 `stale`에 안 들어가 exit 0. 주석은 "exit 1 경로"라 주장. **완료위장 차단 스텝 자체의 구멍** (HIGH).
+- **[F-52]** (7/31) **★ 7/30 M-1 fix가 봇 경로 미적용 → 오늘 실제 재발** — `save_result` 기본값이 True라 `trading_coo.py:2933·2975`·`telegram_bot.py:4073·4087·5897` 5곳이 여전히 상태 파일을 덮는다. 실증: 오늘 `data_verify_result.json` = 06:33:51·status FAIL·daily 0/10(장전 박제). A0(`_job_morning_backfill`)은 docstring이 "전일 기준"인데 코드는 `date.today()`. **근본 처방=`DataVerifier.save_result` 기본값을 False로 뒤집고 저장 필요한 2곳만 True** (HIGH).
+- **[F-53]** (7/31) **⑫ 순위 6종 중 1종만 검증 + 수집기가 전멸해도 `status: ok`** — `data_verifier:392-404`는 `volume.csv`만 확인. `ranking_snapshot_collector:139-140`은 무조건 ok 반환. 실측 `night_futures.csv` **아예 없음**(5/6) (MED).
+- **[F-54]** (7/31) **⑦ 11주체 kosdaq 검증 사각** — kospi만 검증, `kosdaq_investor.csv`는 어느 검증기도 안 봄. 러너도 `print('ok' if r else ...)`라 kospi만 성공해도 ok. **코스닥이 v2 표본 주력** (MED).
+- **[F-55]** (7/31) **누적 CSV 5채널 비원자적 전체 재작성** — flow/market_investor/ranking/kr_us_shock가 `df.to_csv()` 직접(daily fill은 tmp+replace 정본). ⑬⑭는 timeout 5400s 최장 스텝이라 kill 타이밍이 쓰기 중이면 **전 기간 히스토리 절단**. 탐지 계층 0(마지막 한 줄만 읽음) (MED).
+- **[F-56]** (7/31) **★ sync 누락 6번째 — 사람 규율로는 안 끝난다** — CHECKLIST 참조 경로 중 `tv_scanner.json`·`nightwatch_report.json`·`guardian_latest.json`·`consensus.json` 미등재. **근본=CHECKLIST 참조 경로 ↔ sync 대상 차집합을 pre-commit에서 자동 검사** (MED·근본).
+
+**B. 판정 파이프라인 (관점2)** — ★스코어보드 51건 −69.67%p 자체는 독립 재계산 **완전 일치**(torn 0·중복 0·look-ahead 없음)
+- **[F-57]** (7/31) **"전 신호 합산" 라벨이 실제로는 CB 적용 후 수치** — `observe_v2_paper.py:181-190`이 CB로 자른 뒤를 `n`/`sum_net`으로 저장. 실측 유효 11일 **737 → 662건(75건·10.2% 소실)**, 7/30은 101 → 55. 잘린 건의 손익은 `skipped`에 미보존. **S-1 보조기준("실측↔백테스트 갭")의 두 수치가 서로 다른 모집단**이고 방향은 **낙관 편향** (HIGH).
+- **[F-58]** (7/31) **`trades[].net` 박제 + params stamp 6/11일 결손** — COST_RT를 바꿔도 과거일 미소급. 원본 `ret`가 있으므로 합산을 `ret - COST_RT`로 바꾸면 상수 변경 면역 (MED).
+- **[F-59]** (7/31) **⑲-3 보고 발송 실패가 전 계층 무증상** — 정산·저장은 성공하고 보고만 죽으면 nightly ✅·⑳ ✅·A2 ✅·A9 정상값. 사장님만 못 받는다. A3와 같은 발송 스탬프 도입 (MED).
+- **[F-60]** (7/31) **유효일 정의에 러너 커버리지 미반영** — `_cum`은 ticks_health만 봄. 러너가 신호 절반만 잡은 날도 완전 유효일이고, cap5는 시간순이라 **누락 시 다른 5건이 뽑힌다**. history에 `verdict/matched`가 이미 있는데 미사용. 현재 14일 100% 일치라 오염 실적 0 (MED·구조).
+- **[F-61]** (7/31) **cap5 정렬 키가 장부(signal_time) vs 백테스트 도구(entry_time) 상이** — 현재 선택 집합 동일이라 영향 0이나, 해상도가 바뀌면 무경보로 갈린다. `select_cap()` 헬퍼로 단일진실화 (LOW).
+
+**C. 실매매 안전 (관점1)** — ★KIS 주문 sink 7곳 전수 게이트 PASS·`manual=True` 자동경로 0건
+- **[F-62]** (7/31) **[사장님] 룰4(상한가분할)·룰B가 룰D 종목을 커버하지 않는데 코드는 커버한다고 주장** — 룰D 포지션은 `rule_b_watch`/`limit_up_split_watch` 마커를 다는데 두 룰의 필터는 `source.startswith("asset_pool")`(auto_trader:5446·5310)이라 **마커가 읽히지 않는다**. docstring(:2872)은 "룰 3 자동 적용"이라 명시적으로 잘못 서술. 재가동 시 룰D 종목이 +25% 쳐도 절반 락인 없음 → 룰4가 막으려던 무한보유 발생. fix=마커 기준 통일(매매 변경이라 사장님 결정) (HIGH).
+- **[F-63]** (7/31) **NXT/predawn 예산이 30% 현금 룰 미경유** — `auto_trader:6220 cash*0.30`·`:6520 cash*0.40`이 `SAJANG.calc_budget_per_stock` 우회. 하위 `nxt_safe_buy`/`afterhours_buy`에도 현금유보 검사 없음(`safe_buy`만 있음) = **30% 룰 유일 구멍**. 현재 alert_only+AUTO_TRADE_DISABLED 이중차단·predawn 스케줄 미등록으로 무해 (HIGH·재가동 전).
+- **[F-64]** (7/31) **`_job_jarvis_decision` 거래일·장중 가드 0** — 5분 반복인데 `config.yaml:293 dry_run: true`가 유일 방벽. LIVE 매도는 `_is_sell_protected`도 안 거침 (MED).
+- **[F-65]** (7/31) **`cancel_order` 반환 미검증 → 이중 매수 가능** — `kis_trader:1239-1241` modify 실패 시 취소 결과를 안 보고 `buy_market` 추가 발주. 취소 실패(이미 체결)면 2회 매수. 부분매도 중이면 잔량까지 팔릴 수 있음 (MED).
+- **[F-66]** (7/31) **유령 포지션** — `smart_buy:1192-1199`가 `filled_qty=0`인데 `success: True` 반환, 호출부는 success만 보고 등록 → 실체 없는 포지션 (MED).
+- **[F-67]** (7/31) **[사장님] positions.json 미등재 = 트레일링·손절·hard_kill 전면 불능** — 3계층 모두 보호로 판정. `sync_positions` 자동등록분도 `sync_auto_unknown`이라 여전히 보호. 5/21 로킷헬스케어(-15.4%) 사고와 같은 방향이고 CLAUDE.md 룰 10("보호 종목도 트레일링 핸들링 OK")과 어긋남. **"보호=전 매도 차단" vs "보호=고정TP만 차단, 손절은 허용"** 결정 필요 (HIGH).
+
+**D. 사장님 룰 준수 (관점5)** — ★룰 1·2·3·6·10·11 정상 확인(옛 +5% TP 엔진 소멸 확인)
+- **[F-68]** (7/31) **[사장님] 룰4 "+29% 절반 매도"가 코드에 없음** — `SAJANG.LIMIT_UP_SELL_PCT=29.0` 참조 0건. 실제는 `pnl>=25` 즉시 시장가(auto_trader:5452). docstring은 "+29% 락인"이라 주장 = **문서가 구현보다 유리하게 서술**. 사장님 룰 문구 해석 확인 필요 (MED).
+- **[F-69]** (7/31) **★ 자가감사가 "소비자 존재"를 검사하지 않는다 (근본 재발방지)** — `daily_self_audit.py:146-172`는 SAJANG 상수의 **값**만 assert하고 그 값이 실제 소비되는지는 안 본다. 그래서 오늘 적발한 룰7 SAJANG 우회·budget_mode default off가 15:45 감사를 그대로 통과했다. **상수별 소비자 grep ≥1 검사 추가**가 이번 같은 갭의 재발을 막는 유일한 구조적 조치 (MED·근본).
+- **[F-70]** (7/31) **고아 상수 4종** — `LIMIT_UP_HOLD_RATIO`(limit_up_split_sell:53이 0.5 자체 하드코딩 + 주석은 "SAJANG 미등록"이라 오기)·`TRAILING_BREAK_EVEN_AT_ACTIVATION`(동작은 auto_trader:4356 하드코딩)·`RULE_B_CRON_TIME`/`RULE_C_CRON_TIME`(coo가 kst_time 하드코딩). 현재 값 일치라 무해 (LOW).
+- **[F-71]** (7/31) **[사장님] 룰B timing_mode 문서-구현 모순** — `limit_up_split_sell:153`은 `previous_close`를 허용하는데 docstring(:134·144)은 "14:50 매수분 룰B 미적용"이라 명시. 14:50 asset_pool 매수분이 **36분 만에 15:26 절반 익절 대상**이 된다. 의도 확인 필요 (MED).
+- **[F-72]** (7/31) **`equal_levels`/`premium_levels` 보존정책 부재** — 3/24부터 89일치·합계 2.7GB(data_store 4.7GB의 57%)·일 ~30MB 증가. 라이브 생산·소비 중이라 슬러지는 아니나 보존 기간 필요. 현재 디스크 63%·여유 22G (LOW).
+
 - **[F-13]** (7/17) **universe 재편입 파이프** — prune 도구는 제거만 함. 거래재개 종목(1~4주 정지군 포함)·신규상장 추가는 KIS 마스터/순위 API 결합 별도 설계 필요 (LOW·월 1회 prune 재실행 시 함께 검토).
 
 ## §5. 자기성찰 템플릿 (매일 업무일지 마지막 섹션)

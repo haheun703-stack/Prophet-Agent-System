@@ -82,8 +82,11 @@ def _save_pending_sells(data: dict) -> None:
 # ============================================================
 DEFAULT_LOSS_PCT = SAJANG.NORMAL_SL_PCT / 100
 DEFAULT_FIXED_EXIT = SAJANG.FIXED_TP_FORCE_ZERO
-HARD_KILL_PCT = 0.05    # -5% 최후 방어선
-HARD_KILL_WARN_PCT = 0.03  # -3% 경고 (-5%의 60% 도달)
+# ★ 7/31 전체검수 MED-1 — SAJANG 파생(값 동일·동작 무변경).
+# 실매도를 내는 임계(hard_kill_check → sell_market)가 레지스트리 밖에 있으면
+# 사장님이 룰을 고쳐도 매매가 안 바뀐다(5/26 사고 구조). NORMAL_SL과 같은 관례로 통일.
+HARD_KILL_PCT = SAJANG.HARD_KILL_PCT        # -5% 최후 방어선
+HARD_KILL_WARN_PCT = SAJANG.HARD_KILL_WARN_PCT  # -3% 경고 (킬 라인의 60% 도달)
 
 KST_MARKET_OPEN = dtime(9, 0)
 KST_MARKET_CLOSE = dtime(15, 20)

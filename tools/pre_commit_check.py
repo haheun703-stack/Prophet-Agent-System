@@ -129,6 +129,23 @@ RULES = [
 ]
 
 
+def _strip_comment(line: str) -> str:
+    """따옴표 밖의 첫 '#'부터 잘라낸 코드 부분만 반환.
+
+    단순 `split('#')`은 문자열 안의 '#'까지 잘라 오히려 미탐을 만들 수 있어
+    따옴표 상태를 추적한다(멀티라인 문자열까지는 다루지 않는 근사 — 라인 단위 검사 전용)."""
+    q = None
+    for idx, ch in enumerate(line):
+        if q:
+            if ch == q and (idx == 0 or line[idx - 1] != "\\"):
+                q = None
+        elif ch in ("'", '"'):
+            q = ch
+        elif ch == "#":
+            return line[:idx]
+    return line
+
+
 def get_staged_py_files() -> list[str]:
     """git에 staged된 .py 파일 목록 반환."""
     try:
@@ -268,7 +285,11 @@ def run_checks() -> list[dict]:
             if fname in rule.get("exclude_files", []):
                 continue
             for i, line in enumerate(content.split("\n"), 1):
-                if re.search(rule["pattern"], line):
+                # ★ 7/31 전체검수 — 주석/독스트링 안의 '옛 코드 인용'을 위반으로 잡던 오탐 제거.
+                # 실제 사례: 7/1 H1/H2 fix가 `SAJANG.get_momentum_sl(cp)  # (구 int(cp*0.955))`
+                # 처럼 근거를 주석에 남겼는데, RULE-008이 그 주석을 매칭해 **자기 fix에 짖었다**.
+                # 체커가 늑대소년이 되면 진짜 SL 하드코딩을 놓친다(경보 피로 → 무시).
+                if re.search(rule["pattern"], _strip_comment(line)):
                     all_issues.append({
                         "file": filepath,
                         "line": i,

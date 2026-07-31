@@ -256,25 +256,32 @@ def check_a5_contrast(ref: str) -> tuple:
     found, block, last_day = _nightly_block(lines, ref)
     if not found:
         return "FAIL", f"{ref} nightly 블록 없음 (마지막 {last_day}) — 대조 미실행"
-    row = None
+    # ★ 7/31 전체검수 M-3: 러너 verdict는 PASS/EMPTY/CHECK다 — "FAIL"은 존재하지 않는다
+    # (observe_v2_runner.py:195-199). 앞서 PASS|FAIL만 매칭해서, 정작 가장 중요한
+    # **CHECK(불일치 발생 = ⑲-2의 존재 이유)** 날을 "스텝 자체 미실행"으로 오진했다.
+    # 운영자를 데이터 정합 결함이 아니라 cron 장애로 몰아가는 최악의 오진.
+    m, row = None, None
     for ln in block:
-        if "⑲-2" in ln and "대조" in ln and ("PASS" in ln or "FAIL" in ln):
-            row = ln
-    if not row:
-        # ★ Tier1 M-4: 스텝이 '아예 안 돈 날'이 더 나쁜데 WARN이던 심각도 역전 제거.
-        # run_step 실패행(`⚠ ⑲-2 … exit=N | stderr`)엔 PASS/FAIL 토큰이 없다.
+        mm = re.search(r"(\d{8}) 대조 — (PASS|CHECK|EMPTY|FAIL): (.+)$", ln)
+        if mm:
+            m, row = mm, ln
+    if not m:
+        # run_step 실패행(`⚠ ⑲-2 … exit=N | stderr`)엔 결과 토큰이 없다.
         step = [ln for ln in block if "⑲-2" in ln and "시작" not in ln and "완료" not in ln]
         if step:
             return "FAIL", f"⑲-2 실행됐으나 대조 결과 없음 — {step[-1].strip()[-90:]}"
         return "FAIL", "⑲-2 스텝 자체 미실행 — 판정 증거 미생성"
-    m = re.search(r"(\d{8}) 대조 — (PASS|FAIL): (.+)$", row)
-    detail = m.group(3).strip() if m else row.strip()
-    if m and m.group(1) != ref.replace("-", ""):
-        return "WARN", f"대조 대상 {m.group(1)} (기준 {ref})"
-    if m and m.group(2) == "PASS":
-        core = detail.split(" / ")[0]
-        return "PASS", core
-    return "FAIL", detail[:120]
+
+    day_tok, verdict, detail = m.group(1), m.group(2), m.group(3).strip()
+    if day_tok != ref.replace("-", ""):
+        return "WARN", f"대조 대상 {day_tok} (기준 {ref})"
+    if verdict == "PASS":
+        return "PASS", detail.split(" / ")[0]
+    if verdict == "EMPTY":
+        # 신호 0건 — 정상일 수 있으나 [F-38] 결손과 구분이 안 되므로 표면화
+        return "WARN", f"대조 EMPTY(신호 0건) — 무신호/결손 구분 확인 · {detail[:70]}"
+    # CHECK/FAIL = miss·phantom·drift 실재 → 판정 표본 오염 가능
+    return "FAIL", f"대조 {verdict} — {detail[:110]}"
 
 
 def check_a6_safety() -> tuple:

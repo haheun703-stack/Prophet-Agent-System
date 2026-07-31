@@ -113,9 +113,21 @@ def build_report() -> tuple:
         NOTIONAL_KRW, CAP_VIEW_N = 300_000, 5
     try:
         cum, n, wr = _v2_paper_cum_net()   # ★유효일 × 일일 상한(ticks OK만·F-17·7/23 확정)
-        krw = int(cum / 100 * NOTIONAL_KRW)
-        score = (f"📊 페이퍼 스코어보드(유효일·상한{CAP_VIEW_N}건/일): {n}건 승률 {wr or 0}% "
-                 f"순누적 {cum:+.2f}%p ({krw:+,}원/30만·건)")
+        # ★ 7/31 전체검수 M-2: 표본 부족 가드가 _eval_metric에만 있고 스코어보드엔 없었다.
+        # _load_ledger는 파싱 실패를 삼키고 {"days":{}}를 주므로(예외 아님) 장부가 손상되면
+        # 이 줄이 "0건 승률 0% 순누적 +0.00%p"가 되어 **증거 부재가 +0으로 위장**된다.
+        # 이 줄은 ⑲-4 텔레그램과 아침 점검 A9의 첫 줄이다 — 첫 줄이 거짓이면 전부 거짓이다.
+        try:
+            from observe_v2_paper import MIN_JUDGE_N as _MINN
+        except Exception:  # noqa: BLE001
+            _MINN = 10
+        if n < _MINN:
+            score = (f"📊 페이퍼 스코어보드: 표본 {n}건 < {_MINN}건 — "
+                     f"판정 유예(장부 손상/수집 장애 확인 필요)")
+        else:
+            krw = int(cum / 100 * NOTIONAL_KRW)
+            score = (f"📊 페이퍼 스코어보드(유효일·상한{CAP_VIEW_N}건/일): {n}건 승률 {wr or 0}% "
+                     f"순누적 {cum:+.2f}%p ({krw:+,}원/30만·건)")
     except Exception:  # noqa: BLE001
         score = "📊 페이퍼 스코어보드: 장부 없음"
     lines = [score, "⏰ 전략 데드라인 대장"]

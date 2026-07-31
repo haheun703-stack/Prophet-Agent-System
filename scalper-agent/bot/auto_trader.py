@@ -194,8 +194,12 @@ class AutoTrader:
             return 1, "1주 모드 (dynamic_qty=off, 사장님 5/19 결정)"
 
         # ★ 5/25 사장님 명령 ★ budget_mode='split_cash' 분기
+        # ★ 7/31 검수 HIGH-1: default를 'shares'로 두면 config.yaml 키가 사라지는 순간
+        # 사장님 영구 룰(9 split_cash·8 30% 현금)이 경고 없이 꺼진다 = default off 금지 위반.
+        # SAJANG.BUDGET_MODE('split_cash')를 default로 — 현재 config 값과 동일(동작 무변경).
+        from data.sajang_rules import SAJANG as _SJ
         budget_mode = (
-            self.config.get("bot", {}).get("asset_pool", {}).get("budget_mode", "shares")
+            self.config.get("bot", {}).get("asset_pool", {}).get("budget_mode", _SJ.BUDGET_MODE)
         )
         if budget_mode == "split_cash":
             return self._calc_split_cash_qty(code, top_k, cash_snapshot=cash_snapshot)
@@ -2188,7 +2192,8 @@ class AutoTrader:
         # budget_mode='shares' (기존 1/2/3주): 여기서 전체 계산
         # budget_mode='split_cash' (5/25 신설): 매수 루프 안에서 종목별 fetch_price 후 계산
         ap_cfg_qty = (self.config.get("bot", {}) or {}).get("asset_pool", {}) or {}
-        budget_mode = str(ap_cfg_qty.get("budget_mode", "shares"))
+        from data.sajang_rules import SAJANG as _SJ   # 7/31 HIGH-1: default off 금지
+        budget_mode = str(ap_cfg_qty.get("budget_mode", _SJ.BUDGET_MODE))
         if budget_mode != "split_cash":
             dyn_qty, dyn_reason = self._get_jarvis_dynamic_qty()
             if dyn_qty > 1:
@@ -2867,6 +2872,10 @@ class AutoTrader:
           - 사장님 룰 3 자동 적용 (+25% 도달 시 limit_up_split_sell)
         """
         from data.trading_calendar import is_trading_day
+        # ★ 7/31 검수 HIGH-2 — SAJANG은 이 함수 안에서 한 번 더 import되므로(아래 자금 계산부)
+        # 파이썬이 이 이름을 함수 로컬로 잡는다. 임계 판정(조건1/2)이 그 import보다 앞서므로
+        # 여기서 먼저 바인딩하지 않으면 UnboundLocalError다 — 5/25 `_send` 사고와 같은 구조.
+        from data.sajang_rules import SAJANG
         if not is_trading_day():
             logger.info("[pre_close_d] 휴장일 — skip")
             return
@@ -2949,11 +2958,13 @@ class AutoTrader:
                         continue
                 # 조건 1: 오늘 +10% 이상 강세. LimitUpEngine D+0/D+1 후보는
                 # signal_date/누적상승률 가드가 대신 추격을 차단한다.
-                if not signal_info and chg < 10.0:
+                # ★ 7/31 검수 HIGH-2: 리터럴 10.0/3.0 → SAJANG 파생(값 동일·동작 무변경).
+                # 리터럴이면 사장님이 레지스트리를 고쳐도 매매가 안 바뀐다(5/26 사고와 동일 구조).
+                if not signal_info and chg < SAJANG.RULE_D_SURGE_MIN:
                     continue
                 # 조건 2: 현재가가 고가 대비 -3% 이상 눌림 (사장님 룰)
                 pullback_pct = (hi - curr) / hi * 100
-                if pullback_pct < 3.0 and not signal_info:
+                if pullback_pct < SAJANG.RULE_D_PULLBACK_MIN and not signal_info:
                     continue   # 고점 부근 (추격 위험)
 
                 # 조건 3: VWAP 추격 차단
@@ -3015,7 +3026,8 @@ class AutoTrader:
 
         # 4. 매수 실행 (chase_buy + 자금 분배)
         ap_cfg = (self.config.get("bot", {}) or {}).get("asset_pool", {}) or {}
-        budget_mode = str(ap_cfg.get("budget_mode", "shares"))
+        from data.sajang_rules import SAJANG as _SJ   # 7/31 HIGH-1: default off 금지
+        budget_mode = str(ap_cfg.get("budget_mode", _SJ.BUDGET_MODE))
         cash_avail = kis_bal.get("cash", 0) if kis_bal else 0
         total_eval = kis_bal.get("total_eval", 0) if kis_bal else 0
 
@@ -3028,8 +3040,11 @@ class AutoTrader:
         budget_per_new = SAJANG.calc_budget_per_stock(cash_avail, total_eval, top_k)
         budget_per = budget_per_new if budget_mode == "split_cash" else None
 
-        # 30% 룰 적용 후 매수 가능 금액 0이면 매수 차단
-        if budget_per is not None and budget_per <= 0:
+        # ★ 7/31 검수 HIGH-1: 30% 현금 보유는 **자금 분배 방식과 무관한 사장님 영구 룰**이다.
+        # 기존엔 budget_mode!='split_cash'면 budget_per=None → 아래 차단문을 그대로 통과해
+        # 1주 모드로 매수가 진행됐다(30% 검증 0회). budget_mode는 '얼마씩 나눌지'만 정하고,
+        # '살 수 있는지'는 항상 30% 룰이 정한다. (현 config=split_cash라 동작 무변경)
+        if budget_per_new <= 0:
             await _send(
                 f"⛔ [룰 D 14:50] 30% 현금 보유 룰 — 매수 차단\n"
                 f"  현재 현금: {cash_avail:,}원 / 총평가: {total_eval:,}원\n"
@@ -4684,6 +4699,14 @@ class AutoTrader:
         if self._auto_trade_disabled():
             logger.info("[daily_reeval] AUTO_TRADE_DISABLED — skip (5/27 사장님 명령)")
             return
+        # ★ 7/31 검수 HIGH-1 ★ 휴장일 발동 차단 — 다른 14개 job과 동일 표준.
+        # 등록이 COO run_g5(매 캘린더일 15:10·days 필터 없음)라 휴장일에도 깨어난다.
+        # 특히 hold_days는 캘린더 일수라 "최대 보유일 도달 → 전량매도"가 휴장일에
+        # **결정적으로** 발화하고, fetch_price는 전 거래일 박제가를 준다.
+        # (7/17 제헌절 유령신호·7/30 hard_kill_check와 동형)
+        if not is_trading_day():
+            logger.info("[daily_reeval] 휴장일 — skip")
+            return
         if not self._positions:
             return
 
@@ -5128,6 +5151,12 @@ class AutoTrader:
             return
         if self._auto_trade_disabled():
             logger.info("[eod_close] AUTO_TRADE_DISABLED — skip (5/27 사장님 명령)")
+            return
+        # ★ 7/31 검수 HIGH-2 ★ 휴장일 발동 차단 — 동일 표준.
+        # 현재는 trade_mode='swing'이라 청산 분기에 안 들어가지만, 'day'로 바꾸는 순간
+        # 휴장일 전량청산(liquidate_all)이 열린다. 설정 한 줄에 안전이 달리지 않게 한다.
+        if not is_trading_day():
+            logger.info("[eod_close] 휴장일 — skip")
             return
 
         if self.mode == "day":
