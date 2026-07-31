@@ -4805,6 +4805,11 @@ class TradingCOO:
             # ★ 5/27 CRITICAL #1 fix ★ verification_mode 의존성 제거 (사장님 5/26 D-Day 정상화)
             # 옛: if not _vm.is_active(): return  — 검증모드 OFF 시 09:15 매수 차단 사고
             # 신규: is_trading_day() 가드만 (14:50 _job_asset_pool_previous_close와 동일 표준)
+            # ★ 7/31 전체검수 P0-2 ★ 이 모듈엔 is_trading_day 모듈레벨 바인딩이 없다(형제 job 8곳은
+            # 전부 함수 안에서 로컬 import). 5/26 도입 시 import를 빠뜨려 이 가드는 **NameError**였고,
+            # 지금은 위 _auto_trade_disabled 조기 return이 먼저 걸려 가려져 있을 뿐이다.
+            # 봇 재가동 즉시 09:15 첫 매수가 except로 조용히 죽는다(가드가 쓰여 있는데 동작 안 함).
+            from data.trading_calendar import is_trading_day
             if not is_trading_day():
                 return
             if not self.auto_trader:
@@ -4897,7 +4902,11 @@ class TradingCOO:
         09:15 ~ 14:00 (15분 간격, 매수 시간대만).
         """
         try:
-            now = datetime.now(KST) if KST else datetime.now()
+            # ★ 7/31 전체검수 P0-3 ★ `KST`의 유일한 바인딩은 setup_schedule의 지역변수(:5149)라
+            # 여기선 undefined — `if KST else` 가드 자체가 NameError를 던진다(3일간 30회 실측).
+            # "봇시야 송출 실패 (무시)"로 매일 10회씩 조용히 죽고 있었다.
+            _KST_TZ = timezone(timedelta(hours=9))
+            now = datetime.now(_KST_TZ)
             if not (dtime(9, 5) <= now.time() <= dtime(14, 0)):
                 return
             if not self.trader:
@@ -5000,6 +5009,12 @@ class TradingCOO:
         위반 시 텔레그램 즉시 알림 + state 저장.
         5/26 사고 5건 모두 이 검증으로 자동 검출됐어야 함.
         """
+        # ★★★ 7/31 전체검수 P0-1 ★★★ 이 한 줄이 NameError라 **Daily Self-Audit이 신설(5/26
+        # d18c3bd) 이후 66일간 한 번도 실행되지 않았다**. VPS 저널 실증: 매 평일 15:45:00에
+        # `NameError: name 'is_trading_day' is not defined`(10일간 20회·7/31 15:45 포함).
+        # 즉 사장님 영구 룰 13종 자동 검증이 존재한 적이 없다 — 가드가 try 밖이라 예외가
+        # 스케줄러로 그대로 전파됐다.
+        from data.trading_calendar import is_trading_day
         if not is_trading_day():
             return
         try:

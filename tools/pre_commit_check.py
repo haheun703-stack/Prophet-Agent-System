@@ -304,7 +304,58 @@ def run_checks() -> list[dict]:
         # ★ RULE-003 AST 정밀 검사 (5/26 false positive 사고 후 신설) ★
         all_issues.extend(check_unbound_local(filepath, content))
 
+        # ★ RULE-002 (7/31 전체검수 P0-4 신설) — 미정의 이름 = 런타임 NameError ★
+        all_issues.extend(check_undefined_names(filepath))
+
     return all_issues
+
+
+def check_undefined_names(filepath: str) -> list[dict]:
+    """pyflakes로 `undefined name`(런타임 NameError 확정)만 검출.
+
+    ★ 7/31 전체검수 P0 배경 ★
+    CLAUDE.md는 "RULE-002가 is_trading_day 가드를 자동 차단한다"고 5/25부터 적어왔지만
+    **실제 구현이 없었다**. 그 결과 `trading_coo.py`의 세 지점이 66일간 살아남았다:
+      - `_job_daily_self_audit`(15:45) — 가드 한 줄이 NameError라 **사장님 영구 룰 13종
+        자동 검증이 신설 이후 한 번도 실행되지 않음**(VPS 저널 실증)
+      - `_job_asset_pool_scan`(09:15 첫 매수) — 재가동 즉시 조용히 사망할 잠복
+      - 봇시야 송출 — 매일 10회 실패
+
+    교훈: **'가드가 쓰여 있는가'만 보는 규칙으로는 '가드가 동작하는가'를 못 잡는다.**
+    이름 존재 검사(pyflakes)가 가장 확실한 재발 차단이다(전 저장소 12초).
+    pyflakes 부재 환경에선 조용히 skip — 커밋을 막지 않는다.
+    """
+    try:
+        r = subprocess.run(
+            [sys.executable, "-m", "pyflakes", filepath],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
+        )
+    except Exception:
+        return []
+    if "No module named" in (r.stderr or ""):
+        return []
+    out = []
+    for ln in (r.stdout or "").splitlines():
+        if "undefined name" not in ln:
+            continue
+        parts = ln.split(":")
+        try:
+            lineno = int(parts[1])
+        except (IndexError, ValueError):
+            lineno = 0
+        out.append({
+            "file": filepath,
+            "line": lineno,
+            "rule": "RULE-002",
+            "severity": "HIGH",
+            "msg": (
+                "★ 미정의 이름 = 런타임 NameError (7/31 P0 재발 방지) ★\n"
+                f"         → {ln.split(' ', 1)[-1] if ' ' in ln else ln}\n"
+                "         → 가드가 '쓰여 있는데 동작 안 하는' 사고의 원인. 함수 안 로컬 import 누락이 전형.\n"
+                "         → try 블록 밖의 가드면 예외가 스케줄러로 전파돼 job 전체가 죽는다."
+            ),
+        })
+    return out
 
 
 def main():

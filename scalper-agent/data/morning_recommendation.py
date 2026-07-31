@@ -15,10 +15,24 @@ Stage 3: 08:50 최종 확인
   → 기존 premove_scan 스케줄과 연동
 """
 
+import json
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
+
+# ★ 7/31 전체검수 H-2 ★ 이 세 이름이 모듈에 바인딩돼 있지 않아 4개 기능이 **NameError로
+# 조용히 죽어 있었다**(전부 `except: pass`/`logger.debug(...무시)`가 은폐).
+#   :2875 FX→섹터 환율 부스트 · :2901 인플레 체인 부스트 · :3238 US overnight 캐시 ·
+#   :3427 [NXT] 태그.  pyflakes undefined-name 7건 = 저장소 전체 유일 파일이었다.
+BASE_DIR = Path(__file__).resolve().parent.parent      # scalper-agent/ (이 파일 관례와 동일)
+
+# ★ 선정 점수를 바꾸는 두 부스트(FX·인플레)는 66일간 한 번도 적용된 적이 없다.
+# import를 고쳤다고 단타봇 판단으로 켜면 '관측 없이 flip'이다 — 현재 동작을 그대로 보존하고
+# 켜는 것은 사장님 결정으로 남긴다(True로 바꾸면 즉시 활성).
+FX_SECTOR_BOOST_ENABLED = False
+INFLATION_CHAIN_BOOST_ENABLED = False
 
 # .env 로드 (상위 디렉터리)
 from dotenv import load_dotenv
@@ -2393,8 +2407,10 @@ def run_evening_recommendation() -> RecommendationReport:
                 # 부스트 15점 이상인 HOT 섹터 종목은 분석 대상에 추가
                 if boost >= 15:
                     # 유니버스에서 이름 조회
-                    _uni_info = _universe.get(code, {}) if '_universe' in dir() else {}
-                    _nm = _uni_info.get("name", code) if isinstance(_uni_info, dict) else code
+                    # ★ 7/31 H-2 ★ 이 스코프엔 `_universe`가 없어 `'_universe' in dir()`이
+                    # 항상 False였다 = 이름 조회는 **한 번도 동작한 적 없고** 늘 코드값이었다.
+                    # 조건식이라 크래시는 없었으나 미정의 이름이므로 현 동작 그대로 명시화한다.
+                    _nm = code
                     if (code, _nm) not in all_codes_set:
                         all_codes_set.add((code, _nm))
                         hot_injected += 1
@@ -2870,6 +2886,8 @@ def run_evening_recommendation() -> RecommendationReport:
 
     # ── Step 5d-2: FX→섹터 환율 부스트 (BOND-P1) ──
     try:
+        if not FX_SECTOR_BOOST_ENABLED:      # 7/31 H-2 — 현 동작 보존(사장님 결정 대기)
+            raise RuntimeError("FX_SECTOR_BOOST_ENABLED=False (7/31 검수 — 66일 미적용 상태 유지)")
         from data.fx_sector_signal import get_fx_all_sector_boosts
         # nightwatch_report.json에서 USDKRW 데이터 로드
         nw_path = BASE_DIR / "data_store" / "nightwatch_report.json"
@@ -2897,6 +2915,8 @@ def run_evening_recommendation() -> RecommendationReport:
 
     # ── Step 5d-3: 인플레이션 비용 체인 부스트 (BOND-P3) ──
     try:
+        if not INFLATION_CHAIN_BOOST_ENABLED:   # 7/31 H-2 — 현 동작 보존(사장님 결정 대기)
+            raise RuntimeError("INFLATION_CHAIN_BOOST_ENABLED=False (7/31 검수 — 66일 미적용 상태 유지)")
         from data.inflation_chain import get_inflation_sector_boosts
         nw_path2 = BASE_DIR / "data_store" / "nightwatch_report.json"
         if nw_path2.exists():

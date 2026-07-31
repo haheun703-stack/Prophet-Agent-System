@@ -135,6 +135,21 @@
 - **[F-71]** (7/31) **[사장님] 룰B timing_mode 문서-구현 모순** — `limit_up_split_sell:153`은 `previous_close`를 허용하는데 docstring(:134·144)은 "14:50 매수분 룰B 미적용"이라 명시. 14:50 asset_pool 매수분이 **36분 만에 15:26 절반 익절 대상**이 된다. 의도 확인 필요 (MED).
 - **[F-72]** (7/31) **`equal_levels`/`premium_levels` 보존정책 부재** — 3/24부터 89일치·합계 2.7GB(data_store 4.7GB의 57%)·일 ~30MB 증가. 라이브 생산·소비 중이라 슬러지는 아니나 보존 기간 필요. 현재 디스크 63%·여유 22G (LOW).
 
+**E. 슬러지·인프라 (관점4)** — ★P0 4건은 당일 fix 완료
+- ~~**[P0-1]** Daily Self-Audit 66일 전무~~ — ✅ **7/31 fix**. `trading_coo.py:5003` `is_trading_day`가 **모듈 바인딩 없음** → 매 평일 15:45 NameError(VPS 저널 10일 20회·7/31 15:45 포함). 도입 커밋 d18c3bd(5/26)=자가감사 신설 커밋 = **태어날 때부터 고장**. 즉 사장님 영구 룰 13종 자동 검증이 존재한 적 없음. **fix 후 첫 실행에서 즉시 위반 3건 검출**(CRITICAL 2/HIGH 1 — 실계좌 현금 1.5% vs 30% 룰).
+- ~~**[P0-2]** 09:15 첫 매수 job 가드 NameError~~ — ✅ 7/31 fix. `trading_coo.py:4808`. 현재는 `_auto_trade_disabled` 조기 return이 가려주나 **재가동 즉시 09:15 매수가 except로 조용히 사망**할 잠복이었다. 도입 커밋 2eef756(5/26)="가동 안전 보장 fix"가 버그를 심음.
+- ~~**[P0-3]** 봇시야 송출 `KST` NameError~~ — ✅ 7/31 fix. `trading_coo.py:4900`. 3일간 30회 실패.
+- ~~**[P0-4]** RULE-002/004가 문서에만 존재~~ — ✅ **7/31 신설**. CLAUDE.md·REVIEW_3TIER_RULE이 5/25부터 "RULE-002 자동 차단"이라 적어왔으나 `pre_commit_check.py`에 **구현 0건**이었다(P0-1~3이 66일 산 이유). **pyflakes undefined-name을 RULE-002(HIGH·차단)로 배선** — "가드가 쓰여 있는가"가 아니라 "가드가 동작하는가"를 본다. 양성/음성 대조 PASS·저장소 전체 잔여 0건. + RULE-008 주석 오탐 제거(`_strip_comment`).
+- ~~**[H-2]** `morning_recommendation.py` 4개 기능 NameError 사망~~ — ✅ 7/31 fix(모듈 `json`/`datetime`/`BASE_DIR` 바인딩). ★단 **FX 섹터 부스트·인플레 체인 부스트는 선정 점수를 바꾸므로 켜지 않고 플래그로 현 동작 보존**(`FX_SECTOR_BOOST_ENABLED=False`·`INFLATION_CHAIN_BOOST_ENABLED=False`) — 66일간 미적용이던 로직을 단타봇 판단으로 켜면 '관측 없이 flip'. **활성화는 사장님 결정**. US overnight 캐시·[NXT] 태그는 부작용 없어 복원. `_universe` 이름조회는 항상 코드값이었음을 명시화(동작 보존).
+- **[F-73]** (7/31) **텔레그램 발송 정본 부재 — 죽은 심볼 7곳 + 각자 구현 14개** — `send_message`/`send_telegram_message`는 저장소에 **정의 0건**인데 7곳이 import(`verifiers/_common.py:26`은 HTTP 폴백이 살려 매회 예외 1회·`foreign_accumulation_scanner.py:299`는 **UnboundLocalError 경로**·`daytrading_picks`는 항상 False). 별도로 `api.telegram.org` 직접 호출 모듈 14개. `verifiers._common.send_telegram` 정본 승격 후 통합 (MED·F-41 확장).
+- **[F-74]** (7/31) **존재하지 않는 함수 import 3건(try/except 은폐)** — `etf_recommender.py:232 load_sector_report`(미존재→섹터 모멘텀 가중 0)·`limit_up_engine.py:326 detect_rotation`(실제명 `analyze_rotation`→**로테이션 게이트가 한 번도 막은 적 없음·favorable=True 고정**)·`flowx_universe_updater.py:133 load_stock_data`(→volume_ratio 항상 1.0) (MED).
+- **[F-75]** (7/31) **데드 격리 후보 4종(5중 확인 완료) — 별도 패스로 이동** — `data/pension_finance_scan.py`(전 참조가 docstring·6/19 institution_accum_scan로 대체)·`data/csv_loader.py`(**죽은 정본** — 유일 참조가 F-74의 미존재 심볼. 실질 정본은 `utils/stock_utils.load_daily` 소비자 7건)·`backtest/full_period_backtest.py`·`backtest/etf_leader/` 5개(KRX 산물·복구 금지). ★7/4 오삭제 사고(9파일→nightly 이틀 사망) 때문에 **오늘은 이동하지 않고 등재만** — 격리는 집중 패스에서 (LOW).
+- **[F-76]** (7/31) **⚠ 데드 오판 주의 — `tools/sync_from_vps.py`는 살아있다** — python import 0건이라 정적 그래프상 완전히 죽어 보이나 **Windows 작업 `BodyHunter_VPSSync`=Ready·매일 20:30 실행**. `DEAD_KIWOOM.md`에 근거와 함께 명시 필요(다음 검수자 오삭제 방지) (MED·문서).
+- **[F-77]** (7/31) **문서 스테일 11건** — CLAUDE.md/REVIEW_3TIER_RULE의 RULE-002/004 자동차단 주장(P0-4로 해소)·STRATEGY_DEADLINES.md가 S-1을 **7/31**로 표기(JSON은 8/29 연장)·nightly "29단계"(실제 30)·cron 표 4개 누락(swap_monitor·foreign_accumulation_scanner·intraday_learning_v2·observe_v2_runner)·DEAD_KIWOOM 러너 "13종"(실제 21)·REVIEW_3TIER_RULE에 Codex/Tier4 언급 0회 (MED).
+- **[F-78]** (7/31) **★판정 도구가 scratchpad에만 존재 = 소실 예정** — [F-19]/[F-46] 근거를 낸 `f19_cb_cap_consistency.py`·`f19b_cb_timing.py`가 세션 임시폴더에만 있다. 920a763이 막으려던 "판정 증거 소실 통로"와 같은 자리 → `tools/manual/`로 승격 필요 (MED).
+- **[F-79]** (7/31) **노트북 `stock_data_daily/`가 6/23에서 정지** — `sync_from_vps.DATA_DIRS`가 data_store 하위만 받아 **구조적으로 못 받는다**. `market_breadth_today.py:28` 등을 노트북에서 돌리면 5주 낡은 데이터로 분석(7/1 장전 박제 착시와 동종) (MED).
+- **[F-80]** (7/31) **미사용 import 55건/11파일(핵심), 주변부 147건/89파일** — `telegram_bot.py`에 33건(30건이 `_job_*` 머리에 복붙된 `from datetime import date/timedelta`). 도달불가 분기 0건·주석코드 0건은 **깨끗함 확인**. 점진 수렴 (LOW·F-45 병합).
+
 - **[F-13]** (7/17) **universe 재편입 파이프** — prune 도구는 제거만 함. 거래재개 종목(1~4주 정지군 포함)·신규상장 추가는 KIS 마스터/순위 API 결합 별도 설계 필요 (LOW·월 1회 prune 재실행 시 함께 검토).
 
 ## §5. 자기성찰 템플릿 (매일 업무일지 마지막 섹션)
