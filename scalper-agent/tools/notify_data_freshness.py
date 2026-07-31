@@ -23,7 +23,7 @@ Usage:
 
 import argparse
 import sys
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent  # scalper-agent/
@@ -168,6 +168,29 @@ def build_summary(result: dict, today: str) -> str:
     return "\n".join(lines)
 
 
+def _morning_ops_heartbeat(today: str):
+    """아침 점검(08:30·F-29)이 오늘 실제로 돌았는지 1행 — '감시자를 감시하는' 계층.
+
+    ★ 7/31 Tier1 H-2b: 아침 점검을 무인화해도 그 cron이 지워지거나 프로세스가 죽으면
+    다시 아무도 모른다(F-29가 한 계층 위에서 재현). 20:10은 이미 검증된 발송 통로이므로
+    여기서 아침분 스탬프를 대조해 병기한다 — A3(아침이 저녁을 감시)의 대칭.
+
+    로그 파일 자체가 없으면 아직 배선 전이므로 무표기(None). 파일은 있는데 오늘 스탬프가
+    없으면 = cron 제거/프로세스 사망 → 경보."""
+    path = BASE_DIR.parent / "logs" / "daily_ops_check.log"
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()[-400:]
+    except Exception:
+        return None                      # 미배선 — 오알림 금지
+    stamp = f"[ops] === {today}"
+    ran = [ln for ln in lines if stamp in ln]
+    if not ran:
+        return "🚨 아침점검(08:30) 미실행 — cron/프로세스 확인"
+    if any("발송 완료" in ln for ln in ran):
+        return "✅ 아침점검(08:30) 실행·발송"
+    return "⚠️ 아침점검(08:30) 실행됐으나 발송 미확인"
+
+
 def _load_config():
     import yaml
     if not CONFIG_PATH.exists():
@@ -188,6 +211,11 @@ def main():
 
     today = args.date or date.today().isoformat()
 
+    # ★ 7/31 F-4 — 실행 스탬프. 이 로그엔 시각이 없어 아침 A3 확인이 tail 순서에
+    # 의존했다(기계 대조 불가). 아침 점검 무인화(daily_ops_check A3)가 '기준 거래일의
+    # 실행분'을 정확히 집어 판정하려면 실행마다 날짜 스탬프가 있어야 한다.
+    print(f"[notify] === {datetime.now():%Y-%m-%d %H:%M:%S} 실행 (기준 {today}) ===")
+
     # 휴장일 가드 — 정규 실행에서만 (검수 --date/--force는 예외)
     if not args.date and not args.force:
         if not is_trading_day(date.fromisoformat(today)):
@@ -199,6 +227,13 @@ def main():
     _save = not (args.dry_run or args.date)
     result = DataVerifier(today, save_result=_save).verify_all()
     msg = build_summary(result, today)
+
+    # 아침 점검 하트비트는 요약 본문(build_summary) 밖에서 붙인다 — build_summary는
+    # 아침 점검 A1도 소급 호출하는 공용 함수라 오염시키지 않는다.
+    if not args.date:                    # 소급 검수 실행엔 무의미(그날의 아침이 아님)
+        hb = _morning_ops_heartbeat(today)
+        if hb:
+            msg += f"\n{hb}"
 
     print(msg)
 

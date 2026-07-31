@@ -96,11 +96,13 @@ def _pass(value, op: str, threshold):
     return None
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--notify", action="store_true", help="D-3 이내/초과 시 텔레그램")
-    args = ap.parse_args()
+def build_report() -> tuple:
+    """(lines, alerts) 생성 — 스코어보드 + 데드라인 대장 행.
 
+    ★7/31 F-29: 아침 점검 무인화(`daily_ops_check.py`)가 A9를 같은 숫자로 보고해야
+    하는데 로직이 main() 안에 있어 재사용 불가였다. 클론을 만들면 [F-37]
+    (판정 상수 로컬 복제) 재발이므로 함수로 분리해 단일진실을 공유한다.
+    main()의 동작·출력은 무변경."""
     today = date.today()
 
     # ── 스코어보드 (보고 첫 줄 = 숫자 — 7/17 약속) ──
@@ -155,6 +157,15 @@ def main() -> int:
 
     if alerts:
         lines.append(f"→ 판정 보고 의무 {len(alerts)}건 — 폐기/연장 결정은 사장님 (자동 폐기 없음)")
+    return lines, alerts
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--notify", action="store_true", help="D-3 이내/초과 시 텔레그램")
+    args = ap.parse_args()
+
+    lines, alerts = build_report()
     out = "\n".join(lines)
     print(out)
 
