@@ -104,11 +104,11 @@
 > **[사장님]** 표시 = 매매 동작이 실제로 바뀌므로 단타봇 자율 권한 밖.
 
 **A. 데이터·검증 계층 (관점3)**
-- **[F-49]** (7/31) **수급 검증이 placeholder 행을 성공으로 집계 (미탐·7/20 사고의 자매 통로)** — `data_verifier._csv_has_date`(:104-124)가 **첫 컬럼 날짜 문자열만** 비교. VPS 실측: 7/31 행 보유 572개 중 **61개(10.7%)가 수급 전부 0**. 정직한 지표(`flow/_last_update.json`의 `data_through`·`investor_real`)가 **이미 생산 중인데 검증기가 안 본다**(실측 `date=7/31 / data_through=7/30 / investor 2531 vs investor_real 2526`). fix=`supply_analyzer._trim_trailing_placeholder_rows` 재사용 + `data_through` 교차검증 (HIGH).
+- **[F-49]** (7/31·**8/1 심각도 정정 HIGH→MED + 판정식 재정의**) **수급 검증이 값을 보지 않는다 (미탐 통로는 실재)** — `data_verifier._csv_has_date`(:104-124)가 **첫 컬럼 날짜 문자열만** 비교. 정직한 지표(`flow/_last_update.json`의 `data_through`·`investor_real`)가 **이미 생산 중인데 검증기가 안 본다**. ★**8/1 완주 후 전수 재측정으로 정정**: 어제 근거 "572개 중 61개(10.7%)"는 **수집 중(장중) 스냅샷이라 분모가 달랐다**. 완주 후 실측 = **68/2527 = 2.7%**이고 분해하면 **35종 거래정지(daily도 결손)·31종 만성 초소형주·2종만 당일 신규**(049830·263920). 그 2종도 **정상값**으로 확정 — `flow_collector._fetch_investor_api`는 `rt_cd != "0"`이면 `None`을 반환하고 호출부(:265)는 `df is not None`일 때만 행을 쓰므로 **행 존재 = KIS 성공 응답**이고, 같은 `item`에서 파싱되는 `종가`·`전일대비`가 정상값(6200/−40·3525/+20)이다 = 수급 0은 KIS가 준 실제 순매수 0(초소형주 개인↔개인 net 0·거래량 959/3459주로 정합). ★**따라서 fix의 판정식은 "수급 0=실패"가 아니라 "종가·전일대비까지 0인 행" + `data_through` 교차검증**이어야 한다 — 전자로 짜면 7/31에만 오탐 68건 (MED).
 - **[F-50]** (7/31) **16:00 이후 캐시 무조건 신뢰 → placeholder 하루 동결** — `flow_collector.py:206-228`이 "오늘 날짜 행 존재"만 보고 재수집 스킵. 장전 0값 행이 있으면 C3·nightly ⑥ 양쪽 스킵 → EOD 확정치 영영 미수집인데 [F-49] 때문에 PASS (HIGH).
 - **[F-51]** (7/31) **⑳의 데이터 재검증이 어떤 판정에도 반영 안 됨** — `run_nightly_freshness_check.py:64-70`의 재검증 예외·`critical_failures`가 `stale`에 안 들어가 exit 0. 주석은 "exit 1 경로"라 주장. **완료위장 차단 스텝 자체의 구멍** (HIGH).
 - **[F-52]** (7/31) **★ 7/30 M-1 fix가 봇 경로 미적용 → 오늘 실제 재발** — `save_result` 기본값이 True라 `trading_coo.py:2933·2975`·`telegram_bot.py:4073·4087·5897` 5곳이 여전히 상태 파일을 덮는다. 실증: 오늘 `data_verify_result.json` = 06:33:51·status FAIL·daily 0/10(장전 박제). A0(`_job_morning_backfill`)은 docstring이 "전일 기준"인데 코드는 `date.today()`. **근본 처방=`DataVerifier.save_result` 기본값을 False로 뒤집고 저장 필요한 2곳만 True** (HIGH).
-- **[F-53]** (7/31) **⑫ 순위 6종 중 1종만 검증 + 수집기가 전멸해도 `status: ok`** — `data_verifier:392-404`는 `volume.csv`만 확인. `ranking_snapshot_collector:139-140`은 무조건 ok 반환. 실측 `night_futures.csv` **아예 없음**(5/6) (MED).
+- **[F-53]** (7/31·**8/1 범위 확정**) **⑫ 순위 6종 중 1종만 검증 + 수집기가 전멸해도 `status: ok`** — `data_verifier:392-404`는 `volume.csv`만 확인. `ranking_snapshot_collector:139-140`은 무조건 ok 반환. 실측 `night_futures.csv` **아예 없음**(5/6). ★8/1 확인: 나머지 5종은 7/31 전부 정상(volume 725·fluctuation 725·strength 353·foreign_inst 1500·uplowprice 348행). `night_futures`는 **7/28~7/31 전일 `saved:0`이고 `status: ok`** = **7/31 회귀가 아니라 상시 미생산**. `ranking_snapshot_collector.py:128-137`이 장외(정상)와 실패(이상)를 **둘 다 `saved=0`으로 뭉개** 원인 구분 불가 — fix는 두 상태 분기부터 (MED).
 - **[F-54]** (7/31) **⑦ 11주체 kosdaq 검증 사각** — kospi만 검증, `kosdaq_investor.csv`는 어느 검증기도 안 봄. 러너도 `print('ok' if r else ...)`라 kospi만 성공해도 ok. **코스닥이 v2 표본 주력** (MED).
 - **[F-55]** (7/31) **누적 CSV 5채널 비원자적 전체 재작성** — flow/market_investor/ranking/kr_us_shock가 `df.to_csv()` 직접(daily fill은 tmp+replace 정본). ⑬⑭는 timeout 5400s 최장 스텝이라 kill 타이밍이 쓰기 중이면 **전 기간 히스토리 절단**. 탐지 계층 0(마지막 한 줄만 읽음) (MED).
 - **[F-56]** (7/31) **★ sync 누락 6번째 — 사람 규율로는 안 끝난다** — CHECKLIST 참조 경로 중 `tv_scanner.json`·`nightwatch_report.json`·`guardian_latest.json`·`consensus.json` 미등재. **근본=CHECKLIST 참조 경로 ↔ sync 대상 차집합을 pre-commit에서 자동 검사** (MED·근본).
@@ -149,6 +149,11 @@
 - **[F-78]** (7/31) **★판정 도구가 scratchpad에만 존재 = 소실 예정** — [F-19]/[F-46] 근거를 낸 `f19_cb_cap_consistency.py`·`f19b_cb_timing.py`가 세션 임시폴더에만 있다. 920a763이 막으려던 "판정 증거 소실 통로"와 같은 자리 → `tools/manual/`로 승격 필요 (MED).
 - **[F-79]** (7/31) **노트북 `stock_data_daily/`가 6/23에서 정지** — `sync_from_vps.DATA_DIRS`가 data_store 하위만 받아 **구조적으로 못 받는다**. `market_breadth_today.py:28` 등을 노트북에서 돌리면 5주 낡은 데이터로 분석(7/1 장전 박제 착시와 동종) (MED).
 - **[F-80]** (7/31) **미사용 import 55건/11파일(핵심), 주변부 147건/89파일** — `telegram_bot.py`에 33건(30건이 `_job_*` 머리에 복붙된 `from datetime import date/timedelta`). 도달불가 분기 0건·주석코드 0건은 **깨끗함 확인**. 점진 수렴 (LOW·F-45 병합).
+
+### 8/1 신규 등재 — F-81~F-82
+
+- **[F-81]** (8/1) **채널 전수 계수 도구 승격** — 오늘 7/31 적재 확인에 쓴 실측 3종(유니버스 2531 전수 계수·placeholder 분해·활성 기준 공매도 재집계)이 scratchpad에만 있다. [F-78]과 같은 자리(판정 증거 소실 통로). 검수·아침점검마다 재사용되므로 `tools/manual/verify_channels.py` 1본으로 통합해 승격 (MED).
+- **[F-82]** (8/1) **★날짜 표기 3종 난립 → 판독기마다 오판 재발** — 채널별로 `YYYY-MM-DD`(daily·flow·ranking_snapshots) / `YYYYMMDD`(flow_market) / **BOM(`﻿`) 선두**(flow_market·ranking_snapshots) 가 섞여 있다. **8/1 실증: 단타봇이 새로 쓴 실측 스크립트가 이 둘을 못 읽어 ④ 시장11주체·⑧ 순위 스냅샷을 "최신 없음"으로 오판**했다(실제는 정상 — 검증기가 맞고 단타봇이 틀림). 허위 경보를 사장님께 올릴 뻔한 건이고, 앞으로 판독기를 쓸 때마다 같은 자리에서 재발한다. 공용 `read_dated_csv()`(utf-8-sig + 날짜 정규화) 정본화 (MED·근본).
 
 - **[F-13]** (7/17) **universe 재편입 파이프** — prune 도구는 제거만 함. 거래재개 종목(1~4주 정지군 포함)·신규상장 추가는 KIS 마스터/순위 API 결합 별도 설계 필요 (LOW·월 1회 prune 재실행 시 함께 검토).
 
