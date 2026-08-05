@@ -26,6 +26,12 @@
     ([F-22]/[F-36]의 '조용한 사망' 재발 방지). 점검 예외로는 절대 죽지 않는다(exit 0).
     단 **텔레그램 발송 실패는 exit 1** — 사장님 미수신을 기계가 알 수 있는 유일한 신호라
     cron MAILTO까지 닿아야 한다(체이닝 금지·단독 cron 라인 전제).
+  - **[F-89] 발송 재시도 3회 + 미발송 누적 병기** (8/5) — 첫 평일 8/3에 발송이
+    `RemoteDisconnected`로 실패했다. 판정 본문은 정상이었고 A1~A6도 전부 ✅였는데
+    **사장님께만 안 갔고, 그 로그를 읽을 세션이 그날 없었다** = 무인화의 전제가
+    마지막 1마일에서 깨진 것(7/14 "자동화 마지막 1마일은 사람에 닿는 알림"과 같은 자리).
+    누적 카운트는 **자기 로그 역산**으로 구한다 — 상태 파일을 만들면 위의
+    '상태 파일 무접촉' 불변식이 깨지기 때문이다.
   - 판정 수치는 기존 단일진실에 위임 — 상수/로직 로컬 복제 금지([F-37] 교훈)
 
 Usage:
@@ -39,6 +45,7 @@ import argparse
 import re
 import subprocess
 import sys
+import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -67,6 +74,18 @@ BOT_UNIT = "bodyhunter-bot"
 _WD = "월화수목금토일"
 _MARK = {"PASS": "✅", "WARN": "⚠️", "FAIL": "🚨", "SKIP": "⏭️"}
 _RANK = {"PASS": 0, "SKIP": 1, "WARN": 2, "FAIL": 3}
+
+# ── [F-89] 발송 재시도 + 미발송 누적 병기 (8/5 신설) ────────────────────
+# 8/3(첫 평일) 발송이 RemoteDisconnected로 실패했고 재시도가 0건이었다.
+# 본문·판정은 정상이었는데 사장님께만 안 갔고, 그 로그를 읽을 세션이 그날 없었다.
+# ★마커를 상수로 두는 이유: 이 도구가 **자기 로그를 되읽어** 미발송을 센다.
+#   기록하는 문자열과 읽는 문자열이 갈리면 카운트가 조용히 0이 된다(단일진실).
+SELF_LOG = "daily_ops_check.log"          # cron이 >> 로 받는 파일(2>&1 포함)
+MARK_SENT = "텔레그램 발송 완료"
+MARK_FAILED = "텔레그램 발송 실패"        # ★최종 실패에만 쓴다(재시도 중간 로그는 다른 문구)
+SEND_ATTEMPTS = 3
+SEND_BACKOFF = (2, 5)                     # 시도 사이 대기(초) — 최악 7초, cron 무해
+_OPS_HEADER_RE = re.compile(r"\[ops\] === (\d{4}-\d{2}-\d{2}) \d{2}:\d{2}:\d{2} 아침 점검")
 
 try:
     from data.trading_calendar import is_trading_day, last_trading_day
@@ -398,11 +417,57 @@ def build_message(ref: str, rows: list, score: str, dl_rows: list) -> str:
     return "\n".join(lines)
 
 
+def pending_unsent(log_path: Path) -> list:
+    """직전 성공 발송 이후 쌓인 미발송 실행일 목록 ([F-89]).
+
+    ★상태 파일을 만들지 않는다 — 이 도구의 불변식이 '상태 파일 무접촉'이기 때문이다.
+    A2·A3가 이미 로그를 판정 근거로 쓰고 있고, 발송 성공/실패는 이 도구 자신이
+    로그에 남기므로 별도 저장소가 필요 없다(desync·손상·원자성 통로를 0으로 유지).
+
+    전방 스캔: 실행 헤더로 '언제'를 기억하고, 최종 실패면 쌓고, 성공을 만나면 비운다.
+    로그 부재·판독 실패는 빈 목록(발송 자체를 막지 않는다 — 병기는 부가 정보다).
+    """
+    if not log_path.exists():
+        return []
+    try:
+        lines = log_path.read_text("utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    pending: list = []
+    cur = None
+    for ln in lines:
+        m = _OPS_HEADER_RE.search(ln)
+        if m:
+            cur = m.group(1)
+            continue
+        if MARK_SENT in ln:
+            pending.clear()
+        elif MARK_FAILED in ln:
+            pending.append(cur or "?")
+    return pending
+
+
+def pending_notice(pending: list) -> str:
+    """미발송 누적 병기 문구 — 실패 사실 자체가 사람에게 닿게 한다.
+
+    ★마커 문자열(MARK_SENT/MARK_FAILED)을 포함하지 않는다. 포함하면 다음 실행의
+    pending_unsent가 자기 병기문을 실패로 오독한다(자기참조 오염).
+    """
+    days = ", ".join(pending[-3:])
+    more = f" 외 {len(pending) - 3}건" if len(pending) > 3 else ""
+    return (f"⚠️ 지난 {len(pending)}회 미수신({days}{more}) — "
+            f"그날 점검 결과는 VPS {SELF_LOG} 에만 남아 있습니다")
+
+
 def _send_telegram(msg: str) -> int:
     """텔레그램 발송 — 20:10 요약과 동일 경로(검증된 통로).
 
     이름을 `_send`로 두지 않는 이유: 5/25 `_send` UnboundLocalError 사고 이후
-    해당 심볼은 pre-commit RULE-003 감시 대상 패턴이라 혼동을 만들지 않는다."""
+    해당 심볼은 pre-commit RULE-003 감시 대상 패턴이라 혼동을 만들지 않는다.
+
+    [F-89] 8/5 — 단발 발송을 SEND_ATTEMPTS회 재시도로 교체. 8/3 실패 원인은
+    `RemoteDisconnected`(연결이 응답 없이 끊김)로 **재시도로 넘어가는 종류**였다.
+    """
     import yaml
     from output.telegram_alert import TelegramAlert
     config = None
@@ -421,10 +486,24 @@ def _send_telegram(msg: str) -> int:
     if not tg.enabled:
         print("[ops] 텔레그램 미설정(토큰 없음) — 발송 스킵", file=sys.stderr)
         return 1
-    if tg.send_report(msg):
-        print(f"\n[ops] === {datetime.now():%Y-%m-%d %H:%M:%S} 텔레그램 발송 완료 ===")
-        return 0
-    print("[ops] 텔레그램 발송 실패 — 사장님 미수신 가능(토큰/네트워크 확인)", file=sys.stderr)
+
+    for attempt in range(1, SEND_ATTEMPTS + 1):
+        ok = False
+        try:
+            ok = tg.send_report(msg)
+        except Exception as e:  # noqa: BLE001 — 통로가 예외를 던져도 재시도로 흡수
+            print(f"[ops] 발송 예외({attempt}/{SEND_ATTEMPTS}): {e}", file=sys.stderr)
+        if ok:
+            print(f"\n[ops] === {datetime.now():%Y-%m-%d %H:%M:%S} {MARK_SENT} ===")
+            return 0
+        if attempt < SEND_ATTEMPTS:
+            wait = SEND_BACKOFF[attempt - 1]
+            print(f"[ops] 발송 재시도 대기 {wait}s ({attempt}/{SEND_ATTEMPTS} 실패)",
+                  file=sys.stderr)
+            time.sleep(wait)
+
+    print(f"[ops] {MARK_FAILED} — 사장님 미수신 가능(토큰/네트워크 확인·"
+          f"{SEND_ATTEMPTS}회 재시도 소진)", file=sys.stderr)
     return 1
 
 
@@ -459,6 +538,17 @@ def main() -> int:
 
     rows, score, dl_rows = run_checks(ref)
     msg = build_message(ref, rows, score, dl_rows)
+
+    # [F-89] 지난 미발송이 있으면 본문에 병기 — 실패 사실 자체가 사람에게 닿아야 한다.
+    # 판정 로직(build_message)은 순수하게 두고 발송 직전에만 덧붙인다.
+    try:
+        pending = pending_unsent(LOGS_DIR / SELF_LOG)
+    except Exception as e:  # noqa: BLE001 — 병기는 부가 정보. 실패해도 발송은 간다.
+        print(f"[ops] 미발송 누적 판독 실패(무시): {e}", file=sys.stderr)
+        pending = []
+    if pending:
+        msg = f"{msg}\n{pending_notice(pending)}"
+
     print(msg)
 
     if args.dry_run:
