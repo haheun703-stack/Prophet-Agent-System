@@ -30,8 +30,6 @@ Usage:
     python3.11 -X utf8 tools/manual/verify_channels.py --date 2026-08-04 --selftest
 """
 
-from __future__ import annotations
-
 import argparse
 import sys
 from collections import Counter
