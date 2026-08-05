@@ -69,9 +69,40 @@ KR_HOLIDAYS_2025 = {
 # 전체 공휴일 합침
 ALL_HOLIDAYS = KR_HOLIDAYS_2025 | KR_HOLIDAYS_2026
 
+# ★8/5 전체검수 [F-114] — **커버 연도를 데이터에서 파생**한다.
+#   기존엔 2025·2026만 있고 연도 가드가 없어 **2027-01-01부터 조용히
+#   "주말만 휴장"으로 퇴화**한다(신정·설날에 봇이 거래일로 오판). 7/17 제헌절
+#   유령신호 사고(캘린더 데이터 누락 → 휴장일에 박제 시세로 신호 6건)와 **동일 뿌리**이고,
+#   이번엔 **발생일이 이미 확정**돼 있다.
+#   ★날짜를 추측해 넣지 않는다 — 음력 기반 설/추석·대체공휴일을 잘못 넣으면
+#     그 자체가 같은 종류의 사고다. 대신 **미등재 연도를 시끄럽게 만든다.**
+COVERED_YEARS = {d.year for d in ALL_HOLIDAYS}
+_warned_years: set = set()
+
+
+def calendar_covers(d: date) -> bool:
+    """해당 연도 공휴일이 캘린더에 등재돼 있는지([F-114])."""
+    return d.year in COVERED_YEARS
+
 
 def is_holiday(d: date) -> bool:
-    """공휴일인지 확인"""
+    """공휴일인지 확인.
+
+    미등재 연도는 판정 불가다 — False(=거래일)를 돌려주되 **매 연도 1회 ERROR 로그**로
+    표면화한다. 조용히 틀리는 것보다 시끄럽게 틀리는 것이 낫다(7/17 교훈).
+    """
+    if d.year not in COVERED_YEARS:
+        if d.year not in _warned_years:
+            _warned_years.add(d.year)
+            try:
+                import logging
+                logging.getLogger(__name__).error(
+                    "[trading_calendar] %d년 공휴일 미등재 — 주말만 휴장으로 퇴화 중. "
+                    "KR_HOLIDAYS_%d 추가 필요 [F-114] (등재 연도: %s)",
+                    d.year, d.year, sorted(COVERED_YEARS))
+            except Exception:  # pragma: no cover
+                pass
+        return False
     return d in ALL_HOLIDAYS
 
 

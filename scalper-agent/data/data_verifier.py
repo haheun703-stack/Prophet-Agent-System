@@ -306,8 +306,25 @@ def _kis_last_date(path: Path) -> Optional[str]:
     return d
 
 
-def _evening() -> bool:
-    """저녁 수집(nightly ⑫⑬) 완료 기대 시각 이후인지 — 장전 박제 노이즈 방지용."""
+def _evening(ref: str = None) -> bool:
+    """저녁 수집(nightly ⑫⑬) 완료 기대 시각 이후인지 — 장전 박제 노이즈 방지용.
+
+    ★8/5 전체검수 [F-100] — **기준일 인자를 받는다.** 기존엔 벽시계만 봤고
+    (`datetime.now().hour >= 19`) 기준일과 무관했다. 그런데 `daily_ops_check`는
+    매 평일 **08:30**에 `ref = 직전 거래일`로 소급 검증을 돌린다 → `hour=8`이라
+    항상 "저녁 수집 전"으로 유예 → **공매도·순위·시장11주체가 구조적으로 FAIL 불가**.
+    세 채널이 3일 멈춰 있어도 전부 PASS였고, `notify_data_freshness`의 `core_ok`가
+    자동 True가 되어 사장님 텔레그램 헤드라인이 "✅ 핵심 채널 모두 정상"으로 나갔다.
+
+    이 유예의 원래 의미는 *"**오늘** 저녁 수집 전이면 T-1이 정상"*이다.
+    기준일이 이미 지난 과거일이면 그 날의 저녁은 지났으므로 유예할 근거가 없다.
+    """
+    if ref:
+        try:
+            if date.fromisoformat(str(ref)[:10]) < date.today():
+                return True          # 과거일 판정 = 그날 저녁은 이미 지났다
+        except (ValueError, TypeError):
+            pass
     return datetime.now().hour >= 19
 
 
@@ -365,7 +382,7 @@ def _verify_short_kis(today: str) -> dict:
     best = max(dates)
     if best >= today:
         return {"status": "PASS", "latest": best}
-    if not _evening():
+    if not _evening(today):
         return {"status": "PASS", "latest": best, "note": "T-1 (저녁 수집 전)"}
     return {"status": "FAIL", "reason": f"최신 {best} — 저녁 수집 후에도 미갱신", "latest": best}
 
@@ -399,7 +416,7 @@ def _verify_ranking_kis(today: str) -> dict:
         return {"status": "FAIL", "reason": "마지막 행 날짜 없음"}
     if best >= today:
         return {"status": "PASS", "latest": best}
-    if not _evening():
+    if not _evening(today):
         return {"status": "PASS", "latest": best, "note": "T-1 (저녁 수집 전)"}
     return {"status": "FAIL", "reason": f"최신 {best} — 저녁 수집 후에도 미갱신", "latest": best}
 
@@ -414,7 +431,7 @@ def _verify_flow_market(today: str) -> dict:
         return {"status": "FAIL", "reason": "마지막 행 날짜 없음"}
     if best >= today:
         return {"status": "PASS", "latest": best}
-    if not _evening():
+    if not _evening(today):
         return {"status": "PASS", "latest": best, "note": "T-1 (장중/수집 전)"}
     return {"status": "FAIL", "reason": f"최신 {best} — 저녁 수집 후에도 미갱신", "latest": best}
 

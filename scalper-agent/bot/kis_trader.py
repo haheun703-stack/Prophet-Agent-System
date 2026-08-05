@@ -481,6 +481,19 @@ class KISTrader:
                         continue
                     return {"success": False, "message": "토큰 재발급 후에도 잔고 조회 실패"}
 
+                # ★8/5 전체검수 [F-96] — rt_cd 미검사로 거부 응답을 "보유 0종목"으로 읽던 통로.
+                #   ★파급이 가장 무겁다: position_safety:417이 positions=[]로 루프 0회를 돌고
+                #     **아무 로그도 안 남긴다** → hard_kill·룰4·룰B·룰C가 무증상 소멸.
+                #     auto_trader:2180은 _real_holdings_codes=set()이 되어 09:15 중복 차단이
+                #     메모리 장부에만 의존 → **보유 종목 재매수**. 실패 분기(:2189)는 텔레그램
+                #     경고라도 나가는데 rt_cd=1은 성공 분기로 들어가 경고조차 없었다.
+                _rt = str(resp.get("rt_cd", "0"))
+                if _rt != "0":
+                    with self._lock:
+                        self._consecutive_failures += 1
+                    return {"success": False,
+                            "message": f"잔고 조회 거부 rt_cd={_rt} msg_cd={resp.get('msg_cd','')}"}
+
                 output = resp.get("output1", [])
                 summary = resp.get("output2", [{}])
 
@@ -874,8 +887,20 @@ class KISTrader:
             }
             resp = broker.fetch_open_order(param)
 
+            # ★8/5 전체검수 [F-96] — 조회 실패를 "성공 + 미체결 0건"으로 반환하던 통로.
+            #   같은 파일의 다른 조회 11곳(691·762·832·1175·1311·1424·2168·2365·2434·
+            #   2639·2649)은 전부 `rt_cd != "0"`를 검사하므로 설계가 아니라 **누락**이었다.
+            #   KIS는 레이트리밋을 HTTP 200 + rt_cd="1"(EGW00201)로 주고 output이 없다.
+            #   ★파급: `_wait_for_fill`(:1529)이 첫 폴링에서 pending=[]을 보고 "체결 완료"로
+            #     오판 → 지정가 주문이 취소되지 않은 채 거래소에 남는다. 7/20 ticks 사고
+            #     ("성공 카운트 ≠ 성공 증거")와 같은 뿌리.
+            #   fail-open → fail-closed로 되돌린다(재시도/경보 경로가 살아난다).
             if resp is None:
-                return {"success": True, "orders": []}
+                return {"success": False, "message": "미체결 조회 응답 없음"}
+            _rt = str(resp.get("rt_cd", "0"))
+            if _rt != "0":
+                return {"success": False,
+                        "message": f"미체결 조회 거부 rt_cd={_rt} msg_cd={resp.get('msg_cd','')}"}
 
             orders = []
             for item in resp.get("output", []):

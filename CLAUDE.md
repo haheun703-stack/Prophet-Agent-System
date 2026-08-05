@@ -61,7 +61,7 @@
 2. ✅ Tier 2: 호출 site 추적 grep + AST 분석 (사장님 룰 위반 패턴 0건)
 3. ✅ Tier 3: 단위 테스트 + **실제 매매 경로 회귀 테스트** PASS
 4. ✅ VPS 환경 실측 검증 (실제 함수 호출 → 정확 동작 데이터)
-5. ✅ pre-commit hook 통과 (`tools/pre_commit_check.py` RULE-001~004)
+5. ✅ pre-commit hook 통과 (`tools/pre_commit_check.py` — 실제 구현 규칙: TG-001·UNI-001·CSV-001·IMP-001 + **RULE-001·002·003·005·006·007·008**)
 6. ✅ commit message에 "Tier 1 ✅ / Tier 2 ✅ / Tier 3 ✅ + VPS 실측" 명시
 
 **1개라도 ❌ → 사장님께 "보장합니다" 말하지 않음. 자아성찰 + 추가 검수.**
@@ -169,7 +169,12 @@
 ## 🛠️ 자동화 인프라
 
 - **pre-commit hook**: `.git/hooks/pre-commit` → `tools/pre_commit_check.py`
-- **검사 규칙**: TG-001, UNI-001, CSV-001 + RULE-001~004 (5/25 사장님 룰 위반 패턴)
+- **검사 규칙**: TG-001, UNI-001, CSV-001, IMP-001 + **RULE-001·002·003·005·006·007·008**
+  - ★ **8/5 정정** — 이 줄은 오래 "RULE-001~004"라 적혀 있었으나 **양방향으로 틀렸다**:
+    **RULE-004는 구현이 존재한 적 없고**(`pre_commit_check.py` grep 0건), 실제로 차단하는
+    RULE-005~008(SAJANG 우회·단일진실)은 그 범위 밖이었다. 7/31 P0-4가 RULE-002만
+    구현하고 백로그는 "RULE-002/004 신설"로 닫아 절반이 거짓으로 남았다.
+    ★교훈 재적용 = **문서가 "자동 차단한다"고 말하면 구현을 세어 확인한다.**
 - **GitHub**: `haheun703-stack/Prophet-Agent-System`
 - **branch**: `main` (직접 push, PR 없음 — 단타봇 자율 권한)
 

@@ -84,6 +84,16 @@ TICKS_HEALTH_SAMPLE = 40    # 결정적 표본 크기(정렬 후 균등 추출)
 TICKS_BROKEN_PCT = 50.0     # usable 비율 하한
 TICKS_MIN_FILES = 100       # 유니버스 대비 극소 = 전면 장애(파일 미생성 위장 차단)
 TICKS_COVERAGE_MIN = "14:00:00"  # 표본 마지막관측 중앙값 하한 — 오후 결손(정오죽음) 차단(F-16)
+# ★8/5 전체검수 [F-101] — **파일 개수 축의 결손이 무탐지였다.**
+#   기존 임계 100은 유니버스 2,531 대비 **3.95%**다. 레이트리밋 스톰에서
+#   `tick_collector._fetch_snapshot`은 거부·price<=0이면 None을 반환하고 poll_once가
+#   그 종목 CSV를 **아예 만들지 않는다**. 500종목만 파일이 생기고 그 500개가 온전하면
+#   표본 40개 전부 usable → pct=100 → **verdict OK**로 통과했다.
+#   7/20에 막은 건 "행은 있는데 값이 0"이었고, **파일 자체 부재 축은 지금까지 무탐지**.
+#   ★실측(8/5): 73 관측일 전부 99.8%↑(7/17 prune 전은 2,596/2,531=102.5%)이므로
+#     아래 임계로 **기존 유효일 판정이 하나도 바뀌지 않는다**(스코어보드 불변 확인).
+TICKS_FILE_COV_BROKEN = 0.50    # 유니버스 대비 파일 커버리지 — 전면 장애
+TICKS_FILE_COV_TRUNC = 0.90     # 부분 결손(판정 표본이 한쪽으로 기움)
 
 
 def ticks_health(day: str):
@@ -112,8 +122,21 @@ def ticks_health(day: str):
         pct = round(100 * usable / len(sample), 1)
         last_times.sort()
         last_med = last_times[len(last_times) // 2] if last_times else None
-        if pct < TICKS_BROKEN_PCT:
+
+        # [F-101] 파일 커버리지 — 표본은 '존재하는 파일'에서만 뽑히므로 pct로는 못 잡는다
+        cov = None
+        try:
+            from data.data_verifier import _all_universe_codes
+            _uni = len(_all_universe_codes())
+            if _uni > 0:
+                cov = len(files) / _uni
+        except Exception:  # noqa: BLE001 — 유니버스 판독 실패가 판정을 막지는 않는다
+            cov = None
+
+        if pct < TICKS_BROKEN_PCT or (cov is not None and cov < TICKS_FILE_COV_BROKEN):
             verdict = "BROKEN"
+        elif cov is not None and cov < TICKS_FILE_COV_TRUNC:
+            verdict = "TRUNCATED"
         elif last_med is not None and last_med < TICKS_COVERAGE_MIN:
             # usable은 높아도(오전 데이터 충분) 오후가 통째로 결손 = 청산이 정오 EOD로
             # 조기 마감돼 수익률 분포 오염 + 유효일 위장(F-16·7/6 11:17 실측).
@@ -121,6 +144,8 @@ def ticks_health(day: str):
         else:
             verdict = "OK"
         return {"sample": len(sample), "usable_pct": pct, "last_med": last_med,
+                "files": len(files),
+                "file_cov_pct": round(cov * 100, 1) if cov is not None else None,
                 "verdict": verdict}
     except Exception:  # noqa: BLE001
         return None

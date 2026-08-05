@@ -724,9 +724,16 @@ def synthesize(buf: IntradayBuffer, ma: dict, vwap_pos: dict,
         confidence = 0.85 if alive_signals >= 4 else (0.75 if alive_signals >= 3 else 0.65)
         summary = " + ".join(reasons) if reasons else f"종합 {composite:.0f}점"
 
-        # 트레일링 SL: 고점 -1.5%
+        # ★8/5 전체검수 [F-90] 사장님 룰 3 위반 복구 — 고점 -3% 일관 ★
+        #   기존: `int(today_high * 0.985)` = 고점 -1.5% 하드코딩.
+        #   같은 함수의 WEAKENING 분기(아래)는 이미 SAJANG을 쓰고 있었다 = 3개 분기 중
+        #   1개만 전환된 상태였고, 하필 **ALIVE(가장 잘 가는 종목)**가 룰의 절반으로 잘렸다.
+        #   ★소비 경로: auto_trader:4136 ratchet은 `new_sl > 기존`일 때만 갱신하는데
+        #     고점×0.985 > 고점×0.97이라 **-1.5%가 항상 이겨** :4496 effective_sl →
+        #     실매도 트리거까지 도달했다. "5~10% 먹고 나온다"와 정반대 방향.
+        from data.sajang_rules import SAJANG
         today_high = sr.get("today_high", price)
-        trailing_sl = int(today_high * 0.985)
+        trailing_sl = SAJANG.get_trailing_sl(today_high)
 
         return "ALIVE", confidence, summary, "HOLD", {"trailing_sl": trailing_sl}
 

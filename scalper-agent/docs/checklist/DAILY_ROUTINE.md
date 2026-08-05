@@ -221,6 +221,27 @@
 - **[F-119]** (8/5) **테스트 러너 부재 — 4-Tier Tier3를 일괄 증명할 수단이 없다 (MED)** — `pytest` 미설치·`requirements.txt` 미선언·`pytest.ini`/`conftest.py` 0건·훅/nightly 호출 0건. 테스트 33개 중 32개는 자체 러너로 동작하나 `tests/test_flow_collector_naver_frgn.py`는 **순수 pytest라 실행 수단 자체가 없다**. 부수: `bot/test_rule_d_dday_5_27.py:83`이 테스트 5개 중 4개만 러너 리스트에 넣고 **"4/4 PASS"** 출력 = 성공 카운트가 누락을 은폐(7/20과 동형).
 - **[F-120]** (8/5) **SAJANG 고아 26건 — 헬퍼가 검증만 되고 쓰이지 않는다 (LOW·F-70 확장)** — 상수 외에 **판정 메서드**도 포함: `can_buy`(:331 — `sajang_rules.py:154`가 *"매수 전 호출 의무"*라 명시하고 CLAUDE.md 룰 8도 같은 취지인데 **참조 0건**)·`is_rule_b/c_triggered`·`is_limit_up_split_triggered`·`get_pre_close_d_position`·`get_sync_auto_position` — 전부 유일 참조가 테스트. `get_limit_up_hard_stop`은 참조 0. 매매 코드가 상수를 직접 비교해 룰을 만족시키므로 위반은 아니나, [F-69]가 겨눈 "소비자 존재 검사"의 정확한 사각.
 
+**★ 8/5 오후 소진 (사장님 "나머지는 자동으로 너가 진행") — 9건 완료**
+
+> 진행 기준: 사장님 룰을 **복원**하는 것·명백한 버그·검증 맹점·문서 정합만 자율 진행.
+> 룰 자체를 **바꾸거나 완화**하는 건([F-92] 자금비율·[F-93] 손절폭·[F-94] 추매·[F-95] 룰D)은
+> 손대지 않고 남겼다. 전건 회귀 검증 후 커밋.
+
+| ID | 조치 | 회귀 검증 |
+|---|---|---|
+| ~~F-90~~ | `intraday_eye.py` ALIVE 분기 `0.985` → `SAJANG.get_trailing_sl()` (룰 3 복원) | 고점 10,000 → 9,850 → **9,700**. 지지선/저항선 기반 2분기(:651·:689)는 **축이 달라 미변경**(사장님 판단 사안으로 잔존) |
+| ~~F-96~~ | `fetch_open_orders`·`fetch_balance`에 `rt_cd != "0"` 검사 추가 (fail-open → fail-closed) | 게이트 로직 대조 4케이스 PASS(응답없음·레이트리밋=False / 정상 0건·1건=True). 파일 내 11곳 규약과 일치 |
+| ~~F-100~~ | `_evening(ref)` — 과거일 판정이면 벽시계 유예 없음 | 단위: `_evening(어제)=True`·`_evening(오늘)=False`(12시 기준). 실제 검증기 회귀 = 여전히 전 채널 PASS(**데이터가 진짜 신선해서**이지 유예가 아님) |
+| ~~F-101~~ | `ticks_health`에 유니버스 대비 **파일 커버리지** 임계(BROKEN<50%·TRUNCATED<90%) + `files`/`file_cov_pct` 출력 | ★**스코어보드 불변 확인**: 73 관측일 전부 99.8%↑ → 유효일 판정 0건 변화. 재실행 **66건 40.9% −39.47%p 동일** |
+| ~~F-106~~ | S-6 판정기 "판정 불가" 게이트(오전 완료) | 로컬 낡은 미러에서 5개 blocker와 함께 "⏸ 판정 불가" 출력·on_fail 미상신 |
+| ~~F-108~~ | 판정 증거 손상을 `alerts`로 승격 | 음성 대조: `_load_ledger` 몽키패치로 장부 소실 시뮬 → **"판정 근거 소실" alert 발생**. 정상 시 미발생 |
+| ~~F-110~~ | CLAUDE.md의 "RULE-001~004" → 실제 구현(**001·002·003·005·006·007·008** + TG/UNI/CSV/IMP-001)으로 정정 | `pre_commit_check.py` 규칙 id 전수 grep으로 확정. **RULE-004는 존재한 적 없음** |
+| ~~F-111~~ | `asset_pool_loader.py:467` 죽은 `BASE_DIR` 폴백 제거 | ★**저장소 전수 undefined name = 0건**(선언 아닌 실측). RULE-002 오탐 지뢰 제거 |
+| ~~F-113~~ | `STRATEGY_DEADLINES.md`에 현재 활성(S-1·S-6) 표 추가 + S-2~S-5 폐기 명시 | JSON 정본과 대조. 문서 경로로도 8/7 S-6 도래가 보인다 |
+| ~~F-114~~ | `trading_calendar`에 `COVERED_YEARS` 파생 + 미등재 연도 ERROR 로그(연 1회) | 회귀 4케이스 PASS(7/17 제헌절·평일·신정·삼일절). 2027 조회 시 ERROR 발화·2회째 억제. ★**날짜는 추측해 넣지 않았다** — 음력/대체공휴일 오기가 같은 종류의 사고이므로 |
+
+- **[F-121]** (8/5) **★`theme:*` 고신뢰 소스가 기여 0건으로 죽어 있다 (MED·[F-40] 유형)** — `asset_pool_loader.load_theme_universe_stocks()`의 주 경로 `/home/ubuntu/jgis/data_store/theme_universe.json`이 **VPS·로컬 양쪽에 실재하지 않는다**(8/5 실측). 폴백은 [F-111]로 애초에 사문이었다. 소비처 `:279`가 `source_map`에 `theme:{subtheme}`를 넣는데 항상 0건이고, `get_high_confidence_candidates` docstring은 *"theme:* 소스 단독으로도 고신뢰 처리"*라 선언한다 = **선정 축 하나가 조용히 사라진 상태**. 8/5 조치=**값을 만들지 않고 없다는 사실을 WARNING 로그로 남김**(선정 동작 불변). 복구는 막내(정보봇) 산출물 배선 사안이라 **사장님 결정**.
+
 **★ 오탐 기각·정정 (7/31 8건 전건 기각의 연속 — 에이전트 보고는 무조건 직접 재검증)**
 - ❌ **기각: "S-6 증거가 6/10에서 56일 정지·생산 중단"** — VPS 원본은 **8/4 18:08·168 레코드(6/09~8/04)로 생산 정상**. 에이전트가 **로컬 미러(6/10·5건)를 VPS로 오인**해 판정했다(7/31 오탐 유형 1의 재발). 단 그 밑의 사실은 유효: `sector_reversal_shadow.json`이 sync·freshness 미등록. ★그러나 **sync 미등록은 결함이 아니라 결정**이다 — `sync_from_vps.py:111`이 *"shadow/paper는 의도적 sync 제외(6/10 결정) — 판정은 VPS에서 직접"*이라 명시. 단타봇이 사장님 결정을 뒤집지 않는다. 대신 **판정기에 신선도 가드**를 넣어 로컬 오판을 차단([F-106] fix에 포함).
 - ❌ **기각(단타봇 자신의 오경보): "VPS venv에 pyflakes 없음 = RULE-002 사망"** — pre-commit은 VPS에서 돌지 않는다. 훅이 쓰는 로컬 python 3.13에 pyflakes 3.4.0 설치돼 있고 **양성 대조로 실제 차단(HIGH·exit 1) 확인**. 단타봇의 8/5 두 번째 오경보(1차는 ticks 컬럼 인덱스) — **보고 전에 걸렀다.** 잔여 위험은 `check_undefined_names`가 pyflakes 부재 시 **조용히 skip**한다는 것(다른 인터프리터로 커밋하면 무음 통과) → skip 사실을 1줄 출력하도록 보강 필요 (LOW).

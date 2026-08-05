@@ -460,11 +460,23 @@ def load_theme_universe_stocks() -> List[Dict]:
 
     [5/20 학습] 사장님 "단타 = 소재" 원칙. 막내가 매일 06:00 theme_universe 생성.
     여기선 단순 평면 리스트로 변환 (서브테마 정보는 subtheme 필드로 보존).
+
+    ★8/5 전체검수 [F-111/F-121] — 두 가지를 고쳤다(선정 동작은 불변):
+      ① `BASE_DIR` 폴백 제거 — 이 모듈에 `BASE_DIR` 정의가 **0건**이라
+         `'BASE_DIR' in globals()`는 항상 False였다. 즉 폴백은 한 번도 동작한 적이 없고,
+         저장소 전체 undefined-name **잔여 1건**의 정체였다(7/31 "잔여 0건" 선언이 부정확).
+         런타임은 단락 평가로 안전했으나, 이 파일을 커밋하면 RULE-002가 HIGH로
+         차단하는 **오탐 지뢰**였다.
+      ② **침묵 가시화** — 주 경로 `/home/ubuntu/jgis/...`도 **VPS·로컬 양쪽에 실재하지 않는다**
+         (8/5 실측). 따라서 이 함수는 매번 조용히 `[]`를 반환하고,
+         `get_high_confidence_candidates`가 "theme:* 소스 단독으로도 고신뢰"라 선언한
+         축이 **기여 0으로 죽어 있다**([F-40] '죽은 가산항'과 같은 유형).
+         값을 만들어내지 않고 **없다는 사실을 로그로 남긴다** — 복구 여부는 사장님 결정
+         (막내/정보봇 산출물 배선 사안).
     """
     import os
     path_candidates = [
         "/home/ubuntu/jgis/data_store/theme_universe.json",
-        str(BASE_DIR / "theme_universe.json") if 'BASE_DIR' in globals() else None,
     ]
     for p in path_candidates:
         if p and os.path.exists(p):
@@ -486,6 +498,11 @@ def load_theme_universe_stocks() -> List[Dict]:
             except Exception as e:
                 import logging
                 logging.getLogger(__name__).warning(f"[asset_pool] theme_universe 로드 실패 {p}: {e}")
+    # ★[F-121] 조용한 0건 금지 — 소스가 죽었는데 선정은 그대로 도는 상태를 로그로 드러낸다
+    import logging
+    logging.getLogger(__name__).warning(
+        "[asset_pool] theme_universe 미발견(%s) — theme:* 고신뢰 소스 기여 0건. "
+        "막내(정보봇) 산출물 배선 확인 필요 [F-121]", ", ".join(path_candidates))
     return []
 
 

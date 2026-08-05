@@ -133,6 +133,17 @@ def build_report() -> tuple:
     lines = [score, "⏰ 전략 데드라인 대장"]
     alerts = []
 
+    # ★8/5 전체검수 [F-108] — **판정 증거 손상이 alerts로 승격되지 않았다.**
+    #   위에서 "판정 유예(장부 손상/수집 장애 확인 필요)" 문구를 이미 만들어 놓고
+    #   `lines`에만 넣었다. 그런데 ⑲-4 발송은 `if args.notify and alerts:`이고
+    #   아침 점검 A9(`daily_ops_check.check_a9_deadlines`)는 `alerts` 유무만 본다
+    #   → **텔레그램 0건 + 아침 초록불**. 바로 아래 '대장 로드 실패'는 같은 계열인데
+    #   `alerts.append`를 하고 있어 **처리가 한쪽만 돼 있던 비대칭**이다.
+    #   ★위험 구간: 8/7에 S-6가 정리되면 D-3 이내 전략이 없어 alerts=0이 되고,
+    #     8/8~8/25 약 18일간 장부가 깨져도 아무도 모른다.
+    if score.startswith("📊") and ("판정 유예" in score or "장부 없음" in score):
+        alerts.append(f"🚨 {score} — 판정 근거 소실. 스코어보드가 0/+0으로 위장될 수 있다")
+
     # 대장 로드 실패 = '조르기' 정지 상태 — silent이면 존재 이유 무력화 → 알림으로 표면화(Tier1 Med)
     try:
         reg = json.loads(REGISTRY.read_text(encoding="utf-8"))
