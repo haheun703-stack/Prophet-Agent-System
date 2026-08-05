@@ -81,8 +81,22 @@ _RANK = {"PASS": 0, "SKIP": 1, "WARN": 2, "FAIL": 3}
 # ★마커를 상수로 두는 이유: 이 도구가 **자기 로그를 되읽어** 미발송을 센다.
 #   기록하는 문자열과 읽는 문자열이 갈리면 카운트가 조용히 0이 된다(단일진실).
 SELF_LOG = "daily_ops_check.log"          # cron이 >> 로 받는 파일(2>&1 포함)
-MARK_SENT = "텔레그램 발송 완료"
-MARK_FAILED = "텔레그램 발송 실패"        # ★최종 실패에만 쓴다(재시도 중간 로그는 다른 문구)
+# ★8/5 Tier1 보강 — 마커를 본문에 나올 수 없는 토큰으로 바꿨다.
+#   이전 마커는 "텔레그램 발송 완료/실패"라는 평범한 한국어였고, 하필 **A3 항목이
+#   텔레그램 발송 성패를 보고**한다. main()이 보고서 본문을 그대로 로그에 쓰므로,
+#   A3 문구를 "텔레그램 발송 완료"로 다듬는 순간 매 실행이 pending.clear()를 호출해
+#   누적 기능이 영구 0이 된다. 한 단어 차이로만 충돌을 면하고 있던 통로를 닫는다.
+MARK_SENT = "[ops][SEND_OK]"
+MARK_FAILED = "[ops][SEND_FAIL]"          # ★최종 실패에만 쓴다(재시도 중간 로그는 다른 문구)
+DRY_RUN_MARK = "[ops][DRY_RUN]"           # 발송 대상 아님 — 미발송 계수에서 제외
+# ★마커 교체 마이그레이션 — 기존 로그(7/31~8/5)는 옛 문구로 쓰여 있다. 읽기 쪽에서
+#   호환하지 않으면 **이미 발송된 블록이 '마커 없는 죽은 블록'으로 잡혀** 다음 실행에
+#   "지난 4회 미수신"이라는 거짓 병기가 나간다(사장님께 없는 사고를 보고하는 셈).
+#   옛 문구는 A3 본문과 충돌할 수 있는 평범한 한국어라, **`[ops] ` 접두가 있을 때만**
+#   마커로 인정한다(A3 본문 줄은 `✅ A3 …`로 시작해 접두가 없다).
+_LEGACY_SENT = "텔레그램 발송 완료"
+_LEGACY_FAILED = "텔레그램 발송 실패"
+_OPS_PREFIX = "[ops] "
 SEND_ATTEMPTS = 3
 SEND_BACKOFF = (2, 5)                     # 시도 사이 대기(초) — 최악 7초, cron 무해
 _OPS_HEADER_RE = re.compile(r"\[ops\] === (\d{4}-\d{2}-\d{2}) \d{2}:\d{2}:\d{2} 아침 점검")
@@ -279,11 +293,11 @@ def check_a5_contrast(ref: str) -> tuple:
     # (observe_v2_runner.py:195-199). 앞서 PASS|FAIL만 매칭해서, 정작 가장 중요한
     # **CHECK(불일치 발생 = ⑲-2의 존재 이유)** 날을 "스텝 자체 미실행"으로 오진했다.
     # 운영자를 데이터 정합 결함이 아니라 cron 장애로 몰아가는 최악의 오진.
-    m, row = None, None
+    m = None
     for ln in block:
         mm = re.search(r"(\d{8}) 대조 — (PASS|CHECK|EMPTY|FAIL): (.+)$", ln)
         if mm:
-            m, row = mm, ln
+            m = mm
     if not m:
         # run_step 실패행(`⚠ ⑲-2 … exit=N | stderr`)엔 결과 토큰이 없다.
         step = [ln for ln in block if "⑲-2" in ln and "시작" not in ln and "완료" not in ln]
@@ -426,6 +440,12 @@ def pending_unsent(log_path: Path) -> list:
 
     전방 스캔: 실행 헤더로 '언제'를 기억하고, 최종 실패면 쌓고, 성공을 만나면 비운다.
     로그 부재·판독 실패는 빈 목록(발송 자체를 막지 않는다 — 병기는 부가 정보다).
+
+    ★8/5 Tier1 보강 — **마커 없이 끝난 블록도 미발송으로 센다**. 프로세스가
+    OOM/SIGKILL/ImportError로 죽으면 두 마커 어느 쪽도 안 남는데, 사장님은
+    못 받은 것이다. 같은 파일 `check_a3_notify`가 20:10 통로에서 이미
+    *"실행 흔적만 있고 발송 결과 없음 = 미수신 의심"*으로 확정 처리하는 상태 전이인데
+    여기서만 빠져 있었다. `--dry-run` 블록은 발송 대상이 아니므로 제외한다.
     """
     if not log_path.exists():
         return []
@@ -435,15 +455,30 @@ def pending_unsent(log_path: Path) -> list:
         return []
     pending: list = []
     cur = None
+    resolved = True          # 현재 블록이 성공/실패 마커로 결말이 났는가
+    dry = False              # 현재 블록이 --dry-run 인가(발송 대상 아님)
+
+    def _close_block():
+        # 마커 없이 끝난 실블록 = 프로세스 사망 → 미발송으로 계수
+        if cur is not None and not resolved and not dry:
+            pending.append(cur)
+
     for ln in lines:
         m = _OPS_HEADER_RE.search(ln)
         if m:
-            cur = m.group(1)
+            _close_block()
+            cur, resolved, dry = m.group(1), False, False
             continue
-        if MARK_SENT in ln:
+        legacy = ln.startswith(_OPS_PREFIX)
+        if MARK_SENT in ln or (legacy and _LEGACY_SENT in ln):
             pending.clear()
-        elif MARK_FAILED in ln:
+            resolved = True
+        elif MARK_FAILED in ln or (legacy and _LEGACY_FAILED in ln):
             pending.append(cur or "?")
+            resolved = True
+        elif DRY_RUN_MARK in ln or "[dry-run]" in ln:
+            dry = True
+    _close_block()
     return pending
 
 
@@ -467,9 +502,25 @@ def _send_telegram(msg: str) -> int:
 
     [F-89] 8/5 — 단발 발송을 SEND_ATTEMPTS회 재시도로 교체. 8/3 실패 원인은
     `RemoteDisconnected`(연결이 응답 없이 끊김)로 **재시도로 넘어가는 종류**였다.
+
+    ★8/5 Tier1 보강 3건 — 전부 "미발송인데 미발송으로 안 세지는" 통로였다:
+      ① **import를 try 안으로**. `import yaml`이 try 밖이면 ImportError가 main() 밖으로
+         전파돼 최상단 `except → SystemExit(0)`이 삼킨다 = 미수신 + cron 정상 인식 +
+         누적 0의 3중 무음. 이 위험은 추측이 아니다 — 테스트가 노트북에서 yaml stub을
+         주입한다는 것 자체가 이 import가 환경에 따라 실패함을 증명한다.
+      ② **실패 3경로 전부 MARK_FAILED**. 이전엔 재시도 소진 1곳만 찍어서, 토큰 유실로
+         5일 미수신 후 복구돼도 "지난 5회 미수신" 병기가 안 붙었다.
+      ③ **두 마커 모두 stdout**. 실패만 stderr면 cron이 `2>&1`을 잃는 순간 실패 마커가
+         로그에서 사라져 누적이 영구 0이 된다(성공 마커는 남아 조용히 정상으로 보임).
+         같은 파일 A3 주석이 "리다이렉션 설정에 의존하지 말 것"을 이미 원칙으로 세웠다.
     """
-    import yaml
-    from output.telegram_alert import TelegramAlert
+    try:
+        import yaml
+        from output.telegram_alert import TelegramAlert
+    except Exception as e:  # noqa: BLE001 — ①
+        print(f"[ops] {MARK_FAILED} — 발송 모듈 로드 실패: {e}")
+        return 1
+
     config = None
     if CONFIG_PATH.exists():
         try:
@@ -481,10 +532,10 @@ def _send_telegram(msg: str) -> int:
     try:
         tg = TelegramAlert(config)
     except Exception as e:  # noqa: BLE001
-        print(f"[ops] TelegramAlert 생성 실패: {e}", file=sys.stderr)
+        print(f"[ops] {MARK_FAILED} — TelegramAlert 생성 실패: {e}")
         return 1
     if not tg.enabled:
-        print("[ops] 텔레그램 미설정(토큰 없음) — 발송 스킵", file=sys.stderr)
+        print(f"[ops] {MARK_FAILED} — 텔레그램 미설정(토큰 없음)")
         return 1
 
     for attempt in range(1, SEND_ATTEMPTS + 1):
@@ -497,13 +548,14 @@ def _send_telegram(msg: str) -> int:
             print(f"\n[ops] === {datetime.now():%Y-%m-%d %H:%M:%S} {MARK_SENT} ===")
             return 0
         if attempt < SEND_ATTEMPTS:
-            wait = SEND_BACKOFF[attempt - 1]
+            # SEND_ATTEMPTS만 올리면 IndexError → try 밖이라 ①의 무음 경로로 빠진다
+            wait = SEND_BACKOFF[min(attempt - 1, len(SEND_BACKOFF) - 1)]
             print(f"[ops] 발송 재시도 대기 {wait}s ({attempt}/{SEND_ATTEMPTS} 실패)",
                   file=sys.stderr)
             time.sleep(wait)
 
     print(f"[ops] {MARK_FAILED} — 사장님 미수신 가능(토큰/네트워크 확인·"
-          f"{SEND_ATTEMPTS}회 재시도 소진)", file=sys.stderr)
+          f"{SEND_ATTEMPTS}회 재시도 소진)")
     return 1
 
 
@@ -552,7 +604,8 @@ def main() -> int:
     print(msg)
 
     if args.dry_run:
-        print("\n[dry-run] 발송 생략")
+        # DRY_RUN_MARK를 남겨야 pending_unsent가 이 블록을 '프로세스 사망'으로 오인하지 않는다
+        print(f"\n{DRY_RUN_MARK} [dry-run] 발송 생략")
         return 0
     return _send_telegram(msg)
 

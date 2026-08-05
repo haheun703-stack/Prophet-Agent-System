@@ -107,8 +107,14 @@
    - `SAJANG.calc_budget_per_stock(cash, total_eval, top_k)` 의무 호출
    - max_buy = max(0, cash - total_eval × 0.30) — 항상 30% 보유
 9. **split_cash 70% 분배** — `SAJANG.BUDGET_MODE = 'split_cash'`
-10. **사장님 매수 보호** — `SAJANG.SYNC_AUTO_SOURCE = 'manual_president'`
-    - source='manual_president' = TP=0 / mode=swing / 단타봇 트레일링 핸들링 OK
+10. **사장님 매수 보호** — `SAJANG.SYNC_AUTO_SOURCE = 'sync_auto_unknown'`
+    - source='sync_auto_unknown' = TP=0 / mode=swing / 단타봇 트레일링 핸들링 OK
+    - ★ **8/5 정정**: 이 문서는 `'manual_president'`로 적혀 있었으나 그 값은
+      **5/27 08:15 사장님 명령으로 폐기**됐다(*"내가 산게 뭔데 니가 다 샀는데 진짜
+      니가 다 진행을 해야지"*). 추정 라벨은 단타봇 매수를 사장님 책임으로 떠넘기는 것이라
+      금지. 정본 `data/sajang_rules.py:108`은 처음부터 `sync_auto_unknown`이었고,
+      **문서만 70일간 폐기된 값을 영구 룰로 선언**하고 있었다 — CLAUDE.md는 매 세션
+      자동 로드되므로 그동안 모든 세션이 틀린 룰을 먼저 읽었다.
 
 ### 안전 룰
 - **매매 전 KIS 실제 계좌 조회 의무** (`feedback_account_first_principle`)

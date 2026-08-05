@@ -22,6 +22,7 @@ import argparse
 import json
 import statistics
 import sys
+from datetime import date
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent.parent      # scalper-agent/
@@ -33,8 +34,26 @@ except Exception:
     pass
 
 # 신호 강도 순서(강 → 약). 정방향이라면 이 순서로 수익이 단조 감소해야 한다.
-STATUS_ORDER = ["HOT", "RELAY", "WARMING", "COOLING"]
+# ★8/5 전체검수 — "COLD"가 빠져 있어 ①에서 조용히 누락됐다(대조군 ②엔 포함).
+STATUS_ORDER = ["HOT", "RELAY", "WARMING", "COOLING", "COLD"]
 MIN_BUCKET_N = 10          # 이보다 작은 버킷은 방향성 근거로 쓰지 않는다(7/27 소표본 교훈)
+
+# ★8/5 전체검수 HIGH — **측정 불가가 '미달'로 변환되는 통로를 막는다.**
+#   기존 판정식 `ok = mono_fwd and (lift or 0) > 0 and ...`은 산출 불가(None)를
+#   전부 False로 접어 넣어 **항상 폐기 쪽으로 기우는 비관 편향**이었다. S-1 경로엔
+#   MIN_JUDGE_N 가드가 있는데(observe_v2_paper.py:358·strategy_deadline_check.py:78)
+#   S-6 경로에만 없었다. 상수는 정본에서 import한다(로컬 복제 금지·[F-37] 교훈).
+try:
+    sys.path.insert(0, str(BASE / "tools"))
+    from observe_v2_paper import MIN_JUDGE_N      # noqa: E402
+except Exception:                                  # pragma: no cover
+    MIN_JUDGE_N = 10
+
+# 로컬 노트북은 VPS 미러인데 shadow/paper는 **의도적 sync 제외**다
+# (sync_from_vps.py:111 · 6/10 결정 "판정은 VPS에서 직접"). 그 결과 노트북엔
+# 낡은 사본이 남아 있고, 그걸 모르고 여기서 돌리면 **틀린 판정이 나온다**
+# (8/5 실증: 로컬 5건/6-10 vs VPS 168건/8-04). 신선도를 판정 전에 본다.
+STALE_DAYS_MAX = 5
 
 
 def _agg(rows, key):
@@ -60,6 +79,15 @@ def main() -> int:
     if not rec:
         print("[S-6] 레코드 0건 — 판정 불가")
         return 0
+
+    # 장부 신선도 — 로컬 낡은 사본으로 판정하는 사고를 막는다(위 STALE_DAYS_MAX 주석)
+    _stale_days = None
+    try:
+        _u = str(doc.get("updated_at") or "")[:10]
+        if _u:
+            _stale_days = (date.today() - date.fromisoformat(_u)).days
+    except Exception:  # noqa: BLE001 — 신선도 판독 실패가 판정을 막지는 않는다
+        _stale_days = None
 
     days = sorted({x.get("date") for x in rec if x.get("date")})
     n_all, mean_all, med_all = _agg(rec, H)
@@ -113,8 +141,31 @@ def main() -> int:
     wr = 100 * sum(1 for x in v if x > 0) / len(v) if v else 0
     print(f"④ 승률({H} > 0): {sum(1 for x in v if x > 0)}/{len(v)} = {wr:.1f}%")
     print()
-    ok = mono_fwd and (lift or 0) > 0 and bool(ex) and statistics.mean(ex) > 0
+    # ── ★판정 가능 여부를 먼저 확정한다 (측정 불가 ≠ 미달) ──
+    blockers = []
+    if n_all < MIN_JUDGE_N:
+        blockers.append(f"{H} 충전 표본 {n_all}건 < {MIN_JUDGE_N}건")
+    if len(means) < 3:
+        blockers.append(f"유효 등급 버킷 {len(means)}개 < 3개 (단조성 산출 불가)")
+    if lift is None:
+        blockers.append("대조군 리프트 산출 불가(선정/비선정 한쪽이 0건)")
+    if not ex:
+        blockers.append("초과수익 표본 0건")
+    if _stale_days is not None and _stale_days > STALE_DAYS_MAX:
+        blockers.append(f"장부가 {_stale_days}일 낡음(updated_at {doc.get('updated_at')}) "
+                        f"— 로컬 미러일 가능성. VPS 원본으로 재실행할 것")
+
     print("=" * 66)
+    if blockers:
+        # ★여기서 '미달'을 출력하면 안 된다. 못 잰 것을 못 잰다고 말해야 한다.
+        print("판정: ⏸ **판정 불가** — 측정 불가는 미달이 아니다")
+        for b in blockers:
+            print(f"   · {b}")
+        print("→ on_fail 상신하지 않음. 증거 보강 후 재실행 (자동 폐기 없음·결정은 사장님)")
+        print("=" * 66)
+        return 0
+
+    ok = mono_fwd and (lift or 0) > 0 and bool(ex) and statistics.mean(ex) > 0
     print(f"판정: {'✅ 충족' if ok else '❌ 미달'}  "
           f"(전체 평균 {mean_all:+.2f}%p · 승률 {wr:.1f}%)")
     if not ok:
