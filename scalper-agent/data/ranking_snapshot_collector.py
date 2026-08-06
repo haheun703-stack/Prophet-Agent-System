@@ -88,6 +88,12 @@ def collect_ranking_snapshots(top_n: int = 50) -> dict:
     trader = KISTrader()
 
     saved = {}
+    # ★8/6 [F-53] — `saved[kind] = 0`이 **세 가지 다른 상태**를 한 값으로 뭉개고 있었다:
+    #   ① 장외라 데이터가 없음(night_futures·정상)  ② 예외로 수집 실패(이상)
+    #   ③ 예외는 없는데 0행 반환(응답은 왔으나 비었음 — 조용한 실패 후보)
+    # 그 결과 6종이 **전멸해도** `{"status": "ok"}`가 반환되고 nightly 로그엔 성공으로 남았다.
+    # 수집 동작은 손대지 않고 **상태만 정직하게** 나눈다(7/20 "성공 카운트≠성공 증거").
+    state = {}          # kind -> "ok" | "failed" | "skipped" | "empty"
 
     def _ranked(kind, fetch_fn):
         try:
@@ -95,9 +101,14 @@ def collect_ranking_snapshots(top_n: int = 50) -> dict:
             for i, r in enumerate(rows):
                 r["rank"] = i + 1
             saved[kind] = _append_snapshot(kind, rows, today)
+            # 0행은 예외가 아니지만 정상도 아니다 — 순위 API가 빈 배열을 주는 날은 없다.
+            state[kind] = "ok" if saved[kind] > 0 else "empty"
+            if state[kind] == "empty":
+                logger.warning(f"[RANKSNAP] {kind} 0행 — 예외는 없으나 빈 응답(조용한 실패 의심)")
         except Exception as e:  # noqa: BLE001 — 종류별 격리
             logger.error(f"[RANKSNAP] {kind} 실패: {e}")
             saved[kind] = 0
+            state[kind] = "failed"
         time.sleep(SLEEP_SEC)
 
     # 1~4) 단순 순위형 (등락률 / 거래량 / 체결강도 / 상하한가)
@@ -119,25 +130,52 @@ def collect_ranking_snapshots(top_n: int = 50) -> dict:
         saved["foreign_inst"] = _append_snapshot(
             "foreign_inst", all_rows, today, dedup_extra=["category", "code"]
         )
+        state["foreign_inst"] = "ok" if saved["foreign_inst"] > 0 else "empty"
     except Exception as e:  # noqa: BLE001
         logger.error(f"[RANKSNAP] foreign_inst 실패: {e}")
         saved["foreign_inst"] = 0
+        state["foreign_inst"] = "failed"
 
     # 6) KOSPI200 야간선물 (dict 1개 → 1행/일, 장외시간이면 skip)
+    # ★[F-53] 여기가 뭉개짐의 원점이었다 — **장외(정상)와 실패(이상)가 둘 다 0**이었다.
+    #   `night_futures.csv`는 7/28 이후 **상시 미생산**인데 그게 "매일 장외라 정상"인지
+    #   "매일 실패인데 조용한 것"인지 구분할 근거가 로그 한 줄뿐이었다.
     try:
         nf = trader.fetch_night_futures_price()
         if nf and nf.get("available"):
             saved["night_futures"] = _append_snapshot("night_futures", [nf], today)
+            state["night_futures"] = "ok" if saved["night_futures"] > 0 else "empty"
         else:
             reason = nf.get("reason", "none") if nf else "none"
             logger.info(f"[RANKSNAP] night_futures 장외/없음: {reason}")
             saved["night_futures"] = 0
+            state["night_futures"] = "skipped"          # ★정상 — 실패와 구분
+            state["night_futures_reason"] = str(reason)
     except Exception as e:  # noqa: BLE001
         logger.error(f"[RANKSNAP] night_futures 실패: {e}")
         saved["night_futures"] = 0
+        state["night_futures"] = "failed"
 
-    logger.info(f"[RANKSNAP] 완료 {today}: {saved}")
-    return {"status": "ok", "date": today, "saved": saved}
+    failed = [k for k, v in state.items() if v == "failed"]
+    empty = [k for k, v in state.items() if v == "empty"]
+    # 수집 대상(장외 skip 제외) 중 하나도 못 담았으면 전멸이다.
+    attempted = [k for k, v in state.items() if v in ("ok", "failed", "empty")]
+    got = [k for k, v in state.items() if v == "ok"]
+    if not got and attempted:
+        status = "failed"
+    elif failed or empty:
+        status = "partial"
+    else:
+        status = "ok"
+
+    if status == "ok":
+        logger.info(f"[RANKSNAP] 완료 {today}: {saved}")
+    else:
+        # ★status가 로그 본문에 문자열로 남아야 nightly.log를 읽는 쪽이 알 수 있다.
+        logger.error(f"[RANKSNAP] status={status} {today}: 실패 {failed or '-'} · "
+                     f"빈응답 {empty or '-'} · saved={saved}")
+    return {"status": status, "date": today, "saved": saved, "state": state,
+            "failed": failed, "empty": empty}
 
 
 if __name__ == "__main__":
@@ -146,3 +184,8 @@ if __name__ == "__main__":
     )
     result = collect_ranking_snapshots()
     print(result)
+    # ★[F-53] 전멸(=하나도 못 담음)일 때만 비정상 종료. 부분 실패·장외 skip은 exit 0 —
+    #   nightly 한 스텝이 파이프라인 전체를 죽이지 않게(종류별 격리 원칙 유지).
+    #   ※ 현재 nightly는 이 모듈을 `-c` 인라인으로 호출해 이 종료코드를 보지 않는다.
+    #     `-m` 호출로 바꾸는 것은 상주 파이프라인 변경이라 관측 1회 후 별건으로 처리.
+    sys.exit(1 if result.get("status") == "failed" else 0)
