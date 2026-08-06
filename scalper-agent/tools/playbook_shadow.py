@@ -112,11 +112,19 @@ def ticks_health(day: str):
         step = max(1, len(files) // TICKS_HEALTH_SAMPLE)
         sample = files[::step][:TICKS_HEALTH_SAMPLE]
         usable = 0
+        live = 0
         last_times = []
         for f in sample:
             rows = _read_ticks(day, f.stem)
             if len(rows) >= TICKS_MIN_ROWS:
                 usable += 1
+            # [F-123] 행 생존성 — usable은 '행이 있고 price>0'만 보므로 **거래정지 종목의
+            # 박제 행**(price=전일종가 고정·change 0·strength 0·volume 0)을 정상으로 센다.
+            # 8/6 실측: 8/5 2,527파일 중 40건(1.6%)이 이 상태였고 39건이 daily 결손과 대응.
+            # 진단용 병기일 뿐 **verdict 판정식은 건드리지 않는다** — 유효일이 바뀌면
+            # 스코어보드가 움직이고, 그건 발견이 아니라 사고다([F-101] 규약 동일).
+            if any(st > 0 or cr != 0 for _, _, cr, st in rows):
+                live += 1
             if rows:
                 last_times.append(rows[-1][0])   # 마지막 관측 시각
         pct = round(100 * usable / len(sample), 1)
@@ -146,6 +154,9 @@ def ticks_health(day: str):
         return {"sample": len(sample), "usable_pct": pct, "last_med": last_med,
                 "files": len(files),
                 "file_cov_pct": round(cov * 100, 1) if cov is not None else None,
+                # [F-123] 진단 전용(판정 미반영) — 표본 중 '움직인' 종목 비율.
+                # usable_pct와 벌어지는 폭 ≈ 정지 종목 박제 비중.
+                "live_pct": round(100 * live / len(sample), 1),
                 "verdict": verdict}
     except Exception:  # noqa: BLE001
         return None

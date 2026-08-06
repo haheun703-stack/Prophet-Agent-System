@@ -21,6 +21,9 @@ from pathlib import Path
 # ─── 설정 ───────────────────────────────────────────
 SCALPER_DIR = "scalper-agent"
 
+# RULE-002 skip 고지는 커밋당 1회만 (파일마다 찍으면 소음 — 8/6 [F-118])
+_PYFLAKES_SKIP_WARNED = False
+
 # 검사 제외 파일 패턴
 EXCLUDE_PATTERNS = [
     "_tmp_",
@@ -323,17 +326,33 @@ def check_undefined_names(filepath: str) -> list[dict]:
 
     교훈: **'가드가 쓰여 있는가'만 보는 규칙으로는 '가드가 동작하는가'를 못 잡는다.**
     이름 존재 검사(pyflakes)가 가장 확실한 재발 차단이다(전 저장소 12초).
-    pyflakes 부재 환경에선 조용히 skip — 커밋을 막지 않는다.
+    pyflakes 부재 환경에선 skip — 커밋을 막지 않는다.
+
+    ★8/6 [F-118] — skip을 **말하게** 했다. 이전엔 조용히 `[]`를 반환해서, 다른
+    인터프리터로 커밋하면 RULE-002가 통째로 꺼진 채 `[pre-commit] 검수 통과 ✓`가
+    찍혔다. 이 규칙은 66일간 미구현이었던 사실 자체가 7/31 P0였는데, 구현 후에도
+    "돌았는지"를 아무도 못 보는 상태면 같은 자리로 되돌아간다.
+    ★차단이 아니라 고지다 — pyflakes 부재로 커밋을 막으면 환경 하나 때문에 작업이
+    멈춘다. 대신 **꺼졌다는 사실이 화면에 남는다.** 파일마다 찍히면 소음이라 1회만.
     """
+    def _warn_skip(why: str) -> list:
+        global _PYFLAKES_SKIP_WARNED
+        if not _PYFLAKES_SKIP_WARNED:
+            _PYFLAKES_SKIP_WARNED = True
+            print(f"[pre-commit] ⚠️ RULE-002(미정의 이름) 미실행 — {why}\n"
+                  f"             → 이 커밋은 NameError 자동 차단 없이 통과합니다"
+                  f" (설치: {sys.executable} -m pip install pyflakes)")
+        return []
+
     try:
         r = subprocess.run(
             [sys.executable, "-m", "pyflakes", filepath],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
         )
-    except Exception:
-        return []
+    except Exception as e:  # noqa: BLE001 — 실행 실패도 '검사 안 됨'이다
+        return _warn_skip(f"pyflakes 실행 실패({type(e).__name__})")
     if "No module named" in (r.stderr or ""):
-        return []
+        return _warn_skip("pyflakes 미설치")
     out = []
     for ln in (r.stdout or "").splitlines():
         if "undefined name" not in ln:

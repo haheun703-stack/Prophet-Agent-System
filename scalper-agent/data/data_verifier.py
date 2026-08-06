@@ -80,7 +80,14 @@ def _load_universe_codes(n: int = 10) -> List[str]:
 def _load_active_codes(n: int, today: str, max_scan: int = 300) -> List[str]:
     """오늘 거래된 활성 종목(daily 꼬리 5행에 today 행 존재)만 n개 랜덤 반환.
 
-    상폐·거래정지 종목은 daily·investor·short 3채널이 동반 정지(KIS 미제공=정상)라
+    ★8/5 [F-88] 정정 — 아래 "3채널 동반 정지"는 **사실이 아니다**. 실측(8/4 daily
+    결손 41종)에서 **37종(90%)이 daily만 정지하고 investor·short는 계속 기록**한다
+    (011000: daily 6/24 정지 → investor·short 8/4까지 = 6주 격차). 즉 **정지 판별이
+    성립하는 채널은 daily 단독**이고, 수급·공매도의 "99.8%"는 정지 종목의 동결 행을
+    성공으로 집계한 값이다(활성 분모로 보면 100.00%). 이 함수의 동작은 daily만 보므로
+    **의도대로 맞다** — 틀렸던 것은 그 이유를 설명하는 이 문장이었다.
+
+    상폐·거래정지 종목은 daily가 정지(KIS 미제공=정상)라
     universe.json(6/22 박제)에 남아 있어도 daily가 stale → 여기서 자동 제외된다.
     이로써 투자자 수급 검증이 죽은 종목을 밟아 뜨던 랜덤 PARTIAL 오탐을 원천 차단(7/13 사장님 지시).
     반대로 daily는 today인데 investor만 stale인 '진짜 수집 실패'는 여전히 표본에 포함돼 잡힌다.
