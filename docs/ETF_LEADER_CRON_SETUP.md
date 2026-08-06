@@ -1,7 +1,24 @@
-# ETF 주도주 자동 갱신 — VPS cron 등록 안내
+> # 🚫 폐기 문서 — 따라하지 마십시오 (2026-08-06 [F-117])
+>
+> **이 안내서대로 하면 사장님 절대 룰(KRX 무접촉)을 위반합니다.**
+>
+> | 항목 | 현재 상태 |
+> |---|---|
+> | 대상 스크립트 `tools/refresh_etf_leaders.py` | **7/1 삭제됨**(a1560fe) — 저장소에 없음 |
+> | VPS cron(토요일 갱신) | **7/30 제거됨** — 그전까지 매주 `No such file`로 실패 중이었음 |
+> | Step B의 KRX 수집 | **6/22 전역 kill switch** — 사장님 절대 룰(KRX는 퀀트봇 1봇 전담) |
+> | 소비자 `utils/etf_leader_bonus.py` | 살아 있으나 신선도 가드로 **항상 가산 0**(매매 무해) |
+>
+> 즉 **복구 자체가 룰 위반**이라, 되살릴 수 있는 경로가 없습니다.
+> 아래 본문은 삭제하지 않고 **이력으로만** 남깁니다(7/7 교훈 — 삭제 대신 격리·명시).
+> `etf_leader_sc` 가산항을 선정 로직에서 완전히 걷어낼지는 **사장님 결정** 사항입니다.
+
+---
+
+# ETF 주도주 자동 갱신 — VPS cron 등록 안내 <sub>(폐기·이력 보존용)</sub>
 
 ETF Step A→B→C 체인을 VPS에서 자동으로 주기적으로 실행하는 안내서.
-스크립트: `scalper-agent/tools/refresh_etf_leaders.py`
+스크립트: `scalper-agent/tools/refresh_etf_leaders.py` — **★현재 존재하지 않음(7/1 삭제)**
 
 ## 1. 사전 점검 (1회)
 
@@ -36,8 +53,11 @@ crontab -e
 
 다음 라인 추가 (KST 시각 그대로):
 
+> 🚫 **이 cron을 등록하지 마십시오** — 스크립트는 7/1 삭제됐고(등록해도 매주 `No such file`),
+> 살아 있더라도 Step B가 KRX를 수집하므로 **사장님 절대 룰 위반**입니다. 7/30에 제거된 라인입니다.
+
 ```cron
-# ETF 주도주 자동 갱신 — 매주 토요일 자정 KST
+# [폐기·등록 금지] ETF 주도주 자동 갱신 — 매주 토요일 자정 KST
 0 0 * * 6 cd /home/ubuntu/bodyhunter && /home/ubuntu/bodyhunter/venv/bin/python scalper-agent/tools/refresh_etf_leaders.py --quiet >> logs/etf_leader.log 2>&1
 ```
 

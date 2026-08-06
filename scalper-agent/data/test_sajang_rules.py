@@ -227,28 +227,16 @@ if __name__ == "__main__":
     print("=" * 70)
     print("★ 사장님 영구 룰 Rule Registry 단위 테스트 ★")
     print("=" * 70)
-    tests = [
-        test_registry_exists,
-        test_fixed_tp_disabled,
-        test_pullback_entry,
-        test_trailing_3pct,
-        test_rule_3_limit_up,
-        test_rule_b_10pct,
-        test_rule_c_d1_gap,
-        test_rule_d_pre_close,
-        test_sync_auto_unknown_source,
-        test_normal_sl_3pct,
-        test_budget_mode_split_cash,
-        test_cash_reserve_30pct,
-        test_can_buy_30pct_rule,
-        test_calc_budget_per_stock_30pct,
-        test_cash_reserve_zero_total_eval,
-        test_cash_reserve_violation_blocks_buy,
-        test_position_safety_uses_sync_auto_unknown,
-        test_pre_commit_has_rule_005_006_007,
-        test_auto_trader_l4083_disabled,
-        test_asset_pool_tp_force_zero,
-    ]
+    # ★8/6 [F-124-2] 손목록 → 자동 발견. 이전 목록은 21개 중 **20개만** 적혀 있었고
+    # 빠진 하나가 하필 `test_morning_auto_buy_disabled`
+    # (5/27 사장님 *"9시 장시작하자 마자 매수를 했잖아"* 사고의 영구 차단 검증)였다.
+    # 분모가 '실행한 개수'라 `20/20 PASS`로 나와 **룰 하나가 검증에서 빠진 사실이
+    # 100% 초록불에 가려졌다** — 7/20 *"성공 카운트 ≠ 성공 증거"*와 같은 형태.
+    # 사장님 영구 룰 테스트에서 특히 위험하다: 룰을 추가하고 목록에 안 적으면
+    # 그 룰은 조용히 무검증이 된다. 목록을 없애서 그 통로 자체를 닫는다.
+    import inspect
+    tests = [fn for name, fn in sorted(globals().items())
+             if name.startswith("test_") and inspect.isfunction(fn)]
     passed, failed = 0, 0
     for t in tests:
         try:
@@ -261,5 +249,6 @@ if __name__ == "__main__":
             failed += 1
             print(f"[ERROR] {t.__name__}: {type(e).__name__}: {e}")
     print("=" * 70)
-    print(f"결과: {passed}/{passed + failed} PASS, {failed} FAIL")
-    sys.exit(0 if failed == 0 else 1)
+    # 분모 = 발견한 개수(실행한 개수가 아니라) — 누락이 100%로 위장되지 않게
+    print(f"결과: {passed}/{len(tests)} PASS, {failed} FAIL (발견 {len(tests)}건)")
+    sys.exit(0 if failed == 0 and passed == len(tests) else 1)

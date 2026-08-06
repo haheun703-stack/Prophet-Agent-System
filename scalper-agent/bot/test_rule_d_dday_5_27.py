@@ -81,21 +81,32 @@ def test_watchlist_signal_close_price_alias(tmp_path):
 
 
 if __name__ == "__main__":
-    tests = [
-        test_dday_d0_buy,
-        test_dday_d3_block,
-        test_cumulative_20pct_block,
-        test_d1_within_5pct_pass,
-    ]
+    # ★8/6 [F-124-2] 자동 발견으로 교체 — 이전엔 테스트 5개 중 **4개만 손으로 적은
+    # 목록**을 돌리고 `RESULT: 4/4 PASS`를 찍었다. 빠진 하나
+    # (`test_watchlist_signal_close_price_alias`)는 pytest `tmp_path` 픽스처를 써서
+    # 목록에 넣기 번거로웠던 것이고, 이 저장소엔 pytest가 없어([F-119]) **어떤 경로로도
+    # 실행되지 않는 테스트**였다. 분모가 실행한 개수라 100%가 나오는 구조 —
+    # 7/20 *"성공 카운트 ≠ 성공 증거"*와 정확히 같은 형태다.
+    # 손으로 관리하는 목록은 언젠가 반드시 갈린다 → 모듈에서 직접 수집한다.
+    import inspect
+    import tempfile
+
+    tests = [fn for name, fn in sorted(globals().items())
+             if name.startswith("test_") and inspect.isfunction(fn)]
     passed = 0
     failed = 0
     for test in tests:
         try:
-            test()
+            kwargs = {}
+            # pytest 없이도 픽스처 요구를 충족시킨다(현재는 tmp_path 하나뿐).
+            if "tmp_path" in inspect.signature(test).parameters:
+                kwargs["tmp_path"] = Path(tempfile.mkdtemp(prefix="ruled_"))
+            test(**kwargs)
             print(f"[PASS] {test.__name__}")
             passed += 1
         except Exception as exc:
             print(f"[FAIL] {test.__name__}: {exc}")
             failed += 1
-    print(f"RESULT: {passed}/{passed + failed} PASS")
-    sys.exit(0 if failed == 0 else 1)
+    # 분모는 '발견한 개수' — 실행한 개수를 분모로 쓰면 누락이 100%로 위장된다.
+    print(f"RESULT: {passed}/{len(tests)} PASS (발견 {len(tests)}건)")
+    sys.exit(0 if failed == 0 and passed == len(tests) else 1)
