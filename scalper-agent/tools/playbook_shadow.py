@@ -96,12 +96,53 @@ TICKS_FILE_COV_BROKEN = 0.50    # 유니버스 대비 파일 커버리지 — �
 TICKS_FILE_COV_TRUNC = 0.90     # 부분 결손(판정 표본이 한쪽으로 기움)
 
 
-def ticks_health(day: str):
+def _count_live_files(files: list) -> int:
+    """[F-123] 그날 '실제로 움직인' 종목 파일 수 — 전수·단축평가.
+
+    박제(거래정지) 파일은 전 행이 `price=전일종가 고정 / change_rate 0 / strength 0`이라
+    `usable`(행 존재 + price>0)에는 정상으로 잡힌다. 살아있는 종목은 대개 **첫 행에서
+    즉시 확정**되고 박제 파일만 끝까지 읽으므로 전수인데도 2,527파일 ≈ 1.9초다(VPS 실측).
+
+    `_read_ticks`를 쓰지 않는 이유: 그건 전 행을 담고 정렬까지 하는데, 여기 필요한 건
+    "움직인 행이 하나라도 있는가" 뿐이다.
+    """
+    live = 0
+    for p in files:
+        try:
+            with p.open(encoding="utf-8") as f:
+                for row in csv.DictReader(f):
+                    try:
+                        if (float(row.get("strength") or 0) > 0
+                                or float(row.get("change_rate") or 0) != 0):
+                            live += 1
+                            break
+                    except (ValueError, TypeError):
+                        continue
+        except Exception:  # noqa: BLE001 — 판독 실패 파일은 '살아있음'으로 세지 않는다
+            continue
+    return live
+
+
+def ticks_health(day: str, deep: bool = False):
     """그날 ticks가 체결/청산 시뮬에 쓸 수 있는 상태인지 — ★단일진실★.
 
     verdict: OK=정상 / BROKEN=전면 장애(파일 미생성·usable<50%) /
              TRUNCATED=오후 결손(usable는 높아도 마지막관측 중앙값이 이른 날·F-16).
     BROKEN·TRUNCATED = 판정 증거에서 제외해야 하는 날. 실패 시 None(판정 보류).
+
+    ★8/6 [F-123] `deep=True`면 행 생존성(`live_files`/`live_pct`/`frozen_files`)을
+    **전수**로 덧붙인다. verdict 판정식은 deep 여부와 무관하게 동일 — 유효일이 바뀌면
+    스코어보드가 움직이고 그건 발견이 아니라 사고다([F-101] 규약).
+
+    ★왜 표본이 아니라 전수인가 (오늘 내가 한 번 틀린 자리)
+      처음엔 기존 40개 표본에 얹었는데, 박제 비중이 **1.6%**라 1/40=**2.5%p 눈금**으로는
+      원리적으로 안 보인다 — 최근 전 일자가 `live 100.0`으로 나와 *"박제 0"*으로 읽혔다.
+      해상도보다 작은 효과는 그 해상도로 못 잰다([F-20] 교훈의 재발). 그래서 전수로 갔다.
+    ★왜 기본값이 False인가
+      `f21/f83/f86/f87/r1/r4/r5` 백테스트와 `observe_v2_paper`가 이 함수를 **90여 일
+      루프**로 호출한다. 전수 스캔이 기본이면 도구마다 ~3분이 얹힌다. 진단이 필요한
+      쪽(`verify_channels`)만 켠다. **켜지 않으면 값을 내지 않는다** — 못 잰 것을
+      잰 것처럼 보이는 숫자를 두지 않기 위해서다.
     """
     try:
         d = TICKS / day
@@ -112,19 +153,11 @@ def ticks_health(day: str):
         step = max(1, len(files) // TICKS_HEALTH_SAMPLE)
         sample = files[::step][:TICKS_HEALTH_SAMPLE]
         usable = 0
-        live = 0
         last_times = []
         for f in sample:
             rows = _read_ticks(day, f.stem)
             if len(rows) >= TICKS_MIN_ROWS:
                 usable += 1
-            # [F-123] 행 생존성 — usable은 '행이 있고 price>0'만 보므로 **거래정지 종목의
-            # 박제 행**(price=전일종가 고정·change 0·strength 0·volume 0)을 정상으로 센다.
-            # 8/6 실측: 8/5 2,527파일 중 40건(1.6%)이 이 상태였고 39건이 daily 결손과 대응.
-            # 진단용 병기일 뿐 **verdict 판정식은 건드리지 않는다** — 유효일이 바뀌면
-            # 스코어보드가 움직이고, 그건 발견이 아니라 사고다([F-101] 규약 동일).
-            if any(st > 0 or cr != 0 for _, _, cr, st in rows):
-                live += 1
             if rows:
                 last_times.append(rows[-1][0])   # 마지막 관측 시각
         pct = round(100 * usable / len(sample), 1)
@@ -151,13 +184,16 @@ def ticks_health(day: str):
             verdict = "TRUNCATED"
         else:
             verdict = "OK"
-        return {"sample": len(sample), "usable_pct": pct, "last_med": last_med,
-                "files": len(files),
-                "file_cov_pct": round(cov * 100, 1) if cov is not None else None,
-                # [F-123] 진단 전용(판정 미반영) — 표본 중 '움직인' 종목 비율.
-                # usable_pct와 벌어지는 폭 ≈ 정지 종목 박제 비중.
-                "live_pct": round(100 * live / len(sample), 1),
-                "verdict": verdict}
+        out = {"sample": len(sample), "usable_pct": pct, "last_med": last_med,
+               "files": len(files),
+               "file_cov_pct": round(cov * 100, 1) if cov is not None else None,
+               "verdict": verdict}
+        if deep:
+            live = _count_live_files(files)
+            out["live_files"] = live
+            out["live_pct"] = round(100 * live / len(files), 2)
+            out["frozen_files"] = len(files) - live
+        return out
     except Exception:  # noqa: BLE001
         return None
 

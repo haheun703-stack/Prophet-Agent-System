@@ -275,7 +275,9 @@ def census_ticks(d: str) -> Dict:
 
     try:
         import tools.playbook_shadow as pb   # 정본 위임
-        h = pb.ticks_health(ymd)
+        # deep=True — 이 도구는 진단용(하루 1일치)이라 전수 생존성 스캔(~2초)을 켠다.
+        # 백테스트류는 90여 일 루프라 기본값 False 유지([F-123]).
+        h = pb.ticks_health(ymd, deep=True)
         res["health"] = h
         if h and h.get("usable_pct") is not None:
             res["agree"] = abs(float(h["usable_pct"]) - res["pct"]) <= 1.0
@@ -339,6 +341,12 @@ def run(d: str, codes: List[str]) -> Dict:
         agree = "일치" if tk["agree"] else "★불일치 — 정본을 신뢰할 것"
         print(f"⑧ 장중틱            {tk['files']}파일 {tk['rows']:,}행 · 전수 price>0 {tk['pct']:.2f}% "
               f"| 정본 ticks_health {hv}% ({(tk['health'] or {}).get('verdict')}) → {agree}")
+        _h = tk["health"] or {}
+        if _h.get("live_files") is not None:
+            # [F-123] price>0 100%는 정지종목 박제를 정상으로 센다 — '움직인 종목'을 병기.
+            print(f"⑧-2 틱 생존성       살아있음 {_h['live_files']}/{tk['files']} "
+                  f"({_h['live_pct']:.2f}%) · 박제(정지 추정) {_h['frozen_files']}건 "
+                  f"— 판정 미반영·진단 전용")
 
     print()
     return {"daily": dly, "investor": inv, "ticks": tk}
