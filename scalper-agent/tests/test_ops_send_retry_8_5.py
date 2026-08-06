@@ -179,6 +179,97 @@ def test_legacy_marker_migration():
           ops.pending_unsent(log("lg4.log",
                                  HDR.format(d="2026-08-04"), legacy_sent,
                                  HDR.format(d="2026-08-05"), body)), ["2026-08-05"])
+    # ★8/6 — 신규 마커도 접두 규칙: 본문 echo(줄머리가 [ops]가 아님)는 마커가 아니다.
+    #   A5/A9가 타 로그 원문을 본문에 실어 나르므로 이 통로가 열려 있으면
+    #   진짜 실패가 가짜 성공 echo에 지워질 수 있다(8/5 리네임과 같은 계열).
+    check("★본문 echo의 신마커는 무시(접두 규칙)",
+          ops.pending_unsent(log("lg5.log",
+                                 HDR.format(d="2026-08-03"), FAIL,
+                                 f"✅ A5 대조 — 원문 echo에 {ops.MARK_SENT} 포함")),
+          ["2026-08-03"])
+
+
+def _run_main_flow(seed_lines, argv_date="2026-08-06"):
+    """main()을 cron 배선 그대로 통과시킨다 — stdout이 자기 로그로 즉시(`-u`) 흘러드는 조건.
+
+    8/6 실전 재현 장치: 헤더 print가 pending_unsent의 읽기보다 **먼저 파일에 닿는**
+    환경을 만들어야 순서 버그가 드러난다. 단위 픽스처만으론 이 층이 안 보였다
+    (8/5 테스트 22건 전건 PASS였는데 첫 실전에서 거짓 병기가 나간 이유).
+    """
+    tmp = TMP / f"mainflow_{len(_fails)}_{_total}"
+    tmp.mkdir(parents=True, exist_ok=True)
+    selflog = tmp / ops.SELF_LOG
+    selflog.write_text("\n".join(seed_lines) + "\n", encoding="utf-8")
+    sent_msgs = []
+    orig = (ops.LOGS_DIR, ops.run_checks, ops.build_message, ops._send_telegram,
+            sys.argv, sys.stdout)
+    fh = None
+    try:
+        # ★패치·open 모두 try 안 — open 실패 시에도 finally가 전부 복원한다(Tier1 L-1)
+        ops.LOGS_DIR = tmp
+        ops.run_checks = lambda ref: ([], "", [])
+        ops.build_message = lambda ref, rows, score, dl: "본문"
+        ops._send_telegram = lambda m: (sent_msgs.append(m), 0)[1]
+        sys.argv = ["daily_ops_check.py", "--date", argv_date]
+        fh = open(selflog, "a", encoding="utf-8", buffering=1)  # cron `>>` + `-u` 라인 플러시
+        sys.stdout = fh
+        rc = ops.main()
+    finally:
+        sys.stdout = orig[5]
+        if fh is not None:
+            fh.close()
+        (ops.LOGS_DIR, ops.run_checks, ops.build_message, ops._send_telegram,
+         sys.argv) = orig[:5]
+    return rc, (sent_msgs[0] if sent_msgs else "")
+
+
+def test_selfref_own_header():
+    """★[F-89 잔여·8/6] — 자기 헤더를 '죽은 블록'으로 오집계하면 안 된다."""
+    print("■ 자기 헤더 오집계 방지 (8/6 실전 재현)")
+    # 8/6 실전 그대로: 성공 이력만 있는 로그 → 병기가 붙으면 안 된다
+    rc, msg = _run_main_flow([HDR.format(d="2026-08-05"), SENT])
+    check("★성공 이력만 → 거짓 미수신 병기 없음", "미수신" in msg, False)
+    check("exit 0", rc, 0)
+    # 검출력 증명(음성 대조) — 진짜 죽은 이전 블록은 순서 fix 후에도 잡혀야 한다
+    rc2, msg2 = _run_main_flow([HDR.format(d="2026-08-04"), SENT,
+                                HDR.format(d="2026-08-05"), "본문만 있고 끝"])
+    check("★진짜 죽은 블록은 여전히 병기", "지난 1회 미수신(2026-08-05)" in msg2, True)
+
+
+def test_heartbeat_marker_contract():
+    """★8/6 Tier1 HIGH — 20:10 하트비트가 8/5 신마커를 알아봐야 한다.
+
+    8/5 마커 리네임 후 notify_data_freshness._morning_ops_heartbeat만 옛 문구
+    ("발송 완료")를 보고 있었다 = 성공한 날에도 매일 ⚠️, 실패해도 같은 ⚠️(구분 불능
+    — '감시자를 감시하는' 계층이 조용히 죽은 상태). 마커 상수 단일진실은
+    daily_ops_check 파일 경계 밖 소비자까지 적용돼야 한다.
+    """
+    print("■ 20:10 하트비트 ↔ 마커 단일진실")
+    import notify_data_freshness as ndf
+    d = "2026-08-06"
+    hbdir = TMP / "hb"
+    (hbdir / "logs").mkdir(parents=True, exist_ok=True)
+    logp = hbdir / "logs" / "daily_ops_check.log"
+    orig_base = ndf.BASE_DIR
+    ndf.BASE_DIR = hbdir / "scalper-agent"    # 하트비트는 BASE_DIR.parent/logs를 읽는다
+    try:
+        logp.write_text(HDR.format(d=d) + "\n"
+                        + f"[ops] === {d} 08:30:03 {ops.MARK_SENT} ===\n", encoding="utf-8")
+        check("★신마커 성공 인식", ndf._morning_ops_heartbeat(d),
+              "✅ 아침점검(08:30) 실행·발송")
+        logp.write_text(HDR.format(d=d) + "\n"
+                        + f"[ops] === {d} 08:30:03 텔레그램 발송 완료 ===\n", encoding="utf-8")
+        check("옛 마커도 여전히 성공 인식", ndf._morning_ops_heartbeat(d),
+              "✅ 아침점검(08:30) 실행·발송")
+        logp.write_text(HDR.format(d=d) + "\n[ops] " + ops.MARK_FAILED + " — 재시도 소진\n",
+                        encoding="utf-8")
+        check("실패 마커 → ⚠️ 발송 미확인", ndf._morning_ops_heartbeat(d),
+              "⚠️ 아침점검(08:30) 실행됐으나 발송 미확인")
+        logp.write_text(HDR.format(d="2026-08-05") + "\n", encoding="utf-8")
+        check("오늘 스탬프 없음 → 🚨 미실행", ndf._morning_ops_heartbeat(d),
+              "🚨 아침점검(08:30) 미실행 — cron/프로세스 확인")
+    finally:
+        ndf.BASE_DIR = orig_base
 
 
 class _FakeTG:
@@ -201,18 +292,28 @@ def _run_send(results):
     fake = _FakeTG(results)
     mod = types.ModuleType("output.telegram_alert")
     mod.TelegramAlert = lambda cfg: fake
-    sys.modules["output.telegram_alert"] = mod
-    if "yaml" not in sys.modules:          # 노트북엔 PyYAML 미설치(VPS venv엔 있음)
-        y = types.ModuleType("yaml")
-        y.safe_load = lambda *a, **k: {}
-        sys.modules["yaml"] = y
+    # ★8/6 Tier1 M-1 — 스텁은 '복원'한다. pop만 하면 원래 로드돼 있던 진짜 모듈이
+    #   축출되고, yaml 스텁은 영구 잔류해 이후 같은 프로세스의 모든 import yaml이
+    #   조용히 빈 config를 받는다(지금 안전한 건 실행 순서 우연뿐이었다).
+    saved_tg = sys.modules.get("output.telegram_alert")
+    yaml_injected = "yaml" not in sys.modules  # 노트북엔 PyYAML 미설치(VPS venv엔 있음)
     orig_sleep = ops.time.sleep
-    ops.time.sleep = lambda s: None       # 백오프 대기 제거
     try:
+        sys.modules["output.telegram_alert"] = mod
+        if yaml_injected:
+            y = types.ModuleType("yaml")
+            y.safe_load = lambda *a, **k: {}
+            sys.modules["yaml"] = y
+        ops.time.sleep = lambda s: None       # 백오프 대기 제거
         rc = ops._send_telegram("테스트 본문")
     finally:
         ops.time.sleep = orig_sleep
-        sys.modules.pop("output.telegram_alert", None)
+        if saved_tg is not None:
+            sys.modules["output.telegram_alert"] = saved_tg
+        else:
+            sys.modules.pop("output.telegram_alert", None)
+        if yaml_injected:
+            sys.modules.pop("yaml", None)
     return rc, fake.calls
 
 
@@ -237,6 +338,8 @@ def main() -> int:
     test_retry_log_not_counted()
     test_unmarked_block()
     test_legacy_marker_migration()
+    test_selfref_own_header()
+    test_heartbeat_marker_contract()
     test_retry_loop()
     print("\n" + "=" * 58)
     # ★검사 건수를 세서 출력한다 — 8/5에 업무일지가 "22/22"라 적었는데 실제 호출은

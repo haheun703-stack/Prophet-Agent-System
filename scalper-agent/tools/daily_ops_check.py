@@ -97,6 +97,7 @@ DRY_RUN_MARK = "[ops][DRY_RUN]"           # 발송 대상 아님 — 미발송 �
 _LEGACY_SENT = "텔레그램 발송 완료"
 _LEGACY_FAILED = "텔레그램 발송 실패"
 _OPS_PREFIX = "[ops] "
+_OPS_TOKEN_PREFIX = "[ops]"    # 신규 마커·dry 토큰 인정 조건 — 자기 발화 줄만(8/6)
 SEND_ATTEMPTS = 3
 SEND_BACKOFF = (2, 5)                     # 시도 사이 대기(초) — 최악 7초, cron 무해
 _OPS_HEADER_RE = re.compile(r"\[ops\] === (\d{4}-\d{2}-\d{2}) \d{2}:\d{2}:\d{2} 아침 점검")
@@ -470,13 +471,18 @@ def pending_unsent(log_path: Path) -> list:
             cur, resolved, dry = m.group(1), False, False
             continue
         legacy = ln.startswith(_OPS_PREFIX)
-        if MARK_SENT in ln or (legacy and _LEGACY_SENT in ln):
+        # ★8/6 — 신규 마커·dry 토큰도 자기 발화 줄(`[ops]` 시작)에서만 인정한다.
+        #   본문은 타 로그 원문을 실어 나른다(A5가 nightly.log 라인, A9가 대장 문자열).
+        #   맨 부분문자열 판정은 8/5 리네임이 닫은 것과 같은 계열의 오염 통로였다
+        #   (레거시 문구만 접두 보호를 받고 정작 신규 마커가 무방비였다).
+        ops_line = ln.startswith(_OPS_TOKEN_PREFIX)
+        if (ops_line and MARK_SENT in ln) or (legacy and _LEGACY_SENT in ln):
             pending.clear()
             resolved = True
-        elif MARK_FAILED in ln or (legacy and _LEGACY_FAILED in ln):
+        elif (ops_line and MARK_FAILED in ln) or (legacy and _LEGACY_FAILED in ln):
             pending.append(cur or "?")
             resolved = True
-        elif DRY_RUN_MARK in ln or "[dry-run]" in ln:
+        elif ops_line and (DRY_RUN_MARK in ln or "[dry-run]" in ln):
             dry = True
     _close_block()
     return pending
@@ -586,18 +592,30 @@ def main() -> int:
     # ★ last_trading_day(d)는 d를 포함하지 않는 '직전' 거래일이다(정본 docstring).
     # 여기에 today-1을 넘기면 이틀 전이 잡혀 A3가 매일 오탐한다(7/31 VPS 실증에서 적발).
     ref = ref_arg or last_trading_day(today).isoformat()
+
+    # ★[F-89 잔여·8/6] 미발송 누적은 **우리 헤더를 로그에 쓰기 전에** 읽는다.
+    # cron이 `-u`(무버퍼)로 돌아 헤더가 즉시 daily_ops_check.log에 닿고, 그 뒤
+    # pending_unsent가 같은 파일을 읽으면 자기 자신 블록(아직 마커 없음)이
+    # '마커 없이 끝난 죽은 블록'으로 잡힌다 — 8/6 첫 실전에서 발송 성공인데
+    # "지난 1회 미수신(당일)" 거짓 병기가 사장님께 나갔다. 읽기→쓰기 순서를
+    # 고정하면 버퍼링 방식과 무관하게 자기참조가 구조적으로 불가능하다.
+    pending_err = None
+    try:
+        pending = pending_unsent(LOGS_DIR / SELF_LOG)
+    except Exception as e:  # noqa: BLE001 — 병기는 부가 정보. 실패해도 발송은 간다.
+        pending, pending_err = [], e
+
     print(f"[ops] === {datetime.now():%Y-%m-%d %H:%M:%S} 아침 점검 (기준 거래일 {ref}) ===")
+    if pending_err is not None:
+        # 헤더 '뒤'에 찍는다 — 헤더보다 앞선 줄은 스캐너 시야에서 직전 블록에 귀속되어
+        # 예외 메시지 속 우연한 토큰이 남의 블록 판정을 뒤집을 수 있다(Tier1 L-2).
+        print(f"[ops] 미발송 누적 판독 실패(무시): {pending_err}", file=sys.stderr)
 
     rows, score, dl_rows = run_checks(ref)
     msg = build_message(ref, rows, score, dl_rows)
 
     # [F-89] 지난 미발송이 있으면 본문에 병기 — 실패 사실 자체가 사람에게 닿아야 한다.
     # 판정 로직(build_message)은 순수하게 두고 발송 직전에만 덧붙인다.
-    try:
-        pending = pending_unsent(LOGS_DIR / SELF_LOG)
-    except Exception as e:  # noqa: BLE001 — 병기는 부가 정보. 실패해도 발송은 간다.
-        print(f"[ops] 미발송 누적 판독 실패(무시): {e}", file=sys.stderr)
-        pending = []
     if pending:
         msg = f"{msg}\n{pending_notice(pending)}"
 

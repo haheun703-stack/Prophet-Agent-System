@@ -186,7 +186,15 @@ def _morning_ops_heartbeat(today: str):
     ran = [ln for ln in lines if stamp in ln]
     if not ran:
         return "🚨 아침점검(08:30) 미실행 — cron/프로세스 확인"
-    if any("발송 완료" in ln for ln in ran):
+    # ★8/6 Tier1 HIGH — 8/5에 아침점검 성공 마커가 `[ops][SEND_OK]`로 리네임됐는데
+    # 이 줄만 옛 문구("발송 완료")를 보고 있어 성공한 날에도 매일 ⚠️가 나갈 뻔했다.
+    # 성공·실패 어느 쪽도 옛 문구를 더는 안 쓰므로 이 감시 계층 자체가 죽은 상태였다.
+    # 마커는 daily_ops_check 상수가 단일진실 — 파일 경계 밖에서도 위임받는다.
+    try:
+        from daily_ops_check import MARK_SENT, _LEGACY_SENT
+    except Exception:  # noqa: BLE001 — 임포트 실패가 20:10 발송을 죽여선 안 된다
+        MARK_SENT, _LEGACY_SENT = "[ops][SEND_OK]", "텔레그램 발송 완료"
+    if any(MARK_SENT in ln or _LEGACY_SENT in ln for ln in ran):
         return "✅ 아침점검(08:30) 실행·발송"
     return "⚠️ 아침점검(08:30) 실행됐으나 발송 미확인"
 
