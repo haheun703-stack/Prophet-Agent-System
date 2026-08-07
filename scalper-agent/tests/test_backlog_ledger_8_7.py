@@ -89,17 +89,26 @@ def test_04_자기참조_가드():
     check("코드 밖 표기는 잡음", ids(check_backlog_ledger(p2)), ["F-90"])
 
 
+# 정합 **직전** 커밋 — 이 해시의 장부에 모순 9건이 실재한다.
+# ★8/7 VPS 실측에서 잡힌 내 결함: 원래 `HEAD:`로 읽었는데, 정합을 커밋하는 순간
+#   HEAD가 **정합 후 장부**가 돼 음성 대조가 스스로 무너졌다(로컬 PASS → VPS FAIL).
+#   기준이 움직이면 대조가 아니다. 8/6 [F-89](자기 로그를 쓰기 전에 읽어라)와 동형.
+LEDGER_PRE_FIX_REV = "90a7a8d"
+
+
 def test_05_음성대조_구장부():
-    print("\n[5] ★음성 대조 — git HEAD 구 장부에서 실제로 잡히는가")
+    print(f"\n[5] ★음성 대조 — 정합 전 장부({LEDGER_PRE_FIX_REV})에서 실제로 잡히는가")
     rel = "scalper-agent/docs/checklist/DAILY_ROUTINE.md"
     try:
-        old = subprocess.run(["git", "show", f"HEAD:{rel}"], cwd=ROOT,
+        old = subprocess.run(["git", "show", f"{LEDGER_PRE_FIX_REV}:{rel}"], cwd=ROOT,
                              capture_output=True, timeout=30).stdout.decode("utf-8")
     except Exception as e:  # noqa: BLE001
-        print(f"  ⏭  git show 실패({e}) — 음성 대조 skip")
+        print(f"  🚨 미검증 — git show 실패({e}). ★음성 대조가 돌지 않았다(통과 아님).")
+        _fails.append("음성대조 미실행")
         return
     if not old.strip():
-        print("  ⏭  구 장부 판독 실패 — skip")
+        print(f"  🚨 미검증 — {LEDGER_PRE_FIX_REV} 판독 실패. ★음성 대조가 돌지 않았다(통과 아님).")
+        _fails.append("음성대조 미실행")
         return
     p = _TMP / "old_ledger.md"
     p.write_text(old, encoding="utf-8")
