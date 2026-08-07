@@ -52,6 +52,15 @@ PRIORITY_HIGH = "HIGH"
 PRIORITY_MEDIUM = "MEDIUM"
 PRIORITY_LOW = "LOW"
 
+# ── 날짜 CSV 판독 정본 ([F-82]·8/7) — 표기 3종을 이 모듈 밖에서 파싱하지 않는다.
+#    BASE_DIR가 sys.path에 없는 실행 문맥(단독 스크립트)에서도 뜨도록 보강.
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
+from utils.dated_csv import (  # noqa: E402
+    csv_has_date as _dated_csv_has_date,
+    last_csv_date as _dated_last_csv_date,
+)
+
 
 # ═══════════════════════════════════════════
 #  유니버스 로더 (랜덤 샘플링용)
@@ -109,48 +118,30 @@ def _load_active_codes(n: int, today: str, max_scan: int = 300) -> List[str]:
 
 
 def _csv_has_date(csv_path: Path, target: str, tail_rows: int = 5) -> bool:
-    """CSV 마지막 tail_rows행 안에 target 날짜 행이 존재하는지.
+    """CSV 마지막 tail_rows행 안에 target 날짜 행이 존재하는지 — 판독은 정본 위임.
 
-    '마지막 행 == target' 비교는 장중 placeholder(당일 0값 행)나 이후 날짜 행이
-    붙는 순간 과거일 소급 검증(--date)이 깨진다(7/16 실측: 7/15 investor가
-    아침 재검증에서 10/10→0/10 착시). 당일 저녁 정규 검증에선
-    마지막 행 == target ⟹ 포함이므로 기존 판정과 동일하다."""
+    ★8/7 [F-82] — 구현이 `utils.dated_csv`로 옮겨갔다. 구코드는 저장 문자열과
+    인자를 **원문 그대로** 비교해 `flow_market`(`YYYYMMDD`)에 `"2026-08-07"`을
+    물으면 항상 False였다(8/7 실측: 단타봇이 8/6·8/7을 둘 다 결손으로 오산).
+    현재 호출 4곳은 전부 `YYYY-MM-DD` 채널이라 **기존 판정은 불변**이고,
+    바뀌는 것은 앞으로 다른 표기 채널을 물었을 때 조용히 틀리지 않는다는 점이다.
+
+    '마지막 행 == target'이 아니라 꼬리 N행을 보는 이유는 유지(7/16 실측:
+    장중 placeholder나 이후 날짜 행이 붙으면 과거일 소급 검증(--date)이 깨진다)."""
     if not csv_path.exists():
         return False
-    try:
-        with open(csv_path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-        for line in reversed(lines[-tail_rows:]):
-            s = line.strip()
-            if not s:
-                continue
-            if s.split(",")[0].strip()[:10] == target:
-                return True
-        return False
-    except Exception:
-        return False
+    return _dated_csv_has_date(csv_path, target, tail_rows)
 
 
 def _get_last_csv_date(csv_path: Path) -> Optional[str]:
-    """CSV 파일의 마지막 행 날짜 추출 (YYYY-MM-DD)"""
+    """CSV 파일의 마지막 행 날짜 (YYYY-MM-DD) — 판독은 정본 위임.
+
+    ★8/7 [F-82] — 구코드는 원본 `[:10]`을 그대로 돌려줘 `flow_market`에서
+    `20260807`이 나왔다. 그래서 호출부가 `_kis_last_date`로 한 번 더 감싸야 했고,
+    감싸는 걸 잊으면 조용히 틀렸다. 이제 표기와 무관하게 ISO로 돌아온다."""
     if not csv_path.exists():
         return None
-    try:
-        with open(csv_path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-        if len(lines) < 2:
-            return None
-        last_line = lines[-1].strip()
-        if not last_line:
-            last_line = lines[-2].strip() if len(lines) > 2 else ""
-        if not last_line:
-            return None
-        # 첫 번째 컬럼이 날짜
-        date_str = last_line.split(",")[0].strip()
-        # datetime 형식이면 날짜 부분만 (2026-03-19 15:30:00 → 2026-03-19)
-        return date_str[:10]
-    except Exception:
-        return None
+    return _dated_last_csv_date(csv_path)
 
 
 def _file_mtime_date(path: Path) -> Optional[str]:
@@ -306,7 +297,12 @@ def _verify_etf_daily(today: str) -> dict:
 
 
 def _kis_last_date(path: Path) -> Optional[str]:
-    """KIS 채널 CSV 마지막 행 날짜 (YYYYMMDD → YYYY-MM-DD 정규화)."""
+    """KIS 채널 CSV 마지막 행 날짜 (YYYY-MM-DD).
+
+    ★8/7 [F-82] — 정규화가 `_get_last_csv_date`(→ `utils.dated_csv`) 안으로
+    들어가 이 함수는 **위임 별칭**이 됐다. 지우지 않는 이유는 호출 4곳(short·
+    credit·flow_market·ranking)이 *"이 채널은 표기가 다를 수 있다"*는 의도를
+    이름으로 드러내고 있어서다. 남은 방어 분기는 혹시 모를 구형 반환값 대비."""
     d = _get_last_csv_date(path)
     if d and len(d) == 8 and d.isdigit():
         return f"{d[:4]}-{d[4:6]}-{d[6:]}"

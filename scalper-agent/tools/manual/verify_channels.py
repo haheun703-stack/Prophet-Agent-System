@@ -46,6 +46,7 @@ except Exception:
     pass
 
 from data.data_verifier import _all_universe_codes  # noqa: E402  (유니버스 정본)
+from utils.dated_csv import compact as _compact  # noqa: E402  (날짜 판독 정본·[F-82])
 
 DS = BASE_DIR / "data_store"
 
@@ -62,9 +63,14 @@ SELFTEST_ANCHORS = {
 # 공용 판독기 — [F-82] 처방. 모든 채널 읽기는 이 두 함수만 통과한다.
 # ──────────────────────────────────────────────────────────────────────
 def norm_date(s: str) -> str:
-    """날짜 표기 3종을 `YYYYMMDD`로 정규화 (BOM·공백 제거 포함)."""
-    s = s.lstrip("﻿").strip().strip('"')
-    return s.replace("-", "").replace("/", "")
+    """날짜 표기 3종을 `YYYYMMDD`로 정규화 — 판독은 정본 위임([F-82]·8/7).
+
+    ★compact를 유지하는 이유: 이 도구는 결과를 `DS/"ticks"/ymd`(:241) **경로**로
+    쓴다. ISO로 통일하면 디렉터리가 없어져 '데이터 0'으로 조용히 오판한다.
+    구현이 여기 살아 있던 동안 저장소엔 서로 **반대 방향**으로 정규화하는 판독기가
+    3벌 있었다(`_kis_last_date`=ISO / 여기=compact / `_get_last_csv_date`=무변환).
+    해석 불가 값은 정본이 None을 주므로 원문을 돌려준다(기존 동작 보존)."""
+    return _compact(s) or str(s).lstrip("﻿").strip().strip('"')
 
 
 def read_header(path: Path) -> Optional[List[str]]:

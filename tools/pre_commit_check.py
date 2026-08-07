@@ -264,13 +264,70 @@ def check_unused_imports(filepath: str, content: str) -> list[dict]:
     return issues
 
 
+def check_backlog_ledger(doc: Path = None) -> list[dict]:
+    """LEDGER-001 — §4 개선점 장부가 자기모순이면 차단 (8/7 신설).
+
+    ★왜 — 8/7에 이걸로 하루를 날릴 뻔했다.
+      [F-100](HIGH·미소진)을 오늘 개선 후보 1순위로 잡고 착수 직전 코드를 열었더니
+      **이미 8/5에 고쳐져 있었다**. 원인은 8/5 소진 커밋(70148cb)이 완료 **표를
+      덧붙이기만** 하고 원래 불릿의 취소선을 긋지 않은 것 — 같은 ID가 §4 안에서
+      '열림'과 '완료'로 **동시에** 존재했다(9건). 반대 방향도 있었다([F-110]:
+      완료로 닫혔는데 구현 0건). 장부가 양쪽으로 틀리면 *"매일 1건 소진"* 규율은
+      계측기 없이 도는 것이고, 소진 보고 자체의 근거가 사라진다.
+
+    판정: 열린 불릿(`- **[F-x]**`)과 취소선(`~~…F-x…~~`)이 같은 ID로 공존 → HIGH.
+      부분 소진은 취소선을 긋지 말고 `**F-x (부분)**` + 잔여 명시로 표현한다.
+
+    ★자기참조 가드 — 인라인 코드(`` `…` ``)는 걷어내고 센다. 이 규칙을 문서에
+      설명하면서 마커 문자열 자체를 인용하면(8/7 실제 발생) 그 인용이 다시
+      '완료 표기'로 계수돼 자기 문서를 위반으로 짖는다(8/6 [F-89] 자기참조와 동형).
+
+    ★사정권 밖(정직하게 적어 둔다) — **'조용한 소진'은 못 잡는다.**
+      [F-88]은 8/6에 실제로 고쳤는데 완료 표기가 **아예 없어** 모순이 아니었고,
+      그래서 이 규칙에 걸리지 않는다(8/7 음성 대조로 확인·`tests/test_backlog_ledger_8_7.py`).
+      코드 상태와 장부를 대조해야 잡히는데 그건 일반화가 안 된다. 이 규칙이 막는 것은
+      *"닫은 걸 안 닫힌 것처럼 남겨두는"* 통로 하나뿐이다."""
+    if doc is None:      # 인자 주입은 검증용(구 장부에 돌려 검출력을 증명한다)
+        doc = (Path(__file__).resolve().parent.parent
+               / SCALPER_DIR / "docs" / "checklist" / "DAILY_ROUTINE.md")
+    if not doc.exists():
+        return []
+    try:
+        text = doc.read_text(encoding="utf-8")
+    except Exception:
+        return []
+    if "## §4" not in text:
+        return []
+    sec = text[text.index("## §4"):]
+    sec_nocode = re.sub(r"`[^`]*`", "", sec)          # ★자기참조 가드
+
+    rel = f"{SCALPER_DIR}/docs/checklist/DAILY_ROUTINE.md"
+    issues = []
+    open_ids = set(re.findall(r"^- \*\*\[(F-[0-9-]+)\]\*\*", sec_nocode, re.M))
+    done_ids = set(re.findall(r"~~\**\[?(F-[0-9-]+)\]?\**~~", sec_nocode))
+    for fid in sorted(open_ids & done_ids):
+        line_no = next((i for i, ln in enumerate(sec.split("\n"), 1)
+                        if re.match(rf"^- \*\*\[{fid}\]\*\*", ln)), 0)
+        issues.append({
+            "file": rel,
+            "line": line_no,
+            "rule": "LEDGER-1",
+            "severity": "HIGH",
+            "msg": (f"[{fid}] 장부 모순 — '열림'과 '완료'로 동시 존재. 소진했으면 원 불릿에 "
+                    f"취소선을, 부분 소진이면 취소선 대신 '(부분)' + 잔여 명시."),
+        })
+    return issues
+
+
 def run_checks() -> list[dict]:
     """모든 검사 실행."""
+    # ★ 장부 검사는 staged .py 유무와 무관하게 돈다 — 문서만 고친 커밋에서
+    #   조기 반환에 걸려 통째로 건너뛰던 자리(8/7 신설 시 실측).
+    all_issues = check_backlog_ledger()
+
     files = get_staged_py_files()
     if not files:
-        return []
-
-    all_issues = []
+        return all_issues
 
     for filepath in files:
         path = Path(filepath)
