@@ -37,6 +37,12 @@ CRASH_LOG = Path(__file__).parent / "logs" / "crash.log"
 PID_FILE = Path(__file__).parent / "logs" / "bot.pid"
 
 
+def _harden_third_party_logging() -> None:
+    """Keep credential-bearing request URLs out of application logs."""
+    for logger_name in ("httpx", "httpcore"):
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
+
+
 def _check_already_running() -> bool:
     """PID 락 파일로 중복 실행 방지. 이미 실행 중이면 True."""
     import subprocess
@@ -92,6 +98,7 @@ def setup_logging():
             file_handler,
         ],
     )
+    _harden_third_party_logging()
 
 
 def load_config():
