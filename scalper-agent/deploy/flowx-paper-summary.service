@@ -1,0 +1,14 @@
+[Unit]
+Description=FLOWX daily forward paper summary
+After=network.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/bodyhunter/scalper-agent
+ExecStart=/bin/bash -lc '../venv/bin/python3.11 -u -X utf8 tools/summarize_flowx_paper.py --as-of "$(TZ=Asia/Seoul date --iso-8601=seconds)"'
+
+# This unit only reads the paper ledger and writes its derived summary.
+NoNewPrivileges=true
+PrivateTmp=true
+
