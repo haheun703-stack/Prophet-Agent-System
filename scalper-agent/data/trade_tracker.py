@@ -14,6 +14,7 @@ Usage:
 
 import json
 import logging
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, List
@@ -22,6 +23,140 @@ logger = logging.getLogger("BH.TradeTracker")
 
 _STORE = Path(__file__).resolve().parent.parent / "data_store"
 ACTIVE_PATH = _STORE / "active_trades.json"
+_FLOWX_META_FIELDS = (
+    "data_asof", "exit_data_asof", "market", "currency", "ticker",
+    "strategy_id", "strategy_version",
+    "benchmark", "exposure", "regime", "entry_fee", "entry_tax",
+    "entry_slippage", "entry_spread", "exit_fee", "exit_tax",
+    "exit_slippage", "exit_spread",
+)
+
+
+def _flowx_identity(trade: dict, code: str) -> dict:
+    """Map a legacy tracker row to the market-neutral FLOWX identity."""
+    market = str(trade.get("market") or "KR").upper()
+    sources = trade.get("sources") or []
+    first_source = sources[0] if isinstance(sources, list) and sources else ""
+    strategy_id = str(
+        trade.get("strategy_id") or trade.get("strategy")
+        or trade.get("source") or first_source or "body_hunter"
+    )
+    trade_id = str(trade.get("trade_id") or "").strip()
+    if not trade_id:
+        source_id = str(trade.get("source_record_id") or "").strip()
+        trade_id = f"paper:{market}:{code}:{source_id or uuid.uuid4().hex}"
+        trade["trade_id"] = trade_id
+    return {
+        "trade_id": trade_id,
+        "strategy_id": strategy_id,
+        "strategy_version": str(trade.get("strategy_version") or "legacy-1"),
+        "market": market,
+        "currency": str(trade.get("currency") or ("KRW" if market == "KR" else "USD")),
+        "ticker": str(trade.get("ticker") or code),
+    }
+
+
+def _persisted_flowx_asof(adapter, trade_id: str, source_prefix: str) -> str:
+    """Recover the immutable source timestamp after a crash/retry."""
+    for row in adapter.iter_events():
+        if (
+            row.get("trade_id") == trade_id
+            and str(row.get("source_record_id") or "").startswith(source_prefix + ":")
+        ):
+            return str(row.get("data_asof") or "")
+    return ""
+
+
+def _emit_flowx_paper_open(trade: dict, code: str, price: int, reason: str) -> None:
+    """Emit candidate, intent and simulated fill without touching a broker."""
+    from data.flowx_paper_adapter import FlowXPaperEventAdapter
+
+    adapter = FlowXPaperEventAdapter()
+    identity = _flowx_identity(trade, code)
+    now = datetime.now().astimezone()
+    source_base = f"{identity['trade_id']}:{reason}"
+    data_asof = (
+        trade.get("data_asof")
+        or _persisted_flowx_asof(adapter, identity["trade_id"], source_base)
+        or now.isoformat()
+    )
+    trade["data_asof"] = data_asof
+    base = {
+        **identity,
+        "event_at": now,
+        "data_asof": data_asof,
+        "benchmark": trade.get("benchmark"),
+        "exposure": trade.get("exposure", trade.get("position_krw")),
+        "regime": trade.get("regime"),
+        "real_order": False,
+        "paper": True,
+    }
+    adapter.emit(
+        **base,
+        event_type="CANDIDATE",
+        source_record_id=f"{source_base}:candidate",
+        details={"reason": reason, "score": trade.get("total_score")},
+    )
+    adapter.emit(
+        **base,
+        event_type="ORDER_INTENT",
+        source_record_id=f"{source_base}:buy_intent",
+        details={"side": "BUY", "qty": trade.get("shares"), "allowed": True},
+    )
+    adapter.emit(
+        **base,
+        event_type="PAPER_FILL",
+        source_record_id=f"{source_base}:buy_fill",
+        fill={"side": "BUY", "price": price, "qty": trade.get("shares")},
+        fee=trade.get("entry_fee"),
+        tax=trade.get("entry_tax"),
+        slippage=trade.get("entry_slippage"),
+        spread=trade.get("entry_spread"),
+        details={"reason": reason},
+    )
+
+
+def _emit_flowx_paper_exit(trade: dict, code: str, price: int, reason: str) -> None:
+    """Emit a paper sell intent and exit; incomplete costs stay uncertified."""
+    from data.flowx_paper_adapter import FlowXPaperEventAdapter
+
+    adapter = FlowXPaperEventAdapter()
+    identity = _flowx_identity(trade, code)
+    now = datetime.now().astimezone()
+    source_base = f"{identity['trade_id']}:PAPER_CLOSE:{reason}"
+    data_asof = (
+        trade.get("exit_data_asof")
+        or _persisted_flowx_asof(adapter, identity["trade_id"], source_base)
+        or now.isoformat()
+    )
+    trade["exit_data_asof"] = data_asof
+    base = {
+        **identity,
+        "event_at": now,
+        "data_asof": data_asof,
+        "benchmark": trade.get("benchmark"),
+        "exposure": trade.get("exposure", trade.get("position_krw")),
+        "regime": trade.get("regime"),
+        "real_order": False,
+        "paper": True,
+    }
+    adapter.emit(
+        **base,
+        event_type="ORDER_INTENT",
+        source_record_id=f"{source_base}:sell_intent",
+        details={"side": "SELL", "qty": trade.get("shares"), "allowed": True, "reason": reason},
+    )
+    adapter.emit(
+        **base,
+        event_type="EXIT",
+        source_record_id=f"{source_base}:exit_fill",
+        fill={"side": "SELL", "price": price, "qty": trade.get("shares")},
+        fee=trade.get("exit_fee"),
+        tax=trade.get("exit_tax"),
+        slippage=trade.get("exit_slippage"),
+        spread=trade.get("exit_spread"),
+        details={"reason": reason},
+    )
 
 
 class TradeTracker:
@@ -81,6 +216,10 @@ class TradeTracker:
                 "hold_start": "",
                 "hold_days": 0,
             }
+            for field in _FLOWX_META_FIELDS:
+                value = getattr(trade_obj, field, None)
+                if value is not None:
+                    self._active[code][field] = value
         elif isinstance(trade_obj, dict):
             code = trade_obj["code"]
             self._active[code] = trade_obj
@@ -285,6 +424,11 @@ class TradeTracker:
                     pass
 
             # CHECK-2 (Phase3): wrapper 매수 intent (leaf activate와 동일 PAPER_OPEN → dedupe). 비차단.
+            _event_trade = dict(vars(to))
+            _event_trade["actual_entry"] = entry
+            _emit_flowx_paper_open(_event_trade, to.code, entry, "PAPER_OPEN")
+            setattr(to, "data_asof", _event_trade["data_asof"])
+
             try:
                 from bot.order_intent import record_order_intent
                 _sh = int(getattr(to, "shares", 0) or 0)
@@ -350,6 +494,7 @@ class TradeTracker:
                 logger.warning(f"PAPER 가격체크 실패 {code}: {e}")
 
         for code, price, reason in to_close:
+            _emit_flowx_paper_exit(self._active.get(code, {}), code, price, reason)
             # CHECK-2 (Phase3): wrapper 매도 intent (leaf close와 동일 키 → dedupe). 비차단(매도 무손상).
             try:
                 from bot.order_intent import record_order_intent
@@ -397,6 +542,8 @@ class TradeTracker:
             pnl = (close_price - entry) / entry * 100 if entry > 0 else 0
             name = t.get("name", code)
             days = t.get("time_stop_days", 5)
+
+            _emit_flowx_paper_exit(t, code, close_price, "TIME_STOP")
 
             # CHECK-2 (Phase3): wrapper 시간손절 매도 intent (leaf close와 동일 키 → dedupe). 비차단.
             try:
@@ -494,6 +641,8 @@ class TradeTracker:
         Returns:
             등록된 종목명 리스트
         """
+        from data.sajang_rules import SAJANG
+
         registered = []
         for c in candidates:
             # dict 또는 PrecloseCandidate 지원
@@ -527,7 +676,10 @@ class TradeTracker:
                     entry = to["entry_price"]
                 from data.sajang_rules import SAJANG
                 trade_data = {
-                    "trade_id": to.get("trade_id", f"PC_{datetime.now():%Y%m%d}_{code}"),
+                    "trade_id": to.get("trade_id") or (
+                        f"paper:{str(to.get('market') or 'KR').upper()}:{code}:"
+                        f"{to.get('source_record_id') or uuid.uuid4().hex}"
+                    ),
                     "code": code,
                     "name": name,
                     "status": "ACTIVE",
@@ -556,6 +708,13 @@ class TradeTracker:
                 }
             else:
                 # trade_object 없이 기본 등록
+                _candidate_market = (
+                    c.get("market") if isinstance(c, dict) else getattr(c, "market", None)
+                )
+                _candidate_source_id = (
+                    c.get("source_record_id")
+                    if isinstance(c, dict) else getattr(c, "source_record_id", None)
+                )
                 preclose_score = 0
                 if hasattr(c, "preclose_score"):
                     preclose_score = c.preclose_score
@@ -566,7 +725,10 @@ class TradeTracker:
                     entry = c.current_price if hasattr(c, "current_price") else c.get("current_price", 0)
 
                 trade_data = {
-                    "trade_id": f"PC_{datetime.now():%Y%m%d}_{code}",
+                    "trade_id": (
+                        f"paper:{str(_candidate_market or 'KR').upper()}:{code}:"
+                        f"{_candidate_source_id or uuid.uuid4().hex}"
+                    ),
                     "code": code,
                     "name": name,
                     "status": "ACTIVE",
@@ -594,6 +756,15 @@ class TradeTracker:
                     "source": "preclose",
                 }
 
+            _flowx_source = (
+                to if isinstance(to, dict)
+                else (c if isinstance(c, dict) else getattr(c, "__dict__", {}))
+            )
+            for _field in _FLOWX_META_FIELDS:
+                if _flowx_source.get(_field) is not None:
+                    trade_data[_field] = _flowx_source[_field]
+
+            _emit_flowx_paper_open(trade_data, code, entry, "PAPER_PRECLOSE_OPEN")
             self._active[code] = trade_data
             # CHECK-2 (Phase3): 프리클로즈 매수 intent (leaf 미경유 = 독립 기록). 비차단.
             try:
