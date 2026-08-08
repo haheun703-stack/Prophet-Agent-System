@@ -282,6 +282,48 @@
 
 > ★사정권 정직 표기 — LEDGER-1은 **'조용한 소진'은 못 잡는다**(F-88형). 코드와 장부를 대조해야 하는데 일반화가 안 된다. 막는 것은 *"닫은 걸 안 닫힌 것처럼 남겨두는"* 통로 하나뿐이다.
 
+### 8/9 전체검수 신규 등재 — F-127~F-143 (에이전트 4축 + 단타봇 VPS 실측)
+
+> 검수 범위: 8/9 새벽 유입 4커밋(FLOWX·미검증) + 실매매 안전 + 사장님 룰 + 슬러지/문서 + 중복구현.
+> ★에이전트 보고는 전건 단타봇이 재검증했고, **기등재 재발견은 신규로 세지 않았다**([F-70]·[F-77]·[F-90]·[F-91] 등).
+
+**★ 봇 재가동 전 필수 (HIGH)**
+
+- ~~**[F-127]**~~ ✅ **소진 8/9** — **COO 알림 채널 전체 사망 (HIGH)** — `TradingCOO.__init__`은 `bot/auto_trader/cfo/cto`만 설정하는데 알림 job 4곳이 **미정의** `self._send_alert`(8참조)·`self.trader`(2참조)를 썼다. 전부 `if not X: return` **뒤**라 **보고할 게 있을 때만** AttributeError로 죽었다(실패 양상 반전). ★VPS 실측 14일 = 봇시야 **140**·상한가연속 **52**·섹터동조 **26**건. ★7/31 P0-3가 봇시야의 KST NameError를 고치면서 **5줄 아래 이 버그는 안 건드려** "고쳤다" 선언 후에도 계속 죽었다. fix=같은 파일 21곳이 쓰는 `getattr` 정본으로 복원 + `tests/test_coo_alert_wiring_8_9.py`(AST·7/7·음성대조 8+2 확인).
+- **[F-128]** (8/9) **★FLOWX emit이 매도 close 앞에 비가드로 놓임 (HIGH·봇 재가동 차단)** — `trade_tracker.py:497·546`(매수측 `:429·767`). 같은 파일 기존 계측은 **전부** `try/except: pass` + "비차단(매도 무손상)" 주석인데 **신규 emit 4곳만 벌거벗은 채 상태 커밋 앞**에 있다. `PaperEventRejected`는 `ValueError` 서브클래스라 전파 → `check_paper_prices`에서 raise 시 같은 try의 **PaperPortfolio 블록 전체(-10% 서킷 포함)가 스킵**된다. 처방=emit을 `try/except`로 감싸고 `close()`/`register()` **뒤**로 이동(F-129·F-130 폭발반경 동시 차단). ★다른 세션의 **의도된 fail-closed** 설계를 뒤집는 것이라 단타봇 단독 변경 안 함 — 사장님 확인.
+- **[F-135]** (8/9) **74일 박제 ACTIVE 행 (HIGH·재가동 전 정리)** — `data_store/active_trades.json` `updated`가 **2026-05-27 09:08** 정지, `204320` `hold_start 5/27`·`time_stop_days 5`로 74일째 ACTIVE. `paper_close_eod`가 돌았으면 진작 닫혔어야 한다 = **이 코드는 프로덕션에서 한 번도 실행된 적 없다**("오류 로그 없음"이 검증 증거가 못 됨). 재가동 첫 15:25에 이 행이 곧바로 F-128 경로로 들어간다.
+
+**신규 유입 코드 (FLOWX) — 프로세스·배선**
+
+- **[F-136]** (8/9) **★기록↔실제가 정반대 + 정규 배포경로 우회 (HIGH·프로세스)** — 커밋 메시지는 *"VPS 실측 미실행: 상위 지시상 push/deploy 금지"*인데 실제로는 **push·VPS배포·systemd enable·1회 실행(01:56)** 전부 완료. 게다가 `deploy_pull.log`에 8/9 기록 **0건**이고 VPS reflog엔 수동 `pull --ff-only` **4회** = `deploy_pull.sh`가 하는 **kill_switch·trade_runtime_config 보존이 미작동**한 채 pull. 이번엔 kill_switch 무사했으나 **가드가 작동한 게 아니라 운이 좋았던 것**. 봇도 01:51 재시작돼 **미검증 `trade_tracker.py`가 가동 중 프로세스에 적재**됨(실주문은 kill switch로 차단).
+- **[F-129]** (8/9) **dedupe 키에 가격이 없어 재시도가 영구 잠금 (MED)** — `flowx_paper_adapter.py:131-136` event_id에 가격·수량 미포함인데 `:258-266`은 전 필드 일치를 요구 → **같은 거래를 다른 가격으로 재기록하면 무시가 아니라 예외**. 테스트(`:230`)는 재시도 가격을 동일하게 넣어 happy path만 본다(8/6 "픽스처가 실패 층을 우회"의 변형).
+- **[F-130]** (8/9) **장부 1줄 손상 = 이후 모든 페이퍼 청산 정지 (MED)** — `:319-330` `iter_events()`가 파싱 실패 시 raise, `emit()`이 매번 경유. fail-closed 자체는 옳으나 **대상이 장부 쓰기가 아니라 매매 상태 전이까지 번졌다**.
+- **[F-131]** (8/9) **`cost_complete`가 구조적으로 영원히 0 (MED)** — `entry_fee/exit_*/data_asof/source_record_id` 등을 **신규 4파일과 그 테스트 밖에서 생산하는 곳이 0건**. 18:00 summary는 `cost_complete_rate: 0.0`을 영원히 출력한다(초록으로 변할 수 없는 지표). 테스트가 green인 건 `setattr`로 직접 넣기 때문.
+- **[F-132]** (8/9) **신규 산출물 sync·⑳ 미등록 — ★7번째 재발 (MED)** — `data_store/flowx_paper_events/`·`flowx_paper_summary/latest.json`이 `sync_from_vps.CORE_FILES`·`DATA_DIRS`·⑳ freshness·§2 운영표 **전부 0건**. CLAUDE.md가 "작성 시점에 같이"라 명시한 그 항목.
+- **[F-133]** (8/9) **18:00 타이머 — 휴장일 가드·실패알림 0 (MED)** — `OnCalendar=*-*-* 18:00:00` + `Persistent=true`로 **주말·공휴일 포함 매일**, `summarize_flowx_paper.py`에 `is_trading_day()` 0건. `OnFailure=` 0건이라 **죽어도 아무도 모른다**. ★`as_of`가 데이터 신선도가 아니라 **자기 실행 시각**이라, 나중에 ⑳에 물리면 데이터 0건인 날도 GREEN(7/7 완료위장 재현). ★단타봇 정정=nightly와 18:00 동시각이나 **nightly가 flowx 무참조라 데이터 레이스는 아니다**(초기 판단 과했음).
+- **[F-134]** (8/9) **`trade_id` 포맷 변경 + 스키마 확장 (LOW)** — `PC_{YYYYMMDD}_{code}` → `paper:KR:{code}:{uuid4hex}`. 결정적 키가 **난수**가 되어 재실행 멱등성·사후 감사 조인이 사라짐(파싱 소비자 0건이라 즉시 회귀는 없음·의도된 변경).
+
+**실매매 안전 (재가동 전 사장님 결정)**
+
+- **[F-138]** (8/9) **★sync_auto 포지션이 3중으로 매도 차단인데 문서는 반대 (HIGH·사장님 결정)** — `auto_trader.py:357-360`·`position_safety.py:118-120`·`manual_position_protection.py:39`가 전부 `sync_auto_unknown` prefix를 차단 → 트레일링·룰B·룰C·EOD·hard_kill **전부 무효인 순수 buy&hold**. 그런데 `position_safety.py:199-202` 주석과 CLAUDE.md 룰 10은 *"트레일링/룰C 자동 작동 OK"*라 명시. 코드 3층이 일관되므로 버그가 아니라 **문서와 구현 중 무엇이 정본인지 사장님 결정**.
+- **[F-139]** (8/9) **`dynamic_target.py`가 SAJANG 참조 0건 — 라이브 SL이 −5~−8% (HIGH·사장님 결정)** — `:130-137`이 `market_health.get_regime_rules()`의 `sl_max_pct`(레짐별 0.05~0.08)로 SL을 만들고 `auto_trader.py:702·3532`에서 `pos["stop_loss"]`로 직행. 사장님이 `NORMAL_SL_PCT`를 바꿔도 **라이브 SL은 안 따라간다**.
+- **[F-140]** (8/9) **부분체결을 완전청산으로 오인 (HIGH)** — `_wait_for_fill`(kis_trader.py:1585)이 부분체결에도 True. `smart_sell`이 `filled_qty`를 계산하는데 **repo 전체에서 읽는 소비자 0건** → `auto_trader.py:3831-3839`가 `success`만 보고 `_positions.pop()`. ★최악 연쇄=hard_kill(−5%·하한가·미체결 확률 최고) → 접수만 되고 장부 삭제 → sync가 `sync_auto_unknown`으로 재등록 → **[F-138]에 걸려 자동방어 영구 무효**.
+
+**슬러지·문서·중복 (LOW~MED)**
+
+- **[F-137]** (8/9) **`deploy/bodyhunter.service`가 부재 경로 3개를 가리킴 (MED)** — `/home/ubuntu/Prophet-Agent-System/{,.env,scalper-agent/venv/bin/python}` 전부 **VPS에 없음**, 엔트리포인트도 실가동본과 다름(`bot/telegram_bot.py` vs `run_bot.py --once`). 배포하면 봇이 안 뜬다. 실가동본은 `/etc/systemd/system/bodyhunter-bot.service`.
+- **[F-141]** (8/9) **문서 스테일 12건 (MED)** — ★`REVIEW_3TIER_RULE.md:106-115`가 **8/5에 CLAUDE.md에서 고친 그 결함을 그대로 보존**(RULE-004 구현 0건인데 표에 있고, 실제 차단하는 9개는 표 밖). CLAUDE.md:30이 이걸 "메인 문서(필독)"이라 지정. + CLAUDE.md:80-82가 아직 *"RULE-002가 is_trading_day 자동 차단"*이라 주장(실제는 pyflakes undefined-name) + LEDGER-1이 어느 문서 목록에도 없음 + REVIEW_3TIER_RULE에 Codex/Tier4 0회 + "자동화" 주장 2건 구현 0(변경라인수 임계·post-commit 회귀) + nightly 29단계(실제 30) + STRATEGY_DEADLINES §3 판정기록 0건(JSON엔 4건) + ⑯ 자동metric이 삭제된 스텝을 가리킴 + CLAUDE.md 경로 기준 혼재(`utils/` 4건이 루트에서 미해결) + "다른 11개 job"(실측 138중 71).
+- **[F-142]** (8/9) **중복 구현 클러스터 (MED)** — 텔레그램 raw 발송 **12벌**(`daily_learner.py:50`·`position_guardian.py:51`은 **바이트 동일**)·chunking 4벌·KST 정의 **22곳**+표현 18회+`_today*` 래퍼 14개(**같은 이름 다른 반환형** 2쌍)·`_get_kis_session` 3벌(**각자 다른 가드를 잃음** — `market_flow_collector`는 라이브 토큰 probe 누락, `extend_parquet_data`는 CWD락·stale purge 누락)·mojito broker 생성 10벌·`_safe_int/_safe_float` **26정의 3변종**·atomic write 50+ 인라인·`load_dotenv` **5가지 루트 경로**. ★최우선=`_get_kis_session` 1본화(`flow_collector.py:60`이 superset).
+- **[F-143]** (8/9) **★phantom import — 09:15 픽 알림이 항상 실패 (MED)** — `bot.telegram_bot.send_telegram_message`·`send_message` **둘 다 저장소 정의 0건**. `tools/daytrading_picks.py:681·687`이 1·2차 폴백 모두 phantom이라 `send_telegram()`이 **항상 False**를 반환하고 실패 2줄만 print. `tools/foreign_accumulation_scanner.py:299`는 폴백조차 없음. `verifiers/_common.py:26`은 HTTP 폴백이 있어 무해.
+
+**★[F-127] 잔여 — 사장님 결정**: AttributeError는 고쳤으나 **알림 채널 자체가 자동매매 스위치에 묶여 있다.** `telegram_bot.py:2823` `if auto_trade and not auto_trade_locked:` 안에서만 `auto_trader.start(_send_alert)`가 호출되는데 kill switch가 5/28부터 ON이라 **`_send_alert`가 한 번도 주입된 적이 없다**(VPS 30일 `자동매매 시작` 로그 **0건**·INFO는 26,415건 잡히므로 유의미). 결과: `getattr` 정본 21곳도 `alert_fn=None`으로 **조용히 skip**. 즉 매매와 무관한 **관측 알림(섹터동조·상한가연속·봇시야·바닥신호)까지 매매 스위치에 인질**로 잡혀 있다. 처방 후보=관측 알림을 20:10·08:30이 쓰는 `output/telegram_alert.TelegramAlert` 경로로 분리. **매매 동작 변경이 아니나 알림 정책 변경이라 사장님 승인 후 착수.**
+
+**8/9 추가 등재 — F-144~F-146 (phantom import 축)**
+
+- **[F-144]** (8/9) **★섹터 로테이션 게이트가 영구 무효 (HIGH·[F-53] 계열)** — `data/limit_up_engine.py:326`이 `from data.rotation_detector import detect_rotation`을 부르는데 **그 이름은 저장소에 없다**(정본은 `analyze_rotation`·`rotation_detector.py:347` — 리네임이 호출부를 두고 갔다). `except Exception → logger.debug`(디버그라 평시 안 보임)로 삼켜져 `_get_sector_rotation()`이 **항상 기본값** `{"phase":"미확인","favorable":True}`를 반환. 소비자 3곳 전부 무증상 열화: `:746` 매수 reasons에 로테이션이 **한 번도 안 붙음** · `:866` `monitor_days_adj`가 **항상 5**(LATE/REVERSAL→3·EARLY/STAGING→7 분기 도달 불가) · `:1073` 게이트가 **아무것도 막은 적 없음**. 7/31 RULE-002·[F-53]과 같은 모양 = **쓰여 있으나 돌지 않는 가드**.
+- **[F-145]** (8/9) **★킬스위치 가드가 fail-open — 호출부 (HIGH·잠재)** — `bot/telegram_bot.py:1389-1400` `try: from bot.trade_kill_switch import is_auto_trade_disabled … except Exception: pass` 직후 `:1402 self.auto_trader.start(...)`. 심볼은 **현재 존재하므로 라이브 버그는 아니나**, import가 실패하면 가드가 **로그 한 줄 없이 사라지고 자동매매가 시작**된다. 정본 `trade_kill_switch.py:30-33`은 파일 부재·예외에 **True(차단)**로 fail-closed인데 **호출부가 그 보호를 무효화**한다. 형제 3곳 비교 = `position_safety.py:409-414`가 최선(logger.error + 보수적 실패), `trading_coo.py:143-157`·`vwap_split_buy.py:48-57`은 무로깅 False. 처방=`position_safety` 형태로 통일.
+- **[F-146]** (8/9) **phantom import 11건 — [F-143] 확장 (MED)** — `bot/telegram_bot`에 `send_message`·`send_telegram_message` **둘 다 모듈 레벨 정의 0건**인데 **9곳**이 import한다: `data/event_detector.py:679`·`data/market_health.py:1198`·`data/volume_scanner.py:332`·`tools/swing_scan.py:700`(전부 `--telegram` 플래그 **사망**) · `tools/daytrading_picks.py:681·687`(1·2차 폴백 **둘 다 phantom** = 09:15 픽 알림 항상 False) · `tools/foreign_accumulation_scanner.py:299·307`. ★`verifiers/_common.py:26`만 HTTP 폴백이 있어 **살아있으나 100% 백업 엔진으로** 돌고 있고, 실패 로그가 ImportError를 *"token/chat_id 없음"*으로 보고해 **진단을 오도**한다(이게 nightly·무인점검 알림 척추다). + `data/etf_recommender.py:232 load_sector_report` phantom(`except: pass`) → `sector_hot`이 **항상 `{}`** → ETF 추천의 섹터 모멘텀 축이 조용히 0 기여([F-74] 재확인). ★F821 미정의 이름은 **341파일 전수 0건** — 7/31 RULE-002 게이트는 유지되고 있다.
+
 ## §5. 자기성찰 템플릿 (매일 업무일지 마지막 섹션)
 
 ```markdown

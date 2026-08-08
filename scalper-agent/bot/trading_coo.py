@@ -4868,8 +4868,13 @@ class TradingCOO:
                     lines.append(f"  {m['name']} ({m['code']}) +{m['change']:.1f}% 시총{m['cap']:,}억")
             msg = "\n".join(lines)
 
-            if self._send_alert:
-                await self._send_alert(msg)
+            # ★8/9 [F-127] — `self._send_alert`는 TradingCOO에 **정의되지 않는다**
+            #   (__init__은 bot/auto_trader/cfo/cto만 설정). 같은 파일 21곳이 쓰는
+            #   getattr 정본으로 복원. 구코드는 AttributeError로 죽었고, 그것도
+            #   `if not alerts: return` 뒤라 **보고할 게 있을 때만** 죽었다.
+            alert_fn = getattr(self.auto_trader, "_send_alert", None)
+            if alert_fn:
+                await alert_fn(msg)
             logger.info(f"[COO] [섹터동조] 알림 전송: {len(alerts)}그룹")
         except Exception as e:
             logger.warning(f"[COO] 섹터동조 알림 실패 (무시): {e}")
@@ -4888,8 +4893,9 @@ class TradingCOO:
             if not alert:
                 logger.debug("[COO] [바닥신호] 신호 미달 — 스킵")
                 return
-            if self._send_alert:
-                await self._send_alert(alert)
+            alert_fn = getattr(self.auto_trader, "_send_alert", None)   # [F-127]
+            if alert_fn:
+                await alert_fn(alert)
             logger.info(f"[COO] [바닥신호] 알림 전송: {scan.get('alert_count', 0)}종목")
         except Exception as e:
             logger.warning(f"[COO] 바닥신호 스캔 실패 (무시): {e}")
@@ -4909,12 +4915,18 @@ class TradingCOO:
             now = datetime.now(_KST_TZ)
             if not (dtime(9, 5) <= now.time() <= dtime(14, 0)):
                 return
-            if not self.trader:
+            # ★8/9 [F-127] — `self.trader`도 TradingCOO에 **없다**(KISTrader는
+            #   `auto_trader.trader`). 7/31 P0-3가 바로 위 KST NameError를 고치면서
+            #   5줄 아래 이 버그는 건드리지 않아, 봇시야는 "고쳤다" 선언 후에도
+            #   계속 죽었다(14일 140건 실측 — 전부 이 줄).
+            trader = getattr(self.auto_trader, "trader", None)
+            if not trader:
                 return
             from data.bot_view_broadcast import broadcast_now
-            msg = await asyncio.to_thread(broadcast_now, self.trader)
-            if msg and self._send_alert:
-                await self._send_alert(msg)
+            msg = await asyncio.to_thread(broadcast_now, trader)
+            alert_fn = getattr(self.auto_trader, "_send_alert", None)
+            if msg and alert_fn:
+                await alert_fn(msg)
             logger.info("[COO] [봇시야] 송출 완료")
         except Exception as e:
             logger.warning(f"[COO] 봇시야 송출 실패 (무시): {e}")
@@ -4932,8 +4944,9 @@ class TradingCOO:
             if not msg:
                 logger.debug("[COO] [상한가연속] 트리거 없음 — 스킵")
                 return
-            if self._send_alert:
-                await self._send_alert(msg)
+            alert_fn = getattr(self.auto_trader, "_send_alert", None)   # [F-127]
+            if alert_fn:
+                await alert_fn(msg)
             logger.info(f"[COO] [상한가연속] 알림 전송: {result.get('triggered_count', 0)}종목")
         except Exception as e:
             logger.warning(f"[COO] 상한가연속 추적 실패 (무시): {e}")
