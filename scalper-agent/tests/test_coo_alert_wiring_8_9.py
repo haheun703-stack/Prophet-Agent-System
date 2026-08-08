@@ -122,11 +122,20 @@ def test_03_정본_패턴_사용():
           'getattr(self.auto_trader, "trader", None)' in src, True)
 
 
+# fix **직전** 커밋 — 이 해시의 trading_coo.py 에 죽은 참조 8+2가 실재한다.
+# ★8/9 VPS 실측에서 또 잡혔다: 처음 `HEAD:`로 썼는데, fix를 커밋하는 순간 HEAD가
+#   **fix 후 코드**가 되어 음성 대조가 스스로 무너진다(로컬 PASS → VPS FAIL).
+#   ★이건 8/7에 `test_backlog_ledger_8_7.py`에서 **똑같이 겪고 고친 것**이다.
+#   교훈을 그 파일에만 적용하고 다음에 쓴 테스트엔 옮기지 않았다 —
+#   고친 것은 사례였고 습관이 아니었다.
+COO_PRE_FIX_REV = "65d6a4e"
+
+
 def test_04_음성대조_구코드():
-    print("\n[4] ★음성 대조 — fix 전 코드에서 실제로 잡히는가")
+    print(f"\n[4] ★음성 대조 — fix 전 코드({COO_PRE_FIX_REV})에서 실제로 잡히는가")
     rel = "scalper-agent/bot/trading_coo.py"
     try:
-        old = subprocess.run(["git", "show", f"HEAD:{rel}"], cwd=ROOT,
+        old = subprocess.run(["git", "show", f"{COO_PRE_FIX_REV}:{rel}"], cwd=ROOT,
                              capture_output=True, timeout=30).stdout.decode("utf-8")
     except Exception as e:  # noqa: BLE001
         print(f"  🚨 미검증 — git show 실패({e}). 음성 대조가 돌지 않았다(통과 아님).")
