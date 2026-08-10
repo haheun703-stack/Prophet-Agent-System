@@ -1023,15 +1023,38 @@ class KISTrader:
 
     def sell_market(self, code: str, qty: int, split: int = None,
                     manual: bool = False) -> dict:
-        """시장가 매도 - 분할 주문 지원"""
+        """시장가 매도 - 분할 주문 지원.
+
+        ★8/10 검수 [F-157] — 반환에 체결 수량을 실어 준다.
+          기존 반환은 `success`(=접수된 청크가 1개라도 있음)와 사람용 `message` 뿐이었다.
+          그래서 **3분할 중 1청크만 접수돼도 호출부는 "전량 매도 성공"으로 읽었다.**
+          `_reconcile_fill`(계좌 잔고 델타로 실제 체결을 추론하는 정본)은 이미 있었고
+          smart_buy·chase_buy·smart_sell 3곳이 쓰는데 **시장가 경로만 빠져 있었다** —
+          하필 hard_kill(-5% 최후 방어선)이 이 경로를 쓴다.
+          ★`success` 의미는 바꾸지 않았다(호출처 10곳 영향 0). 키만 추가한다:
+            filled_qty / requested_qty / partial
+        """
         if split is None:
             split = self.config.get("risk", {}).get("split_count", 3)
         split = max(1, min(split, 10))
 
         name = CODE_TO_NAME.get(code, code)
+        # 주문 前 보유 수량 — 체결 대조 기준선(smart_* 경로와 동일 규약)
+        qty_before = self._holding_qty_for_reconcile(code)
 
         if split <= 1 or qty <= 1:
-            return self._execute_sell(code, qty, name, manual=manual)
+            r = self._execute_sell(code, qty, name, manual=manual)
+            if not r.get("success"):
+                # 게이트 차단·주문 실패 — 대조할 것이 없다(잔고 조회 낭비 회피)
+                r.setdefault("filled_qty", 0)
+                r.setdefault("requested_qty", qty)
+                r.setdefault("partial", False)
+                return r
+            actual = self._actual_fill_qty(code, qty_before, "SELL", qty)
+            r["filled_qty"] = actual
+            r["requested_qty"] = qty
+            r["partial"] = actual < qty
+            return r
 
         # 분할 주문
         chunk = qty // split
@@ -1053,15 +1076,19 @@ class KISTrader:
                 time.sleep(0.3)
 
         success = total_filled > 0
+        # ★접수량(total_filled)이 아니라 **계좌 델타로 확인한 실체결**을 싣는다.
+        #   대조 불가(잔고 조회 실패)면 _actual_fill_qty 가 요청량을 돌려주므로 구동작과 동일(fail-open).
+        actual = self._actual_fill_qty(code, qty_before, "SELL", qty) if success else 0
         msg = f"분할 매도 {'완료' if success else '실패'}\n{name}({code}) {total_filled}/{qty}주 ({split}분할)"
-        if total_filled < qty:
-            msg += f"\n미체결: {qty - total_filled}주"
+        if actual < qty:
+            msg += f"\n미체결: {qty - actual}주 (실체결 {actual})"
 
         try:
             self._log_trade("SELL", code, name, total_filled, split)
         except Exception as e:
             logger.warning(f"매매일지 기록 실패 (SELL {code}): {e}")
-        return {"success": success, "message": msg}
+        return {"success": success, "message": msg,
+                "filled_qty": actual, "requested_qty": qty, "partial": actual < qty}
 
     def _execute_sell(self, code: str, qty: int, name: str,
                       manual: bool = False) -> dict:

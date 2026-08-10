@@ -37,7 +37,7 @@ Macro Strategy — 매크로 레짐별 대응 전략
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 from data.sajang_rules import SAJANG
 
@@ -292,8 +292,19 @@ def get_adjusted_sl(base_sl_pct: float = 0.035, regime: str = None) -> float:
         조정된 SL 비율 (예: 0.020 = -2.0%)
     """
     response = get_regime_response(regime)
-    # 레짐 SL이 기본값보다 타이트하면 레짐 SL 사용
-    return min(base_sl_pct, response.sl_pct)
+    # ★8/10 검수 [F-158] — 사장님 룰 3(매수가 -3% 일관) 하한을 건다.
+    #   기존 `min(base, regime)` 은 "레짐이 더 타이트하면 레짐을 쓴다"였고, 실측하면
+    #     스태그플레이션 sl_pct=0.020 → 실효 **-2.00%**
+    #     비용상승       sl_pct=0.025 → 실효 **-2.50%**
+    #   로 **룰보다 조여졌다**. 소비처 `auto_trader.py:3710`(loss_percent)은 라이브 매수 경로다.
+    #   ★[F-90](장중 눈 트레일링이 -1.5%로 조여지던 것)과 **정확히 같은 유형**이고,
+    #     이번엔 '레짐'이라는 이름 뒤에 숨어 있었다.
+    #   ★현재 무해했던 이유는 설계가 아니라 우연이다 — nightwatch_report 가 48h 초과면
+    #     '안정'(0.035)으로 폴백하고 금요일 산출분은 월요일에 72h 라, 레짐이 사실상 늘 '안정'이었다.
+    #     그 폴백이 고쳐지는 순간 위반이 즉시 유효해진다 → 순서 의존을 없애려 여기서 막는다.
+    #   ★느슨한 쪽(0.035)은 min 이 그대로 SAJANG 값으로 눌러 주므로 양방향 모두 룰에 고정된다.
+    rule_sl = SAJANG.NORMAL_SL_PCT / 100
+    return max(rule_sl, min(base_sl_pct, response.sl_pct))
 
 
 def get_adjusted_max_hold(base_days: int = 5, regime: str = None) -> int:
@@ -337,8 +348,12 @@ def get_strategy_dashboard() -> str:
         f"  레짐: {regime}",
         f"  투자비중 상한: {response.max_position_pct}%",
         f"  예산 배수: ×{response.budget_multiplier:.1f}",
-        f"  손절: -{response.sl_pct*100:.1f}%",
-        f"  트레일링: -{response.trailing_pct*100:.1f}%",
+        # ★8/10 검수 [F-161] — 사장님께 보여주는 값은 **실효값**이어야 한다.
+        #   기존: 레짐 정의값(sl_pct 2.0~3.5% / trailing_pct 1.5~2.0%)을 그대로 출력했는데,
+        #   손절은 [F-158] 하한으로 실효 -3% 이고 트레일링은 애초에 매매 소비가 0건이다
+        #   (룰 3 = 고점 -3% 일관). 정의값을 보여주면 룰이 두 개인 것처럼 읽힌다([F-109] 계열).
+        f"  손절: -{get_adjusted_sl(SAJANG.NORMAL_SL_PCT / 100, regime)*100:.1f}% (사장님 룰 하한 적용)",
+        f"  트레일링: -{SAJANG.TRAILING_PCT:.1f}% (룰 3 일관 · 레짐 정의 {response.trailing_pct*100:.1f}%는 미적용)",
         f"  최대 보유: {response.max_hold_days}일",
     ]
 

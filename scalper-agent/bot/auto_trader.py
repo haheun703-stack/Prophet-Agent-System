@@ -887,14 +887,12 @@ class AutoTrader:
                         if entry and not sl:
                             # 매크로 전략 기반 SL 조정
                             from data.sajang_rules import SAJANG
-                            try:
-                                from data.macro_strategy import get_adjusted_sl
-                                _base_sl = get_adjusted_sl(SAJANG.NORMAL_SL_PCT / 100)
-                            except Exception as _ms_e:
-                                # macro_strategy 실패 시 고정 SL(3.5%) 적용 → 변동성 미반영
-                                logger.warning(
-                                    f"[auto_trader] macro_strategy 실패 → 기본 SL 3.5% 적용: {_ms_e}"
-                                )
+                            # ★8/10 검수 [F-159] — 죽은 계산 + 거짓 주석 제거.
+                            #   기존: `_base_sl = get_adjusted_sl(...)` 를 부르고 **결과를 쓰지 않았다**
+                            #   (저장소 전체에서 _base_sl 사용 0건). 그리고 주석은 "실패 시 고정 SL
+                            #   3.5% 적용"이라 **코드와도(3.0%) SAJANG 과도** 달라, 읽는 사람이
+                            #   "레짐 SL 조정이 동작한다"고 오해하게 만들었다.
+                            #   실제 동작은 처음부터 사장님 룰 3 그대로다 = 매수가 -3%.
                             sl = SAJANG.get_normal_sl(entry)
                         if entry and not tp:
                             from data.sajang_rules import SAJANG

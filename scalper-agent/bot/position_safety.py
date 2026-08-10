@@ -518,38 +518,70 @@ def hard_kill_check(
                 try:
                     result = self.trader.sell_market(code, qty)
                     success = bool(result and result.get("success"))
+                    # ★8/10 검수 [F-157] — 실체결 수량으로 분기한다.
+                    #   기존: success 만 보고 **메모리에서 포지션을 지웠다.**
+                    #   그런데 sell_market 의 success 는 "분할 중 1청크라도 접수됨"이라
+                    #   부분체결에도 True 였고, 그때 아래 연쇄가 돌았다:
+                    #     ①메모리 삭제 → ②KIS 에 잔량 존재 → ③5분 뒤 sync_positions 케이스 A 가
+                    #     `source="sync_auto_unknown"` 으로 재등록 → ④_is_protected 가
+                    #     `sync_auto*` 를 보호로 판정 → **그 종목은 영구히 hard_kill 대상 밖**.
+                    #   = 최후 방어선이 부분체결 1회로 스스로를 무장해제한다.
+                    #   ★이 경로는 8/10 dry_run 해제([F-91])로 **처음 열렸다** — 켠 쪽이 감사했다.
+                    filled = int((result or {}).get("filled_qty", qty if success else 0) or 0)
+                    fully_closed = success and filled >= qty
                     logger.critical(
                         f"[HARD_KILL] 💀 시장가 매도: {name}({code}) "
-                        f"qty={qty} success={success} result={result}"
+                        f"qty={qty} 체결={filled} success={success} result={result}"
                     )
                     killed.append({
                         "code": code, "name": name,
                         "loss_pct": loss_pct,
-                        "action": "KILLED" if success else "FAILED",
+                        "action": "KILLED" if fully_closed else ("PARTIAL" if filled > 0 else "FAILED"),
                         "qty": qty,
+                        "filled_qty": filled,
                         "result": result,
                     })
 
-                    if success:
-                        # 메모리 정리
+                    if success and not fully_closed:
+                        # 부분체결 — 지우지 않는다. 수량만 줄여 **원래 source 를 유지**해
+                        # 다음 사이클에도 hard_kill 사정권에 남긴다(위 연쇄 차단).
+                        if code in self._positions:
+                            self._positions[code]["qty"] = max(0, qty - filled)
+                            self._save_positions()
+                        logger.critical(
+                            f"[HARD_KILL] ⚠️ 부분체결 {filled}/{qty} — 포지션 유지"
+                            f"(잔량 {qty - filled}주, 다음 사이클 재시도). "
+                            f"삭제 시 sync_auto 재등록으로 보호 전환되어 방어선을 벗어난다."
+                        )
+
+                    if fully_closed:
+                        # 메모리 정리 (전량 청산 확인된 경우만)
                         if code in self._positions:
                             del self._positions[code]
                             self._save_positions()
 
-                        # trade_journal 표준 적재 (박사 fix 5/21 19:45: 화이트리스트 안전 매핑)
-                        # bkit:code-analyzer 발견: "hard_kill"/"hard_kill_check" 화이트리스트 없음
-                        # → "sell_sl" (손절 류) + "guardian" (안전장치 매도) 사용
+                    # trade_journal 표준 적재 (박사 fix 5/21 19:45: 화이트리스트 안전 매핑)
+                    # bkit:code-analyzer 발견: "hard_kill"/"hard_kill_check" 화이트리스트 없음
+                    # → "sell_sl" (손절 류) + "guardian" (안전장치 매도) 사용
+                    # ★8/10 [F-157] — 조건을 `fully_closed` 가 아니라 **`filled > 0`** 으로 둔다.
+                    #   부분체결도 실제로 팔린 수량만큼 손익이 확정되는데, 전량일 때만 적재하면
+                    #   그 손익이 장부에서 사라진다(5/22 "guardian 가짜 매도 회계 결함"과 같은 자리).
+                    #   qty 도 요청량이 아니라 **실체결량**을 넣는다.
+                    if filled > 0:
                         try:
                             from data import trade_journal as _tj
                             _tj.log_sell(
-                                code=code, name=name, qty=qty,
+                                code=code, name=name, qty=filled,
                                 sell_price=current_price,
                                 buy_price=buy_price,
                                 event_type="sell_sl",     # 화이트리스트 호환 (손절 류)
                                 source="guardian",         # 화이트리스트 호환 (안전장치)
                                 order_no=(result or {}).get("order_no")
                                           or (result or {}).get("ODNO"),
-                                note=f"hard_kill: -{kill_pct*100:.0f}% 강제매도 (손실 {loss_pct*100:+.2f}%)",
+                                note=(f"hard_kill: -{kill_pct*100:.0f}% 강제매도 "
+                                      f"(손실 {loss_pct*100:+.2f}%"
+                                      + (f" · 부분체결 {filled}/{qty}" if not fully_closed else "")
+                                      + ")"),
                             )
                         except Exception as _tj_e:
                             logger.warning(f"[HARD_KILL] trade_journal 실패: {_tj_e}")
@@ -670,8 +702,43 @@ def process_pending_sells(self):
             try:
                 result = self.trader.sell_market(code, qty)
                 success = bool(result and result.get("success"))
+                # ★8/10 검수 [F-157] — 큐 경로도 hard_kill 과 **같은 결함**이었다.
+                #   success(=1청크 접수)만 보고 ①메모리 삭제 ②`del pending[code]` 를 했다.
+                #   부분체결이면 잔량이 KIS 에 남는데 **메모리·큐 양쪽에서 사라져**
+                #   sync 케이스 A 가 sync_auto_unknown 으로 재등록 → 보호 → 최후 방어선 밖.
+                #   큐는 "장외 도달분을 다음 시초에 반드시 판다"는 예약 안전망인데
+                #   그 안전망까지 같이 없어졌다.
+                filled = int((result or {}).get("filled_qty", qty if success else 0) or 0)
+                fully_closed = success and filled >= qty
 
-                if success:
+                if success and not fully_closed:
+                    # 부분체결 — 메모리 유지(수량만 감액·source 보존) + **큐에도 잔량으로 남긴다**
+                    if code in self._positions:
+                        self._positions[code]["qty"] = max(0, qty - filled)
+                        self._save_positions()
+                    info["qty"] = max(0, qty - filled)
+                    pending[code] = info
+                    logger.critical(
+                        f"[QUEUE] ⚠️ 부분체결 {filled}/{qty} — 잔량 {qty - filled}주 큐 유지"
+                        f"(다음 사이클 재시도). 큐에서 빼면 방어선 밖으로 나간다."
+                    )
+                    if filled > 0:
+                        try:
+                            from data import trade_journal as _tj
+                            _tj.log_sell(
+                                code=code, name=name, qty=filled,
+                                sell_price=buy_price, buy_price=buy_price,
+                                event_type="sell_sl", source="guardian",
+                                order_no=(result or {}).get("order_no")
+                                          or (result or {}).get("ODNO"),
+                                note=f"pending_sells 큐 부분체결 {filled}/{qty}: {queued_reason}",
+                            )
+                        except Exception as _tj_e:
+                            logger.warning(f"[QUEUE] trade_journal 실패: {_tj_e}")
+                    processed.append({"code": code, "name": name, "action": "PARTIAL",
+                                      "filled_qty": filled, "remain": qty - filled})
+
+                if fully_closed:
                     # 현재가 조회 (실현 손익 추정)
                     sell_price = buy_price
                     try:
@@ -719,7 +786,9 @@ def process_pending_sells(self):
                         "loss_pct": actual_loss,
                     })
                     del pending[code]
-                else:
+                elif not success:
+                    # ★`else` 로 두면 부분체결(success=True·fully_closed=False)이 여기로 떨어져
+                    #   "실패"로 이중 기록된다 — 위 PARTIAL 분기와 충돌. 조건을 명시한다.
                     logger.error(
                         f"[QUEUE] ❌ 시초 매도 실패: {name}({code}) result={result}"
                     )
