@@ -644,11 +644,21 @@ def synthesize(buf: IntradayBuffer, ma: dict, vwap_pos: dict,
     if resistances and flow.get("volume_acceleration", 0) >= 1.5 and flow.get("flow_state") == "INFLOW":
         nearest_res = resistances[0].get("price", 0)
         if nearest_res > 0 and price > nearest_res:
+            # ★8/10 [F-90] 잔여 2분기 중 하나 — 사장님 룰 3(고점 -3% 일관) 복구.
+            #   기존: trailing_sl = nearest_res(돌파한 저항선) 그대로.
+            #   돌파 직후엔 저항선이 고점 바로 아래라 고점 -1% 수준까지 조여질 수 있었고,
+            #   auto_trader:4136 ratchet(new_sl > 기존일 때만 갱신)이 **조이는 값만 채택**하므로
+            #   룰(-3%)보다 타이트한 값이 그대로 :4496 effective_sl → 실매도로 갔다.
+            #   ★반대로 저항선이 훨씬 아래면 룰보다 느슨해지는데 그것도 룰 위반이다
+            #     ("-3%에서 자른다"인데 -10%까지 버티는 것) → 분기별 변형을 두지 않고 통일.
+            #   S/R 정보는 사유 문자열에 남겨 관측성은 유지한다.
+            from data.sajang_rules import SAJANG
+            today_high = sr.get("today_high", price)
             return (
                 "BREAKING", 0.85,
                 f"{nearest_res:,} 돌파 + 거래량 {flow['volume_acceleration']:.1f}x",
                 "HOLD",
-                {"trailing_sl": nearest_res, "tp_adjust": "UP"},
+                {"trailing_sl": SAJANG.get_trailing_sl(today_high), "tp_adjust": "UP"},
             )
 
     # DYING: 역배열 + VWAP 하회 + OUTFLOW + REVERSING
@@ -682,11 +692,17 @@ def synthesize(buf: IntradayBuffer, ma: dict, vwap_pos: dict,
     if (strong_supports and flow.get("volume_trend") in ("INCREASING", "SURGING")
             and flow.get("strength", 0) >= 100 and prev_verdict in ("DYING", "WEAKENING", "BOUNCING")):
         nearest_sup = strong_supports[0]["price"]
+        # ★8/10 [F-90] 잔여 2분기 중 나머지 — 사장님 룰 3(고점 -3% 일관) 복구.
+        #   기존: int(nearest_sup * 0.995) = 지지선 -0.5% 하드코딩.
+        #   지지선이 고점 가까이 있으면 고점 -2% 수준으로 조여져 룰을 넘었다(BREAKING과 동형).
+        #   이로써 trailing_sl 산출 4분기(BREAKING·BOUNCING·ALIVE·WEAKENING)가 전부 SAJANG 경유.
+        from data.sajang_rules import SAJANG
+        today_high = sr.get("today_high", price)
         return (
             "BOUNCING", 0.70,
             f"{nearest_sup:,} 지지 {strong_supports[0]['touches']}회 + 체결강도 {flow['strength']:.0f}",
             "HOLD",
-            {"trailing_sl": int(nearest_sup * 0.995)},
+            {"trailing_sl": SAJANG.get_trailing_sl(today_high)},
         )
 
     # ── 2차: 복합 점수 기반 ──

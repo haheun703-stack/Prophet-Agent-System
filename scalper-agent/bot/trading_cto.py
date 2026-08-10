@@ -20,6 +20,12 @@ logger = logging.getLogger("BH.CTO")
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data_store"
+
+# ★8/10 — 리포트에 찍히는 룰 수치를 SAJANG 단일진실에서 파생시키기 위한 import.
+#   "CTO 오류가 매매를 차단하는 일은 절대 없음" 원칙은 유지된다: 이 모듈은 순수 상수 정의라
+#   부작용·네트워크·파일 IO 가 없고, 실패하면 어차피 매매 코드 전체가 못 뜬다(같은 모듈을 쓴다).
+from data.sajang_rules import SAJANG as _SAJANG
+
 PARAMS_PATH = DATA_DIR / "cto_params.json"
 FEATURES_PATH = DATA_DIR / "cto_features.json"
 SIGNALS_PATH = DATA_DIR / "cto_signals.json"
@@ -78,18 +84,24 @@ class TradingCTO:
             "min_pct": 30,
             "max_pct": 120,
         },
+        # ★8/10 [F-90] 관련 정정 — 매매 무해하나 사장님께 보고되는 값이 틀렸다.
+        #   이 dict 는 :351-355 "주요 파라미터" **텔레그램 리포트 출력에만** 쓰인다
+        #   (get_param/get_params 호출처 0건 · cto_params.json 부재 · 매매 판정 소비 0건 — 4중 확인).
+        #   그런데 값이 5/25 사장님 룰로 폐기된 것들이었다: alive_trailing_sl 0.985(=고점 -1.5%)·
+        #   bouncing_sl 0.995·trailing_pct 2.0·sl_pct 3.5. 정본은 SAJANG(트레일링 3.0·SL 3.0).
+        #   ★[F-109]와 같은 모양 — **코드에 단일진실을 둬도 사장님이 보는 화면이 폐기된 값을
+        #     말하면 룰이 두 개인 것과 같다.** 실측 대조 대신 SAJANG 에서 파생시켜 어긋날 수 없게 한다.
         "eye": {
             "min_score": 50,
             "poll_interval": 10,
             "sr_touch_pct": 0.003,
-            "bouncing_sl": 0.995,
-            "alive_trailing_sl": 0.985,
-            "weakening_trailing_sl": 0.975,
+            # 4분기(BREAKING·BOUNCING·ALIVE·WEAKENING) 전부 SAJANG 경유로 통일됨(8/10)
+            "trailing_sl_ratio": round(1 - _SAJANG.TRAILING_PCT / 100, 4),
             "min_strength_weak": 90,
         },
         "risk": {
-            "sl_pct": 3.5,
-            "trailing_pct": 2.0,
+            "sl_pct": _SAJANG.NORMAL_SL_PCT,
+            "trailing_pct": _SAJANG.TRAILING_PCT,
             "max_hold_days_momentum": 5,
             "daily_loss_limit": 500000,
             "reserve_ratio": 0.10,

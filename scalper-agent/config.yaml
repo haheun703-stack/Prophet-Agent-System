@@ -281,8 +281,17 @@ bot:
     sync_enabled: true           # KIS↔메모리 동기화 (메모리 누락 사고 0)
     enforce_sl_enabled: true     # SL=None 강제 세팅 (sl_disabled 종목은 보호)
     hard_kill_enabled: true      # -5% 강제 매도 (사장님 보호 종목 제외)
-    hard_kill_pct: 0.05          # -5% 킬 라인
-    hard_kill_dry_run: true      # 5/22 검증: true (로그만) → 5/26 실전: false
+    # ★8/10 [F-91] hard_kill_pct 제거 — SAJANG.HARD_KILL_PCT 단일진실로 위임.
+    #   position_safety.py:601 `cfg.get("hard_kill_pct", HARD_KILL_PCT)`가 키 부재 시
+    #   SAJANG 파생값(0.05)을 쓴다. 값 동일·동작 무변경이고, 사장님이 룰을 고치면
+    #   레지스트리 한 곳만 바꾸면 되게 한다(5/26 사고 구조 = 룰을 고쳐도 매매가 안 바뀜).
+    # ★8/10 [F-91] dry_run true → false — 66일 지연된 사장님 지시 이행.
+    #   이 줄은 스스로 "5/26 실전: false"라 적어 놓고 값은 true 였다 = 값이 자기 주석과 모순.
+    #   그동안 -5% 최후 방어선(5/21 로킷헬스케어 -15.4% 사고의 처방)이 로그만 찍고 있었다.
+    #   ★지금 실주문은 여전히 0 — trade_runtime_config.evaluate_auto_order:119 가
+    #     PAPER_ONLY 를 **첫 검사에서** SELL 포함 전 자동주문 차단(실측 확인).
+    #     즉 이 변경은 "재가동 시 방어선이 실제로 작동한다"를 켜는 것이다.
+    hard_kill_dry_run: false     # 5/22 검증: true(로그만) → 5/26 실전: false (8/10 이행)
 
   # ★ 5/21 22:30 박사 자율 — 통합 의사결정 (사장님 22:00 + 22:30 명령) ★
   # 정보봇 악재 + VWAP 상/중/하 + 시총별 SL + 상승/하락 추매 통합 판정
