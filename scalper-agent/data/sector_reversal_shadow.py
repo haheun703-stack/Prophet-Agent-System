@@ -1,6 +1,13 @@
 # -*- coding: utf-8 -*-
 """Sector reversal shadow recorder (6/9 사장님 지시) — 6/10~6/12 자동 적재.
 
+★★★ 8/10 — 전략(S-6)은 폐기됐으나 이 모듈은 **삭제 금지** ★★★
+  S-6 판정 미달로 shadow 적재 배선(nightly ③ · 봇 15:50 job)은 제거됐다. 그러나 이 파일의
+  `_daily_rows`는 아래 4개 모듈이 import 하는 **일봉 판독 단일진실**이라 지우면 그것들이 죽는다:
+    data/early_variant_shadow.py:39 (nightly ③-2) · data/reentry_shadow.py:37 (nightly ③-3)
+    data/paper_sim_portfolio.py:214 · tools/reentry_ticks_precision_7_7.py:45
+  즉 build_shadow/update_forward는 이제 수동 재개 전용이고, _daily_rows는 현역이다.
+
 배경: 강한섹터(HOT) 판정이 momentum_5d(5일창)이라 급락 후 V자 당일반전을
 하루 늦게 잡는다(6/9 반도체 RS+7.7·거래대금1위인데 5d=COLD 미선정).
 → HOT_5D(기존 5일 선정)와 REVERSAL_D0(당일 급반등·HOT 미선정)을 둘 다 shadow로

@@ -36,7 +36,7 @@
 |------|------|------|
 | **08:30** | **아침 점검 A1~A6·A9 자동 + 텔레그램** (7/31 F-29 신설) | `logs/daily_ops_check.log` |
 | 17:45 | VPS 코드 자동배포 (deploy_pull) | — |
-| 18:00 | **nightly 관측 파이프라인** (①fill→⑳freshness, 현재 29단계) | `logs/nightly.log` |
+| 18:00 | **nightly 관측 파이프라인** (①fill→⑳freshness, **29단계** — 8/10 S-6 폐기로 ③ 제거) | `logs/nightly.log` |
 | 19:40 | foreign_exh 소진율 재수집 (네이버 저녁 게시분) | `logs/foreign_exh_late.log` |
 | 20:10 | **데이터 수집완료 텔레그램 요약** → 사장님 발송 | `logs/notify_freshness.log` |
 | 20:30 | VPSSync (노트북 미러 수신 — 노트북 켜져 있을 때) | 로컬 |
@@ -329,6 +329,11 @@
 - **[F-147]** (8/9) **★테스트처럼 생겼으나 실행 경로가 없다 (MED)** — `tests/test_flow_collector_naver_frgn.py`(115줄)는 `__main__` **0건**이고 pytest 픽스처(`tmp_path`/`monkeypatch`)를 쓰는데 **pytest 미설치·`pytest.ini`/`conftest.py`/`pyproject.toml` 전부 0건**([F-119]). 즉 **어떤 경로로도 돌 수 없어 회귀 보호가 0**인데 파일명·구조는 보호가 있는 것처럼 보인다. ★같은 검사에서 무근거 삭제를 막은 대조도 함께 확인 = `bot/test_scenario_fields_5_31.py`·`test_score_kki_5_31.py`·`tools/test_zerorow_guard_6_22.py`는 **모듈 레벨에서 실행되므로 살아있다**(죽지 않았다). ★교훈=**"테스트가 있다"≠"테스트가 돈다"** — 5/25 "단위 PASS ≠ 실제 적용"의 한 층 앞.
 - **[F-148]** (8/9) **살아있는 모듈 안의 고아 함수 14개 (LOW·[F-70] 확장)** — 각각 **전 프로젝트에서 자기 `def` 줄 1건만** 존재(문자열·문서·cron 포함 토큰 인덱스로 확인·동적 디스패치 0). ★패턴 2가지가 의미 있다: ①**"목표가 API" 3종 세트가 통째로 미배선** — `premium_levels.get_target_levels`·`gap_support.get_gap_target_levels`·`equal_level_detector.get_eq_target_levels`(세 모듈 자체는 라이브·다른 함수는 쓰임) ②**반쪽 CRUD** — `event_detector`에서 `get/update/remove_macro_theme`는 `telegram_bot`이 쓰는데 **`add_macro_theme`만 호출자 0** = 매크로 테마를 **추가할 방법이 없다**. 나머지=`collect_5min_yfinance`·`fetch_post_bars_ohlc`·`scan_candidates_trix`·`get_regime_context`·`score_quant_candidate`·`detect_gap_realtime`·`_fetch_foreign_rate_kis_snapshot`·`get_policy_bonus`·`get_hot_theme_codes`·`get_etf_market_direction`.
 - **[F-146 보강]** `data/csv_loader.py`는 `class CSVLoader`만 정의하는데 `data/flowx_universe_updater.py:133`이 `from data.csv_loader import load_stock_data`를 부른다 — **저장소 전체에 그 이름이 없다**(phantom 12번째·[F-74] 기존 지적 재확인).
+
+**8/10 등재 — S-6 폐기 작업 중 발견**
+
+- **[F-149]** (8/10) **★활성 전략이 0이 되면 A9가 영구 초록불 (MED — 8/29 도래)** — S-6 폐기로 `strategy_deadlines.json`의 `status=='active'`가 **S-1 하나만** 남았다. 지금은 S-1이 매일 ❌미달로 alerts를 띄워 무음이 아니지만, **8/29에 S-1이 판정되면 active=0 → ⑲-4 alerts=0 → `daily_ops_check:341 check_a9_deadlines`가 alerts만 보므로 아침 A9 영구 초록불**이 된다. 그 뒤로는 대장이 깨져도(스키마 변형 [F-36]·장부 손상 [F-108]) 어느 계층도 짖지 않는다. ★이건 8/5 [F-108] 원 진단이 *"8/7에 S-6가 정리되면 8/8~8/25 alerts=0"*로 예고했던 상태가 **S-1 하나 덕분에 미뤄졌을 뿐**임을 뜻한다 — 예고가 빗나간 게 아니라 **유예된 것**이다. fix 방향 = "active 전략 0건"을 정상이 아니라 **WARN**으로(운영기에 심판할 전략이 없다 = 진화가 멈춘 상태) + `score` 경로도 A9 판정에 반영([F-108] fix가 alerts만 승격한 절반).
+- **[F-150]** (8/10) **DAILY_ROUTINE의 nightly 단계 수가 실제와 1 어긋나 있었다 (LOW)** — §2 표가 *"현재 29단계"*라 적고 있었으나 8/10 이전 실제는 **30단계**였다(nightly.log `요약: 30/30`·AST 실측 30). 오늘 ③ 제거로 우연히 29가 되어 **틀린 숫자가 저절로 맞아버린** 자리다. A2 판정은 로그 한 줄 안의 `ok == total` 동적 비교라 **판정에는 영향 없었다**(하드코딩 없음을 확인함). 그래서 LOW지만, 성격은 [F-100]/[F-110] 계열 — **문서가 구현을 안 세고 적은 수치**. 근본 처방은 문서에 숫자를 적지 않거나(범위 표기) pre-commit이 세는 것. ★기록 이유 = *우연히 맞은 것을 맞았다고 두면 다음에 또 어긋난다.*
 
 ## §5. 자기성찰 템플릿 (매일 업무일지 마지막 섹션)
 

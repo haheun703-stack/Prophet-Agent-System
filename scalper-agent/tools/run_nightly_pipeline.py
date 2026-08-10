@@ -5,12 +5,15 @@
   - 해결: fill을 먼저 돌리고 그 뒤에 shadow/paper를 둬서 forward 당일 충전.
 
 순서(★fill 후 shadow/paper = forward 지연 해결★):
-  ① fill 4-way → ② step6 sync → ②-2 missed_gainers backfill → ③ shadow(build+forward) → ④ paper 3-Type
+  ① fill 4-way → ② step6 sync → ②-2 missed_gainers backfill → ③-2 early variant shadow
+  → ③-3 reentry shadow → ③-4 theme relay shadow → ④ paper 3-Type
   → ⑤ paper forward 충전 → ⑥ 수급 4종 → ⑦ 11주체 → ⑧ 국적별 → ⑨ F1
   - ②-2(6/23 신설): 일봉 늦은 적재일 missed_gainers self-heal 재생성(fill·sync 직후).
-  - 관측 3단계(shadow·paper build·paper forward)는 일봉만 필요 → fill 직후 실행(수급보다 앞).
+  - ★③(sector_reversal shadow)은 8/10 S-6 판정 폐기로 제거됐다(사장님 결정). ③-2~③-4는 유지.
+    이 docstring이 제거 후에도 ③을 나열하고 있어 8/10 Tier2에서 같이 정정했다 — 실제
+    단계 수는 **29**다([F-150]: 문서가 구현을 안 세고 적으면 조용히 어긋난다).
+  - 관측 단계(shadow·paper build·paper forward)는 일봉만 필요 → fill 직후 실행(수급보다 앞).
   - ⑤(6/15 신설): paper는 ④에서 코호트 생성만 → forward는 과거 코호트 대상이라 별도 단계.
-    shadow가 ③에서 build+forward를 묶는 것과 동일 취지(H-3 dead code 해소).
 
 안전:
   - 봇 OFF·매수 무접촉·실주문0·SAJANG 무변경(데이터/관측 전용, 검증된 진입점만 호출).
@@ -82,8 +85,11 @@ def main():
          [PY, "-c", "import collect_all; collect_all.step6_sync_stock_data_daily()"], 600),
         ("②-2 missed_gainers backfill",   # 6/23 STALE 사고 fix — 일봉 늦은 적재일 self-heal 재생성(① fill·② sync 직후)
          [PY, "tools/run_missed_gainers_backfill.py"], 300),
-        ("③ shadow build+forward",
-         [PY, "tools/run_sector_reversal_shadow_daily.py"], 600),
+        # ③ sector_reversal shadow — ★8/10 S-6 판정 폐기(사장님 결정)로 제거.
+        #   판정 결과: 표본 188건·forward d1/d3/d5 3지평 전부 미달·신호 등급 역단조(HOT −9.78)·승률 29.0%.
+        #   ★ data/sector_reversal_shadow.py 모듈은 삭제하지 않는다 — _daily_rows가 ③-2·③-3·
+        #     paper_sim_portfolio·reentry_ticks_precision 4개 모듈의 일봉 단일진실이라 지우면 그것들이 죽는다.
+        #   재개는 tools/run_sector_reversal_shadow_daily.py 수동 실행(보존됨).
         ("③-2 early variant shadow",   # 6/16 초입 포착 strict/early 병렬 shadow(매수 무접촉·관측 전용)
          [PY, "tools/run_early_variant_shadow_daily.py"], 600),
         ("③-3 reentry shadow",   # 6/18 재진입 룰 시뮬(early 후보 소비·손절+재진입 vs 손절만 vs 홀딩·관측 전용)

@@ -1,6 +1,13 @@
 # -*- coding: utf-8 -*-
 """Sector reversal shadow 자동 적재 러너 (6/9 사장님: "스케줄표에 맞게 알아서 자동 적재").
 
+★★★ 8/10 폐기 — 자동 호출 경로 없음 (S-6 판정, 사장님 결정) ★★★
+  판정: 표본 188건 · forward d1/d3/d5 3지평 전부 미달 · 등급 역단조(HOT −9.78) · 승률 29.0%.
+  nightly ③ 스텝과 봇 15:50 job이 둘 다 제거됐다. 이 파일은 **재현·감사·수동 재개용 보존**
+  (S-2 클러스터 수확 선례). 돌리려면 아래 실행줄로 직접 호출해야 한다 — 자동으로는 안 돈다.
+  ※ data/sector_reversal_shadow.py 모듈 자체는 살아 있다: _daily_rows가 ③-2·③-3·
+    paper_sim_portfolio·reentry_ticks_precision의 일봉 단일진실이라 폐기 대상이 아니다.
+
 봇 OFF 유지 중 OS 스케줄러(매일 15:50 + 로그온 캐치업)가 호출한다.
 self-heal 캐치업: 디바이스 시작일(=가장 이른 기록일)부터 오늘까지의 미기록 거래일만
 pykrx as_of로 채운다 → update_forward 1회. 노트북 1대가 15:50에 꺼져 있어도 다음에

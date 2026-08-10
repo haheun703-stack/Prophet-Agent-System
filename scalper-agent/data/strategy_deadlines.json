@@ -76,8 +76,11 @@
       "criteria": "forward_d1/d3/d5로 status_5d(HOT/WARMING/RELAY 등) 라벨별 엣지 유무 정식 판정",
       "metric": null,
       "on_fail": "폐기 (nightly ③ 제외) 또는 게이트 결합",
-      "status": "active",
-      "note": "S-5 판정 중 forward 보유 확인돼 승격. 다음 심판 8/7."
+      "status": "dropped_strategy",
+      "reported": "2026-08-07",
+      "evidence": "표본 188건 · forward_d1/d3/d5 3개 지평 전부 미달 · 신호 등급 역단조(status_5d d5: HOT -9.78 / RELAY -6.69 / WARMING -4.50 = 강한 등급일수록 나쁨) · 선정 리프트 -3.12%p · 승률 29.0%. 판정기는 8/5 [F-106] fix 후 버전(측정 불가를 미달로 접지 않음·MIN_JUDGE_N 정본 import) — 표본 144~155건·유효버킷 3개로 '판정 가능' 상태에서 낸 미달. 시장 대비 초과수익(-6.39)은 [F-107]로 지표 자체에 비관 편향이 있어 근거에서 제외했고, 그것을 빼도 ①3지평 미달 ②등급 역단조만으로 결론 불변.",
+      "decision": "2026-08-10 사장님 결정 — 폐기 확정(nightly ③ 제외). 의존성 추적 결과 배선만 제거하고 코드는 보존: ①nightly ③ 스텝 제거 ②봇 job _job_sector_reversal_shadow + 15:50 스케줄 등록 제거(같은 전략의 두 번째 실행 경로 — 한쪽만 빼면 재가동 시 되살아남) ③★data/sector_reversal_shadow.py 모듈은 존치 — _daily_rows가 early_variant_shadow·reentry_shadow·paper_sim_portfolio·reentry_ticks_precision_7_7 4개 모듈의 일봉 단일진실이라 삭제 시 ③-2·③-3 동반 사망 ④러너 tools/run_sector_reversal_shadow_daily.py·판정도구 tools/manual/s6_sector_reversal_judge.py 보존(재현·감사·수동 재개용, S-2 선례). 반대방향 누락 점검: sector_reversal_shadow.json은 ⑳ 신선도·sync CORE_FILES 양쪽 미등재라 제거할 등재 항목 없음(sync 제외는 6/10 사장님 결정 — sync_from_vps.py:111).",
+      "note": "S-5 판정 중 forward 보유 확인돼 승격. 8/7 D-DAY 도래 → 8/10 폐기 확정(기한초과 3일)."
     }
   ],
   "hold": [
