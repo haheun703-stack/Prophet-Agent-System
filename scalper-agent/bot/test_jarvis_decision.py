@@ -146,20 +146,44 @@ class TestDecideAction(unittest.TestCase):
         print("  ✅ T06 PASS: VWAP 하단 + 손실 → RECOVERY_ADD")
 
     def test_07_sl_large(self):
-        """[대형주 -10%] SL_LARGE."""
+        """[대형주 -11%] SL_SMALL — ★시총별 차등 SL은 폐기됐다.
+
+        ★8/10 정정 ([F-119] 러너 신설로 53일 만에 처음 실행돼 드러남).
+        이 테스트는 5/21 설계(대형 -10% / 중형 -5% / 소형 -3%)를 정답으로 주장하고 있었으나,
+        그 룰은 **5/25 사장님 룰 "고점 -3% 일관"으로 폐기**됐고 6/18에 SAJANG 단일진실로
+        통일됐다(`jarvis_decision.py:234-236` 주석이 폐기를 명시).
+        ★위험했던 지점: 이 테스트를 "통과시키려" 코드를 고쳤다면 **폐기된 시총별 SL을
+        되살려 사장님 룰을 위반**하게 된다. 낡은 테스트가 폐기된 룰을 가리키는 함정이었다.
+        → 기대값을 현행 룰(SAJANG.get_normal_sl · 시총 무관 -3%)로 정정한다.
+        """
         pos = {"_code": "005380", "buy_price": 100000, "source": "asset_pool"}
         with self._stub_no_negative(), self._stub_vwap("MIDDLE", 1.0), self._stub_tier("LARGE", 15000):
-            action, _ = decide_action(pos, 89000)  # -11%
-        self.assertEqual(action, ACTION_SL_LARGE)
-        print("  ✅ T07 PASS: 대형주 -10% → SL_LARGE")
+            action, reason = decide_action(pos, 89000)  # -11%
+        self.assertEqual(action, ACTION_SL_SMALL)
+        self.assertIn("SAJANG", reason)          # 하드코딩 복귀 감시
+        print("  ✅ T07 PASS: 대형주 -11% → SL_SMALL (시총 무관 SAJANG -3% 일관)")
 
     def test_08_sl_mid(self):
-        """[중형주 -5%] SL_MID."""
+        """[중형주 -6%] SL_SMALL — 위와 같은 이유(시총별 차등 폐기)."""
         pos = {"_code": "217590", "buy_price": 100000, "source": "asset_pool"}
         with self._stub_no_negative(), self._stub_vwap("MIDDLE", 1.0), self._stub_tier("MID", 5000):
-            action, _ = decide_action(pos, 94000)  # -6%
-        self.assertEqual(action, ACTION_SL_MID)
-        print("  ✅ T08 PASS: 중형주 -5% → SL_MID")
+            action, reason = decide_action(pos, 94000)  # -6%
+        self.assertEqual(action, ACTION_SL_SMALL)
+        self.assertIn("SAJANG", reason)
+        print("  ✅ T08 PASS: 중형주 -6% → SL_SMALL (시총 무관 SAJANG -3% 일관)")
+
+    def test_07b_sl_large_mid_constants_unused(self):
+        """★ACTION_SL_LARGE/MID 가 매매 판정에 되살아나지 않는지 감시 (8/10 신설).
+
+        위 두 테스트의 기대값을 바꾸면 '폐기 확인'이 사라진다. 상수 자체는 로그 라벨로
+        남아 있으므로, **판정 분기에서 반환되지 않는다**는 사실을 별도로 고정해 둔다.
+        """
+        import inspect
+        import bot.jarvis_decision as jd
+        src = inspect.getsource(jd.decide_action)
+        self.assertNotIn("return ACTION_SL_LARGE", src, "시총별 SL 부활 — 5/25 사장님 룰 위반")
+        self.assertNotIn("return ACTION_SL_MID", src, "시총별 SL 부활 — 5/25 사장님 룰 위반")
+        print("  ✅ T07b PASS: 시총별 SL 분기 부재 확인 (폐기 유지)")
 
     def test_09_sl_small(self):
         """[소형주 -3%] SL_SMALL."""
@@ -169,13 +193,24 @@ class TestDecideAction(unittest.TestCase):
         self.assertEqual(action, ACTION_SL_SMALL)
         print("  ✅ T09 PASS: 소형주 -3% → SL_SMALL")
 
-    def test_10_take_profit_10(self):
-        """[+10% 수익] TAKE_PROFIT."""
+    def test_10_no_fixed_take_profit(self):
+        """[+11% 수익] HOLD — ★고정 TP는 폐기됐다. 청산은 트레일링이 한다.
+
+        ★8/10 정정 ([F-119]). 원래 이 테스트는 +10%에서 TAKE_PROFIT을 정답으로 주장했는데,
+        **사장님 룰 1 = 트레일링 only · 고정 TP 폐기**(`SAJANG.FIXED_TP_DISABLED=True` ·
+        `get_take_profit()=0`)라 현행 코드는 HOLD가 옳다(`jarvis_decision.py:246-248`).
+        ★이 테스트를 통과시키려 코드를 고쳤다면 **폐기된 고정 +TP를 부활**시켰을 것이다.
+        → 이제 "고정 TP가 발동하지 않는다"를 검증하는 테스트로 뒤집는다.
+        """
         pos = {"_code": "066570", "buy_price": 100000, "source": "asset_pool"}
         with self._stub_no_negative(), self._stub_vwap("MIDDLE", 1.0), self._stub_tier("LARGE", 30000):
             action, _ = decide_action(pos, 111000)  # +11% (VWAP 중간이라 피라미딩 X)
-        self.assertEqual(action, ACTION_TAKE_PROFIT)
-        print("  ✅ T10 PASS: +10% 수익 → TAKE_PROFIT (smart_sell 지정가)")
+        self.assertEqual(action, ACTION_HOLD, "고정 TP 부활 — 사장님 룰 1(트레일링 only) 위반")
+        # 뿌리까지 고정: SAJANG 단일진실이 실제로 0을 주는지
+        from data.sajang_rules import SAJANG
+        self.assertTrue(SAJANG.FIXED_TP_DISABLED, "FIXED_TP_DISABLED 가 꺼졌다")
+        self.assertEqual(SAJANG.get_take_profit(100000), 0, "get_take_profit 이 0이 아니다")
+        print("  ✅ T10 PASS: +11% 수익 → HOLD (고정 TP 폐기·트레일링이 청산 담당)")
 
     def test_11_hold_normal(self):
         """[정상 변동] HOLD."""

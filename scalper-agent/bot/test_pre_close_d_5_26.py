@@ -87,17 +87,34 @@ def test_pre_close_d_uses_vwap_orderbook():
 
 
 def test_pre_close_d_selection_conditions():
-    """새 룰 D 선정 조건 확인 (오늘 +10%+ 강세 + 눌림 -3%+)."""
+    """새 룰 D 선정 조건 확인 (오늘 +10%+ 강세 + 눌림 -3%+).
+
+    ★8/10 정정 ([F-119] 러너 신설로 드러남 — 10일간 아무도 못 돌렸다).
+    원래 이 테스트는 소스에 리터럴 `chg < 10.0` / `pullback_pct < 3.0` 이 있는지 grep 했다.
+    그런데 **7/31 검수 HIGH-2가 그 리터럴을 `SAJANG.RULE_D_*` 파생으로 바꾸면서**
+    (auto_trader.py 주석 *"리터럴 10.0/3.0 → SAJANG 파생(값 동일·동작 무변경)"*)
+    테스트만 낡은 채 남아 FAIL이 됐다 — **코드가 옳고 테스트가 틀린 경우다.**
+    ★그대로 두면 위험한 방향은 반대다: 통과시키려 리터럴을 되돌리면 RULE-005~007이
+    막으려는 **SAJANG 우회**가 된다.
+    → 이제 ①함수가 SAJANG 상수를 경유하는지 ②그 상수 값이 사장님 룰과 같은지 **둘 다** 본다.
+      (리터럴 grep은 리팩터에 부서지지만, 이 형태는 값과 단일진실을 동시에 고정한다)
+    """
     at_path = ROOT / 'bot' / 'auto_trader.py'
     src = at_path.read_text(encoding='utf-8')
     start = src.find('async def pre_close_d_scan_and_buy')
     end = src.find('async def close_verification_positions')
     func_src = src[start:end]
-    # 오늘 +10% 이상 강세
-    assert "chg < 10.0" in func_src or "chg >= 10.0" in func_src, "+10% 강세 조건 누락"
-    # 고점 대비 -3% 이상 눌림
-    assert "pullback_pct < 3.0" in func_src or "pullback_pct >= 3.0" in func_src, "눌림 -3% 조건 누락"
-    print("[PASS] 새 룰 D 선정 조건 (+10% 강세 + -3% 눌림) 적용")
+    assert start != -1 and end != -1 and func_src, "pre_close_d_scan_and_buy 함수를 못 찾음"
+
+    # ① 단일진실 경유 — 하드코딩 복귀 차단
+    assert "SAJANG.RULE_D_SURGE_MIN" in func_src, "+10% 강세 조건이 SAJANG 경유가 아님"
+    assert "SAJANG.RULE_D_PULLBACK_MIN" in func_src, "눌림 조건이 SAJANG 경유가 아님"
+
+    # ② 값이 사장님 룰 그대로인지 (경유만 하고 값이 바뀌면 못 잡으므로 값도 고정)
+    from data.sajang_rules import SAJANG
+    assert SAJANG.RULE_D_SURGE_MIN == 10.0, f"룰 D 강세 임계 변경됨: {SAJANG.RULE_D_SURGE_MIN}"
+    assert SAJANG.RULE_D_PULLBACK_MIN == 3.0, f"룰 D 눌림 임계 변경됨: {SAJANG.RULE_D_PULLBACK_MIN}"
+    print("[PASS] 새 룰 D 선정 조건 (+10% 강세 + -3% 눌림) SAJANG 경유 + 값 일치")
 
 
 def test_pre_close_d_position_attributes():
