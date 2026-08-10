@@ -48,8 +48,6 @@
   python3.11 -X utf8 tools/manual/f155_intraday_ignition_backtest.py
   python3.11 -X utf8 tools/manual/f155_intraday_ignition_backtest.py --at 09:30:00
 """
-from __future__ import annotations
-
 import argparse
 import contextlib
 import csv
