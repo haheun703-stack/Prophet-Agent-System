@@ -175,8 +175,25 @@ REGIME_STRATEGIES: Dict[str, RegimeResponse] = {
 #  공개 API
 # ═══════════════════════════════════════════
 
+#  nightwatch_report 신선도 임계 — ★숫자는 **여기 한 곳에만** 둔다 ([F-160] 8/11 소진).
+#    8/10 검수에서 docstring "24h+" · 인라인 주석 "24시간 이상" · 코드 `> 48` 로 **세 곳이
+#    서로 다른 값**을 말하고 있었다. 읽는 사람은 "하루 지나면 폴백"이라 믿는데 실제로는 이틀이다.
+#    같은 뿌리가 [F-150](문서가 구현을 안 세고 적은 수치)·[F-110](CLAUDE.md 양방향 오류)이므로,
+#    문구를 고치는 대신 **중복될 숫자 자체를 없앤다**.
+#  ★주말 구조적 폴백(등재 사실·행동 변경 아님): nightwatch 는 평일 산출이라 금요일분은
+#    월요일에 72h 가 된다 → **매주 월요일 레짐은 사실상 '안정' 폴백**이다(8/10 VPS 실측:
+#    8/7 16:35 산출 → 8/10 "72h stale"). 임계를 24 로 낮추든 48 로 두든 이 사실은 변하지 않고,
+#    주말 보정은 매매 동작을 바꾸는 일이라 **사장님 결정 사안**이다. 여기서는 값을 바꾸지 않는다.
+#    (레짐 SL 이 룰보다 조여지던 문제는 [F-158] 에서 임계 하한으로 이미 차단됐다.)
+NIGHTWATCH_STALE_HOURS = 48
+
+
 def get_current_regime() -> str:
-    """현재 인플레이션 레짐 반환. 캐시 없거나 24h+ stale이면 '안정'."""
+    """현재 인플레이션 레짐 반환.
+
+    캐시가 없거나 `NIGHTWATCH_STALE_HOURS` 를 초과해 낡았으면 '안정' 폴백.
+    ★임계값을 이 docstring 에 **숫자로 적지 않는다** — 상수와 어긋나는 순간
+      [F-160] 이 그대로 재발한다(문서가 구현을 안 세고 적는 자리)."""
     try:
         from data.inflation_chain import analyze_inflation_chain
         import json
@@ -190,13 +207,13 @@ def get_current_regime() -> str:
 
         nw = json.loads(nw_path.read_text("utf-8"))
 
-        # staleness 체크: 24시간 이상이면 경고 + 안정 폴백
+        # staleness 체크: NIGHTWATCH_STALE_HOURS 초과면 경고 + 안정 폴백
         ts = nw.get("timestamp", "")
         if ts:
             try:
                 nw_dt = datetime.strptime(ts[:19], "%Y-%m-%d %H:%M:%S")
                 age_hours = (datetime.now() - nw_dt).total_seconds() / 3600
-                if age_hours > 48:
+                if age_hours > NIGHTWATCH_STALE_HOURS:
                     logger.warning(
                         f"[MacroStrategy] nightwatch_report {age_hours:.0f}h stale → 안정 폴백")
                     return "안정"
@@ -299,7 +316,8 @@ def get_adjusted_sl(base_sl_pct: float = 0.035, regime: str = None) -> float:
     #   로 **룰보다 조여졌다**. 소비처 `auto_trader.py:3710`(loss_percent)은 라이브 매수 경로다.
     #   ★[F-90](장중 눈 트레일링이 -1.5%로 조여지던 것)과 **정확히 같은 유형**이고,
     #     이번엔 '레짐'이라는 이름 뒤에 숨어 있었다.
-    #   ★현재 무해했던 이유는 설계가 아니라 우연이다 — nightwatch_report 가 48h 초과면
+    #   ★현재 무해했던 이유는 설계가 아니라 우연이다 — nightwatch_report 가
+    #     NIGHTWATCH_STALE_HOURS 초과면 (8/11 [F-160]: 숫자는 상수 한 곳에만)
     #     '안정'(0.035)으로 폴백하고 금요일 산출분은 월요일에 72h 라, 레짐이 사실상 늘 '안정'이었다.
     #     그 폴백이 고쳐지는 순간 위반이 즉시 유효해진다 → 순서 의존을 없애려 여기서 막는다.
     #   ★느슨한 쪽(0.035)은 min 이 그대로 SAJANG 값으로 눌러 주므로 양방향 모두 룰에 고정된다.
