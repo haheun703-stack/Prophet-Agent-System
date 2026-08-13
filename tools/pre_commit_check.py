@@ -238,6 +238,13 @@ def check_unused_imports(filepath: str, content: str) -> list[dict]:
         if not m:
             continue
 
+        # ★ 8/13 [F-174]: `from __future__ import ...` 는 **컴파일러 지시자**라
+        #   본문에 이름이 다시 등장할 수가 없다 → occurrence=1 이 항상 성립해
+        #   **구조적으로 100% 오탐**이다(8/13 flowx_evidence_bridge 커밋에서 실제 발생).
+        #   오탐이 쌓이면 사람이 게이트를 꺼버린다([F-153] 교훈) → 규칙에서 제외.
+        if re.match(r'^from\s+__future__\s+import\s', line.strip()):
+            continue
+
         imports_str = m.group(1)
         # ★ 6/26: 인라인 주석(# noqa 등) 제거 — 안 떼면 name에 주석이 붙어("is_trading_day  # noqa")
         #   실제 사용처와 매칭 안 돼 occurrence=1 → IMP-001 오탐 (cp949 아님·인라인 주석 파싱 버그)
