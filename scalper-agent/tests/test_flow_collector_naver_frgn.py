@@ -139,6 +139,66 @@ def test_collect_foreign_exhaustion_backfills_missing_middle_date(tmp_path, monk
     assert restored["종가"] == 360_500
 
 
+def test_stale_naver_response_must_not_delete_recent_rows(tmp_path, monkeypatch):
+    """★[F-170] 핵심 회귀 — 네이버가 스테일 응답을 줘도 최근 정상 행을 지우면 안 된다.
+
+    구코드는 `df.index <= row_date`(네이버 최신일)로 잘라서, 네이버가 06-04 까지만 주면
+    캐시의 06-05~06-09 를 **삭제**했다. 소형주는 네이버가 과거 보유주수를 0으로 덮으므로
+    이렇게 지워진 행은 **영구 복구 불가**다(8/11 −6 실측이 이 경로).
+    """
+    flow_dir = tmp_path / "flow"
+    flow_dir.mkdir(parents=True)
+
+    cache_file = flow_dir / "005930_foreign_exh.csv"
+    pd.DataFrame(
+        [
+            {"소진율": 47.81, "보유수량": 2_795_254_819, "종가": 351_500},
+            {"소진율": 47.90, "보유수량": 2_800_000_000, "종가": 352_000},
+            {"소진율": 48.00, "보유수량": 2_805_000_000, "종가": 353_000},
+        ],
+        index=pd.DatetimeIndex(["2026-06-04", "2026-06-05", "2026-06-09"], name="date"),
+    ).to_csv(cache_file)
+
+    monkeypatch.setattr(fc, "FLOW_DIR", flow_dir)
+    monkeypatch.setattr(fc, "SHORT_DIR", tmp_path / "short")
+    monkeypatch.setattr(fc, "NAT_DIR", tmp_path / "nationality")
+    monkeypatch.setattr(fc._requests, "Session", lambda: FakeSession())
+    monkeypatch.setattr(fc.time, "sleep", lambda *_: None)
+    # 오늘은 06-10 인데 네이버(FakeSession)는 06-04 까지만 준다 = 스테일 응답
+    monkeypatch.setattr(fc, "_today_kst_ts", lambda: pd.Timestamp("2026-06-10"))
+
+    fc.collect_foreign_exhaustion(["005930"], force=False)
+
+    saved = pd.read_csv(cache_file, index_col=0, parse_dates=True)
+    dates = {idx.strftime("%Y-%m-%d") for idx in saved.index}
+    assert "2026-06-05" in dates, "스테일 응답이 정상 행을 지웠다 — [F-170] 재발"
+    assert "2026-06-09" in dates, "스테일 응답이 정상 행을 지웠다 — [F-170] 재발"
+
+
+def test_future_dated_row_is_still_cut(tmp_path, monkeypatch):
+    """미래 일자 행(정상 경로로는 생길 수 없음)은 여전히 잘린다 — 방어 목적 보존."""
+    flow_dir = tmp_path / "flow"
+    flow_dir.mkdir(parents=True)
+
+    cache_file = flow_dir / "005930_foreign_exh.csv"
+    pd.DataFrame(
+        [{"소진율": 99.0, "보유수량": 1, "종가": 1}],
+        index=pd.DatetimeIndex(["2026-06-20"], name="date"),
+    ).to_csv(cache_file)
+
+    monkeypatch.setattr(fc, "FLOW_DIR", flow_dir)
+    monkeypatch.setattr(fc, "SHORT_DIR", tmp_path / "short")
+    monkeypatch.setattr(fc, "NAT_DIR", tmp_path / "nationality")
+    monkeypatch.setattr(fc._requests, "Session", lambda: FakeSession())
+    monkeypatch.setattr(fc.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(fc, "_today_kst_ts", lambda: pd.Timestamp("2026-06-10"))
+
+    fc.collect_foreign_exhaustion(["005930"], force=False)
+
+    saved = pd.read_csv(cache_file, index_col=0, parse_dates=True)
+    assert "2026-06-20" not in {idx.strftime("%Y-%m-%d") for idx in saved.index}
+
+
 def test_collect_foreign_exhaustion_still_drops_zero_rows(tmp_path, monkeypatch):
     """전량 병합으로 바꿔도 빈/오염 행(소진율·보유수량 동시 0) 방어는 살아 있다."""
     flow_dir = tmp_path / "flow"
@@ -180,6 +240,9 @@ def test_collect_foreign_exhaustion_writes_latest_trading_date_and_removes_ghost
     monkeypatch.setattr(fc, "NAT_DIR", nat_dir)
     monkeypatch.setattr(fc._requests, "Session", lambda: FakeSession())
     monkeypatch.setattr(fc.time, "sleep", lambda *_: None)
+    # ★[F-170] 기준일 고정 — 06-05는 '오늘(06-04)' 기준 **미래 일자**라 ghost로 잘린다.
+    #   (예전엔 '네이버 최신일 이후'라 잘렸다. 지금은 미래인 것만 자른다.)
+    monkeypatch.setattr(fc, "_today_kst_ts", lambda: pd.Timestamp("2026-06-04"))
 
     result = fc.collect_foreign_exhaustion(["005930"], force=False)
 

@@ -491,6 +491,15 @@ def _parse_naver_frgn_html(code: str, html: str) -> List[dict]:
     return sorted(dedup.values(), key=lambda x: x["date"], reverse=True)
 
 
+def _today_kst_ts() -> pd.Timestamp:
+    """오늘(KST) 자정 Timestamp — foreign_exh ghost 컷 기준일([F-170]).
+
+    별도 함수인 이유 = **테스트에서 기준일을 갈아끼울 수 있어야** 한다. 이 값이 컷의
+    유일한 기준이므로, 고정 날짜 픽스처로 '미래 행은 지우고 과거 행은 안 지운다'를
+    양방향으로 고정할 수 있어야 한다."""
+    return pd.Timestamp(datetime.now(KST).replace(tzinfo=None).date())
+
+
 def _fetch_foreign_rates_naver(code: str,
                                http_session: Optional[_requests.Session] = None) -> List[dict]:
     """네이버 frgn 일별 페이지의 **전 거래일** 외국인 보유율 행 (최신순).
@@ -577,6 +586,9 @@ def collect_foreign_exhaustion(
     fetched = 0
     failed = 0
     stale_skipped = 0
+    # ★[F-170] ghost 컷이 실제로 몇 행을 지웠는지 **반드시 보이게** 센다.
+    # 이 사고가 오래 안 보인 이유가 "조용히 지웠다"는 것 하나였다.
+    ghost_dropped = 0
     http_session = _requests.Session()
 
     for i, code in enumerate(need_fetch):
@@ -599,7 +611,6 @@ def collect_foreign_exhaustion(
             new_rows = pd.DataFrame(
                 recs, index=pd.DatetimeIndex(dates, name="date")
             ).sort_index()
-            row_date = new_rows.index.max()
 
             # 기존 캐시에 병합 — 같은 날짜는 네이버(신규)가 이긴다(keep="last").
             if cache_file.exists():
@@ -610,8 +621,18 @@ def collect_foreign_exhaustion(
             else:
                 df = new_rows
 
-            # 네이버가 준 최신 거래일 이후의 행은 장전/휴장일 KIS 스냅샷 ghost로 간주해 제거한다.
-            df = df[df.index <= row_date]
+            # ★[F-170] ghost 컷 기준을 '네이버가 준 최신일' → **오늘(KST)** 로 바꿨다.
+            # 옛 `df.index <= row_date` 는 네이버가 한 번이라도 스테일 응답을 주면 그
+            # 사이의 **멀쩡한 최근 행을 삭제**했다(8/11 −6 실측 · 소형주는 지워지면
+            # 네이버가 과거 보유주수를 0으로 덮으므로 **영구 복구 불가**).
+            # 원래 목적이던 "죽은 KIS 스냅샷 경로가 남긴 today ghost 제거"는
+            # `_fetch_foreign_rate_kis_snapshot` **호출자 0건**이라 이미 사문이고,
+            # 미래 일자만 자르면 목적(있을 수 없는 행 제거)은 지키면서 정상 행은 못 지운다.
+            # ★거래일 캘린더로 자르지 않는 이유 = 캘린더가 틀린 적이 있다(7/17 제헌절).
+            #   캘린더 버그가 데이터 삭제로 번지는 경로를 만들지 않는다.
+            before_cut = len(df)
+            df = df[df.index <= _today_kst_ts()]
+            ghost_dropped += before_cut - len(df)
 
             # 빈/오염 행 방어: 소진율 또는 보유수량이 있는 거래일만 보존
             if "소진율" in df.columns and "보유수량" in df.columns:
@@ -633,7 +654,12 @@ def collect_foreign_exhaustion(
     total = len(results)
     coverage = total / len(codes) * 100 if codes else 0
     print(f"  외국인 소진율 완료: 수집{fetched}, 기존캐시{existing_cache_count}, 저장"
-          f"{total}종목/{len(codes)} ({coverage:.1f}%) 실패{failed} 정리{stale_skipped}")
+          f"{total}종목/{len(codes)} ({coverage:.1f}%) 실패{failed} 정리{stale_skipped}"
+          f" ghost컷{ghost_dropped}")
+    if ghost_dropped:
+        # 미래 일자 행은 정상 경로로는 생길 수 없다 — 0이 아니면 새 유입 경로가 생긴 것.
+        logger.warning("[F-170] foreign_exh ghost 컷 %d행 삭제 — 미래 일자 행 유입 경로 확인 필요",
+                       ghost_dropped)
     return results
 
 
