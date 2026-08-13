@@ -84,6 +84,84 @@ def test_parse_naver_frgn_html_uses_trading_date():
     assert "2026-06-03" not in {row["date"] for row in rows}
 
 
+def test_fetch_foreign_rates_naver_returns_every_trading_day(monkeypatch):
+    """★[F-170] 페이지가 준 거래일을 전부 돌려준다 — 되채움의 원천."""
+    monkeypatch.setattr(fc._requests, "Session", lambda: FakeSession())
+
+    rows = fc._fetch_foreign_rates_naver("005930")
+
+    assert [r["date"] for r in rows] == ["2026-06-04", "2026-06-02", "2026-06-01"]
+
+
+def test_fetch_foreign_rate_naver_singular_still_returns_latest_only(monkeypatch):
+    """하위호환 — `_fetch_foreign_rate_api`가 여전히 최신 1행만 받는다."""
+    monkeypatch.setattr(fc._requests, "Session", lambda: FakeSession())
+
+    row = fc._fetch_foreign_rate_naver("005930")
+
+    assert row["date"] == "2026-06-04"
+    assert row["소진율"] == 47.81
+
+
+def test_collect_foreign_exhaustion_backfills_missing_middle_date(tmp_path, monkeypatch):
+    """★[F-170] 회귀 — ghost 컷이 지운 중간 거래일이 다음 수집에서 자가복구된다.
+
+    구코드(`rows[0]` 1행만 병합)에서는 06-02가 영영 비어 있었다. 8/13 실측으로
+    9거래일 226건의 구멍이 이 경로로 생겼음을 확인했다(음성대조 대상 테스트).
+    """
+    flow_dir = tmp_path / "flow"
+    flow_dir.mkdir(parents=True)
+
+    cache_file = flow_dir / "005930_foreign_exh.csv"
+    # 06-02가 빠진 캐시 = 실제 VPS에서 관측된 '구멍' 모양 그대로
+    pd.DataFrame(
+        [
+            {"소진율": 48.30, "보유수량": 2_823_815_351, "종가": 349_000},
+            {"소진율": 47.81, "보유수량": 2_795_254_819, "종가": 351_500},
+        ],
+        index=pd.DatetimeIndex(["2026-06-01", "2026-06-04"], name="date"),
+    ).to_csv(cache_file)
+
+    monkeypatch.setattr(fc, "FLOW_DIR", flow_dir)
+    monkeypatch.setattr(fc, "SHORT_DIR", tmp_path / "short")
+    monkeypatch.setattr(fc, "NAT_DIR", tmp_path / "nationality")
+    monkeypatch.setattr(fc._requests, "Session", lambda: FakeSession())
+    monkeypatch.setattr(fc.time, "sleep", lambda *_: None)
+
+    fc.collect_foreign_exhaustion(["005930"], force=False)
+
+    saved = pd.read_csv(cache_file, index_col=0, parse_dates=True)
+    dates = [idx.strftime("%Y-%m-%d") for idx in saved.index]
+    assert dates == ["2026-06-01", "2026-06-02", "2026-06-04"]
+    restored = saved.loc[pd.Timestamp("2026-06-02")]
+    assert restored["소진율"] == 48.07
+    assert restored["보유수량"] == 2_810_201_369
+    assert restored["종가"] == 360_500
+
+
+def test_collect_foreign_exhaustion_still_drops_zero_rows(tmp_path, monkeypatch):
+    """전량 병합으로 바꿔도 빈/오염 행(소진율·보유수량 동시 0) 방어는 살아 있다."""
+    flow_dir = tmp_path / "flow"
+    flow_dir.mkdir(parents=True)
+
+    cache_file = flow_dir / "005930_foreign_exh.csv"
+    pd.DataFrame(
+        [{"소진율": 0.0, "보유수량": 0, "종가": 350_000}],
+        index=pd.DatetimeIndex(["2026-06-03"], name="date"),
+    ).to_csv(cache_file)
+
+    monkeypatch.setattr(fc, "FLOW_DIR", flow_dir)
+    monkeypatch.setattr(fc, "SHORT_DIR", tmp_path / "short")
+    monkeypatch.setattr(fc, "NAT_DIR", tmp_path / "nationality")
+    monkeypatch.setattr(fc._requests, "Session", lambda: FakeSession())
+    monkeypatch.setattr(fc.time, "sleep", lambda *_: None)
+
+    fc.collect_foreign_exhaustion(["005930"], force=False)
+
+    saved = pd.read_csv(cache_file, index_col=0, parse_dates=True)
+    assert "2026-06-03" not in {idx.strftime("%Y-%m-%d") for idx in saved.index}
+
+
 def test_collect_foreign_exhaustion_writes_latest_trading_date_and_removes_ghost(tmp_path, monkeypatch):
     flow_dir = tmp_path / "flow"
     short_dir = tmp_path / "short"

@@ -491,8 +491,16 @@ def _parse_naver_frgn_html(code: str, html: str) -> List[dict]:
     return sorted(dedup.values(), key=lambda x: x["date"], reverse=True)
 
 
-def _fetch_foreign_rate_naver(code: str, http_session: Optional[_requests.Session] = None) -> Optional[dict]:
-    """네이버 frgn 일별 페이지에서 최신 거래일 외국인 보유율 조회."""
+def _fetch_foreign_rates_naver(code: str,
+                               http_session: Optional[_requests.Session] = None) -> List[dict]:
+    """네이버 frgn 일별 페이지의 **전 거래일** 외국인 보유율 행 (최신순).
+
+    ★8/13 [F-170] — 이 페이지를 20일치 파싱해 놓고 최신 1행만 쓰고 버리던 것이
+    사고의 절반이었다. 나머지 절반은 `collect_foreign_exhaustion`의 ghost 컷이
+    파일 **전체 이력**에 걸린다는 것. 둘이 만나면 네이버가 최신일을 한 번이라도
+    이전 날짜로 준 종목은 그 뒤 행이 지워지고 되채울 경로가 없다.
+    파싱 결과를 그대로 돌려주는 것이 유일한 복구 경로이며 HTTP 추가 비용은 0이다.
+    """
     sess = http_session or _requests.Session()
     try:
         resp = sess.get(
@@ -504,11 +512,19 @@ def _fetch_foreign_rate_naver(code: str, http_session: Optional[_requests.Sessio
         resp.raise_for_status()
         if not resp.encoding:
             resp.encoding = "euc-kr"
-        rows = _parse_naver_frgn_html(code, resp.text)
-        return rows[0] if rows else None
+        return _parse_naver_frgn_html(code, resp.text)
     except Exception as e:
         logger.warning(f"네이버 외국인 보유비율 조회 실패 {code}: {e}")
-        return None
+        return []
+
+
+def _fetch_foreign_rate_naver(code: str, http_session: Optional[_requests.Session] = None) -> Optional[dict]:
+    """네이버 frgn 일별 페이지에서 최신 거래일 1행 (하위호환 — `_fetch_foreign_rate_api` 전용).
+
+    ★신규 코드는 `_fetch_foreign_rates_naver`(복수)를 쓸 것. 이 함수의 '1행만' 성질이
+    [F-170]의 원인이었으므로 수집 경로에서는 더 이상 쓰지 않는다."""
+    rows = _fetch_foreign_rates_naver(code, http_session=http_session)
+    return rows[0] if rows else None
 
 
 def collect_foreign_exhaustion(
@@ -570,22 +586,29 @@ def collect_foreign_exhaustion(
             print(f"    [{i+1}/{len(need_fetch)}] 수집중... (성공{fetched} 실패{failed})")
 
         try:
-            row = _fetch_foreign_rate_naver(code, http_session=http_session)
-            if row is None:
+            rows = _fetch_foreign_rates_naver(code, http_session=http_session)
+            if not rows:
                 failed += 1
                 continue
 
-            row_date = pd.Timestamp(row.pop("date"))
-            new_row = pd.DataFrame([row], index=pd.DatetimeIndex([row_date], name="date"))
+            # ★[F-170] 페이지가 준 거래일을 **전부** 병합한다. 최신 1행만 쓰면 아래
+            # ghost 컷이 지운 중간 날짜를 영영 되채울 수 없어 이력에 구멍이 남는다
+            # (8/13 실측: 9거래일 226건). 전부 병합하면 다음 수집에서 자가복구된다.
+            recs = [dict(r) for r in rows]
+            dates = [pd.Timestamp(r.pop("date")) for r in recs]
+            new_rows = pd.DataFrame(
+                recs, index=pd.DatetimeIndex(dates, name="date")
+            ).sort_index()
+            row_date = new_rows.index.max()
 
-            # 기존 캐시에 병합
+            # 기존 캐시에 병합 — 같은 날짜는 네이버(신규)가 이긴다(keep="last").
             if cache_file.exists():
                 old = pd.read_csv(cache_file, index_col=0, parse_dates=True)
-                df = pd.concat([old, new_row])
+                df = pd.concat([old, new_rows])
                 df = df[~df.index.duplicated(keep="last")]
                 df = df.sort_index()
             else:
-                df = new_row
+                df = new_rows
 
             # 네이버가 준 최신 거래일 이후의 행은 장전/휴장일 KIS 스냅샷 ghost로 간주해 제거한다.
             df = df[df.index <= row_date]
