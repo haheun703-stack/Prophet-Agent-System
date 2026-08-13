@@ -50,12 +50,25 @@ from utils.dated_csv import compact as _compact  # noqa: E402  (날짜 판독 �
 
 DS = BASE_DIR / "data_store"
 
-# 자기검증 앵커 — 8/1·8/5 업무일지에 기록된 실측치. 이 값이 재현되지 않으면
+# 자기검증 앵커 — 업무일지에 기록된 실측치. 이 값이 재현되지 않으면
 # 도구가 바뀐 것이거나 데이터가 바뀐 것이므로 **결과를 인용하기 전에 멈춘다.**
+#
+# ★8/13 [F-170] 확장 — `fex_min` (외국인소진율 행 보유 종목 수) 추가.
+#   그날 드리프트가 난 채널이 하필 **앵커가 없던 채널**이었다(8/11 2,435 → 8/13 2,429).
+#   발견이 가능했던 유일한 이유가 업무일지에 숫자가 적혀 있었기 때문이고, 그건 사람이
+#   읽어야 한다는 뜻이다 → 기계가 대조하게 옮긴다.
+#   ★판정식이 다른 이유: 소진율은 **늘 수는 있고 줄면 안 된다**. [F-170] fix 로 과거 행
+#   병합(증가)이 정상 동작이 됐으므로 정확일치로 걸면 매일 오탐이 난다. 반대로 **감소는
+#   언제나 회귀**다 — 그게 [F-170] 그 자체였다. 그래서 하한(>=) 으로 고정한다.
 SELFTEST_ANCHORS = {
     "2026-07-31": {"ticks_rows": 47_978, "ticks_pct": 100.00, "daily_ok": 2_492},
     "2026-08-03": {"ticks_rows": 47_720, "ticks_pct": 100.00, "daily_ok": 2_491},
     "2026-08-04": {"ticks_rows": 50_400, "ticks_pct": 100.00, "daily_ok": 2_490},
+    # 8/13 세션 실측 (업무일지 docs/journal/ops/2026-08-13.md §2 와 동일 값)
+    "2026-08-12": {"ticks_rows": 47_830, "ticks_pct": 100.00, "daily_ok": 2_479,
+                   "fex_min": 2_416},
+    "2026-08-13": {"ticks_rows": 50_337, "ticks_pct": 100.00, "daily_ok": 2_467,
+                   "fex_min": 2_408},
 }
 
 
@@ -355,7 +368,8 @@ def run(d: str, codes: List[str]) -> Dict:
                   f"— 판정 미반영·진단 전용")
 
     print()
-    return {"daily": dly, "investor": inv, "ticks": tk}
+    # fex 도 반환 — 8/13 [F-170] 이후 selftest 가 하한 대조에 쓴다.
+    return {"daily": dly, "investor": inv, "ticks": tk, "fex": fex}
 
 
 def selftest(results: Dict[str, Dict]) -> int:
@@ -370,15 +384,21 @@ def selftest(results: Dict[str, Dict]) -> int:
             print(f"  {d} — 앵커 없음 (skip)")
             continue
         checks = [
-            ("ticks_rows", r["ticks"]["rows"], a["ticks_rows"]),
-            ("ticks_pct", r["ticks"]["pct"], a["ticks_pct"]),
-            ("daily_ok", r["daily"]["ok"], a["daily_ok"]),
+            ("ticks_rows", r["ticks"]["rows"], a["ticks_rows"], "eq"),
+            ("ticks_pct", r["ticks"]["pct"], a["ticks_pct"], "eq"),
+            ("daily_ok", r["daily"]["ok"], a["daily_ok"], "eq"),
         ]
-        for name, got, want in checks:
-            mark = "✅" if got == want else "🚨"
-            if got != want:
+        # ★[F-170] 소진율은 하한 대조 — 증가는 정상(과거 행 병합), **감소는 회귀**.
+        if "fex_min" in a:
+            checks.append(("fex_min", r["fex"]["all_hit"], a["fex_min"], "ge"))
+        for name, got, want, how in checks:
+            ok = (got >= want) if how == "ge" else (got == want)
+            mark = "✅" if ok else "🚨"
+            if not ok:
                 bad += 1
-            print(f"  {mark} {d} {name:11s} 실측 {got} / 기록 {want}")
+            rel = "이상" if how == "ge" else ""
+            print(f"  {mark} {d} {name:11s} 실측 {got} / 기록 {want}{rel}"
+                  + ("  ← 감소=회귀([F-170])" if not ok and how == "ge" else ""))
     print(f"\n{'✅ 앵커 전부 재현 — 결과 인용 가능' if bad == 0 else f'🚨 {bad}건 불일치 — 인용 前 원인 규명 필수'}")
     return bad
 
