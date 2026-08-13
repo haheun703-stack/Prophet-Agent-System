@@ -29,6 +29,12 @@ _FLOWX_META_FIELDS = (
     "benchmark", "exposure", "regime", "entry_fee", "entry_tax",
     "entry_slippage", "entry_spread", "exit_fee", "exit_tax",
     "exit_slippage", "exit_spread",
+    "evidence_ref", "evidence_asof", "evidence_freshness",
+    "evidence_catalyst_kinds", "evidence_catalyst_count",
+)
+
+_FLOWX_EVIDENCE_FIELDS = tuple(
+    field for field in _FLOWX_META_FIELDS if field.startswith("evidence_")
 )
 
 
@@ -95,7 +101,14 @@ def _emit_flowx_paper_open(trade: dict, code: str, price: int, reason: str) -> N
         **base,
         event_type="CANDIDATE",
         source_record_id=f"{source_base}:candidate",
-        details={"reason": reason, "score": trade.get("total_score")},
+        details={
+            "reason": reason,
+            "score": trade.get("total_score"),
+            "evidence": {
+                field: trade.get(field) for field in _FLOWX_EVIDENCE_FIELDS
+                if trade.get(field) is not None
+            },
+        },
     )
     adapter.emit(
         **base,
