@@ -147,7 +147,32 @@ def build_summary(result: dict, today: str) -> str:
         and tk_st in ("PASS", "SKIP")   # FAIL이면 판정 원천 죽음 → 초록불 금지(F-15)
     )
     if core_ok:
-        lines.append("✅ 핵심 채널 모두 정상 — 실주문 0·페이퍼")
+        # ★8/14 [F-164] 처방 ② — 판정(core_ok)은 그대로 두고 **문구만** 실상에 맞춘다.
+        # PARTIAL을 정상으로 계수하는 것 자체는 의도된 설계다(네이버 소진율 부분 실패는
+        # 상시이고, 그걸 실패로 치면 매일 빨간불 = [F-153] 마모). 문제는 같은 화면에
+        # `⚠️`와 `✅ 모두 정상`이 동시에 남아, 마지막 줄만 읽으면 실상과 어긋난다는 것.
+        # → "모두"는 진짜 전부 깨끗할 때만 쓰고, 아니면 무엇이 부분인지 병기한다(값 불변).
+        caveats = []
+        if fx["status"] == "PARTIAL":
+            caveats.append(f"외국인소진율 부분수집 {fx['ok']}/{fx['checked']}")
+        # 수급·공매도는 실측(7/30~8/14 12거래일) 활성 대비 **정확히 100.0%**라
+        # 결손 자체가 이상 신호 → 소수라도 노출한다.
+        for _key, _label in (("investor_flow", "수급"), ("short_kis", "공매도")):
+            _m = d.get(_key, {}).get("missing") or 0
+            if _m:
+                caveats.append(f"{_label} 결손 {_m}종")
+        # ★신용은 다르다 — 구조적으로 매일 80종 안팎이 비어 있는 것이 **정상 대역**이다
+        # (실측 96.8~97.0%·8/14 기준 82종). 이걸 매일 "결손"으로 띄우면 사장님이 매일
+        # 같은 경고를 보게 되고, 그게 바로 [F-153]이 말한 '사람이 경보를 끄게 만드는' 마모다.
+        # (8/14 VPS 실측에서 실제로 그 문구가 나와 잡았다 — 픽스처에선 안 보였다.)
+        # → 정상 대역을 벗어나 PARTIAL/FAIL 로 떨어질 때만 노출한다.
+        _cs = d.get("credit_kis", {})
+        if _cs.get("status") in ("PARTIAL", "FAIL"):
+            caveats.append(f"신용 커버리지 {_cs.get('ok')}/{_cs.get('checked')}")
+        if caveats:
+            lines.append("✅ 핵심 채널 정상 — 단 " + " · ".join(caveats))
+        else:
+            lines.append("✅ 핵심 채널 모두 정상 — 실주문 0·페이퍼")
     else:
         bad = []
         if daily_st != "PASS":

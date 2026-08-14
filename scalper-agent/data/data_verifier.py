@@ -117,6 +117,23 @@ def _load_active_codes(n: int, today: str, max_scan: int = 300) -> List[str]:
     return active
 
 
+def _active_codes_all(today: str) -> List[str]:
+    """오늘 거래된 활성 종목 **전수** (표본 아님) — 소규모 결손을 세기 위한 분모.
+
+    ★8/14 [F-33] 소진 — 표본 검증은 '조용한 결손'을 구조적으로 못 잡는다.
+    표본 n종이 결손률 p를 최소 1건이라도 잡을 확률은 1-(1-p)^n 이라, n=10이면
+    p=2%에서 **18.3%**, p=1%에서 **9.6%**에 그친다(81.7%·90.4% 미검출).
+    그런데 우리가 실제로 겪은 사고는 전부 그 대역이었다 — 8/11 소진율 -6종,
+    8/13 구멍 3종. **큰 사고는 잡고 우리가 당한 유형엔 눈을 감는 게이트**였다.
+
+    ★표본을 쓸 성능 근거도 없다 — VPS 실측 **0.30초**(2,531종 daily 꼬리 5행).
+    investor·short·credit 전수까지 합쳐 0.59초라 20:10 발송·08:30 점검 예산 안이다.
+
+    `_load_active_codes`(랜덤 표본)는 다른 호출자를 위해 존치한다."""
+    return [c for c in _all_universe_codes()
+            if _csv_has_date(DAILY_DIR / f"{c}.csv", today)]
+
+
 def _csv_has_date(csv_path: Path, target: str, tail_rows: int = 5) -> bool:
     """CSV 마지막 tail_rows행 안에 target 날짜 행이 존재하는지 — 판독은 정본 위임.
 
@@ -185,23 +202,40 @@ def _verify_daily_ohlcv(today: str) -> dict:
 
 
 def _verify_investor_flow(today: str) -> dict:
-    """투자자 수급 CSV — 활성 종목(daily 오늘자) 랜덤 10 꼬리 5행에 today 행 존재.
+    """투자자 수급 CSV — 활성 종목(daily 오늘자) **전수** 꼬리 5행에 today 행 존재.
 
-    상폐·정지 종목(daily도 stale=KIS 미제공 정상)은 _load_active_codes가 표본에서
-    자동 제외 → 6/22 박제 universe.json의 죽은 종목을 밟던 랜덤 PARTIAL 오탐 차단(7/13).
-    daily는 today인데 investor만 stale이면 여전히 ok 미가산 → 진짜 수집 실패는 잡힌다."""
-    codes = _load_active_codes(10, today)
+    상폐·정지 종목(daily도 stale=KIS 미제공 정상)은 활성 분모에서 자동 제외 →
+    6/22 박제 universe.json의 죽은 종목을 밟던 랜덤 PARTIAL 오탐 차단(7/13).
+    daily는 today인데 investor만 stale이면 여전히 ok 미가산 → 진짜 수집 실패는 잡힌다.
+
+    ★8/14 [F-33] 표본 10종 → 전수(`_active_codes_all`). 표본은 결손 2%를 81.7%
+    놓쳤고(계산 근거는 그 함수 docstring), 전수 비용은 실측 0.12초다."""
+    codes = _active_codes_all(today)
     if not codes:
         # 거래일에 활성 종목 0 = daily 전종목 미수집/유니버스 로드 실패 (기존 시맨틱 유지: FAIL).
         # 이 경우 daily_ohlcv(CRITICAL)도 함께 FAIL로 잡히는 안전망이 존재.
         return {"status": "FAIL", "reason": "활성 종목 0 (유니버스 로드 실패/전종목 미수집)",
-                "checked": 0, "ok": 0}
+                "checked": 0, "ok": 0, "missing": 0}
     ok = 0
     for code in codes:
         if _csv_has_date(FLOW_DIR / f"{code}_investor.csv", today):
             ok += 1
-    status = "PASS" if ok == len(codes) else ("PARTIAL" if ok > 0 else "FAIL")
-    return {"status": status, "checked": len(codes), "ok": ok}
+    n = len(codes)
+    miss = n - ok
+    # ★8/14 [F-33] — 소수 결손은 PASS를 유지하되 `missing`으로 **보이게** 한다.
+    # investor_flow는 RETRY_MAP 등재 채널이라 PARTIAL이면 06:30 A0가
+    # `_job_collect_daily`를 통째로 재실행한다(trading_coo:2941-2967). 실측
+    # (7/30~8/14 12거래일)은 **전부 100.0%**라 결손 자체가 이상 신호지만,
+    # 1~2종 노이즈로 매일 전체 재수집이 도는 것은 낭비이자 [F-153] 경보 마모다.
+    # → 판정(=자동 동작)은 불변, 가시성만 확보. 다수 결손은 종전대로 승격.
+    tol = max(2, int(n * 0.005))
+    if miss <= tol:
+        status = "PASS"
+    elif ok >= n // 2:
+        status = "PARTIAL"
+    else:
+        status = "FAIL"
+    return {"status": status, "checked": n, "ok": ok, "missing": miss}
 
 
 def _verify_nationality(today: str) -> dict:
@@ -375,28 +409,59 @@ def _verify_ticks(today: str) -> dict:
 
 
 def _verify_short_kis(today: str) -> dict:
-    """KIS 공매도(⑬·6/27 신설) — 저녁 19시 전엔 전일분 정상(수집=nightly)."""
+    """KIS 공매도(⑬·6/27 신설) — 활성 종목 **전수** 커버리지. 저녁 19시 전엔 전일분 정상.
+
+    ★8/14 [F-33] 소진(7/30 등재·MED·15일 미소진) — 기존은 `_load_universe_codes(5)`
+    (활성필터 **없음**) + `best = max(dates)`라 **5종 중 1종만 신선해도 PASS**였다.
+    상폐 종목이 표본에 섞여 분모를 오염시키고, max()는 최악을 숨긴다. 실제 ⑬ 로그가
+    "2531/2531"이든 "5%"든 같은 초록불이 나오는 구조였다.
+    ★RETRY_MAP 미등재 채널이라 상태 승격이 재수집을 트리거하지 않는다(부작용 0).
+    ★실측(7/30~8/14 12거래일) 활성 대비 **전부 100.0%** → 결손이 곧 이상 신호."""
     if not SHORT_DIR.exists():
         return {"status": "SKIP", "reason": "short/ 디렉터리 없음"}
+    codes = _active_codes_all(today)
+    if not codes:
+        # 활성 0 = daily 미수집. daily_ohlcv(CRITICAL)가 잡으므로 여기선 판정 보류.
+        return {"status": "SKIP", "reason": "활성 종목 0 (daily 미수집·상위 채널이 판정)"}
+    ok = sum(1 for c in codes if _csv_has_date(SHORT_DIR / f"{c}_short_bal.csv", today))
+    n = len(codes)
+    miss = n - ok
+    if miss == 0:
+        return {"status": "PASS", "latest": today, "checked": n, "ok": ok, "missing": 0}
+    # 오늘분이 아직 없다 = 저녁 수집 전이면 정상(T-1). 최신일은 표본으로 표기만.
     dates = [d for d in (_kis_last_date(SHORT_DIR / f"{c}_short_bal.csv")
-                         for c in _load_universe_codes(5)) if d]
-    if not dates:
-        return {"status": "FAIL", "reason": "샘플 파일 없음"}
-    best = max(dates)
-    if best >= today:
-        return {"status": "PASS", "latest": best}
+                         for c in codes[:50]) if d]
+    best = max(dates) if dates else ""
     if not _evening(today):
-        return {"status": "PASS", "latest": best, "note": "T-1 (저녁 수집 전)"}
-    return {"status": "FAIL", "reason": f"최신 {best} — 저녁 수집 후에도 미갱신", "latest": best}
+        return {"status": "PASS", "latest": best, "note": "T-1 (저녁 수집 전)",
+                "checked": n, "ok": ok, "missing": miss}
+    tol = max(2, int(n * 0.005))
+    if miss <= tol:
+        return {"status": "PASS", "latest": today, "checked": n, "ok": ok, "missing": miss}
+    if ok >= n // 2:
+        return {"status": "PARTIAL", "latest": today, "checked": n, "ok": ok, "missing": miss,
+                "reason": f"저녁 수집 후 결손 {miss}/{n}종"}
+    return {"status": "FAIL", "reason": f"최신 {best} — 저녁 수집 후에도 미갱신({ok}/{n})",
+            "latest": best, "checked": n, "ok": ok, "missing": miss}
 
 
 def _verify_credit_kis(today: str) -> dict:
-    """KIS 신용잔고(⑭·6/27 신설) — 구조적 T+2~3 지연이 정상 → 7일 이내 PASS."""
+    """KIS 신용잔고(⑭·6/27 신설) — 구조적 T+2~3 지연이 정상 → 7일 이내 PASS.
+
+    ★8/14 [F-33] 소진 — 기존은 `_load_universe_codes(5)` + `max(dates)`라 5종 중
+    1종만 신선해도 PASS였다. 전수 커버리지를 함께 본다.
+    ★단 이 채널은 today 기준으로 세면 **항상 0%**다(T+2~3 지연이 정상). 그래서
+    커버리지는 **최신 적재일(best) 기준**으로 센다 — 실측(7/30~8/11) **96.8~97.0%**가
+    정상 대역이라 임계는 95%. 그 아래면 '지연은 정상인데 수집이 부분 실패'다.
+    ★RETRY_MAP 미등재 → 상태 승격이 재수집을 트리거하지 않는다(부작용 0)."""
     credit_dir = STORE_DIR / "credit"
     if not credit_dir.exists():
         return {"status": "SKIP", "reason": "credit/ 디렉터리 없음"}
-    dates = [d for d in (_kis_last_date(credit_dir / f"{c}_credit_bal.csv")
-                         for c in _load_universe_codes(5)) if d]
+    codes = _active_codes_all(today)
+    if not codes:
+        return {"status": "SKIP", "reason": "활성 종목 0 (daily 미수집·상위 채널이 판정)"}
+    per = {c: _kis_last_date(credit_dir / f"{c}_credit_bal.csv") for c in codes}
+    dates = [d for d in per.values() if d]
     if not dates:
         return {"status": "FAIL", "reason": "샘플 파일 없음"}
     best = max(dates)
@@ -404,9 +469,18 @@ def _verify_credit_kis(today: str) -> dict:
         lag = (date.fromisoformat(today) - date.fromisoformat(best)).days
     except ValueError:
         return {"status": "FAIL", "reason": f"날짜 파싱 실패: {best}"}
-    if lag <= 7:
-        return {"status": "PASS", "latest": best, "note": f"T+{lag} (KIS 구조적 지연 정상)"}
-    return {"status": "FAIL", "reason": f"최신 {best} ({lag}일 지연 — 구조적 범위 초과)", "latest": best}
+    n = len(codes)
+    ok = sum(1 for d in per.values() if d == best)
+    miss = n - ok
+    if lag > 7:
+        return {"status": "FAIL", "reason": f"최신 {best} ({lag}일 지연 — 구조적 범위 초과)",
+                "latest": best, "checked": n, "ok": ok, "missing": miss}
+    # 지연은 정상 범위 — 남는 질문은 "그 최신일이 몇 종목에 실제로 들어왔나".
+    if ok < n * 0.95:
+        return {"status": "PARTIAL", "latest": best, "checked": n, "ok": ok, "missing": miss,
+                "reason": f"T+{lag} 지연은 정상이나 커버리지 {ok}/{n} (<95%)"}
+    return {"status": "PASS", "latest": best, "note": f"T+{lag} (KIS 구조적 지연 정상)",
+            "checked": n, "ok": ok, "missing": miss}
 
 
 def _verify_ranking_kis(today: str) -> dict:
