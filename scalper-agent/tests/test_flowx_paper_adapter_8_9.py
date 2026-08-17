@@ -333,6 +333,103 @@ class FlowXPaperAdapterTest(unittest.TestCase):
         self.assertTrue(rows[-1]["net_return_certified"])
         self.assertAlmostEqual(rows[-1]["net_return"], 0.05)
 
+    def test_main_paper_object_path_attaches_public_evidence_before_emit(self):
+        trade = TradeObject(
+            trade_id="MAIN-KR-EVIDENCE-1", code="005930", name="Samsung",
+            total_score=80, sources=["main_kr"], regime="NEUTRAL",
+            entry_price=100, stop_loss=95, target_price=105,
+            rr_verdict="ACCEPT", shares=10,
+        )
+        for field, value in {
+            "market": "KR", "currency": "KRW", "ticker": "005930",
+            "strategy_id": "main_kr", "strategy_version": "1",
+            "created_at": "2026-08-18T08:00:00+09:00",
+        }.items():
+            setattr(trade, field, value)
+
+        evidence_path = self.event_dir / "stock_evidence_latest.json"
+        evidence_now = datetime(2026, 8, 17, 22, 0, tzinfo=timezone.utc)
+        evidence_path.write_text(json.dumps({
+            "schema_version": "flowx.stock-evidence-batch.v1",
+            "item_contract": "flowx.stock-evidence.v1",
+            "mode": "paper_read_only",
+            "generated_at": evidence_now.isoformat(),
+            "items": [{
+                "instrument": {"market": "KR", "ticker": "005930"},
+                "freshness": {"components": {"catalysts": {"status": "fresh"}}},
+                "catalysts": [{
+                    "kind": "disclosure",
+                    "published_at": (evidence_now - timedelta(minutes=1)).isoformat(),
+                }],
+            }],
+        }), encoding="utf-8")
+
+        active_path = self.event_dir / "evidence_active.json"
+        with (
+            patch("data.flowx_paper_adapter.FLOWX_EVENT_DIR", self.event_dir),
+            patch.object(trade_tracker_module, "ACTIVE_PATH", active_path),
+            patch("data.trade_object.load_trade_objects", return_value=[trade]),
+            patch("bot.order_intent.record_order_intent", return_value={}),
+        ):
+            tracker = TradeTracker()
+            self.assertEqual(
+                tracker.register_paper_from_objects(evidence_path=evidence_path),
+                ["Samsung"],
+            )
+
+        candidate = next(
+            row for row in FlowXPaperEventAdapter(self.event_dir).iter_events()
+            if row["event_type"] == "CANDIDATE"
+        )
+        self.assertEqual(candidate["details"]["evidence"]["evidence_catalyst_count"], 1)
+        self.assertEqual(
+            candidate["details"]["evidence"]["evidence_catalyst_kinds"],
+            ["disclosure"],
+        )
+        self.assertIn("flowx_public_evidence", trade.sources)
+
+    def test_main_paper_object_rejects_evidence_created_after_candidate(self):
+        trade = TradeObject(
+            trade_id="MAIN-KR-NO-LOOKAHEAD", code="005930", name="Samsung",
+            total_score=80, sources=["main_kr"], entry_price=100,
+            rr_verdict="ACCEPT", shares=10,
+            created_at="2026-08-17 16:58",
+        )
+        evidence_path = self.event_dir / "stock_evidence_latest.json"
+        evidence_path.write_text(json.dumps({
+            "schema_version": "flowx.stock-evidence-batch.v1",
+            "item_contract": "flowx.stock-evidence.v1",
+            "mode": "paper_read_only",
+            "generated_at": "2026-08-17T09:00:00Z",
+            "items": [{
+                "instrument": {"market": "KR", "ticker": "005930"},
+                "freshness": {"components": {"catalysts": {"status": "fresh"}}},
+                "catalysts": [{
+                    "kind": "news", "published_at": "2026-08-17T08:30:00Z",
+                }],
+            }],
+        }), encoding="utf-8")
+
+        active_path = self.event_dir / "no_lookahead_active.json"
+        with (
+            patch("data.flowx_paper_adapter.FLOWX_EVENT_DIR", self.event_dir),
+            patch.object(trade_tracker_module, "ACTIVE_PATH", active_path),
+            patch("data.trade_object.load_trade_objects", return_value=[trade]),
+            patch("bot.order_intent.record_order_intent", return_value={}),
+        ):
+            tracker = TradeTracker()
+            self.assertEqual(
+                tracker.register_paper_from_objects(evidence_path=evidence_path),
+                ["Samsung"],
+            )
+
+        candidate = next(
+            row for row in FlowXPaperEventAdapter(self.event_dir).iter_events()
+            if row["event_type"] == "CANDIDATE"
+        )
+        self.assertEqual(candidate["details"]["evidence"], {})
+        self.assertNotIn("flowx_public_evidence", trade.sources)
+
     def test_same_day_same_ticker_reentry_gets_distinct_trade_ids(self):
         candidate = {
             "code": "005930", "name": "Samsung", "current_price": 100,

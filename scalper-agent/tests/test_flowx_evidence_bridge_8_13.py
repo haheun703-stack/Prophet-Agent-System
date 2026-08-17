@@ -10,6 +10,9 @@ from pathlib import Path
 from data.flowx_evidence_bridge import (
     EvidenceBridgeRejected,
     attach_public_evidence,
+    candidate_decision_at,
+    iter_public_evidence_paths,
+    load_best_public_evidence,
     load_public_evidence,
 )
 
@@ -57,6 +60,7 @@ class FlowXEvidenceBridgeTest(unittest.TestCase):
         self.assertEqual(trade["evidence_catalyst_count"], 1)
         self.assertEqual(trade["evidence_catalyst_kinds"], ["news"])
         self.assertTrue(trade["evidence_ref"].endswith(":KR:005930"))
+        self.assertIn(":sha256-", trade["evidence_ref"])
         self.assertEqual(trade["sources"], ["v2", "flowx_public_evidence"])
 
     def test_fails_closed_for_untrusted_snapshot(self):
@@ -85,6 +89,51 @@ class FlowXEvidenceBridgeTest(unittest.TestCase):
         ]
         self._write(document)
         self.assertEqual(load_public_evidence(self.path, DECISION), {})
+
+    def test_lists_latest_then_dated_handoff_paths(self):
+        directory = Path(self.temp.name)
+        latest = directory / "stock_evidence_latest.json"
+        dated = directory / "stock_evidence_2026-08-13.json"
+        latest.write_text("{}", encoding="utf-8")
+        dated.write_text("{}", encoding="utf-8")
+        self.assertEqual(iter_public_evidence_paths((directory,)), (latest, dated))
+
+    def test_bad_or_post_decision_latest_falls_back_to_dated_snapshot(self):
+        directory = Path(self.temp.name)
+        latest = directory / "stock_evidence_latest.json"
+        dated = directory / "stock_evidence_2026-08-12.json"
+        latest.write_text("[]", encoding="utf-8")
+        dated.write_text(json.dumps(_snapshot()), encoding="utf-8")
+        paths = iter_public_evidence_paths((directory,))
+        self.assertIn(("KR", "005930"), load_best_public_evidence(paths, DECISION))
+
+    def test_newest_valid_snapshot_wins_across_directories(self):
+        first = Path(self.temp.name) / "first"
+        second = Path(self.temp.name) / "second"
+        first.mkdir()
+        second.mkdir()
+        older = _snapshot("2026-08-13T04:00:00Z")
+        newer = _snapshot("2026-08-13T05:00:00Z")
+        newer["items"][0]["catalysts"][0]["kind"] = "disclosure"
+        (first / "stock_evidence_2026-08-13.json").write_text(
+            json.dumps(older), encoding="utf-8"
+        )
+        (second / "stock_evidence_latest.json").write_text(
+            json.dumps(newer), encoding="utf-8"
+        )
+
+        index = load_best_public_evidence(
+            iter_public_evidence_paths((first, second)), DECISION
+        )
+        self.assertEqual(index[("KR", "005930")]["evidence_catalyst_kinds"], ["disclosure"])
+
+    def test_legacy_candidate_time_is_interpreted_as_kst(self):
+        parsed = candidate_decision_at("2026-08-13 14:30")
+        self.assertEqual(parsed.isoformat(), "2026-08-13T05:30:00+00:00")
+
+    def test_candidate_time_without_value_is_rejected(self):
+        with self.assertRaises(EvidenceBridgeRejected):
+            candidate_decision_at("")
 
 
 if __name__ == "__main__":

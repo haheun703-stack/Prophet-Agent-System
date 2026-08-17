@@ -404,7 +404,7 @@ class TradeTracker:
     #  PAPER 트레이딩 시스템
     # ═══════════════════════════════════════════
 
-    def register_paper_from_objects(self, kis=None) -> list:
+    def register_paper_from_objects(self, kis=None, evidence_path=None) -> list:
         """trade_objects.json에서 ACCEPT 종목을 PAPER_ACTIVE로 등록
 
         Args:
@@ -417,12 +417,58 @@ class TradeTracker:
         if not trade_objs:
             return []
 
+        evidence_paths = ()
+        try:
+            from data.flowx_evidence_bridge import (
+                iter_public_evidence_paths,
+            )
+
+            evidence_paths = (
+                (Path(evidence_path),) if evidence_path
+                else iter_public_evidence_paths()
+            )
+        except Exception as exc:
+            # 공개 근거 결손은 PAPER 추적을 멈추지 않되 원장에 근거를 위조하지 않는다.
+            logger.warning("[FLOWX] 공개 evidence 연결 실패: %s", type(exc).__name__)
+
+        evidence_cache = {}
         registered = []
         for to in trade_objs:
             if to.rr_verdict == "REJECT":
                 continue
             if self.is_tracked(to.code):
                 continue
+
+            evidence = None
+            try:
+                from data.flowx_evidence_bridge import (
+                    candidate_decision_at,
+                    load_best_public_evidence,
+                )
+
+                decision_at = candidate_decision_at(getattr(to, "created_at", ""))
+                cache_key = decision_at.isoformat()
+                if cache_key not in evidence_cache:
+                    evidence_cache[cache_key] = load_best_public_evidence(
+                        evidence_paths,
+                        decision_at,
+                    )
+                market = str(getattr(to, "market", "KR") or "KR").upper()
+                ticker = str(getattr(to, "ticker", to.code) or to.code).upper()
+                evidence = evidence_cache[cache_key].get((market, ticker))
+            except Exception as exc:
+                logger.warning(
+                    "[FLOWX] 후보시각 evidence 연결 실패 %s: %s",
+                    to.code,
+                    type(exc).__name__,
+                )
+            if evidence:
+                for field, value in evidence.items():
+                    setattr(to, field, value)
+                sources = list(getattr(to, "sources", []) or [])
+                if "flowx_public_evidence" not in sources:
+                    sources.append("flowx_public_evidence")
+                to.sources = sources
 
             # 시가 조회 (장 시작 후)
             entry = to.entry_price

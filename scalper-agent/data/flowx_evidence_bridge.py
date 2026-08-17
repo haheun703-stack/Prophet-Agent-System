@@ -4,10 +4,20 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
+from zoneinfo import ZoneInfo
+
+
+SCALPER_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_PUBLIC_EVIDENCE_DIRS = (
+    SCALPER_ROOT / "data_store" / "flowx_public",
+    Path("/home/ubuntu/jgis/data/flowx_public"),
+)
+_KST = ZoneInfo("Asia/Seoul")
 
 
 class EvidenceBridgeRejected(ValueError):
@@ -27,6 +37,20 @@ def _aware(value: datetime | str, field: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
+def candidate_decision_at(value: datetime | str) -> datetime:
+    """Normalize the bot's legacy KST-naive candidate creation timestamp."""
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        try:
+            parsed = datetime.fromisoformat(str(value or ""))
+        except ValueError as exc:
+            raise EvidenceBridgeRejected("candidate created_at is invalid") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        parsed = parsed.replace(tzinfo=_KST)
+    return parsed.astimezone(timezone.utc)
+
+
 def load_public_evidence(
     path: str | Path,
     decision_at: datetime | str,
@@ -41,6 +65,8 @@ def load_public_evidence(
     except (OSError, json.JSONDecodeError) as exc:
         raise EvidenceBridgeRejected("public evidence snapshot is unreadable") from exc
 
+    if not isinstance(document, dict):
+        raise EvidenceBridgeRejected("public evidence snapshot must be an object")
     if document.get("schema_version") != "flowx.stock-evidence-batch.v1":
         raise EvidenceBridgeRejected("unsupported evidence batch schema")
     if document.get("item_contract") != "flowx.stock-evidence.v1":
@@ -90,14 +116,66 @@ def load_public_evidence(
         kinds = sorted({
             str(catalyst.get("kind") or "unknown") for catalyst in safe_catalysts
         })
+        item_digest = hashlib.sha256(
+            json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
+                "utf-8"
+            )
+        ).hexdigest()[:16]
         result[(market, ticker)] = {
-            "evidence_ref": f"{document['generated_at']}:{market}:{ticker}",
+            "evidence_ref": (
+                f"{document['generated_at']}:sha256-{item_digest}:{market}:{ticker}"
+            ),
             "evidence_asof": document["generated_at"],
             "evidence_freshness": catalyst_freshness.get("status"),
             "evidence_catalyst_kinds": kinds,
             "evidence_catalyst_count": len(safe_catalysts),
         }
     return result
+
+
+def iter_public_evidence_paths(
+    directories: tuple[Path, ...] = DEFAULT_PUBLIC_EVIDENCE_DIRS,
+) -> tuple[Path, ...]:
+    """List current and dated public snapshots in fallback order."""
+    result = []
+    for directory in directories:
+        latest = directory / "stock_evidence_latest.json"
+        if latest.is_file():
+            result.append(latest)
+        result.extend(
+            path for path in sorted(
+                directory.glob("stock_evidence_????-??-??.json"), reverse=True
+            )
+            if path.is_file()
+        )
+    return tuple(result)
+
+
+def load_best_public_evidence(
+    paths: tuple[Path, ...],
+    decision_at: datetime | str,
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Use the newest valid pre-decision snapshot across every handoff path."""
+    rejected = False
+    best_generated = None
+    best_index = None
+    for path in paths:
+        try:
+            index = load_public_evidence(path, decision_at)
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            generated = _aware(raw.get("generated_at"), "generated_at")
+            if best_generated is None or generated > best_generated:
+                best_generated = generated
+                best_index = index
+        except EvidenceBridgeRejected:
+            rejected = True
+        except (OSError, json.JSONDecodeError, AttributeError):
+            rejected = True
+    if best_index is not None:
+        return best_index
+    if rejected:
+        raise EvidenceBridgeRejected("no decision-safe public evidence snapshot")
+    return {}
 
 
 def attach_public_evidence(
