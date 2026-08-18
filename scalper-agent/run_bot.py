@@ -25,9 +25,6 @@ if sys.stdout and hasattr(sys.stdout, 'buffer'):
 # 프로젝트 경로
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from dotenv import load_dotenv
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
-
 import yaml
 
 # 자동 재시작 설정
@@ -41,6 +38,24 @@ def _harden_third_party_logging() -> None:
     """Keep credential-bearing request URLs out of application logs."""
     for logger_name in ("httpx", "httpcore"):
         logging.getLogger(logger_name).setLevel(logging.WARNING)
+
+
+def _load_runtime_environment() -> None:
+    """Load deployment credentials only when the executable actually starts."""
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
+
+def _print_startup_safety_status() -> None:
+    """Report safety state without emitting account or chat identifiers."""
+    from bot.trade_runtime_config import is_paper_only
+
+    automatic_mode = "PAPER_ONLY (실주문 차단)" if is_paper_only() else "LIVE 설정"
+    print("\n  KIS 계좌: 설정됨")
+    print("  Telegram Chat: 설정됨")
+    print(f"  자동주문: {automatic_mode}")
+    print("  수동주문: 사용자 명령 시 실주문 가능 (자동가드와 별도)")
 
 
 def _check_already_running() -> bool:
@@ -131,7 +146,7 @@ def verify_kis():
         print(f"  ❌ 현재가 조회 실패: {price.get('message')}")
         return False
 
-    print("  ✅ KIS API 실매매 준비 완료\n")
+    print("  ✅ KIS API 조회 연결 확인\n")
     return True
 
 
@@ -142,7 +157,7 @@ def _run_bot_once():
 
     print("=" * 50)
     print("  Body Hunter v4 텔레그램 봇")
-    print("  동적 목표가 + KIS 실매매")
+    print("  동적 목표가 + KIS 조회 연결")
     print(f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 50)
 
@@ -157,8 +172,7 @@ def _run_bot_once():
         print("  .env 파일을 확인하세요")
         sys.exit(1)
 
-    print(f"\n  KIS 계좌: {os.getenv('KIS_ACC_NO')}")
-    print(f"  Telegram Chat: {os.getenv('TELEGRAM_CHAT_ID')}")
+    _print_startup_safety_status()
 
     # KIS API 연결 테스트
     if not verify_kis():
@@ -180,6 +194,8 @@ def _run_bot_once():
 
 def main():
     """자동 재시작 래퍼"""
+    _load_runtime_environment()
+
     # 중복 실행 방지
     if _check_already_running():
         print("  봇이 이미 실행 중입니다. 중복 시작 차단.")
