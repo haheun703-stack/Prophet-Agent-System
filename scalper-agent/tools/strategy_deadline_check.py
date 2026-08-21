@@ -153,11 +153,13 @@ def build_report() -> tuple:
         alerts.append(row)
         reg = {}
 
+    active_n = 0
     for s in reg.get("strategies", []):
         # 엔트리별 격리 — 나쁜 1행이 전체 평가/알림을 무산시키지 않게(Tier1 Med)
         try:
             if s.get("status") != "active":
                 continue
+            active_n += 1
             dleft = (date.fromisoformat(s["deadline"]) - today).days
             dtag = f"D-{dleft}" if dleft > 0 else ("D-DAY" if dleft == 0 else f"⚠기한초과 {-dleft}일")
             row = f"[{s['id']}] {s['name']} — {dtag} ({s['deadline']})"
@@ -173,10 +175,42 @@ def build_report() -> tuple:
             lines.append(row)
             if dleft <= ALERT_DDAY:
                 alerts.append(row)
+
+            # ★8/21 [F-179] 벤치마크 강제 — 절대수익 기준은 "시장을 이겼는가"를 못 잰다.
+            #   [S-1]은 기준이 `>0`이었는데 같은 기간 시장 동일가중이 T+3 +0.37%p·T+5 +0.98%p였다.
+            #   즉 **아무거나 사도 플러스인 구간에서 `>0`을 통과선으로 삼았고**, 명분 축은
+            #   시장 대비 -6.05%p(t -6.33)로 가치를 파괴하는데 절대수익만 보면 '그냥 마이너스'로
+            #   보였다. 규약(사장님 8/21 승인) = 신규 등재는 `benchmark` 필드 의무.
+            #   ★자동 폐기·자동 실패 처리는 하지 않는다(이 도구의 불변식) — 표면화만 한다.
+            if not s.get("benchmark"):
+                brow = (f"[{s['id']}] ⚠ benchmark 미지정 — 절대수익 기준은 시장을 이겼는지 "
+                        f"못 잰다([F-179] 8/21 사장님 승인 규약)")
+                lines.append(brow)
+                alerts.append(brow)
         except Exception as e:  # noqa: BLE001
             row = f"[{s.get('id', '?')}] ⚠ 엔트리 평가 실패({e}) — 대장 수동 확인"
             lines.append(row)
             alerts.append(row)
+
+    # ★8/21 — 활성 전략 0건은 '이상 없음'이 아니라 **조르기가 멈춘 상태**다.
+    #   이 파일 위쪽 주석이 이미 경고하던 위험구간("8/7에 S-6가 정리되면 alerts=0이 되고
+    #   장부가 깨져도 아무도 모른다")이 8/21 [S-1] 폐기로 **실현**됐다: 체커 출력이
+    #   스코어보드 + "⏰ 전략 데드라인 대장" 헤더뿐이고 alerts=0 → 텔레그램 미발송.
+    #   7/17 사장님이 대장을 만든 이유가 '판정 없이 무기한 도는 것'의 차단인데,
+    #   **전략이 하나도 없는 상태**는 그 반대편의 같은 실패(진화 정지)다.
+    #   ★경보 마모 방지([F-153] 교훈) — 매일 같은 문구를 짖지 않도록 **경과일을 함께** 낸다.
+    #     상태 파일은 쓰지 않는다('상태 파일 무접촉' 불변식·8/5) — 대장의 reported 최댓값에서 역산.
+    if reg and active_n == 0:
+        try:
+            reported = [s["reported"] for s in reg.get("strategies", []) if s.get("reported")]
+            since = (today - date.fromisoformat(max(reported))).days if reported else None
+        except Exception:  # noqa: BLE001
+            since = None
+        gap = f"{since}일째" if since is not None else "기간 불명"
+        row = (f"⚠ 활성 전략 0건 ({gap}) — 데드라인 조르기 정지. "
+               f"탐색 중이면 [T-1] 진행 상황을, 아니면 대장 복구를 확인할 것")
+        lines.append(row)
+        alerts.append(row)
 
     if alerts:
         lines.append(f"→ 판정 보고 의무 {len(alerts)}건 — 폐기/연장 결정은 사장님 (자동 폐기 없음)")
