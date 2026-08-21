@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 """[S-8] 등재 완성 — ①BROAD_DOWN 게이트 결합 ②슬리피지 현실성 실측."""
 import csv, sys, os, statistics as st
-from collections import defaultdict
 sys.path.insert(0, os.getcwd())
 from data.data_verifier import DAILY_DIR, _all_universe_codes
 
