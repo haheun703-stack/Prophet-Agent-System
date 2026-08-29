@@ -91,12 +91,19 @@ def main() -> int:
     print("[1] 활성 전략 0건 — 침묵 차단")
     lines, alerts = _with_registry(ALL_DROPPED)
     txt_l, txt_a = _joined(lines), _joined(alerts)
+    # ★[S-8] 관측 줄은 계산 실패 시 alerts로 승격된다 — 조용한 성공 위장 차단
+    check("S-8 관측 줄이 존재한다", any("[S-8] 관측" in l for l in lines))
     check("활성 0건이 alerts에 뜬다", "활성 전략 0건" in txt_a, f"\n     alerts={alerts}")
     check("lines에도 표기된다", "활성 전략 0건" in txt_l)
     check("경과일이 함께 표기된다(마모 방지)", "6일째" in txt_a, f"\n     alerts={alerts}")
     check("문구가 행동을 지시한다([T-1] 또는 대장 복구)",
           "[T-1]" in txt_a or "대장 복구" in txt_a)
-    check("스코어보드 첫 줄은 유지된다(7/17 약속)", lines and lines[0].startswith("📊"))
+    # ★8/29 갱신 — 첫 줄이 [S-8] 관측치로 바뀌었다(폐기된 [S-1] 숫자가 대표하던 것을 교체).
+    #   7/17 약속("보고 첫 줄 = 스코어보드")의 취지는 '숫자로 시작하라'이고, 그 숫자는
+    #   **판정 대상 전략**의 것이어야 한다. 폐기 전략을 첫 줄에 두는 쪽이 취지 위반이다.
+    check("첫 줄 = [S-8] 관측치(숫자로 시작 — 7/17 약속)", lines and lines[0].startswith("🔭"))
+    check("둘째 줄 = 폐기 라벨 붙은 [S-1] 페이퍼",
+          len(lines) > 1 and "S-1 폐기" in lines[1] and "판정 대상 아님" in lines[1])
     check("★불변식 — 자동 폐기 없음(status 무변경)",
           all(s["status"] == "dropped_strategy" for s in ALL_DROPPED["strategies"]))
 
@@ -153,7 +160,7 @@ def main() -> int:
     print("\n[5] 실제 대장 — 회귀(정본 파일)")
     lines5, alerts5 = sdc.build_report()
     check("정본에서도 exit 없이 동작", isinstance(lines5, list) and isinstance(alerts5, list))
-    check("정본 첫 줄 = 스코어보드", lines5 and lines5[0].startswith("📊"))
+    check("정본 첫 줄 = [S-8] 관측치", lines5 and lines5[0].startswith("🔭"))
     real = json.loads(sdc.REGISTRY.read_text(encoding="utf-8"))
     n_active = sum(1 for s in real.get("strategies", []) if s.get("status") == "active")
     if n_active == 0:
