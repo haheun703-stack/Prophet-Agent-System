@@ -5,7 +5,16 @@
 안전: select 1행만(사용한도 초과 상태라 최소 쿼리)·쓰기 0·삭제 0.
 """
 import os, sys, datetime
-sys.path.insert(0, os.getcwd())
+from pathlib import Path
+
+# ★8/29 fix — cwd 의존이었다. `cd scalper-agent` 에서 돌리면 상위의 shared/ 를 못 찾아
+#   ModuleNotFoundError로 죽는다(8/29 실측). 실행 위치와 무관하게 repo 루트를 잡는다.
+#   tools/manual/ 의 다른 도구들은 처음부터 __file__ 기준이었는데 이것만 빠져 있었다.
+#   ★경로는 세지 말고 찍어서 확인했다 — parents[3]이 repo 루트(shared/ 보유) 실측.
+_ROOT = Path(__file__).resolve().parents[3]              # …/tools/manual → repo 루트
+for _p in (str(_ROOT), str(_ROOT / "scalper-agent")):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from shared.supabase_client import get_client, _ensure_env
 _ensure_env()
