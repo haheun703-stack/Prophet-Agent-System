@@ -103,7 +103,7 @@ def main() -> int:
     #   **판정 대상 전략**의 것이어야 한다. 폐기 전략을 첫 줄에 두는 쪽이 취지 위반이다.
     check("첫 줄 = [S-8] 관측치(숫자로 시작 — 7/17 약속)", lines and lines[0].startswith("🔭"))
     check("둘째 줄 = 폐기 라벨 붙은 [S-1] 페이퍼",
-          len(lines) > 1 and "S-1 폐기" in lines[1] and "판정 대상 아님" in lines[1])
+          len(lines) > 1 and "S-1 폐기" in lines[1] and "최종 고정" in lines[1])
     check("★불변식 — 자동 폐기 없음(status 무변경)",
           all(s["status"] == "dropped_strategy" for s in ALL_DROPPED["strategies"]))
 

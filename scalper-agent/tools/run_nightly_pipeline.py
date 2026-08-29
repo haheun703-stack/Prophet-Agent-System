@@ -140,10 +140,15 @@ def main():
          [PY, "tools/morning_briefing.py"], 60),
         ("⑲ 플레이북 페이퍼",   # 7/4 사장님 "바둑 경우의 수" — ticks(~20분 해상도·전종목·체결강도) 결정적 replay: PB-A 추매단타(+5%도달→다음관측 진입)·PB-B 상한가D+1 스파이크. record-only·매수/매도/picks/SAJANG 무접촉
          [PY, "tools/playbook_shadow.py"], 900),
-        ("⑲-2 OBSERVE v2 대조",   # 7/10 압축 로드맵 — 장중 OBSERVE 러너(정제판 v2 실시간 intent·실주문 0) ↔ 최종 ticks 대조(일치/누락/유령/지연). 라이브 전환 판정 자료. record-only·주문 무접촉
-         [PY, "tools/observe_v2_runner.py", "--compare"], 600),
-        ("⑲-3 v2 페이퍼 장부",   # 7/16 사장님 "페이퍼로 승률·수익금부터" — 장중 intent를 최종 ticks로 페이퍼 정산(⑲ replay 동일규약·CB -6%p 리허설) → 누적 승률/수익금 장부+텔레그램. record-only·실주문 0·주문/SAJANG/picks 무접촉
-         [PY, "tools/observe_v2_paper.py", "--daily"], 300),
+        # ★8/29 [S-1] 폐기 배선 정리 (사장님 승인) — ⑲-2·⑲-3 **스텝만 제거·코드는 보존**(S-6 전례).
+        #   [S-1]은 8/21 폐기됐는데 러너·장부가 계속 돌아 **폐기 전략의 손실이 매일 첫 줄로 발송**됐다
+        #   (8/21 121건 -67.93%p → 8/29 148건 -85.91%p). 8/29에 러너 cron을 중단했고,
+        #   러너가 없으면 `_intents_for()`가 None을 돌려 ⑲-3은 정산을 skip하는데 **nightly는 exit 0**이라
+        #   매일 조용히 ✅가 찍힌다 = [F-22]가 경고한 '완료위장'. 그래서 스텝 자체를 뺀다.
+        #   ★보존되는 것: ticks 수집(봇 job B2 — 러너와 독립) · ⑲ replay · 장부 파일 · 코드 전부.
+        #     v2 신호는 ticks에서 사후 재구성 가능하므로 선정 피처로 되살릴 길은 열려 있다.
+        #   ★되살릴 때: 이 두 줄 복원 + crontab의 observe_v2_runner 주석 해제(백업
+        #     /home/ubuntu/crontab.bak.20260829_s1runner).
         ("⑲-4 전략 데드라인 체크",   # 7/17 사장님 "전략에 데드라인=진짜 진화" — 대장(data/strategy_deadlines.json) D-day+기준 자동평가, D-3 이내/초과만 텔레그램. 자동 폐기 없음(판정 보고 의무·결정=사장님). read-only
          [PY, "tools/strategy_deadline_check.py", "--notify"], 120),
         ("⑳ 산출물 신선도 자가검증",   # 7/7 전체검수 fix — 핵심 산출물 오늘날짜 검증(완료위장 방지·stale이면 이 스텝이 ⚠) + DataVerifier 재실행(장전 박제 해소·fill 후 진실). read-only·매매 무접촉
