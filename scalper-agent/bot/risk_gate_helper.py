@@ -26,9 +26,15 @@ from __future__ import annotations
 import importlib.util
 import logging
 import os
+from datetime import date
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# ★8/29 [F-171] 외인소진율 판정 근거의 최대 허용 나이(달력일).
+#   소진율은 평일 매일 수집되고 재수집(19:40)까지 있어 정상이면 1~3일이다.
+#   휴장 연휴를 감안해 10일. 실측(8/29): 이 임계로 2,482종 통과 / 49종 stale.
+EXHAUSTION_MAX_AGE_DAYS = 10
 
 # 정보봇 SDK importlib 로드 (bodyhunter src/ 와 충돌 회피)
 _JGIS_SDK_PATH = "/home/ubuntu/jgis/src/infrastructure/adapters/risk_gate_client.py"
@@ -179,7 +185,33 @@ def is_foreign_exhaustion_blocked(code: str) -> bool:
         df = load_foreign_exhaustion(code)
         if df is None or len(df) == 0:
             return False
-        rate = float(df["소진율"].iloc[-1])  # 가장 최신
+
+        # ★8/29 [F-171] — 여기는 **날짜를 보지 않고** 마지막 행을 그대로 읽고 있었다.
+        #   소진율 파일이 몇 달 전에서 멈춘 종목이 있어도 그 옛 숫자로 오늘 매수를 판정한다.
+        #   ★실측(8/29·2,531종): 최신(8/28) 2,422종(95.7%) / **한 달+ 묵은 것 49종(1.9%)**.
+        #     그 49종의 소진율은 전부 0~16%라 차단 임계(50%)에 안 걸린다 →
+        #     **오늘 시점의 실제 오차단은 0종**이다. 즉 급한 사고는 없다.
+        #   ★그러나 위험 방향은 반대다 — 묵은 데이터가 *낮은* 값을 보여주면
+        #     **차단해야 할 종목을 통과시킨다**(안전장치가 조용히 무력화). 49종이 전부 그 형태다.
+        #   ★처방은 **'보이게 하되 동작 불변'**([F-164] 규약): stale이면 차단하지 않고(현행 유지)
+        #     경고를 남긴다. 지금 차단으로 바꾸면 49종이 영구 매수불가가 되는데, 그 부작용을
+        #     정당화할 실측 근거(오차단 0종)가 없다. **관측 후 승격**이 순서다.
+        _stale_days = None
+        try:
+            _last = df.index[-1]
+            _lastd = _last.date() if hasattr(_last, "date") else None
+            if _lastd is not None:
+                _stale_days = (date.today() - _lastd).days
+        except Exception:  # noqa: BLE001
+            _stale_days = None
+
+        rate = float(df["소진율"].iloc[-1])
+        if _stale_days is not None and _stale_days > EXHAUSTION_MAX_AGE_DAYS:
+            # 판정은 그대로 내되(동작 불변) 근거가 낡았다는 사실을 남긴다.
+            logger.warning(
+                "[risk_gate_helper][F-171] 외인소진율 STALE %s: 마지막 %d일 전 "
+                "(소진율 %.2f%%·임계 밖이면 통과) — 안전장치가 낡은 값으로 판정 중",
+                code, _stale_days, rate)
         return client.is_blacklisted_for_exhaustion(rate)
     except Exception as e:
         logger.warning("[risk_gate_helper] 외인소진율 체크 실패 %s: %s", code, e)

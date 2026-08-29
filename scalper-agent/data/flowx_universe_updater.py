@@ -130,14 +130,31 @@ def update_sector_universe() -> dict:
 def _calc_volume_ratio_kr(trader, code: str, today_vol: int) -> float:
     """KR 종목 volume_ratio = 당일거래량 / 20일 평균거래량"""
     try:
-        from data.csv_loader import load_stock_data
-        df = load_stock_data(code)
+        # ★8/29 [F-166] — `load_stock_data` 는 저장소에 **없는 이름**이다(csv_loader는
+        #   클래스만 제공). `except Exception: pass` + `return 1.0` 이라 KR 종목의
+        #   volume_ratio 가 **언제나 정확히 1.0**("평소와 동일")으로 FLOWX에 올라가고 있었다
+        #   = 거래량이 몇 배로 터진 종목도 정상으로 보고되는 고장난 체온계.
+        # ★함정 하나 더 — 이름만 고치면 여전히 실패한다: `load_ohlcv()` 가 돌려주는 컬럼은
+        #   **소문자 `volume`**(csv_loader:148)인데 여기선 `df["Volume"]`(대문자)를 읽고 있어
+        #   KeyError → 같은 except로 빠져 또 1.0이 된다. 컬럼명까지 같이 고친다.
+        # ★8/29 [F-166] 2차 정정 — 장부에 적힌 처방(`CSVLoader().load_ohlcv()`)도 **틀렸다.**
+        #   실측: ①CSVLoader.data_dir = `bodyhunter/stock_data_daily`(4,017개)로 **우리 수집본이
+        #   아닌 별도 디렉터리**를 본다 ②`load_ohlcv()`는 `df[['date',...]]`를 하는데 `load()`가
+        #   date 컬럼을 안 줘서 **KeyError로 자체 파손**돼 있다. 그대로 썼으면 같은 except로
+        #   빠져 **여전히 1.0**이었다(실측에서 400/400=100%가 1.0으로 확인됨).
+        #   → 프로젝트 표준 로더 `utils.stock_utils.load_daily(code, DAILY_DIR)` 사용.
+        #     우리가 매일 검증하는 `data_store/daily/*.csv`(컬럼 `거래량`)를 읽는다.
+        from pathlib import Path as _Path
+        from utils.stock_utils import load_daily as _load_daily
+        _daily_dir = _Path(__file__).resolve().parent.parent / "data_store" / "daily"
+        df = _load_daily(code, _daily_dir, min_rows=20)
         if df is not None and len(df) >= 20:
-            avg_vol = df["Volume"].tail(20).mean()
+            avg_vol = float(df["거래량"].tail(20).mean())
             if avg_vol > 0:
                 return today_vol / avg_vol
-    except Exception:
-        pass
+    except Exception as e:  # noqa: BLE001
+        # ★조용한 실패가 이 버그를 8/11~8/29 살려뒀다 — 이제는 흔적을 남긴다([F-156] 계열).
+        logger.debug("[flowx][F-166] volume_ratio 계산 실패 %s: %s — 1.0 폴백", code, e)
     # 로컬 CSV 없으면 1.0 반환
     return 1.0
 

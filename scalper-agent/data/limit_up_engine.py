@@ -323,8 +323,13 @@ def _get_sector_rotation(sector: str) -> dict:
     result = {"phase": "미확인", "hot_days": 0, "signal": "", "favorable": True}
 
     try:
-        from data.rotation_detector import detect_rotation
-        report = detect_rotation()
+        # ★8/29 [F-165] — `detect_rotation` 이라는 이름은 저장소에 **존재한 적이 없다.**
+        #   `try/except` 안이라 매일 조용히 ImportError로 빠져 이 함수는 **항상 기본값**
+        #   ("미확인"·hot_days 0)만 돌려주고 있었다 = 섹터 로테이션 정보가 사실상 0.
+        #   정답은 `analyze_rotation()`(rotation_detector:347 · RotationReport 반환 ·
+        #   history=None이면 파일에서 로드 · `.hot_sectors` 필드 보유 — 아래 사용부와 일치).
+        from data.rotation_detector import analyze_rotation
+        report = analyze_rotation()
         if not report:
             return result
 

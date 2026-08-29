@@ -162,7 +162,9 @@ def calc_upper_wick_pct(code: str, recent_days: int = 3) -> float:
 # ─────────────────────────────────────────────
 LARGE_CAP_MIN_MCAP = 20000          # 시총 2조+ 대형주만
 LARGE_CAP_QUIET_THRESHOLD = 15.0    # 조용함 ±15% (대형주는 원래 변동 큼)
+# ★8/29 [F-172] — 이 상수의 '5일'이 **구현과 27.6배 어긋나 있었다**(아래 DUAL_BUY_DAYS 참조).
 LARGE_CAP_MIN_DUAL_BUY = 300        # 외인+기관 5일 누적 300억+ (쌍매수 필수)
+DUAL_BUY_DAYS = 5                   # ★8/29 신설 — '5일'을 코드가 실제로 지키게 하는 상수
 LARGE_CAP_MIN_FINAL = 55.0          # 대형주 최종 컷오프 (조금 완화)
 
 
@@ -198,9 +200,17 @@ def scan_large_caps(
             continue
 
         try:
-            # 5일 외인/기관 누적 (백만원 → 억원)
-            foreign_amt = flow["외국인_금액"].astype(float).values / 100
-            inst_amt = flow["기관_금액"].astype(float).values / 100
+            # ★8/29 [F-172] — 주석은 '5일 누적'인데 **파일 전체를 더하고 있었다.**
+            #   `load_investor_flow()`(flow_collector:1082)는 행 제한 없이 CSV 전체를 반환하는데
+            #   그대로 `.sum()` 했다. 실측(8/29): 파일 **138행** = 약 6.5개월. 27.6배.
+            #   ★영향 실측: 300억+ 통과가 **101종 → 20종**(교집합 6종·탈락 95·신규 14).
+            #     대형주(시총 2조+) 중 101종이 통과했다는 건 **필터로 기능하지 않았다**는 뜻이다
+            #     (6개월간 순매수 300억은 대형주면 대부분 넘는다).
+            #   ★임계 300억은 유지 — 5일 기준 분포에서 상위 20번째가 309.6억이라 그대로 유효.
+            #     즉 이건 '기준 변경'이 아니라 **기준이 원래 재려던 것을 재게 만드는 fix**다.
+            #   ★picks는 실매수 경로(auto_trader:215)와 연결 — 봇 OFF·실주문 0 상태에서 반영.
+            foreign_amt = flow["외국인_금액"].astype(float).tail(DUAL_BUY_DAYS).values / 100
+            inst_amt = flow["기관_금액"].astype(float).tail(DUAL_BUY_DAYS).values / 100
             foreign_total = float(foreign_amt.sum())
             inst_total = float(inst_amt.sum())
 
