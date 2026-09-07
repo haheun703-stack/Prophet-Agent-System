@@ -53,16 +53,27 @@ def _check(name, cond):
 
 
 def _step_names(src: str) -> list:
-    """nightly STEPS의 표시 이름만 추출 — 주석 안의 문자열은 세지 않는다."""
-    names = []
-    for line in src.splitlines():
-        st = line.strip()
-        if st.startswith("#"):
-            continue
-        m = re.match(r'\("([^"]+)"\s*,\s*$', st)
-        if m:
-            names.append(m.group(1))
-    return names
+    """nightly `steps` 리스트의 표시 이름 — **AST로** 센다.
+
+    ★9/7 회귀검수 M5 후속: 첫 판은 정규식 `\\("([^"]+)"\\s*,\\s*$` 였는데
+      이름이 줄 끝에 오는 형태만 잡아 **26개 중 6개만** 셌다. 그 불완전한 목록으로
+      "국적별 스텝 없음"을 판정하고 있었다 — 국적별이 다른 형태였으면 그냥 통과했다.
+      정규식으로 코드를 세지 말고 파서로 센다.
+    """
+    import ast
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            tgt = node.targets[0]
+            if isinstance(tgt, ast.Name) and tgt.id == "steps" and isinstance(node.value, ast.List):
+                out = []
+                for el in node.value.elts:
+                    if isinstance(el, ast.Tuple) and el.elts:
+                        first = el.elts[0]
+                        if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                            out.append(first.value)
+                return out
+    return []
 
 
 def test_nightly_step_removed():
@@ -73,7 +84,15 @@ def test_nightly_step_removed():
     # 인접 스텝은 살아 있어야 한다(과다 제거 방지)
     for keep in ("⑦ 11주체", "⑨ F1 forward+preflight", "⑥ 수급 4종"):
         _check(f"인접 스텝 보존: {keep}", keep in names)
-    _check("스텝 수 표기 갱신(26)", "**26**" in NIGHTLY)
+    # ★9/7 회귀검수 M5 — 첫 판은 `"**26**" in NIGHTLY`(문자열 존재)만 봤다.
+    #   그건 [F-150]("문서가 구현을 안 세고 적으면 조용히 어긋난다")을 **그걸 막으려 쓴 테스트 안에서**
+    #   반복한 것이다. 실제 리스트 길이를 세서 문서 숫자와 대조한다.
+    import re as _re
+    _m = _re.search(r"단계 수는 \*\*(\d+)\*\*", NIGHTLY)
+    _doc_n = int(_m.group(1)) if _m else -1
+    _real_n = len(_step_names(NIGHTLY))
+    _check(f"문서 표기({_doc_n}) == 실제 스텝 수({_real_n})", _doc_n == _real_n)
+    _check("스텝 수 26", _real_n == 26)
 
 
 def test_coo_wiring_removed():
@@ -95,13 +114,25 @@ def test_no_automatic_call_path():
     [S-6]의 "한쪽만 빼면 재가동 시 되살아난다"를 스스로 저지를 뻔한 자리라 함께 제거했다.
     `__main__` 수동 블록만 남긴다(cron 직접 호출은 crontab 실측 0건).
     """
+    # ★9/7 회귀검수 M5 — 첫 판은 `upload_short.py` **한 파일만** 스캔했다.
+    #   주장("자동 실행 경로 0건")은 저장소 전체인데 검사는 파일 하나였다 = 다른 파일에
+    #   새 호출자가 생기면 통과한다. 저장소 전수로 넓힌다(테스트·아카이브 제외).
+    auto = []
+    for _p in BASE_DIR.rglob("*.py"):
+        _sp = str(_p).replace("\\", "/")
+        if any(x in _sp for x in ("_trash", "_archive", "__pycache__", "/tests/")):
+            continue
+        _ls = _p.read_text("utf-8", errors="ignore").splitlines()
+        _main = next((i for i, l in enumerate(_ls) if l.startswith("if __name__")), len(_ls))
+        for _i, _l in enumerate(_ls[:_main]):
+            if ("upload_nationality_flows()" in _l and not _l.strip().startswith("#")
+                    and not _l.lstrip().startswith("def ")):
+                auto.append(f"{_p.name}:{_i+1}")
+    _check(f"★저장소 전수 — __main__ 이전 자동 호출 0건 (실측 {auto})", not auto)
+
     src = (BASE_DIR / "data" / "upload_short.py").read_text("utf-8")
     lines = src.splitlines()
     main_at = next(i for i, l in enumerate(lines) if l.startswith("if __name__"))
-    auto = [i + 1 for i, l in enumerate(lines[:main_at])
-            if "upload_nationality_flows()" in l and not l.strip().startswith("#")
-            and not l.lstrip().startswith("def ")]      # 함수 '정의' 줄은 호출이 아니다
-    _check(f"__main__ 이전 자동 호출 0건 (실측 {auto})", not auto)
     manual = [i + 1 for i, l in enumerate(lines[main_at:], start=main_at)
               if "upload_nationality_flows()" in l and not l.strip().startswith("#")]
     _check("__main__ 수동 경로 1곳 존치(재현용)", len(manual) == 1)
@@ -183,9 +214,22 @@ def test_krx_absolute_rule():
 
 
 def test_negative_control():
-    """★음성대조 — 폐기 전 형태를 재현하면 위 검사들이 잡는다."""
-    old_nightly = NIGHTLY + '\n        ("⑧ 국적별",\n'
-    _check("음성대조: 스텝을 되돌리면 검출", any("국적별" in n for n in _step_names(old_nightly)))
+    """★음성대조 — 폐기 전 형태를 재현하면 위 검사들이 잡는다.
+
+    ★9/7 회귀검수 후속: `_step_names`를 AST로 바꾸면서 이 음성대조가 깨졌다.
+      첫 판은 파일 끝에 `("⑧ 국적별",` **조각**을 붙였는데, 정규식 시절엔 통했지만
+      AST는 *"'(' was never closed"* 로 파싱 실패한다 → `_step_names`가 `[]`를 돌려
+      음성대조가 **조용히 무효**가 될 뻔했다(예외가 아니라 빈 목록이라 더 위험).
+      → 문법적으로 **유효한 스텝 튜플**을 실제 리스트 안에 삽입해 재현한다.
+    """
+    anchor = '        ("⑨ F1 forward+preflight",'
+    assert anchor in NIGHTLY, "앵커 스텝이 사라졌다 — 음성대조 갱신 필요"
+    revert = ('        ("⑧ 국적별",\n'
+              '         [PY, "-c", "import collect_all; collect_all.step3_nationality()"], 600),\n')
+    old_nightly = NIGHTLY.replace(anchor, revert + anchor, 1)
+    names = _step_names(old_nightly)
+    _check("음성대조: 스텝을 되돌리면 검출", any("국적별" in n for n in names))
+    _check("음성대조: 되돌린 목록이 실제로 파싱됨(빈 목록 아님)", len(names) == 27)
     old_coo = COO + '\n            "C25_nationality_xray",\n'
     body = "\n".join(l for l in old_coo.splitlines() if not l.strip().startswith("#"))
     _check("음성대조: C25를 되돌리면 검출", "C25_nationality_xray" in body)

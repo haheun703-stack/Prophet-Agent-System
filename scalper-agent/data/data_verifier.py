@@ -155,7 +155,12 @@ def _csv_has_date(csv_path: Path, target: str, tail_rows: int = 5, _today_overri
     호출처 6곳(이 파일 5 + notify_data_freshness 1)이 아니라 **여기서** 닫는다.
     기준일이 과거면 (오늘 − 기준일) 달력일수만큼 꼬리를 넓힌다: 하루 최대 1행이라
     안전한 상한이고, 파일은 이미 전체를 읽고 있어 비용 증가는 0이다.
-    기준일 == 오늘(운영 20:10·08:30 경로)이면 gap=0 → **종전과 완전히 동일**."""
+    기준일 == 오늘이면 gap=0 → **종전과 완전히 동일**.
+    ★9/7 회귀검수 M1 정정 — 처음 이 줄은 *"20:10·**08:30** 경로"* 라 적었으나 **08:30은 틀렸다**:
+      `daily_ops_check.py`는 `ref = last_trading_day(today)`(전 거래일)이라 오늘 실측 gap=3이다.
+      즉 아침 점검은 꼬리 5→8행으로 **넓어진 상태로 판정**한다. 실데이터 A/B 결과 판정 차이는
+      0채널(critical_failures 양쪽 [])이지만, 문서가 사실과 달랐던 것은 그대로 오류다.
+      gap=0이 보장되는 것은 **20:10 경로뿐**(`args.date or today`)."""
     if not csv_path.exists():
         return False
     try:

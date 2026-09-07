@@ -75,7 +75,10 @@ def test_picks_sl_sajang():
                (lv["entry_low"], lv["entry_high"], lv["tp1"], lv["tp2"])
                == (int(close * 0.985), int(close * 1.010), int(close * 1.050), int(close * 1.080)))
     _check("sl(10000) == 9700 (−3%)", dp.price_levels(10000)["sl"] == 9700)
-    _check("close=0 → 전부 0", all(v == 0 for v in dp.price_levels(0).values()))
+    # ★9/7 [F-231] `sl_rule`(문자열) 추가로 "전부 0"이 성립하지 않는다 — **숫자 키만** 본다
+    _check("close=0 → 숫자 키 전부 0",
+           all(v == 0 for v in dp.price_levels(0).values() if isinstance(v, (int, float))))
+    _check("close=0에도 sl_rule은 규칙 문자열", dp.price_levels(0)["sl_rule"].startswith("진입가"))
 
 
 def test_no_literal_in_source():

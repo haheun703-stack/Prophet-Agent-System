@@ -36,9 +36,11 @@ from datetime import datetime, timedelta
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 if str(Path(__file__).resolve().parents[1]) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # scalper-agent/ (SAJANG)
-    # ★부수효과(9/7 Tier1 L-2): 스크립트 직접 실행 시 `bot.telegram_bot`도 이제 import된다 →
-    #   종전엔 ModuleNotFoundError로 조용히 죽던 `--send-telegram`(opt-in)이 실제 발송한다.
-    #   cron 경로(trading_coo가 패키지 import)는 원래 bot 경로가 있어 동작 불변.
+    # ★9/7 회귀검수 M4 정정 — 처음 여기에 *"이제 `--send-telegram`이 실제 발송한다"* 고 적었으나
+    #   **불가능하다**: `send_telegram()`이 부르는 `send_telegram_message`/`send_message`는
+    #   저장소에 **정의가 0건**이다([F-41]/[F-73]/[F-143]/[F-167] 계열 — 유령 import).
+    #   그래서 이 함수는 지금도 항상 False를 돌려준다. 경로 삽입 자체는 SAJANG import용이고
+    #   이름 충돌 0건(회귀검수 확인). cron 경로(패키지 import)는 동작 불변.
 from data.sajang_rules import SAJANG   # ★9/7 [F-185] SL 단일진실
 # ★9/7 [F-188] 표시용 목표가(tp1/tp2)는 참고 밴드다 — 실제 청산 룰은 SAJANG(고점 −3% 트레일링·고정 TP 없음).
 #   문구를 SAJANG에서 파생시켜 룰이 바뀌면 문구도 같이 바뀌게 한다(리터럴 금지).
@@ -612,12 +614,18 @@ def price_levels(close: float) -> dict:
     읽지 않는다. 같은 날 두 번째 '변수명만 보고 원천 안 따라간' 오기.)
     TP +5%/+8%는 참고 밴드로 남기고 EXIT_RULE_NOTE로 청산 룰을 병기한다([F-188] 9/7 소진)."""
     close = float(close or 0)
+    lo, hi = int(close * 0.985), int(close * 1.010)
     return {
-        "entry_low": int(close * 0.985),
-        "entry_high": int(close * 1.010),
+        "entry_low": lo,
+        "entry_high": hi,
         "tp1": int(close * 1.050),          # +5% (참고 밴드)
         "tp2": int(close * 1.080),          # +8% (참고 밴드)
-        "sl": SAJANG.get_normal_sl(close),  # 매수가 −3% (사장님 영구 룰·NORMAL_SL_PCT)
+        # ★9/7 [F-231] `sl`은 **종가 기준 대표값**이다 — 진입은 밴드라 단일 숫자로 −3%를 표현할 수 없다.
+        #   실제 적용 규칙은 `sl_rule`이고, 밴드 양끝의 값을 함께 실어 오해를 없앤다.
+        "sl": SAJANG.get_normal_sl(close),
+        "sl_rule": f"진입가 −{SAJANG.NORMAL_SL_PCT:g}%",
+        "sl_at_entry_low": SAJANG.get_normal_sl(lo),
+        "sl_at_entry_high": SAJANG.get_normal_sl(hi),
     }
 
 
@@ -632,13 +640,21 @@ def price_levels_limit_up(close: float) -> dict:
     눌림 밴드(−7~−3%)·참고 목표(+5/+10%)는 종전 값 그대로(백테스트 EV +1.18% 근거 유지)."""
     close = float(close or 0)
     pullback_target = int(close * 0.95)              # −5% 눌림목 타겟
+    lo, hi = int(close * 0.93), int(close * 0.97)    # −7% 깊은 눌림 / −3% 얕은 눌림
     return {
         "pullback_target": pullback_target,
-        "entry_low": int(close * 0.93),              # −7% 깊은 눌림
-        "entry_high": int(close * 0.97),             # −3% 얕은 눌림
+        "entry_low": lo,
+        "entry_high": hi,
         "tp1": int(pullback_target * 1.05),          # 진입가 +5% (참고 밴드)
         "tp2": int(pullback_target * 1.10),          # 진입가 +10% (참고 밴드)
-        "sl": SAJANG.get_normal_sl(pullback_target), # 진입가 −3% (사장님 영구 룰)
+        # ★9/7 [F-231] 트랙 C는 진입 밴드가 **4%p 폭**(−7~−3%)이라 단일 SL 숫자가 특히 위험했다.
+        #   눌림목 기준 −3%(92,150 @close 100,000)는 깊은 쪽 체결(93,000)에서 **−0.91%**,
+        #   얕은 쪽(97,000)에서 **−5.00%**가 된다 — 양쪽 다 사장님 룰(−3%)이 아니다.
+        #   9/7 오전 내가 −15% 리터럴을 고치면서 이 폭을 계산하지 않았다([F-189] 후속).
+        "sl": SAJANG.get_normal_sl(pullback_target),
+        "sl_rule": f"진입가 −{SAJANG.NORMAL_SL_PCT:g}%",
+        "sl_at_entry_low": SAJANG.get_normal_sl(lo),
+        "sl_at_entry_high": SAJANG.get_normal_sl(hi),
     }
 
 
@@ -692,6 +708,10 @@ def format_flowx_post(picks: list[dict], ewy_signal: dict, mode: str = "confirme
             lines.append(f"   🎯 눌림목대기 {p['entry_low']:,}~{p['entry_high']:,} · 참고목표 {p['tp1']:,} (+{p['upside_to_tp1_pct']:.1f}%)")
         else:
             lines.append(f"   🎯 진입 {p['entry_low']:,}~{p['entry_high']:,} · 참고목표 {p['tp1']:,} (+{p['upside_to_tp1_pct']:.1f}%)")
+        # ★9/7 [F-231] 손절은 진입 밴드마다 달라진다 — 숫자 하나로 적으면 오해한다
+        _slr = p.get("sl_rule")
+        if _slr:
+            lines.append(f"   🛑 손절 {_slr} (밴드 양끝 {p.get('sl_at_entry_low', 0):,}~{p.get('sl_at_entry_high', 0):,})")
         lines.append(f"   📊 {p['key_reasons']}")
         # 🔗 ETF 대안
         etf_code = p.get("etf_alt_code", "")

@@ -59,7 +59,19 @@ def test_limit_up_levels():
                (lv["entry_low"], lv["entry_high"], lv["tp1"], lv["tp2"])
                == (int(close * 0.93), int(close * 0.97), int(pb * 1.05), int(pb * 1.10)))
     _check("sl(100000) == 92150 (눌림 95,000의 −3%)", dp.price_levels_limit_up(100000)["sl"] == 92150)
-    _check("close=0 → 전부 0", all(v == 0 for v in dp.price_levels_limit_up(0).values()))
+    # ★9/7 [F-231] `sl_rule`(문자열) 추가로 "전부 0"이 성립하지 않는다 — **숫자 키만** 본다
+    _check("close=0 → 숫자 키 전부 0",
+           all(v == 0 for v in dp.price_levels_limit_up(0).values()
+               if isinstance(v, (int, float))))
+    _check("close=0에도 sl_rule은 규칙 문자열",
+           dp.price_levels_limit_up(0)["sl_rule"].startswith("진입가"))
+    # ★[F-231] 핵심 — 밴드 어디에서 체결돼도 정확히 −3%여야 한다
+    for close in (100000, 47250, 8130):
+        lv = dp.price_levels_limit_up(close)
+        for key, entry in (("sl_at_entry_low", lv["entry_low"]),
+                           ("sl_at_entry_high", lv["entry_high"])):
+            pct = (lv[key] / entry - 1) * 100 if entry else 0
+            _check(f"트랙C {close} {key} = 진입가 −3% (실측 {pct:+.2f}%)", abs(pct + 3.0) < 0.02)
 
 
 def test_no_literals_in_source():
