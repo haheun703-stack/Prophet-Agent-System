@@ -52,7 +52,7 @@ bot/trading_coo.py:4299-4306  _recover_nationality_flows() — 마커가 낡으�
 퀀트봇 `data/krx_nationality/nationality_signal.json`이 **6/9 이후 갱신되지 않아**(HEALTH `⏸️ 국적별수급 STALE`, 9/4 기준 90일) FLOWX `foreign_flow` 업로드가 신선도 가드로 매일 스킵되고, `scan_tomorrow_picks` 전략 L·`build_killer_picks`가 비어 있다. 3봇 분업상 외인 수급은 단타봇 담당이다.
 
 **지시**:
-1. 단타봇이 **종목 단위** 국적별 외인 수급을 제공할 수 있는지(소스·주기·시작 가능일) 답하라. §2에서 보듯 현재 단타봇 원천도 6/19에 멈춰 있으므로, **먼저 그 소스가 살아 있는지부터** 답하라. 불가하면 불가라고 답하라 — 그러면 퀀트봇이 정보봇 `supply_daily/*_nationality_flow.json`(섹터 단위 20행/일, 9/4까지 매일)로 대체 설계한다.
+1. 단타봇이 **종목 단위** 국적별 외인 수급을 제공할 수 있는지(소스·주기·시작 가능일) 답하라. §2에서 보듯 현재 단타봇 원천도 6/19에 멈춰 있으므로, **먼저 그 소스가 살아 있는지부터** 답하라. 불가하면 불가라고 답하라. ★**9/7 정정**: 대체 후보로 검토했던 정보봇 `supply_daily/*_nationality_flow.json`은 **쓸 수 없다** — 정보봇 회신(9/7 12:0x)에 따르면 필드명이 `nation`일 뿐 값은 국적이 아니라 **섹터**다(`외국인전체(반도체)` 형태). 즉 단타봇이 불가하면 **현재 대체 소스가 없다**. 그 경우 국적별 수급을 쓰는 퀀트봇 경로(`scan_tomorrow_picks` 전략 L·`build_killer_picks`·FLOWX `foreign_flow`)를 **정식 폐기할지** 별도 판단이 필요하다.
 2. 가능하면 산출 경로·스키마 제안을 첨부하라. 퀀트봇 소비처는 `scan_tomorrow_picks`(전략 L)·`build_killer_picks`·FLOWX `foreign_flow`다.
 
 ---

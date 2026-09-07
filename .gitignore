@@ -21,6 +21,9 @@ venv/
 # 대용량 데이터 - GitHub에 올리지 않음
 stock_data_daily/
 
+# DB 백업(9/7 [F-192] 소급정리) — 26MB gzip. 로컬·VPS 이중 보관, git 금지
+backups/
+
 # 옛 KIS API 프로젝트 (915파일, 모델+크롤링데이터)
 KISOpenAPI_260208/
 
