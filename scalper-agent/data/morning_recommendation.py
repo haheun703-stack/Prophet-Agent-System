@@ -418,7 +418,21 @@ def _step_war_relay_inject() -> list[dict]:
 # ═══════════════════════════════════════
 
 def _get_market_change_today() -> float:
-    """오늘 KOSPI(KODEX200) 등락률 - 상대강도 계산 기준"""
+    """오늘 KOSPI(KODEX200) 등락률 - 상대강도 계산 기준
+
+    ★9/7 [F-217] KRX 게이트 추가 — 사장님 6/22 절대 룰(KRX 일절 미접근).
+      `krx_gate.py` docstring이 *"pykrx 웹스크래핑도 krx_enabled()가 True일 때만"* 이라
+      명시했는데 이 파일엔 게이트가 **0건**이었고, C13(평일 16:30)이 이 함수를 매일 불렀다.
+      차단 시 0.0을 돌려주면 상대강도 기준이 0 = 기존 '시장 등락 미상' 경로와 동일하다.
+    """
+    try:
+        from data.krx_gate import krx_enabled, krx_block_reason
+        if not krx_enabled():
+            logger.warning("[krx_gate] %s — 시장 등락률 조회 스킵(0.0)", krx_block_reason())
+            return 0.0
+    except Exception:                       # noqa: BLE001 — 게이트 로드 실패는 보수적 차단
+        logger.warning("[krx_gate] 게이트 로드 실패 — KRX 보수적 차단")
+        return 0.0
     try:
         from pykrx import stock
         from datetime import datetime, timedelta
@@ -451,11 +465,33 @@ def _step3_tech_filter(codes_names: list[tuple[str, str]], market_chg: float = 0
     Returns: {code: {"score": 0~5, "detail": "...", "today_chg": -8.2,
                       "relative_str": +2.1, "close": 57600}}
     """
-    from pykrx import stock
     from datetime import datetime, timedelta
     import numpy as np
 
     results = {}
+
+    # ★9/7 [F-217] KRX 게이트 — 사장님 6/22 절대 룰(KRX 일절 미접근).
+    #   이 함수는 C13(평일 16:30)에서 `ThreadPoolExecutor`로 **후보 종목마다 병렬 호출**된다
+    #   (`:2564`). 즉 게이트 없이 종목 수만큼 KRX에 fan-out하고 있었다 — 6/22 사장님 지적
+    #   *"무자비하게 너무 들어가서 못 들어간다"* 가 정확히 이 모양이다.
+    #   차단 시 전 종목을 '데이터부족'으로 반환한다 = 아래 `len(df) < 60` 분기와 같은 결과라
+    #   호출자 처리 경로가 바뀌지 않는다.
+    try:
+        from data.krx_gate import krx_enabled, krx_block_reason
+        _krx_ok = krx_enabled()
+        if not _krx_ok:
+            logger.warning("[krx_gate] %s — 기술 필터 %d종 스킵(데이터부족 처리)",
+                           krx_block_reason(), len(codes_names))
+    except Exception:                       # noqa: BLE001 — 게이트 로드 실패는 보수적 차단
+        logger.warning("[krx_gate] 게이트 로드 실패 — KRX 보수적 차단")
+        _krx_ok = False
+    if not _krx_ok:
+        for _c, _n in codes_names:
+            results[_c] = {"score": 0, "detail": "데이터부족(KRX 차단)",
+                           "today_chg": 0, "relative_str": 0, "close": 0}
+        return results
+
+    from pykrx import stock
     end = datetime.now()
     start = end - timedelta(days=120)
     start_s = start.strftime("%Y%m%d")

@@ -3412,12 +3412,22 @@ class AutoTrader:
                     conditions_detail.append(f"MACD스킵({tag})")
                 else:
                     try:
+                        # ★9/7 [F-217] KRX 게이트 — 사장님 6/22 절대 룰(KRX 일절 미접근).
+                        #   여기는 `_check_entry_watch` → `job_monitor`의 **30초 루프** 안이고
+                        #   감시 종목 수만큼 매 tick 돈다. 게이트가 없어 재가동 시 분당 수십 건이
+                        #   KRX로 나갔다. 아래 `except: pass`가 실패를 삼켜 로그에도 안 남았다.
+                        #   차단 시 day_df=None → 기존 '데이터 부족' 경로와 동일(구조 무변경).
+                        from data.krx_gate import krx_enabled
                         from strategies.macd_zero_scanner import _calc_macd
-                        from pykrx import stock as pykrx_stock
                         from datetime import timedelta
-                        end_d = datetime.now().strftime("%Y%m%d")
-                        start_d = (datetime.now() - timedelta(days=60)).strftime("%Y%m%d")
-                        day_df = pykrx_stock.get_market_ohlcv(start_d, end_d, code)
+                        if not krx_enabled():
+                            day_df = None
+                            conditions_detail.append("MACD스킵(KRX차단)")
+                        else:
+                            from pykrx import stock as pykrx_stock
+                            end_d = datetime.now().strftime("%Y%m%d")
+                            start_d = (datetime.now() - timedelta(days=60)).strftime("%Y%m%d")
+                            day_df = pykrx_stock.get_market_ohlcv(start_d, end_d, code)
                         if day_df is not None and len(day_df) >= 30:
                             close_arr = day_df["종가"].astype(float).values
                             macd_l, macd_s, macd_h = _calc_macd(close_arr)
