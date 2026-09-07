@@ -312,7 +312,20 @@ def check_backlog_ledger(doc: Path = None) -> list[dict]:
     rel = f"{SCALPER_DIR}/docs/checklist/DAILY_ROUTINE.md"
     issues = []
     open_ids = set(re.findall(r"^- \*\*\[(F-[0-9-]+)\]\*\*", sec_nocode, re.M))
-    done_ids = set(re.findall(r"~~\**\[?(F-[0-9-]+)\]?\**~~", sec_nocode))
+    # ★9/7 [F-201] 닫힘 인식 확장 — 구 정규식 `~~**[F-x]**~~` 은 **ID 직후에 곧바로
+    #   `~~`가 오는 짧은 형태만** 잡았다. 장부의 실제 표기는
+    #   `- ~~**[F-x]** (날짜) **제목 (등급)**~~ — ✅ 완료…` 처럼 취소선이 문장 끝까지 이어진다.
+    #   실측: 취소선 불릿 53건 중 **19건만 인식**(64% 미탐) → 8/7에 이 규칙을 만들고도
+    #   [F-117](8/6 완료·원 불릿 취소선 누락)과 [F-160]이 **32일·28일간 '열림'으로 남아 있었다**
+    #   = 이 규칙이 막으려던 바로 그 재발을 규칙 자신이 놓쳤다.
+    #   ★한 줄 안의 취소선 블록을 잡고 **블록의 첫 ID만** 채택한다 — 본문에서 다른 항목을
+    #     참조하는 경우(`~~[F-158] … 뒤의 [F-90] …~~`)를 닫힘으로 오인하지 않기 위해서다.
+    done_ids = set()
+    for _ln in sec_nocode.splitlines():
+        for _blk in re.findall(r"~~(.+?)~~", _ln):
+            _m = re.match(r"\s*\**\[?(F-[0-9-]+)\]?", _blk)
+            if _m:
+                done_ids.add(_m.group(1))
     for fid in sorted(open_ids & done_ids):
         line_no = next((i for i, ln in enumerate(sec.split("\n"), 1)
                         if re.match(rf"^- \*\*\[{fid}\]\*\*", ln)), 0)
