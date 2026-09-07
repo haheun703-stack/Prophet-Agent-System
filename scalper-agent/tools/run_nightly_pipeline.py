@@ -11,7 +11,7 @@
   - ②-2(6/23 신설): 일봉 늦은 적재일 missed_gainers self-heal 재생성(fill·sync 직후).
   - ★③(sector_reversal shadow)은 8/10 S-6 판정 폐기로 제거됐다(사장님 결정). ③-2~③-4는 유지.
     이 docstring이 제거 후에도 ③을 나열하고 있어 8/10 Tier2에서 같이 정정했다 — 실제
-    단계 수는 **29**다([F-150]: 문서가 구현을 안 세고 적으면 조용히 어긋난다).
+    단계 수는 **26**이다(8/29 ⑲-2·⑲-3 제거 −2 · 9/7 ⑧ 국적별 폐기 −1)([F-150]: 문서가 구현을 안 세고 적으면 조용히 어긋난다).
   - 관측 단계(shadow·paper build·paper forward)는 일봉만 필요 → fill 직후 실행(수급보다 앞).
   - ⑤(6/15 신설): paper는 ④에서 코호트 생성만 → forward는 과거 코호트 대상이라 별도 단계.
 
@@ -110,8 +110,14 @@ def main():
          [PY, "-c", "import collect_all as C; C.step2_supply_demand(C.get_universe_codes())"], 3600),
         ("⑦ 11주체",
          [PY, "-c", "from data.market_investor_collector import collect_market_investor as f; r=f(days=3); print('ok' if r else 'EMPTY')"], 600),
-        ("⑧ 국적별",
-         [PY, "-c", "import collect_all; collect_all.step3_nationality()"], 600),
+        # ★9/7 [F-198] ⑧ 국적별 — 사장님 "폐기해라" 지시로 **배선 제거**(코드·데이터 보존).
+        #   6/22 KRX kill switch 이후 `krx_gate`가 세션 획득 전에 차단해 **KRX 실호출 0건**이고
+        #   산출물도 0건인데, 이 스텝만 매일 1~3초 돌며 "⚠ 국적별 스냅샷 0건!" 경고를 내고
+        #   nightly는 ✅로 표시해 왔다(3개월). = "되살아나지 않을 것을 계속 기다리는 상태"이자
+        #   [F-153] 경보 마모. 퀀트봇도 같은 날 ㈏정식폐기를 권고했고 사장님이 결정하셨다.
+        #   ★코드 보존: collect_all.step3_nationality()·크롤러·profiler·signal 전부 존치
+        #     (morning_recommendation·auto_trader·telegram_bot·position_guardian·nightwatch가
+        #      import하며, 게이트가 빈 값을 돌려주므로 안전 — [S-6] sector_reversal 전례).
         ("⑨ F1 forward+preflight",
          [PY, "tools/run_f1_forward_preflight.py"], 300),
         ("⑩ 기관매집스캔(KRX-free)",   # 6/19 연기금 KRX박제 대체 — KIS 기관계 fresh 시그널 + 업로드(⑥ 수급 뒤)

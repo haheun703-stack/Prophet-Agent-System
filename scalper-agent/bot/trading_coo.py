@@ -1783,11 +1783,10 @@ class TradingCOO:
                 self._job_cto_accuracy_update(context),
             ))
 
-        # C25: 국적 수급 X-ray Supabase 업로드 (독립 경로)
-        stage3_jobs.append((
-            "C25_nationality_xray",
-            self._job_nationality_xray_upload(context),
-        ))
+        # ★9/7 [F-198] C25 국적 X-ray — 사장님 "폐기해라" 지시로 **잡 등록 제거**(함수 보존).
+        #   원천이 6/19 정지(KRX 게이트 차단)라 오늘 [F-192] 신선도 가드가 발행을 막았고,
+        #   그 위에서 잡을 계속 돌리면 매일 "stale 스킵" 로그만 쌓인다.
+        #   `_job_nationality_xray_upload`·`upload_nationality_flows`는 존치(재현·감사·재개용).
 
         # C26: NXT Paper Trading 등록
         stage3_jobs.append((
@@ -4074,12 +4073,9 @@ class TradingCOO:
                 "date_key": "date",
                 "recover": self._recover_investor_flow,
             },
-            {
-                "name": "nationality_xray",
-                "path": data_dir / "nationality" / "_last_upload.json",
-                "date_key": "date",
-                "recover": self._recover_nationality_flows,
-            },
+            # ★9/7 [F-198] nationality_xray — 폐기로 감시 항목 제거(복구 함수는 존치).
+            #   남겨두면 마커가 매일 낡아 복구를 시도하고, 그 복구는 [F-192] 가드가 스킵한다
+            #   = 아무 일도 일어나지 않는 재시도가 매일 도는 상태.
         ]
 
         # ── 1단계: 검증 ──

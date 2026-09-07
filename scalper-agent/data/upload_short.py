@@ -658,11 +658,14 @@ def run_flowx_upload(rec_data: dict = None, nat_daily_all: dict = None) -> bool:
     else:
         upload_short_signals(flowx_signals)
 
-    # nationality_flows 업로드 (prediction.json + CSV)
-    try:
-        upload_nationality_flows()
-    except Exception as e:
-        logger.error(f"[FLOWX] nationality_flows 업로드 실패: {e}")
+    # ★9/7 [F-198] nationality_flows 업로드 제거 — 사장님 "폐기해라" 결재.
+    #   C25 잡·AUTO-RECOVERY를 뺐는데 **이 경로가 세 번째 호출구였다**:
+    #     run_flowx_upload() ← morning_recommendation.py:3214·4642 (실매매 추천 파이프라인, 매일)
+    #   즉 배선 2곳만 빼고 "폐기 완료"라 할 뻔했다 — 우리가 [S-6]에서 배운
+    #   "한쪽만 빼면 재가동 시 되살아난다"를 스스로 저지를 뻔한 자리.
+    #   ★현상: [F-192] 가드 덕에 실제 발행은 이미 0이었으나(stale 스킵), 남겨두면
+    #     매일 "stale 스킵" 로그만 쌓이고 폐기가 완료되지 않는다.
+    #   함수(`upload_nationality_flows`)는 존치 — 배선만 제거(재개 시 이 한 줄 복원).
 
     return True
 
@@ -747,9 +750,11 @@ if __name__ == "__main__":
         else:
             print("업로드 실패 — .env의 SUPABASE_URL, SUPABASE_KEY 확인하세요.")
 
-        # nationality_flows 업로드
+        # nationality_flows 업로드 — ★9/7 [F-198] 폐기 후에도 **수동 실행 경로는 존치**.
+        #   여기는 `if __name__ == "__main__"` 안이라 cron·봇 어디서도 불리지 않는다
+        #   (crontab 실측 0건). 재현·감사·재개 검증용. 자동 경로는 전부 제거됐다.
         print(f"\n{'='*80}")
-        print("  nationality_flows 업로드")
+        print("  nationality_flows 업로드 (수동 · [F-198] 폐기 후 재현용)")
         print(f"{'='*80}")
         nat_ok = upload_nationality_flows()
         print(f"  → {'성공' if nat_ok else '실패/스킵'}")
