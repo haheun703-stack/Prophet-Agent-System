@@ -40,6 +40,12 @@ if str(Path(__file__).resolve().parents[1]) not in sys.path:
     #   종전엔 ModuleNotFoundError로 조용히 죽던 `--send-telegram`(opt-in)이 실제 발송한다.
     #   cron 경로(trading_coo가 패키지 import)는 원래 bot 경로가 있어 동작 불변.
 from data.sajang_rules import SAJANG   # ★9/7 [F-185] SL 단일진실
+# ★9/7 [F-188] 표시용 목표가(tp1/tp2)는 참고 밴드다 — 실제 청산 룰은 SAJANG(고점 −3% 트레일링·고정 TP 없음).
+#   문구를 SAJANG에서 파생시켜 룰이 바뀌면 문구도 같이 바뀌게 한다(리터럴 금지).
+EXIT_RULE_NOTE = (
+    f"📐 청산 룰: 고점 −{SAJANG.TRAILING_PCT:g}% 트레일링 · 고정 TP 없음"
+    f"{' (FIXED_TP_DISABLED)' if SAJANG.FIXED_TP_DISABLED else ''} — 아래 목표가는 참고 밴드"
+)
 from foreign_accumulation_scanner import (
     scan_universe,
     load_universe,
@@ -349,13 +355,11 @@ def scan_limit_up_followup(
         inst = item.get("inst_net", 0)
 
         # 눌림목 대기 진입 (백테스트 결과: 눌림목 EV +1.18% vs 시초가 -2.83%)
-        # 상한가 종가 대비 -5% 눌린 지점을 진입 타겟으로 설정
-        pullback_target = int(close * 0.95)    # -5% 눌림목 타겟
-        entry_low = int(close * 0.93)          # -7% 깊은 눌림 (더 좋은 진입)
-        entry_high = int(close * 0.97)         # -3% 얕은 눌림 (최소 기준)
-        tp1 = int(pullback_target * 1.05)      # 진입가 대비 +5%
-        tp2 = int(pullback_target * 1.10)      # 진입가 대비 +10%
-        sl = int(pullback_target * 0.85)       # 진입가 대비 -15%
+        # 상한가 종가 대비 -5% 눌린 지점을 진입 타겟으로 설정 — 단일 헬퍼(9/7 [F-189] SL SAJANG 파생)
+        _lv = price_levels_limit_up(close)
+        pullback_target = _lv["pullback_target"]
+        entry_low, entry_high = _lv["entry_low"], _lv["entry_high"]
+        tp1, tp2, sl = _lv["tp1"], _lv["tp2"], _lv["sl"]
 
         # 태그에서 핵심 이유 추출
         tags = item.get("tags", [])
@@ -602,16 +606,39 @@ def price_levels(close: float) -> dict:
     (NORMAL_SL −3%·SAJANG 단일진실)을 우회했다(pre-commit RULE-008 적발·도입 c546fc5).
     조사 결과 **실주문 경로는 아니다**: `bot/auto_trader.py`는 이 JSON에서 `ewy_signal`만
     읽고(:215), 실매수 후보의 `sl`은 morning_recommendation/tomorrow_picks/war_relay에서 온다.
-    소비처는 텔레그램 표시·FLOWX/Supabase 업로드(`upload_daytrading_picks:73`)·
-    PaperPortfolio(`telegram_bot:4243`) 3곳 = 사장님이 **보는 값**이 룰과 달랐던 것.
-    TP +5%/+8%는 표시용 목표 밴드로 남긴다(FIXED_TP_DISABLED와의 문구 정합은 [F-188]·사장님 결정)."""
+    소비처는 텔레그램 표시·FLOWX/Supabase 업로드(`upload_daytrading_picks:73`) **2곳** = 사장님이
+    **보는 값**이 룰과 달랐던 것. (9/7 오후 정정 — 오전엔 PaperPortfolio도 소비처로 적었으나
+    `telegram_bot:4318`은 `SAJANG.get_take_profit/get_normal_sl`을 **직접** 호출하고 picks의 tp/sl을
+    읽지 않는다. 같은 날 두 번째 '변수명만 보고 원천 안 따라간' 오기.)
+    TP +5%/+8%는 참고 밴드로 남기고 EXIT_RULE_NOTE로 청산 룰을 병기한다([F-188] 9/7 소진)."""
     close = float(close or 0)
     return {
         "entry_low": int(close * 0.985),
         "entry_high": int(close * 1.010),
-        "tp1": int(close * 1.050),          # +5% (표시용)
-        "tp2": int(close * 1.080),          # +8% (표시용)
+        "tp1": int(close * 1.050),          # +5% (참고 밴드)
+        "tp2": int(close * 1.080),          # +8% (참고 밴드)
         "sl": SAJANG.get_normal_sl(close),  # 매수가 −3% (사장님 영구 룰·NORMAL_SL_PCT)
+    }
+
+
+def price_levels_limit_up(close: float) -> dict:
+    """[트랙 C] 상한가 후속 눌림목 진입의 표시용 가격 레벨.
+
+    ★9/7 [F-189] 소진 — 종전 SL은 눌림목가×85%(**−15%**) 리터럴이 두 곳(스캐너·main)에 있었다.
+    사장님 영구 룰(−3%)과 5배 차이인데 RULE-008 정규식이 `0.9x`만 잡아 `0.8x`는 사각이었다
+    (정규식도 같은 날 `0.[89]x`로 확장). 실주문 경로 아님(price_levels와 같은 소비처 2곳).
+    SL은 눌림목 진입가 기준 `SAJANG.get_normal_sl`. 대안 −4.5%(`get_limit_up_hard_stop`)는
+    6/17 '상한가 **D+0** 진입가' paper-only 결정이라 D+1 눌림 진입엔 적용 근거가 없어 채택하지 않음.
+    눌림 밴드(−7~−3%)·참고 목표(+5/+10%)는 종전 값 그대로(백테스트 EV +1.18% 근거 유지)."""
+    close = float(close or 0)
+    pullback_target = int(close * 0.95)              # −5% 눌림목 타겟
+    return {
+        "pullback_target": pullback_target,
+        "entry_low": int(close * 0.93),              # −7% 깊은 눌림
+        "entry_high": int(close * 0.97),             # −3% 얕은 눌림
+        "tp1": int(pullback_target * 1.05),          # 진입가 +5% (참고 밴드)
+        "tp2": int(pullback_target * 1.10),          # 진입가 +10% (참고 밴드)
+        "sl": SAJANG.get_normal_sl(pullback_target), # 진입가 −3% (사장님 영구 룰)
     }
 
 
@@ -637,6 +664,7 @@ def format_flowx_post(picks: list[dict], ewy_signal: dict, mode: str = "confirme
     lines = [
         f"{title} · TOP {len(picks)}",
         f"📅 {now} {subtitle}",
+        EXIT_RULE_NOTE,                       # 9/7 [F-188] 청산 룰 병기(SAJANG 파생)
         "━━━━━━━━━━━━━━━━━━━━━━━━",
     ]
 
@@ -661,9 +689,9 @@ def format_flowx_post(picks: list[dict], ewy_signal: dict, mode: str = "confirme
         lines.append(f"{rank_emoji} <b>{p['name']}</b> ({p['code']}) · {p.get('sector','-')}")
         lines.append(f"   💰 현재가 {p['close_end']:,}원 · 시총 {int(p['mcap_억']):,}억")
         if p.get("track", "").startswith("C_"):
-            lines.append(f"   🎯 눌림목대기 {p['entry_low']:,}~{p['entry_high']:,} · 목표 {p['tp1']:,} (+{p['upside_to_tp1_pct']:.1f}%)")
+            lines.append(f"   🎯 눌림목대기 {p['entry_low']:,}~{p['entry_high']:,} · 참고목표 {p['tp1']:,} (+{p['upside_to_tp1_pct']:.1f}%)")
         else:
-            lines.append(f"   🎯 진입 {p['entry_low']:,}~{p['entry_high']:,} · 목표 {p['tp1']:,} (+{p['upside_to_tp1_pct']:.1f}%)")
+            lines.append(f"   🎯 진입 {p['entry_low']:,}~{p['entry_high']:,} · 참고목표 {p['tp1']:,} (+{p['upside_to_tp1_pct']:.1f}%)")
         lines.append(f"   📊 {p['key_reasons']}")
         # 🔗 ETF 대안
         etf_code = p.get("etf_alt_code", "")
@@ -819,13 +847,11 @@ def main():
 
         final_score = c["score"] + sector_bonus + mcap_bonus
 
-        # 눌림목 대기 진입 (백테스트 검증: 눌림목 EV +1.18%)
-        pullback_target = int(close * 0.95)    # -5% 눌림목 타겟
-        entry_low = int(close * 0.93)          # -7% 깊은 눌림
-        entry_high = int(close * 0.97)         # -3% 얕은 눌림
-        tp1 = int(pullback_target * 1.05)      # 진입가 +5%
-        tp2 = int(pullback_target * 1.10)      # 진입가 +10%
-        sl = int(pullback_target * 0.85)       # 진입가 -15%
+        # 눌림목 대기 진입 (백테스트 검증: 눌림목 EV +1.18%) — 단일 헬퍼(9/7 [F-189] SL SAJANG 파생)
+        _lv = price_levels_limit_up(close)
+        pullback_target = _lv["pullback_target"]
+        entry_low, entry_high = _lv["entry_low"], _lv["entry_high"]
+        tp1, tp2, sl = _lv["tp1"], _lv["tp2"], _lv["sl"]
 
         # 이유
         reasons = [f"상한가 {c['price_change_%']:+.1f}% 눌림목대기 (연속성 {c['score']:.0f}점)"]
@@ -880,7 +906,7 @@ def main():
               f"| {p.get('sector','-'):8} "
               f"| 현재 {p['close_end']:>8,} "
               f"| {entry_label} {p['entry_low']:>8,}~{p['entry_high']:>8,} "
-              f"| 목표 {p['tp1']:>8,}")
+              f"| 참고목표 {p['tp1']:>8,}")
         print(f"     └ {p['key_reasons']}")
         inst_total = p.get('inst_total_억', 0)
         dual_total = p.get('dual_total_억', p['foreign_total_억'] + inst_total)
@@ -893,6 +919,7 @@ def main():
             "mode": args.mode,
             "ewy_signal": ewy_signal,
             "market_regime": load_market_regime(),  # 7/4 정보 라벨 — picks/필터/점수 무접촉
+            "exit_rule": EXIT_RULE_NOTE,             # 9/7 [F-188] additive — 소비자 스키마 불변
             "config": {
                 "scan_top": args.scan_top,
                 "top_large": args.top_large,

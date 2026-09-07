@@ -3241,11 +3241,19 @@ class TradingCOO:
                 _mkt_regime = load_market_regime()
             except Exception:  # noqa: BLE001
                 _mkt_regime = None
+            # ★9/7 [F-188] 청산 룰 문구(SAJANG 파생) — CLI `--save`와 이 cron 경로가 **각자** out을 만든다
+            #   (7/4 market_regime과 같은 중복 뿌리). 한쪽만 넣으면 운영 JSON엔 없는데 장부는 "했다"가 된다
+            #   = [F-110] 모양. 실패해도 저장을 막지 않는다(정보 필드).
+            try:
+                from tools.daytrading_picks import EXIT_RULE_NOTE as _exit_rule
+            except Exception:  # noqa: BLE001
+                _exit_rule = None
             out = {
                 "updated": datetime.now().isoformat(),
                 "mode": mode,
                 "ewy_signal": ewy_signal,
                 "market_regime": _mkt_regime,
+                "exit_rule": _exit_rule,
                 "picks": picks,
             }
             try:
