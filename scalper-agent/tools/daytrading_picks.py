@@ -34,6 +34,12 @@ from datetime import datetime, timedelta
 
 # foreign_accumulation_scanner 재사용
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+if str(Path(__file__).resolve().parents[1]) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # scalper-agent/ (SAJANG)
+    # ★부수효과(9/7 Tier1 L-2): 스크립트 직접 실행 시 `bot.telegram_bot`도 이제 import된다 →
+    #   종전엔 ModuleNotFoundError로 조용히 죽던 `--send-telegram`(opt-in)이 실제 발송한다.
+    #   cron 경로(trading_coo가 패키지 import)는 원래 bot 경로가 있어 동작 불변.
+from data.sajang_rules import SAJANG   # ★9/7 [F-185] SL 단일진실
 from foreign_accumulation_scanner import (
     scan_universe,
     load_universe,
@@ -541,13 +547,11 @@ def apply_daytrading_filters(
         if final_score < min_final_score:
             continue
 
-        # 추천 진입/목표가 계산
+        # 추천 진입/목표가 계산 — 단일 헬퍼(테스트 가능·SAJANG 파생)
         close = c.get("close_end", 0)
-        entry_low = int(close * 0.985)
-        entry_high = int(close * 1.010)
-        tp1 = int(close * 1.050)  # +5%
-        tp2 = int(close * 1.080)  # +8%
-        sl = int(close * 0.965)   # -3.5%
+        _lv = price_levels(close)
+        entry_low, entry_high = _lv["entry_low"], _lv["entry_high"]
+        tp1, tp2, sl = _lv["tp1"], _lv["tp2"], _lv["sl"]
 
         # 핵심 이유 1줄
         reasons = []
@@ -589,6 +593,26 @@ def apply_daytrading_filters(
 
     filtered.sort(key=lambda x: x["final_score"], reverse=True)
     return filtered
+
+
+def price_levels(close: float) -> dict:
+    """픽 1건의 표시용 가격 레벨(진입 밴드·목표·손절).
+
+    ★9/7 [F-185] 소진 — 종전 SL은 종가×96.5%(−3.5%) 리터럴로 사장님 영구 룰
+    (NORMAL_SL −3%·SAJANG 단일진실)을 우회했다(pre-commit RULE-008 적발·도입 c546fc5).
+    조사 결과 **실주문 경로는 아니다**: `bot/auto_trader.py`는 이 JSON에서 `ewy_signal`만
+    읽고(:215), 실매수 후보의 `sl`은 morning_recommendation/tomorrow_picks/war_relay에서 온다.
+    소비처는 텔레그램 표시·FLOWX/Supabase 업로드(`upload_daytrading_picks:73`)·
+    PaperPortfolio(`telegram_bot:4243`) 3곳 = 사장님이 **보는 값**이 룰과 달랐던 것.
+    TP +5%/+8%는 표시용 목표 밴드로 남긴다(FIXED_TP_DISABLED와의 문구 정합은 [F-188]·사장님 결정)."""
+    close = float(close or 0)
+    return {
+        "entry_low": int(close * 0.985),
+        "entry_high": int(close * 1.010),
+        "tp1": int(close * 1.050),          # +5% (표시용)
+        "tp2": int(close * 1.080),          # +8% (표시용)
+        "sl": SAJANG.get_normal_sl(close),  # 매수가 −3% (사장님 영구 룰·NORMAL_SL_PCT)
+    }
 
 
 def _mode_title(mode: str) -> tuple[str, str]:

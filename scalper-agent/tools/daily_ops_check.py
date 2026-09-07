@@ -10,8 +10,11 @@
   A1 전일 기초데이터 소급 실측  — DataVerifier(save_result=False) + 핵심 채널 판정
   A2 nightly 파이프라인 완주    — logs/nightly.log 마지막 블록 요약 N/N + ⑳ 완료위장
   A3 20:10 텔레그램 발송 성공   — logs/notify_freshness.log 실행 스탬프 + 발송 결과
-  A4 OBSERVE v2 러너 가동       — logs/observe_v2.log 전 거래일 누적 신호
-  A5 ⑲-2 대조 + 스코어보드      — nightly 블록의 대조 라인 + 페이퍼 누적(단일진실)
+  A4 OBSERVE v2 러너 가동       — ★9/7 미등록([F-187]) — 8/29 사장님 승인으로 [S-1] 러너 중단
+  A5 ⑲-2 대조 + 스코어보드      — ★9/7 미등록([F-187]) — 8/29 nightly ⑲-2·⑲-3 제거. 판정 대상은
+                                   [S-8]이고 그 관측치는 A9(체커) 첫 줄이 단일진실이다.
+                                   8/31~9/7 6영업일 동안 이 두 항목이 매일 🚨를 냈다 — 폐기 결정 때
+                                   "다음 날 아침 화면"을 그려보지 않은 내 누락([F-183] 교훈 당일 위반).
   A6 봇 서비스·안전 불변식      — systemctl + PAPER_ONLY + 자동매매 스위치
   A9 전략 데드라인 대장         — strategy_deadline_check.build_report() 위임
 
@@ -258,7 +261,9 @@ def check_a3_notify(ref: str) -> tuple:
 
 
 def check_a4_observe(ref: str) -> tuple:
-    """A4 OBSERVE v2 러너 — 08:30 시점엔 당일 미실행이라 전 거래일 누적으로 판정."""
+    """A4 OBSERVE v2 러너 — 08:30 시점엔 당일 미실행이라 전 거래일 누적으로 판정.
+
+    ★9/7 [F-187] run_checks 미등록(8/29 [S-1] 러너 중단). 코드 보존·재개 시 복원."""
     lines = _read_lines(LOGS_DIR / "observe_v2.log", tail=1500)
     if not lines:
         return "SKIP", "observe_v2.log 없음(VPS 전용)"
@@ -283,7 +288,9 @@ def check_a4_observe(ref: str) -> tuple:
 
 
 def check_a5_contrast(ref: str) -> tuple:
-    """A5 ⑲-2 대조 — 관측 의도 vs 체결 재현 일치(miss/phantom 0)."""
+    """A5 ⑲-2 대조 — 관측 의도 vs 체결 재현 일치(miss/phantom 0).
+
+    ★9/7 [F-187] run_checks 미등록(8/29 nightly ⑲-2 제거). 코드 보존·재개 시 복원."""
     lines = _read_lines(LOGS_DIR / "nightly.log")
     if not lines:
         return "SKIP", "nightly.log 없음(VPS 전용)"
@@ -372,8 +379,10 @@ def run_checks(ref: str) -> tuple:
         ("A1", f"전일({int(ref[5:7])}/{int(ref[8:10])}) 기초데이터", lambda: check_a1_freshness(ref)),
         ("A2", "nightly 완주", lambda: check_a2_nightly(ref)),
         ("A3", "20:10 발송", lambda: check_a3_notify(ref)),
-        ("A4", "OBSERVE v2 러너", lambda: check_a4_observe(ref)),
-        ("A5", "⑲-2 대조", lambda: check_a5_contrast(ref)),
+        # ★9/7 [F-187] A4·A5 미등록 — 8/29 사장님 승인으로 [S-1] 러너 cron 중단·nightly
+        #   ⑲-2/⑲-3 제거. 점검 대상이 사라졌는데 점검기는 6영업일 동안 매일 🚨를 냈다
+        #   (8/31~9/7 08:30 본문 실측). 매일 같은 오탐은 진짜 경보를 마모시킨다([F-153]).
+        #   함수는 보존(S-2·S-6 선례: 배선만 제거·코드 보존). 러너 재개 시 두 줄 복원.
         ("A6", "봇·안전 불변식", check_a6_safety),
     ]
     rows = []
@@ -472,7 +481,7 @@ def pending_unsent(log_path: Path) -> list:
             continue
         legacy = ln.startswith(_OPS_PREFIX)
         # ★8/6 — 신규 마커·dry 토큰도 자기 발화 줄(`[ops]` 시작)에서만 인정한다.
-        #   본문은 타 로그 원문을 실어 나른다(A5가 nightly.log 라인, A9가 대장 문자열).
+        #   본문은 타 로그 원문을 실어 나른다(A2가 nightly.log 라인, A9가 대장 문자열 — 9/7 A5 미등록).
         #   맨 부분문자열 판정은 8/5 리네임이 닫은 것과 같은 계열의 오염 통로였다
         #   (레거시 문구만 접두 보호를 받고 정작 신규 마커가 무방비였다).
         ops_line = ln.startswith(_OPS_TOKEN_PREFIX)

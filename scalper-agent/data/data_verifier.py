@@ -58,6 +58,7 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 from utils.dated_csv import (  # noqa: E402
     csv_has_date as _dated_csv_has_date,
+    iso as _dated_csv_iso,
     last_csv_date as _dated_last_csv_date,
 )
 
@@ -134,7 +135,7 @@ def _active_codes_all(today: str) -> List[str]:
             if _csv_has_date(DAILY_DIR / f"{c}.csv", today)]
 
 
-def _csv_has_date(csv_path: Path, target: str, tail_rows: int = 5) -> bool:
+def _csv_has_date(csv_path: Path, target: str, tail_rows: int = 5, _today_override=None) -> bool:
     """CSV 마지막 tail_rows행 안에 target 날짜 행이 존재하는지 — 판독은 정본 위임.
 
     ★8/7 [F-82] — 구현이 `utils.dated_csv`로 옮겨갔다. 구코드는 저장 문자열과
@@ -144,9 +145,27 @@ def _csv_has_date(csv_path: Path, target: str, tail_rows: int = 5) -> bool:
     바뀌는 것은 앞으로 다른 표기 채널을 물었을 때 조용히 틀리지 않는다는 점이다.
 
     '마지막 행 == target'이 아니라 꼬리 N행을 보는 이유는 유지(7/16 실측:
-    장중 placeholder나 이후 날짜 행이 붙으면 과거일 소급 검증(--date)이 깨진다)."""
+    장중 placeholder나 이후 날짜 행이 붙으면 과거일 소급 검증(--date)이 깨진다).
+
+    ★9/7 [F-186] — 그 꼬리 N행이 **소급 폭보다 좁으면 같은 방식으로 깨진다.**
+    9/7에 `--date 2026-08-31`을 물었더니 투자자수급 **0/2485**(파일엔 8/31 행 존재).
+    8/31 뒤에 9/1~9/4 4행 + 06:30 A0가 붙인 9/7 placeholder 1행 = 5행이 있어
+    8/31이 꼬리 5행 밖으로 밀렸다. 같은 한계를 8/11 순위 스냅샷에서 한 번 봤고
+    (그때는 전수 재계수로 확인만 하고 도구는 그대로 뒀다) 이번이 두 번째 —
+    호출처 6곳(이 파일 5 + notify_data_freshness 1)이 아니라 **여기서** 닫는다.
+    기준일이 과거면 (오늘 − 기준일) 달력일수만큼 꼬리를 넓힌다: 하루 최대 1행이라
+    안전한 상한이고, 파일은 이미 전체를 읽고 있어 비용 증가는 0이다.
+    기준일 == 오늘(운영 20:10·08:30 경로)이면 gap=0 → **종전과 완전히 동일**."""
     if not csv_path.exists():
         return False
+    try:
+        _t = _dated_csv_iso(target)
+        _today = _today_override or date.today()
+        gap = (_today - date.fromisoformat(_t)).days if _t else 0
+    except (TypeError, ValueError):
+        gap = 0
+    if gap > 0:
+        tail_rows = tail_rows + gap
     return _dated_csv_has_date(csv_path, target, tail_rows)
 
 
