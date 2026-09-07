@@ -347,6 +347,37 @@ def _build_countries_detail(code: str) -> tuple:
         return None, None, None
 
 
+# ★9/7 [F-192] nationality 원천 신선도 가드 (운영자 지시서 260907 §2)
+#   6/22 KRX 접근 차단 이후 원천 CSV가 **6/19에 멈춰 있는데** 업로드는 매일 돌아
+#   `date=오늘`로 같은 스냅샷을 다시 적재해 왔다(정보봇 실측: 매일 1,911행·누적 273,698행).
+#   잡은 성공하고 행수도 일정해 로그로는 보이지 않았다 — 퀀트봇 8/11 B-61과 같은 모양.
+#   ★사장님 절대룰(KRX·nationality 무접촉)과 충돌하지 않는다: 이 가드는 **수집이 아니라
+#     발행을 멈춘다**. 오히려 "단타봇 KRX 영구 OFF"를 실제로 이행하는 쪽이다.
+#   ★빈 표가 낡은 값보다 낫다 — 결손이 눈에 보여야 한다.
+NATIONALITY_STALE_MAX_DAYS = 4      # 원천 최신일이 기준일 대비 이보다 오래면 업로드 스킵(지시서 권고)
+
+
+def _nationality_source_age(code_dates: list, ref: "date | None" = None) -> tuple:
+    """원천 CSV 최신일의 경과일 판정 — (stale, latest_yyyymmdd, age_days).
+
+    code_dates: `_find_all_nationality_codes()` 반환형 [(code, "YYYYMMDD"), ...]
+    판독 불가(빈 목록·형식 오류)는 **stale로 접는다** — 모르면 발행하지 않는다.
+    """
+    ref = ref or date.today()
+    best = None
+    for _code, d in code_dates or []:
+        ds = str(d)
+        if len(ds) == 8 and ds.isdigit() and (best is None or ds > best):
+            best = ds
+    if not best:
+        return True, None, None
+    try:
+        age = (ref - date(int(best[:4]), int(best[4:6]), int(best[6:8]))).days
+    except ValueError:
+        return True, best, None
+    return age > NATIONALITY_STALE_MAX_DAYS, best, age
+
+
 def _find_all_nationality_codes() -> list[tuple[str, str]]:
     """nationality CSV가 있는 전체 종목 코드 + 최신 날짜 반환
 
@@ -369,6 +400,34 @@ def _find_all_nationality_codes() -> list[tuple[str, str]]:
                 code_dates[code] = d
 
     return list(code_dates.items())
+
+
+def _write_nationality_marker(count: int, pred_count: int, xray_count: int,
+                              skipped: bool = False, reason: str = "") -> None:
+    """AUTO-RECOVERY 신선도 마커 — 성공/스킵 **양쪽 다** 기록한다.
+
+    ★9/7 [F-192] — 스킵 시에도 오늘 날짜를 남기는 이유: 마커의 의미는 "오늘 업로드했다"가
+    아니라 "오늘 이 잡이 판정을 마쳤다"다. 안 남기면 AUTO-RECOVERY가 매 사이클 재시도해
+    같은 스킵을 반복한다(무한 재시도). 대신 `skipped`·`reason`을 함께 적어
+    **마커만 보고 '업로드됨'으로 오독할 수 없게** 한다(성공 위장 차단).
+    """
+    marker_dir = Path(__file__).resolve().parent.parent / "data_store" / "nationality"
+    try:
+        marker_dir.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "date": str(date.today()),
+            "count": count,
+            "pred_count": pred_count,
+            "xray_count": xray_count,
+            "timestamp": datetime.now().isoformat(),
+        }
+        if skipped:
+            payload["skipped"] = True
+            payload["reason"] = reason
+        (marker_dir / "_last_upload.json").write_text(
+            json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    except Exception as me:                              # noqa: BLE001
+        logger.warning(f"nationality _last_upload.json 저장 실패: {me}")
 
 
 def upload_nationality_flows() -> bool:
@@ -395,6 +454,20 @@ def upload_nationality_flows() -> bool:
     all_codes = _find_all_nationality_codes()
     if not all_codes and not predictions:
         logger.warning("nationality 데이터 없음 — 업로드 스킵")
+        return False
+
+    # ★9/7 [F-192] 원천 신선도 가드 — 낡은 스냅샷을 오늘 날짜로 재발행하지 않는다.
+    #   AUTO-RECOVERY(`trading_coo._recover_nationality_flows`)도 **이 함수를 호출**하므로
+    #   가드는 한 곳에서 양쪽 경로에 적용된다(복구가 가드를 우회하는 통로 0 — 지시서 §2-3).
+    stale, latest_src, age = _nationality_source_age(all_codes)
+    if stale:
+        logger.warning(
+            "[FLOWX] nationality_flows 원천 stale(최신 %s · 경과 %s일 > %d일) → 업로드 스킵 "
+            "(재탕 정지·빈 표가 낡은 값보다 낫다)",
+            latest_src or "판독불가", age if age is not None else "?", NATIONALITY_STALE_MAX_DAYS,
+        )
+        _write_nationality_marker(0, 0, 0, skipped=True,
+                                  reason=f"source_stale:{latest_src or 'unreadable'}:{age}d")
         return False
 
     # universe에서 종목명 매핑
@@ -488,19 +561,7 @@ def upload_nationality_flows() -> bool:
         )
 
         # AUTO-RECOVERY freshness 체크용 마커 파일
-        marker_dir = Path(__file__).resolve().parent.parent / "data_store" / "nationality"
-        marker_dir.mkdir(parents=True, exist_ok=True)
-        marker_path = marker_dir / "_last_upload.json"
-        try:
-            marker_path.write_text(json.dumps({
-                "date": today_str,
-                "count": len(rows),
-                "pred_count": pred_count,
-                "xray_count": extra_count,
-                "timestamp": datetime.now().isoformat(),
-            }, ensure_ascii=False), encoding="utf-8")
-        except Exception as me:
-            logger.warning(f"nationality _last_upload.json 저장 실패: {me}")
+        _write_nationality_marker(len(rows), pred_count, extra_count)
 
         return True
     except Exception as e:
