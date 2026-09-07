@@ -3621,18 +3621,12 @@ class BodyHunterBot:
         except Exception as e:
             logger.error(f"일봉+수급 수집 실패: {e}")
 
-        # 3. 외국인 국적별 수급
-        try:
-            nat_codes = self._get_nationality_targets()
-            if nat_codes:
-                from data.krx_nationality_crawler import afetch_nationality_batch
-                date_from = (datetime.now() - timedelta(days=5)).strftime("%Y%m%d")
-                date_to = datetime.now().strftime("%Y%m%d")
-                nat_results = await afetch_nationality_batch(nat_codes, date_from, date_to)
-                nat_ok = sum(1 for df in nat_results.values() if not df.empty)
-                logger.info(f"국적별 수급 수집: {nat_ok}/{len(nat_codes)}")
-        except Exception as e:
-            logger.error(f"국적별 수급 실패: {e}")
+        # 3. 외국인 국적별 수급 — ★9/7 [F-198] 폐기로 제거(사장님 "폐기해라").
+        #    C3는 CRITICAL 잡이라 통째로 뺄 수 없어 **이 블록만** 뺀다.
+        #    `afetch_nationality_batch`는 KRX 직접 호출 경로다. 오늘은 `krx_gate`가
+        #    세션 획득 전에 막아 무해하지만, 남겨두면 KRX_ENABLED=1 한 번에
+        #    폐기한 기능이 되살아난다([S-6] "한쪽만 빼면 재가동 시 부활").
+        #    크롤러·`_get_nationality_targets`는 존치 — 배선만 제거.
 
         # 3.5 시장 세부 11주체 수급 (KIS FHPTJ04040000 코스피+코스닥) — 5/31 신규
         #     종목별(4주체)이 버리던 금융투자(세력)/투신/사모/보험/기타외국인 세부 줍기. 매매 무관·비차단.
@@ -3741,9 +3735,19 @@ class BodyHunterBot:
         return list(codes) if codes else []
 
     async def cmd_nationality(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """국적수급 - 추천/보유 종목 외국인 국적별 수급 변화 보고"""
+        """국적수급 - 추천/보유 종목 외국인 국적별 수급 변화 보고
+
+        ★9/7 [F-198] 국적별 수급은 **정식 폐기**됐다(사장님 결재). 자동 잡 4곳은 전부
+        배선을 제거했고, 이 명령은 사람이 직접 치는 것이라 **존치**한다(재현·감사용).
+        다만 원천이 6/19에 멈춰 있고 KRX는 사장님 6/22 영구 룰로 미접근이라
+        결과가 비는 것이 정상이다 — "고장"으로 오인하지 않도록 먼저 알린다.
+        """
         if not self._is_authorized(update):
             return
+        await update.message.reply_text(
+            "ℹ️ 국적별 수급은 9/7 폐기됐습니다(원천 6/19 정지 · KRX 미접근 영구 룰).\n"
+            "   아래는 남아 있는 데이터로만 조회합니다 — 비어 있으면 정상입니다."
+        )
         text = update.message.text.strip()
 
         # "국적수급 삼성전자" or "국적수급 005930" → 특정 종목

@@ -110,6 +110,41 @@ def test_no_automatic_call_path():
            COO.count("from data.upload_short import upload_nationality_flows") == 2)
 
 
+def test_all_daily_jobs_unwired():
+    """★Tier1 MEDIUM-3 소진 — 국적별 수집을 하던 **다른 세 잡**까지 배선 제거.
+
+    ①~④를 끝내고 "폐기 완료"라 했는데 Tier1이 세 개를 더 찾았다:
+      C17 nationality_charts (trading_coo:1731) → generate_charts_batch
+      C3  collect_daily(CRITICAL) → telegram_bot:3624 afetch_nationality_batch (KRX 직접)
+      C13 evening_analysis → auto_trader:5727 _report_nationality_signal (KRX 직접)
+    전부 게이트로 무해했지만 ①KRX_ENABLED=1 한 번에 되살아나고
+    ②C17은 종목당 0.157초 × TOP200 = **매일 ~31초**를 태우며 종목마다 로그를 찍었다
+    (= nightly ⑧에서 없앤 "0건 경고 + ✅"와 같은 [F-153] 마모).
+    """
+    tb = (BASE_DIR / "bot" / "telegram_bot.py").read_text("utf-8")
+    at = (BASE_DIR / "bot" / "auto_trader.py").read_text("utf-8")
+
+    def live(src: str) -> str:
+        """주석 줄을 뺀 '살아 있는 코드'만 — 주석 안의 심볼을 배선으로 오인하지 않게."""
+        return "\n".join(l for l in src.splitlines() if not l.strip().startswith("#"))
+
+    _check("C17 잡 등록 없음", "C17_nationality_charts" not in live(COO))
+    _check("C3에 afetch_nationality_batch 호출 없음", "afetch_nationality_batch(" not in live(tb))
+    _check("C13에 _report_nationality_signal 호출 없음",
+           "await self._report_nationality_signal(" not in live(at))
+    # ★보존 — 함수 자체는 살아 있어야 재개할 수 있다
+    _check("_job_nationality_charts 존치", "async def _job_nationality_charts" in tb)
+    _check("_report_nationality_signal 존치", "async def _report_nationality_signal" in at)
+    _check("afetch_nationality_batch 모듈 존치",
+           "def afetch_nationality_batch" in (BASE_DIR / "data" / "krx_nationality_crawler.py").read_text("utf-8"))
+    # 사람이 직접 치는 텔레그램 명령은 존치하되 폐기 안내를 낸다
+    _check("cmd_nationality 존치", "async def cmd_nationality" in tb)
+    _check("cmd_nationality가 폐기 안내", "국적별 수급은 9/7 폐기" in tb)
+    # 과다 제거 방지 — 인접 잡은 살아 있어야 한다
+    for keep in ("C18", "C24", "C26"):
+        _check(f"인접 잡 보존: {keep}", keep in live(COO))
+
+
 def test_code_preserved():
     """폐기는 배선 제거다 — 되돌릴 수 있어야 한다."""
     _check("_job_nationality_xray_upload 존치", "async def _job_nationality_xray_upload" in COO)
@@ -158,8 +193,8 @@ def test_negative_control():
 
 if __name__ == "__main__":
     for fn in (test_nightly_step_removed, test_coo_wiring_removed, test_no_automatic_call_path,
-               test_code_preserved, test_consumers_not_broken, test_krx_absolute_rule,
-               test_negative_control):
+               test_all_daily_jobs_unwired, test_code_preserved, test_consumers_not_broken,
+               test_krx_absolute_rule, test_negative_control):
         print(f"[{fn.__name__}]")
         fn()
     print(f"\n결과: {PASS_N} PASS / {FAIL_N} FAIL")

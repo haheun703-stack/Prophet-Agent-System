@@ -1727,13 +1727,11 @@ class TradingCOO:
                 self.bot._job_macd_scan(context),
             ))
 
-        # C17: 국적 차트 (재시도 지원 — TOP200 KRX 크롤링으로 600초 초과 빈발)
-        if self.bot:
-            stage3_jobs.append((
-                "C17_nationality_charts",
-                self.bot._job_nationality_charts(context),
-                lambda: self.bot._job_nationality_charts(context),
-            ))
+        # ★9/7 [F-198] C17 국적 차트 — 폐기로 **잡 등록 제거**(함수 보존).
+        #   Tier1 실측: 종목당 `compare_nationality` 0.157초 = 29,596파일 디렉터리를 7회 glob →
+        #   전부 None. TOP200이면 **매일 ~31초를 태우고 종목마다 "국적 데이터 없음, 스킵" 로그**를
+        #   찍는다. 이것이 nightly ⑧에서 없앤 "0건 경고 + ✅"와 정확히 같은 [F-153] 마모다.
+        #   `telegram_bot._job_nationality_charts`는 존치(재개 시 이 블록만 복원).
 
         # C18: 파이프라인 헬스
         if self.bot:

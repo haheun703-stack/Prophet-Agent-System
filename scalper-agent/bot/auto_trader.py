@@ -5722,11 +5722,9 @@ class AutoTrader:
                     f"   매수 금액: 장 시작 시 실제 잔고 기반 자동 계산"
                 )
 
-            # 국적별 수급 보고 (추천 + 보유 종목)
-            try:
-                await self._report_nationality_signal(_send)
-            except Exception as e2:
-                logger.warning(f"국적별 수급 보고 실패 (무시): {e2}")
+            # ★9/7 [F-198] 국적별 수급 보고 — 폐기로 호출 제거(함수 보존).
+            #   `_report_nationality_signal`은 `collect_daily_snapshots`로 KRX를 직접 친다.
+            #   게이트가 막아 오늘은 무해하나, 남기면 재가동 시 되살아나는 세 번째 잡이었다.
 
         except Exception as e:
             logger.error(f"저녁 분석 실패: {e}")
