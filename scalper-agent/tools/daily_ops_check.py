@@ -474,23 +474,33 @@ def alert_streaks(log_path: Path) -> dict:
     except OSError:
         return {}
 
-    by_day: dict = {}          # 실행일 → 그날 **마지막** 블록의 경보 코드 집합
+    by_day: dict = {}          # 실행일 → 그날 **마지막 실(實)블록**의 경보 코드 집합
     cur_day = None
     cur_codes: set = set()
     seen_alert = False
+    cur_dry = False
 
     def _close():
-        # 경보 줄이 한 번도 없던 블록도 '그날은 경보 0건' 으로 기록해야 연속이 끊긴다.
-        if cur_day is not None:
+        # ★수동 `--dry-run` 블록은 **세지 않는다**. 세션에서 점검기를 한 번 돌릴 때마다
+        #   그날 상태가 덮여 연속이 끊기거나 늘어난다 = 운영 지표를 사람이 건드리는 통로.
+        #   `pending_unsent` 가 이미 같은 이유로 dry 를 제외하고 있다(8/5 규약) —
+        #   같은 파일 안에서 한쪽만 안 지키면 두 숫자가 서로 다른 말을 한다.
+        # 경보 줄이 한 번도 없던 실블록은 '그날 경보 0건' 으로 기록해야 연속이 끊긴다.
+        if cur_day is not None and not cur_dry:
             by_day[cur_day] = set(cur_codes) if seen_alert else set()
 
     for ln in lines:
         m = _OPS_HEADER_RE.search(ln)
         if m:
             _close()
-            cur_day, cur_codes, seen_alert = m.group(1), set(), False
+            cur_day, cur_codes, seen_alert, cur_dry = m.group(1), set(), False, False
             continue
         if cur_day is None:
+            continue
+        # dry 판정은 자기 발화 줄(`[ops]` 접두)에서만 — 본문이 실어 나르는 타 로그
+        # 원문에 같은 토큰이 있어도 오염되지 않는다(8/6 계열).
+        if ln.startswith(_OPS_TOKEN_PREFIX) and (DRY_RUN_MARK in ln or "[dry-run]" in ln):
+            cur_dry = True
             continue
         am = _ALERT_LINE_RE.match(ln.strip())
         if am:

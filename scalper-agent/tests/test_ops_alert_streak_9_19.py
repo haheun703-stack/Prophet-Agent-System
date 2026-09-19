@@ -127,6 +127,37 @@ def test_body_text_from_other_logs_is_not_counted(tmp_path):
     assert set(st) == {"A1"}, f"본문 인용이 계수됐다: {st}"
 
 
+def test_manual_dry_run_block_is_ignored(tmp_path):
+    """★수동 `--dry-run` 이 운영 지표를 건드리면 안 된다.
+
+    세션에서 점검기를 한 번 돌릴 때마다 그날 상태가 덮여 연속이 끊기거나 늘어난다.
+    `pending_unsent` 는 이미 같은 이유로 dry 를 제외한다(8/5 규약) — 같은 파일 안에서
+    한쪽만 안 지키면 두 숫자가 서로 다른 말을 한다. 9/19 VPS 실측 직전에 잡았다.
+    """
+    dry_block = ["[ops] === 2026-09-18 14:30:00 아침 점검 (기준 거래일 2026-09-17) ===",
+                 "✅ 아침 점검 이상 없음 — 실주문 0·페이퍼",
+                 f"[ops] {ops.DRY_RUN_MARK} [dry-run] 발송 생략"]
+    p = _write(tmp_path, [
+        _block("2026-09-16", "⚠️ 확인 권장: A1"),
+        _block("2026-09-17", "⚠️ 확인 권장: A1"),
+        _block("2026-09-18", "⚠️ 확인 권장: A1"),
+        dry_block,                                  # 수동 dry-run — 무시돼야 한다
+    ])
+    st = ops.alert_streaks(p)
+    assert st.get("A1") == 3, f"dry-run 블록이 계수에 섞였다: {st}"
+
+
+def test_dry_run_alert_is_also_ignored(tmp_path):
+    """dry-run 이 경보를 냈어도 세지 않는다(양방향)."""
+    dry_block = ["[ops] === 2026-09-18 14:30:00 아침 점검 (기준 거래일 2026-09-17) ===",
+                 "🚨 즉시 확인 필요: A9",
+                 f"[ops] {ops.DRY_RUN_MARK} [dry-run] 발송 생략"]
+    p = _write(tmp_path, [_block("2026-09-17", "⚠️ 확인 권장: A1"), dry_block])
+    st = ops.alert_streaks(p)
+    assert "A9" not in st, f"dry-run 경보가 계수됐다: {st}"
+    assert st.get("A1") == 1
+
+
 def test_missing_log_is_silent_not_crash(tmp_path):
     assert ops.alert_streaks(tmp_path / "nope.log") == {}
 
