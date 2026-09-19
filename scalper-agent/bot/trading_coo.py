@@ -49,6 +49,7 @@ STEP 3-9: setup_schedule() + telegram_bot.py 연결
 """
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -69,6 +70,38 @@ DATA_STORE = BASE_DIR / "data_store"
 COO_STATE_PATH = DATA_STORE / "coo_state.json"
 COO_RUN_LOG_PATH = DATA_STORE / "coo_run_log.json"
 MORNING_STATE_PATH = DATA_STORE / "morning_state.json"
+
+
+async def emit_alert(alert_fn, text: str) -> bool:
+    """사고 알림을 **실제로** 보낸다 ([F-225] 9/19).
+
+    ★배경 — 이 파일 21곳이 `await asyncio.to_thread(alert_fn, msg)` 였는데
+      `alert_fn`(= `auto_trader._send_alert` ← `telegram_bot` 의 `async def _send_alert`)
+      은 **코루틴 함수**다. `to_thread` 는 스레드에서 그것을 호출해 **코루틴 객체만
+      만들고 끝난다** — await 되지 않고, 예외도 없고, 로그는 성공으로 남는다.
+      9/19 재현: 현행 패턴 **발송 0건 · 예외 0건**.
+      버려지던 것: `EOD 청산 실패 … 수동 청산 필요!` · `B3 모니터 크래시` ·
+      `모닝스캔 실패` · `이브닝분석 실패` 등 **사장님께 가야 할 사고 알림**.
+
+    ★같은 파일 A15에 올바른 형태가 이미 있었는데 21곳만 전환이 안 됐다.
+      21곳에 분기를 복제하지 않고 **헬퍼 하나**로 모은다 — 복제하면 한 곳을 고쳐도
+      나머지가 조용히 남고, 테스트가 복제본을 검사하게 된다(9/19에 겪은 실패).
+    """
+    if alert_fn is None:
+        return False
+    try:
+        if asyncio.iscoroutinefunction(alert_fn):
+            await alert_fn(text)
+            return True
+        res = await asyncio.to_thread(alert_fn, text)
+        # partial·bound wrapper 로 감싸이면 iscoroutinefunction 이 False 인데 반환값이
+        # awaitable 일 수 있다 — 그 경우에도 버리지 않는다.
+        if inspect.isawaitable(res):
+            await res
+        return True
+    except Exception as e:  # noqa: BLE001 — 알림 실패가 잡을 죽이면 안 된다
+        logger.warning(f"[alert] 발송 실패(무시): {type(e).__name__}: {e}")
+        return False
 
 
 class GroupStatus(str, Enum):
@@ -938,7 +971,7 @@ class TradingCOO:
                 msg = ("⚠️ 모닝스캔 실패\n"
                        f"{'recommendation.json 직접 로드 성공' if recovered else '자동매수 비활성'}\n"
                        "수동 확인 필요")
-                await asyncio.to_thread(alert_fn, msg)
+                await emit_alert(alert_fn, msg)
         except Exception as e:
             logger.warning(f"[COO] FALLBACK-A12 텔레그램 경고 실패: {e}")
 
@@ -1188,7 +1221,7 @@ class TradingCOO:
             if alert_fn:
                 status = "강제 재호출 성공" if recovered else "신규 진입 차단 중"
                 msg = f"🚨 B3 모니터 크래시 감지\n{status}\n수동 확인 필요"
-                await asyncio.to_thread(alert_fn, msg)
+                await emit_alert(alert_fn, msg)
         except Exception as e:
             logger.warning(f"[COO] FALLBACK-B3 텔레그램 경고 실패: {e}")
 
@@ -1305,7 +1338,7 @@ class TradingCOO:
                     msg = ("🚨 EOD 청산 실패\n"
                            "포지션 확인 불가\n"
                            "수동 확인 필요!")
-                await asyncio.to_thread(alert_fn, msg)
+                await emit_alert(alert_fn, msg)
         except Exception as e:
             logger.warning(f"[COO] FALLBACK-B15 텔레그램 경고 실패: {e}")
 
@@ -2810,7 +2843,7 @@ class TradingCOO:
                 two_week = portfolio.format_two_week_report()
                 alert_fn = getattr(self.auto_trader, "_send_alert", None) if self.auto_trader else None
                 if alert_fn:
-                    await asyncio.to_thread(alert_fn, two_week)
+                    await emit_alert(alert_fn, two_week)
                     logger.info(f"[C27] Paper Trading Week{day_count//7} 종합 리포트 발송")
 
             return {
@@ -2875,7 +2908,7 @@ class TradingCOO:
                 alert_fn = getattr(self.auto_trader, "_send_alert", None) if self.auto_trader else None
                 if alert_fn:
                     try:
-                        await asyncio.to_thread(alert_fn, msg)
+                        await emit_alert(alert_fn, msg)
                     except Exception:
                         pass
 
@@ -2987,7 +3020,7 @@ class TradingCOO:
                                 f"   재시도 후에도 FAIL: {', '.join(still_fail)}\n"
                                 f"   수동 확인 필요"
                             )
-                            await asyncio.to_thread(alert_fn, msg)
+                            await emit_alert(alert_fn, msg)
                         except Exception:
                             pass
 
@@ -3023,7 +3056,7 @@ class TradingCOO:
                 alert_fn = getattr(self.auto_trader, "_send_alert", None) if self.auto_trader else None
                 if alert_fn:
                     msg = format_watchbox_telegram(result)
-                    await asyncio.to_thread(alert_fn, msg)
+                    await emit_alert(alert_fn, msg)
 
             logger.info(f"[C29] 주목 종목 박스 생성 완료 ({total}종목)")
             return {"watchbox": "OK", "count": total}
@@ -3049,7 +3082,7 @@ class TradingCOO:
             alert_fn = getattr(self.auto_trader, "_send_alert", None) if self.auto_trader else None
             if alert_fn:
                 try:
-                    await asyncio.to_thread(alert_fn, text)
+                    await emit_alert(alert_fn, text)
                 except Exception:
                     pass
 
@@ -3088,7 +3121,7 @@ class TradingCOO:
             if not sent:
                 alert_fn = getattr(self.auto_trader, "_send_alert", None) if self.auto_trader else None
                 if alert_fn:
-                    await asyncio.to_thread(alert_fn, msg)
+                    await emit_alert(alert_fn, msg)
 
             # 4) Supabase 업로드 (실패해도 무시)
             try:
@@ -3146,10 +3179,8 @@ class TradingCOO:
                 if not sent:
                     alert_fn = getattr(self.auto_trader, "_send_alert", None) if self.auto_trader else None
                     if alert_fn:
-                        if asyncio.iscoroutinefunction(alert_fn):
-                            await alert_fn(text)
-                        else:
-                            await asyncio.to_thread(alert_fn, text)
+                        # [F-225] 이미 분기가 있던 자리 — 헬퍼로 통일(동작 동일)
+                        await emit_alert(alert_fn, text)
 
             # 타임아웃: 최대 25분 (08:30→08:55 사이 안전 마진)
             result = await asyncio.wait_for(
@@ -3286,7 +3317,7 @@ class TradingCOO:
                 if not sent:
                     alert_fn = getattr(self.auto_trader, "_send_alert", None) if self.auto_trader else None
                     if alert_fn:
-                        await asyncio.to_thread(alert_fn, msg)
+                        await emit_alert(alert_fn, msg)
                         sent = True
                 if sent:
                     logger.info(f"[DAYTRADING:{mode}] 텔레그램 송출 완료 ({len(picks)}종목)")
@@ -3341,7 +3372,7 @@ class TradingCOO:
                 if not sent:
                     alert_fn = getattr(self.auto_trader, "_send_alert", None) if self.auto_trader else None
                     if alert_fn:
-                        await asyncio.to_thread(alert_fn, msg)
+                        await emit_alert(alert_fn, msg)
                         sent = True
                 if sent:
                     logger.info(f"[C31] 성적표 텔레그램 송출 완료 (평균 {report['avg_return']:+.2f}%)")
@@ -3398,7 +3429,7 @@ class TradingCOO:
                 if not sent:
                     alert_fn = getattr(self.auto_trader, "_send_alert", None) if self.auto_trader else None
                     if alert_fn:
-                        await asyncio.to_thread(alert_fn, msg)
+                        await emit_alert(alert_fn, msg)
                         sent = True
                 if sent:
                     logger.info(f"[C32] NXT TOP 5 텔레그램 발행 ({len(picks_data['picks'])}종목)")
@@ -3477,7 +3508,7 @@ class TradingCOO:
             if not sent:
                 alert_fn = getattr(self.auto_trader, "_send_alert", None) if self.auto_trader else None
                 if alert_fn:
-                    await asyncio.to_thread(alert_fn, msg)
+                    await emit_alert(alert_fn, msg)
 
             logger.info(f"[C36] 매집 레이더 발행 완료 ({len(nxt_targets)}종목)")
             return {"accumulation_radar": "OK", "count": len(nxt_targets)}
@@ -3523,7 +3554,7 @@ class TradingCOO:
             if not sent:
                 alert_fn = getattr(self.auto_trader, "_send_alert", None) if self.auto_trader else None
                 if alert_fn:
-                    await asyncio.to_thread(alert_fn, msg)
+                    await emit_alert(alert_fn, msg)
 
             logger.info(
                 f"[C37] 원샷 잠복 감지 완료 (잠복 {stealth_count}건, "
@@ -3628,7 +3659,7 @@ class TradingCOO:
                 if not sent:
                     alert_fn = getattr(self.auto_trader, "_send_alert", None) if self.auto_trader else None
                     if alert_fn:
-                        await asyncio.to_thread(alert_fn, msg)
+                        await emit_alert(alert_fn, msg)
                 logger.info(f"[C39] 대량쌍매수 {dual.get('detected',0)}종목 "
                             f"+ 연속급등 {surge.get('count',0)}종목 알림 발송")
 
@@ -3696,7 +3727,7 @@ class TradingCOO:
                         if self.auto_trader else None
                     )
                     if alert_fn:
-                        await asyncio.to_thread(alert_fn, msg)
+                        await emit_alert(alert_fn, msg)
 
             logger.info(
                 f"[C40] 기관매집 {'완료' if ok else '실패'} — "
@@ -3783,7 +3814,7 @@ class TradingCOO:
                         if self.auto_trader else None
                     )
                     if alert_fn:
-                        await asyncio.to_thread(alert_fn, msg)
+                        await emit_alert(alert_fn, msg)
 
             logger.info(
                 f"[C41] 연기금스캔 {'완료' if ok else '실패'} — "
@@ -3871,7 +3902,7 @@ class TradingCOO:
                 if not sent:
                     alert_fn = getattr(self.auto_trader, "_send_alert", None) if self.auto_trader else None
                     if alert_fn:
-                        await asyncio.to_thread(alert_fn, msg)
+                        await emit_alert(alert_fn, msg)
                         sent = True
                 if sent:
                     logger.info(f"[C33] NXT 성적표 텔레그램 발행 (평균 {report['avg_return']:+.2f}%)")
@@ -3904,7 +3935,7 @@ class TradingCOO:
                 msg = format_nxt_pre_alert(data)
                 alert_fn = getattr(self.auto_trader, "_send_alert", None)
                 if alert_fn and msg:
-                    await asyncio.to_thread(alert_fn, msg)
+                    await emit_alert(alert_fn, msg)
                     logger.info("[C4E] NXT 예비 알림 발송 완료")
 
             return {"nxt_early": "OK", "nasdaq_pct": nq_pct}
@@ -3952,7 +3983,7 @@ class TradingCOO:
                     msg = ("🚨 이브닝분석 실패\n"
                            "전일 recommendation.json 유지\n"
                            "내일 추천 정확도 저하 가능")
-                await asyncio.to_thread(alert_fn, msg)
+                await emit_alert(alert_fn, msg)
         except Exception as e:
             logger.warning(f"[COO] FALLBACK-C13 텔레그램 경고 실패: {e}")
 
