@@ -2094,9 +2094,21 @@ def _step5_cross_validate(
         _fib_tp = _fib.get("tp_fib", 0) if _fib else 0
         entry = int(p_info.get("entry") or m_info.get("entry") or close)
         from data.sajang_rules import SAJANG
-        sl = int(_fib_sl or p_info.get("sl") or m_info.get("sl") or SAJANG.get_normal_sl(close))
+        # ★9/19 [F-226] `or` 체인이라 FIB/premove/MACD 중 **하나라도 있으면 SAJANG은
+        #   영영 안 쓰인다**(4순위 폴백). 실측(9/18 라이브 픽): 8건 중 7건이 룰 이탈,
+        #   최악 **-28.01%**(SK스퀘어) = 사장님 -3% 룰의 9배 손실 허용.
+        #   ★기준가도 `close` → **`entry`**. 손절은 '얼마에 샀는가'에서 재는 것이고,
+        #     눌림 진입(`ENTRY_MODE_DEFAULT='pullback_3pct'`)이면 close와 entry가 다르다.
+        #   ★하한 클램프만 건다 — 더 타이트한 SL(ATR이 좁은 경우)은 그대로 둔다.
+        #     (더 얕은 쪽이 문제라는 지적은 [F-219]로 별건·사장님 결정 사안)
+        _sl_floor = SAJANG.get_normal_sl(entry)
+        _sl_raw = int(_fib_sl or p_info.get("sl") or m_info.get("sl") or _sl_floor)
+        sl = SAJANG.clamp_sl(entry, _sl_raw)
         tp = SAJANG.get_take_profit(close)
         sl_source = "FIB" if _fib_sl else p_info.get("sl_source", "ATR")
+        if sl != _sl_raw:
+            # 클램프됐다는 사실을 **숨기지 않는다** — 표시·장부·FLOWX가 이 값을 읽는다
+            sl_source = f"{sl_source}→SAJANG"
 
         # 신뢰도 (교차수 + 기술점수 기반)
         if cross >= 2 and t_info.get("score", 0) >= 3.0:

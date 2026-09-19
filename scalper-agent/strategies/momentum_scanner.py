@@ -427,7 +427,15 @@ def scan_momentum(top_n: int = 5) -> List[MomentumCandidate]:
 
             entry = int(closes[-1])
             atr = calc_atr(highs, lows, closes, 14)
-            sl = max(int(entry - atr * 1.0), int(entry * 0.90))  # ATR×1.0, 최대 -10%
+            # ★9/19 [F-226] 하한이 `entry * 0.90`(-10%)이라 **사장님 영구 룰(-3%)의
+            #   3배 손실**을 허용하고 있었다. 이 파일은 SAJANG import가 0건이었다.
+            #   실측(9/18 라이브 픽): 이 경로 5건이 전부 -5.6~-10.1%로 룰 이탈.
+            #   ★ATR 기반이라는 기존 의도는 유지하고 **하한만 룰로 바꾼다** —
+            #     ATR이 좁으면 그대로(타이트), 깊으면 -3%에서 멈춘다.
+            #   ★RULE-008이 `0.[89]x` 리터럴을 잡는데 이 줄은 걸린 적이 없다:
+            #     pre-commit 이 staged 한정이고 이 파일은 staged 된 적이 없다([F-241]).
+            from data.sajang_rules import SAJANG
+            sl = SAJANG.clamp_sl(entry, int(entry - atr * 1.0))
             tp = int(entry + atr * 3.0)  # ATR×3.0 (급등 기대)
 
             all_signals = item["vol_signals"] + tech_signals

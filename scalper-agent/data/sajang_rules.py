@@ -216,6 +216,30 @@ class SajangRules:
         return int(buy_price * (1 - cls.NORMAL_SL_PCT / 100))
 
     @classmethod
+    def clamp_sl(cls, entry_price: float, proposed_sl: float) -> int:
+        """제안된 손절가를 사장님 -3% 룰 안으로 **클램프**한다 ([F-226] 9/19 신설).
+
+        더 타이트한 손절(ATR이 좁은 경우 등)은 **그대로 둔다** — 하한만 건다.
+        더 얕은 SL이 휩쏘를 부른다는 논점은 별건([F-219]·사장님 결정 사안).
+
+        ★왜 헬퍼로 두는가 = 클램프 식을 호출부마다 복제하면 **테스트가 복제본을
+          검사하게 되고**, 프로덕션을 되돌려도 통과한다(9/19에 실제로 겪었다).
+          SAJANG 단일 진실 규약과도 맞다.
+
+        실측 배경(9/18 라이브 픽 8건): 7건이 룰 이탈, 최악 -28.01%.
+          · morning_recommendation — `or` 체인이라 FIB이 있으면 SAJANG이 영영 미사용
+          · momentum_scanner       — 하한이 `entry * 0.90`(-10%) · SAJANG import 0건
+        """
+        floor = cls.get_normal_sl(entry_price)
+        try:
+            proposed = int(proposed_sl)
+        except (TypeError, ValueError):
+            return floor
+        if proposed <= 0:
+            return floor
+        return max(proposed, floor)
+
+    @classmethod
     def get_trailing_sl(cls, high_watermark: float) -> int:
         """사장님 영구 룰 — 고점 -3% 트레일링 SL."""
         return int(high_watermark * (1 - cls.TRAILING_PCT / 100))
