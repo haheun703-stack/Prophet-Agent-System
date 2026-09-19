@@ -867,17 +867,35 @@ def _fetch_foreign_rate_api(base_url: str, headers: dict, code: str) -> Optional
     return row
 
 
+KIS_TR_INQUIRE_PRICE = "FHKST01010100"   # 국내주식 현재가 조회 TR-ID
+
+
 def _fetch_foreign_rate_kis_snapshot(base_url: str, headers: dict, code: str) -> Optional[dict]:
-    """KIS 현재가 API에서 외국인 보유비율 조회 (legacy snapshot fallback only)."""
+    """KIS 현재가 API에서 외국인 보유비율 **당일 스냅샷** 조회.
+
+    ★★수집 경로에 쓰지 말 것 — 이 API는 휴장일·장전에도 전일 값을 돌려주므로
+      캐시에 그대로 쓰면 **today ghost**가 생긴다([F-170]·7/17 제헌절 사고와 같은 뿌리).
+      용도는 **교차검증(읽고 비교만)** 이다. 결과를 파일에 쓰지 않는다.
+
+    ★9/19 [F-238] — 이 함수는 **태어날 때부터 고장나 있었다**: `tr_id` 헤더가 없어
+      KIS가 `rt_cd=1 / EGW00310 (TR-ID가 유효하지 않습니다)` 를 돌려주고 **항상 None**.
+      호출자가 0건이라 아무도 몰랐다(7/31 'Daily Self-Audit 신설 커밋=태어날 때부터
+      고장'과 같은 계열). 실측으로 확인하고 tr_id 를 붙였다 —
+      005930 소진율 46.46 / 보유수량 2,715,986,745 정상 수신.
+    """
     try:
         params = {
             "FID_COND_MRKT_DIV_CODE": "J",
             "FID_INPUT_ISCD": code,
         }
 
+        # tr_id 는 API마다 다르므로 세션 공통 헤더에 없다 — 호출부가 붙여야 한다.
+        h = dict(headers)
+        h["tr_id"] = KIS_TR_INQUIRE_PRICE
+
         resp = _requests.get(
             f"{base_url}/uapi/domestic-stock/v1/quotations/inquire-price",
-            headers=headers, params=params, timeout=10,
+            headers=h, params=params, timeout=10,
         )
         data = resp.json()
 
