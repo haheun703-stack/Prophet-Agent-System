@@ -41,10 +41,17 @@ BAEKMAN_TO_EOK = 100.0             # 백만원 → 억원
 WINDOW_DAYS = 10                   # 매집 판정 윈도우 (최근 10거래일)
 ACCUM_MIN_DAYS = 7                 # 기관계 매수 7일+ = 매집 (pension 7d+와 동일 기준)
 
+# ★9/19 [F-244] `KB`·`BNK` 제거 — **정상 주식을 ETF로 오분류**하고 있었다.
+#   universe 실측: 이 목록이 KB금융·BNK금융지주·KB발해인프라·KBI메탈·KBI동양철관·
+#   KB오토시스 등 **7종**을 배제했다(전부 PER·PBR·섹터가 있는 실제 기업).
+#   KB자산운용 ETF 브랜드는 2024년 KBSTAR → **RISE** 로 바뀌었고 RISE 는 이미 목록에 있다.
+#   ★[F-227] 검수 중 발견 — 장부는 *"auto_trader 만 10개고 다른 4벌은 18개"* 라며
+#     18개로 맞추라는 취지였는데, 실측해 보니 **18개 쪽이 오탐을 만들고 있었다**.
+#     장부의 처방도 검증 대상이다(8/29 교훈).
 ETF_PREFIXES = [
     "KODEX", "TIGER", "RISE", "PLUS", "KIWOOM", "KoAct", "TIME",
-    "SOL", "HANARO", "KOSEF", "ACE", "ARIRANG", "BNK", "TIMEFOLIO",
-    "FOCUS", "WOORI", "KB", "TREX",
+    "SOL", "HANARO", "KOSEF", "ACE", "ARIRANG", "TIMEFOLIO",
+    "FOCUS", "WOORI", "TREX",
 ]
 
 

@@ -45,9 +45,14 @@ _INTRADAY_MAX_PER_DAY = 10    # 5/19 D-Day 재활성 — 사장님 5/18 야간 �
 _CUTOFF_TIME = time(14, 0)    # 14:00 이후 신규 진입 OFF (KST)
 
 # ETF prefix (단타 검증 대상 외)
+# ★9/19 [F-244] `KB`·`BNK` 제거 — **정상 주식을 ETF로 오분류**하고 있었다.
+#   universe 실측: 이 목록이 KB금융·BNK금융지주·KB발해인프라·KBI메탈·KBI동양철관·
+#   KB오토시스 등 **7종**을 배제했다(전부 PER·PBR·섹터가 있는 실제 기업).
+#   KB자산운용 ETF 브랜드는 2024년 KBSTAR → **RISE** 로 바뀌었고 RISE 는 이미 목록에 있다.
+#   (이 파일은 BNK금융지주 1종을 배제하고 있었다)
 _ETF_PREFIXES = (
     "KODEX", "TIGER", "RISE", "PLUS", "KIWOOM", "KoAct", "TIME",
-    "SOL", "HANARO", "KOSEF", "ACE", "ARIRANG", "BNK",
+    "SOL", "HANARO", "KOSEF", "ACE", "ARIRANG",
 )
 
 

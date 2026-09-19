@@ -2491,6 +2491,28 @@ class AutoTrader:
         # 종목명 조회를 위해 trigger/source_map에서 name 추출 보강
         name_map = {t.get("code"): t.get("name", "") for t in triggers if isinstance(t, dict)}
 
+        # ★9/19 [F-227] 위 name_map 만으로는 **ETF 필터가 구조적으로 무력**했다.
+        #   후보 `ranked` 는 `get_top_candidates()` 산출이고 그 함수는 code/score/sources 만
+        #   돌려준다(name 필드 **없음**). triggers 에 없는 코드는 name='' 이 되고
+        #   `''.startswith(prefix)` 는 항상 False 라 **그대로 통과**한다.
+        #   실측(9/19): 후보 2,453종 중 **2,135종(87%)이 name 공란**.
+        #   ★현재 실제 누출은 0건이다 — universe 2,531종에 ETF 가 한 종목도 없다.
+        #     즉 지금 사고는 없지만 **ETF 가 유니버스에 들어오는 순간 그대로 뚫린다**.
+        #   → universe.json 으로 이름을 보강한다(읽기 실패해도 종전 동작 유지).
+        try:
+            _uni_path = Path(__file__).resolve().parent.parent / "data_store" / "universe.json"
+            with open(_uni_path, encoding="utf-8") as _uf:
+                _uni = json.load(_uf)
+            _added = 0
+            for _c, _v in (_uni or {}).items():
+                if not name_map.get(_c) and isinstance(_v, dict) and _v.get("name"):
+                    name_map[_c] = _v["name"]
+                    _added += 1
+            if _added:
+                logger.info(f"[asset_pool] ETF 필터용 종목명 보강 {_added}종 (universe) [F-227]")
+        except Exception as _ne:  # noqa: BLE001 — 보강 실패가 매수 경로를 막으면 안 된다
+            logger.warning(f"[asset_pool] 종목명 보강 실패(계속): {_ne}")
+
         filtered = []
         for code in all_codes:
             if code in excluded:
