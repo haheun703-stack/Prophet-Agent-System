@@ -143,7 +143,24 @@ class DynamicTargetEngine:
         inst_cost_sl = int(inst_cost * 0.97) if inst_cost > 0 else 0
 
         # SL = max(매집원가 방어선, ATR SL) - 가장 타이트한 것 사용
-        final_sl = max(inst_cost_sl, initial_sl) if inst_cost_sl > 0 else initial_sl
+        # ★★9/19 [F-219] **매집원가 방어선이 진입가 위에 잡히면 매수 즉시 청산**이다.
+        #   `inst_cost * 0.97 > entry_price`(= 매집원가가 진입가보다 3.1%+ 높음)면
+        #   손절선이 진입가 위로 간다. 장부는 '가능성'이라 했는데 **실측은 3분의 1**:
+        #   자산풀 후보 198종 중 **70종(35.4%)** · 최악 진입가 **+57.25%**.
+        #   봇이 켜져 있었다면 자산풀 매수의 1/3이 체결 즉시 손절됐다.
+        #   ★진입가 위의 '방어선'은 방어선이 아니다 — 그 경우 ATR SL 만 쓴다.
+        if 0 < inst_cost_sl < entry_price:
+            final_sl = max(inst_cost_sl, initial_sl)
+        else:
+            final_sl = initial_sl
+
+        # ★[F-219] 이 파일은 SAJANG import 0건이었고 최종 수정이 3/8 —
+        #   사장님 영구 룰(5/21~) **제정보다 앞선다**. 주입 3곳이 전부 실매도 경로라
+        #   룰보다 깊은 손절이 그대로 나간다 → 하한만 룰로 건다([F-226]과 같은 헬퍼).
+        #   ★더 타이트해지는 쪽(sl_atr_mult=0.5)은 **전략 선택이라 손대지 않는다** —
+        #     그건 사장님 결정 사안으로 남겨 둔다.
+        from data.sajang_rules import SAJANG
+        final_sl = SAJANG.clamp_sl(entry_price, final_sl)
 
         state = TargetState(
             code=code,
