@@ -1745,12 +1745,17 @@ class TradingCOO:
             ))
         elif self._g6_mode == "DEGRADED":
             logger.warning("[COO] C15 선취매 스킵 (DEGRADED 모드)")
+            # ★9/19 [F-224] `timestamp=` 를 넘기고 있었다 — `JobResult.__init__` 에
+            #   그 파라미터가 없어(내부에서 자동 설정) **TypeError**. 이 raise 는
+            #   `run_g7` 안이고 **try 로 감싸여 있지 않다**(AST 확인) → DEGRADED 모드가
+            #   되는 순간 run_g7 이 Stage 3 준비에서 죽고 C16·C18~C21·C23~C34·Stage4 가
+            #   전부 미실행 + group_status['G7'] 이 RUNNING 에 고착돼 재시작 자동복구도 무력.
+            #   호출 15곳 중 **이 하나만** 시그니처 불일치였다(전수 AST 검사).
             results.append(JobResult(
                 name="C15_predawn_buy",
                 success=False,
                 elapsed=0.0,
                 error="SKIPPED: DEGRADED mode",
-                timestamp=datetime.now().isoformat(),
             ))
 
         # C16: MACD 스캔
