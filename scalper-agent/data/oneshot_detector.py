@@ -3,7 +3,7 @@
 원샷 쌍매수 잠복 감지기 (One-Shot Dual-Buy Stealth Detector)
 =============================================================
 최근 N일 내 외인+기관 동시 대량매수(원샷)가 터졌지만
-주가가 아직 크게 움직이지 ��은 "잠복" 종목 포착.
+주가가 아직 크게 움직이지 않은 "잠복" 종목 포착.
 
 패턴: 쌍매수 300억+ 폭탄 → 며칠 눌림 → 급등
 실전: 대주전자재료 4/15 +419억 쌍매수 → 4/20 -4.4% 잠복 → 4/21 +14%
@@ -20,7 +20,7 @@ import os
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+
 
 logger = logging.getLogger("BH.OneshotDetector")
 
@@ -50,7 +50,7 @@ def scan_oneshot_stealth(
             "min_dual_buy": 200,
             "stealth": [...],    # 잠복 (쌍매수 후 변화 ±7%)
             "gone": [...],       # 이미 출발 (+7%+)
-            "failed": [...],     # ���패 (-7%~)
+            "failed": [...],     # 실패 (-7%~)
             "summary": {
                 "total_signals": int,
                 "stealth_count": int,
@@ -76,13 +76,13 @@ def scan_oneshot_stealth(
         conn.close()
         return {"error": "insufficient dates"}
 
-    latest_date = dates[0]         # 가��� 최근 거래일 (종가 기준)
+    latest_date = dates[0]         # 가장 최근 거래일 (종가 기준)
     latest_date_fmt = f"{latest_date[:4]}-{latest_date[4:6]}-{latest_date[6:]}"
     search_dates = dates[1:]       # 쌍매수 탐색 범위 (당일 제외)
     start_date = search_dates[-1]  # 가장 오래된 탐색일
 
     logger.info(
-        f"[원���] 기준일={latest_date}, 탐색={start_date}~{search_dates[0]} "
+        f"[원샷] 기준일={latest_date}, 탐색={start_date}~{search_dates[0]} "
         f"({len(search_dates)}일), 최소={min_dual_buy}억"
     )
 
@@ -215,7 +215,7 @@ def scan_oneshot_stealth(
     return result
 
 
-# ── 텔���그램 포맷 ──
+# ── 텔레그램 포맷 ──
 
 def format_oneshot_alert(scan: dict) -> str:
     """텔레그램 알림 포맷"""
@@ -234,7 +234,7 @@ def format_oneshot_alert(scan: dict) -> str:
     ]
 
     if stealth:
-        lines.append("▸ 잠복 종목 (��매수 후 아직 ±7%)")
+        lines.append("▸ 잠복 종목 (쌍매수 후 아직 ±7%)")
         for i, s in enumerate(stealth[:15], 1):
             lines.append(
                 f"  {i}. {s['name']} ({s['ticker']})"

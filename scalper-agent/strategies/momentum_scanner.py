@@ -17,7 +17,7 @@ import logging
 import warnings
 warnings.filterwarnings("ignore")
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import List
 from pathlib import Path
 
 import numpy as np

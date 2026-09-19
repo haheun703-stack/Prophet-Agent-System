@@ -340,13 +340,47 @@ def check_backlog_ledger(doc: Path = None) -> list[dict]:
     return issues
 
 
-def run_checks() -> list[dict]:
-    """모든 검사 실행."""
+def get_all_py_files() -> list[str]:
+    """저장소의 **모든** 추적 .py 파일 ([F-241]).
+
+    ★9/19 — pre-commit 이 `git diff --cached` 한정이라 **오래된 파일의 위반은
+      영원히 안 잡힌다.** [F-226](손절 -10% 하한)이 실제로 그랬다: RULE-008 의
+      `0.[89]x` 정규식이 `int(entry * 0.90)` 을 잡을 수 있었는데 그 파일이 한 번도
+      staged 된 적이 없어 **규칙이 단 한 번도 돌지 않았다**. [F-219]도 같은 구조
+      (`dynamic_target.py` 최종 수정 3/8 — 사장님 룰 제정보다 앞).
+      "규칙이 있다"와 "규칙이 돈다"는 다르다(7/31 교훈의 같은 얼굴).
+    """
+    try:
+        out = subprocess.run(["git", "ls-files", "*.py"],
+                             capture_output=True, text=True, timeout=30)
+    except Exception:
+        return []
+    # ★자기 자신은 제외한다 — 이 파일은 규칙 **패턴 문자열**을 담고 있어 스스로를
+    #   위반으로 짖는다(전체 스캔 첫 실행에서 4건: RULE-001·005, TG-001, CSV-001).
+    #   8/7 LEDGER-1 이 마커 인용을 자기 위반으로 잡던 것과 같은 얼굴.
+    #   staged 경로에서는 이 파일이 staged 될 때만 도는데 그때도 같은 오탐이 난다 —
+    #   여기서 한 번에 막는다.
+    me = Path(__file__).resolve()
+    files = []
+    for f in out.stdout.splitlines():
+        if not f.strip():
+            continue
+        try:
+            if Path(f).resolve() == me:
+                continue
+        except Exception:
+            pass
+        files.append(f)
+    return files
+
+
+def run_checks(scan_all: bool = False) -> list[dict]:
+    """모든 검사 실행. `scan_all` 이면 staged 가 아니라 추적 .py 전체를 본다."""
     # ★ 장부 검사는 staged .py 유무와 무관하게 돈다 — 문서만 고친 커밋에서
     #   조기 반환에 걸려 통째로 건너뛰던 자리(8/7 신설 시 실측).
     all_issues = check_backlog_ledger()
 
-    files = get_staged_py_files()
+    files = get_all_py_files() if scan_all else get_staged_py_files()
     if not files:
         return all_issues
 
@@ -456,9 +490,13 @@ def check_undefined_names(filepath: str) -> list[dict]:
 
 
 def main():
-    issues = run_checks()
+    # ★[F-241] `--scan-all` 은 **보고 전용**이다(차단 없음·exit 0).
+    #   전체 스캔을 차단에 쓰면 기존 위반 때문에 모든 커밋이 막힌다 —
+    #   가시성만 얻고 동작은 불변으로 둔다([F-164] '보이게 하되 동작 불변' 규약).
+    scan_all = "--scan-all" in sys.argv
+    issues = run_checks(scan_all=scan_all)
     if not issues:
-        print("[pre-commit] 검수 통과 ✓")
+        print(f"[pre-commit] 검수 통과 ✓{' (전체 스캔)' if scan_all else ''}")
         return 0
 
     # 심각도별 정렬
@@ -477,6 +515,11 @@ def main():
             has_blocking = True
 
     print()
+    if scan_all:
+        # 보고 전용 — 기존 위반으로 커밋을 막지 않는다. 숫자를 보이게 하는 것이 목적.
+        print(f"[--scan-all] 추적 .py 전체 스캔 — {len(issues)}건 (보고 전용·차단 없음)")
+        print("  ★ staged 커밋 경로는 종전과 동일하게 CRITICAL/HIGH 를 차단합니다.")
+        return 0
     if has_blocking:
         print("CRITICAL/HIGH 발견 — 커밋 차단됨. 수정 후 다시 시도하세요.")
         return 1
