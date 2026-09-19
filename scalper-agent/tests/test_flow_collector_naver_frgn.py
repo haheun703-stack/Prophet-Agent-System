@@ -61,17 +61,39 @@ NAVER_FRGN_HTML = """
 """
 
 
+# ★9/19 [F-237] — 원천이 구 HTML에서 신 trend JSON으로 바뀌었다. 아래 Fake를 갈아끼운다.
+#   ★이 파일의 존재 이유는 원천이 아니라 **[F-170]이 지키는 성질**이다:
+#     ①스테일 응답이 최근 행을 지우지 않는다 ②중간 거래일이 자가복구된다
+#     ③미래 일자는 잘린다 ④빈 행은 안 쌓인다.
+#   원천을 바꾸면서 이 6건이 통째로 죽어 있었다(러너가 적발). 성질은 원천과 무관하므로
+#   Fake만 교체하고 단언은 유지한다 — **재발 방지막을 걷어내지 않는다**.
+NAVER_TREND_JSON = [
+    {"bizdate": "20260604", "foreignerHoldRatio": "47.81%", "closePrice": "351,500"},
+    {"bizdate": "20260602", "foreignerHoldRatio": "48.07%", "closePrice": "360,500"},
+    {"bizdate": "20260601", "foreignerHoldRatio": "48.30%", "closePrice": "349,000"},
+]
+
+
 class FakeResponse:
-    text = NAVER_FRGN_HTML
+    text = NAVER_FRGN_HTML          # 구 파서 단위 테스트용으로 남겨 둔다
     encoding = None
+
+    def __init__(self, payload=None):
+        self._payload = NAVER_TREND_JSON if payload is None else payload
 
     def raise_for_status(self):
         return None
 
+    def json(self):
+        return self._payload
+
 
 class FakeSession:
+    def __init__(self, payload=None):
+        self._payload = payload
+
     def get(self, *args, **kwargs):
-        return FakeResponse()
+        return FakeResponse(self._payload)
 
 
 def test_parse_naver_frgn_html_uses_trading_date():
@@ -135,8 +157,10 @@ def test_collect_foreign_exhaustion_backfills_missing_middle_date(tmp_path, monk
     assert dates == ["2026-06-01", "2026-06-02", "2026-06-04"]
     restored = saved.loc[pd.Timestamp("2026-06-02")]
     assert restored["소진율"] == 48.07
-    assert restored["보유수량"] == 2_810_201_369
     assert restored["종가"] == 360_500
+    # ★[F-237] 신 원천은 보유수량을 주지 않는다 → 공란. 0으로 채우면 '실제 보유 0'과
+    #   구분이 사라지므로 **비어 있는 것이 올바른 상태**다. 백필은 소진율로 성립한다.
+    assert pd.isna(restored["보유수량"])
 
 
 def test_stale_naver_response_must_not_delete_recent_rows(tmp_path, monkeypatch):
@@ -199,27 +223,208 @@ def test_future_dated_row_is_still_cut(tmp_path, monkeypatch):
     assert "2026-06-20" not in {idx.strftime("%Y-%m-%d") for idx in saved.index}
 
 
-def test_collect_foreign_exhaustion_still_drops_zero_rows(tmp_path, monkeypatch):
-    """전량 병합으로 바꿔도 빈/오염 행(소진율·보유수량 동시 0) 방어는 살아 있다."""
+def _setup_flow(tmp_path, monkeypatch, payload=None):
     flow_dir = tmp_path / "flow"
-    flow_dir.mkdir(parents=True)
+    flow_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(fc, "FLOW_DIR", flow_dir)
+    monkeypatch.setattr(fc, "SHORT_DIR", tmp_path / "short")
+    monkeypatch.setattr(fc, "NAT_DIR", tmp_path / "nationality")
+    monkeypatch.setattr(fc._requests, "Session", lambda: FakeSession(payload))
+    monkeypatch.setattr(fc.time, "sleep", lambda *_: None)
+    return flow_dir
 
+
+def test_zero_ratio_row_is_now_kept_not_dropped(tmp_path, monkeypatch):
+    """★9/19 [F-237] **의도된 동작 변경** — 소진율 0.00 행을 더 이상 버리지 않는다.
+
+    옛 규칙은 `(소진율 > 0) | (보유수량 > 0)` 이었다. 신 원천이 보유수량을 주지 않으므로
+    그 조건은 한쪽 날개가 꺾인 채 돌아가고, **소진율 0.00인 84종(전수 실측 3.37%)**이
+    매일 행을 못 쌓아 조용히 빈다. 그리고 0.00은 오염이 아니라 '외국인 보유가 없다'는
+    값이다. 값을 값으로 취급하지 않은 옛 규칙이 틀렸다.
+    """
+    flow_dir = _setup_flow(tmp_path, monkeypatch)
     cache_file = flow_dir / "005930_foreign_exh.csv"
     pd.DataFrame(
         [{"소진율": 0.0, "보유수량": 0, "종가": 350_000}],
         index=pd.DatetimeIndex(["2026-06-03"], name="date"),
     ).to_csv(cache_file)
 
-    monkeypatch.setattr(fc, "FLOW_DIR", flow_dir)
-    monkeypatch.setattr(fc, "SHORT_DIR", tmp_path / "short")
-    monkeypatch.setattr(fc, "NAT_DIR", tmp_path / "nationality")
-    monkeypatch.setattr(fc._requests, "Session", lambda: FakeSession())
-    monkeypatch.setattr(fc.time, "sleep", lambda *_: None)
+    fc.collect_foreign_exhaustion(["005930"], force=False)
+
+    saved = pd.read_csv(cache_file, index_col=0, parse_dates=True)
+    assert "2026-06-03" in {idx.strftime("%Y-%m-%d") for idx in saved.index},         "소진율 0.00 행이 사라졌다 — 84종이 매일 비게 된다 [F-237]"
+
+
+def test_truly_empty_row_is_still_dropped(tmp_path, monkeypatch):
+    """빈 행 방어는 살아 있다 — 소진율·보유수량이 **둘 다 결측**인 행만 제거."""
+    flow_dir = _setup_flow(tmp_path, monkeypatch)
+    cache_file = flow_dir / "005930_foreign_exh.csv"
+    pd.DataFrame(
+        [{"소진율": None, "보유수량": None, "종가": 350_000}],
+        index=pd.DatetimeIndex(["2026-06-03"], name="date"),
+    ).to_csv(cache_file)
 
     fc.collect_foreign_exhaustion(["005930"], force=False)
 
     saved = pd.read_csv(cache_file, index_col=0, parse_dates=True)
     assert "2026-06-03" not in {idx.strftime("%Y-%m-%d") for idx in saved.index}
+
+
+def test_merge_must_not_wipe_existing_holding_qty(tmp_path, monkeypatch):
+    """★★9/19 [F-237] 최우선 회귀 — 병합이 기존 보유수량을 지우면 안 된다.
+
+    신 원천은 보유수량을 주지 않는다. 행 단위 교체(`concat` + `duplicated(keep="last")`)
+    를 쓰면 같은 날짜의 **기존 실값이 결측으로 덮인다**. 신 원천이 매번 10거래일을 주므로
+    수집 때마다 3,510파일 × 최근 10행이 조용히 지워지고, 되채울 원천이 없다.
+    8/13 [F-170]과 같은 얼굴이며, 9/19 검수에서 실제로 재현돼 잡혔다.
+    """
+    flow_dir = _setup_flow(tmp_path, monkeypatch)
+    cache_file = flow_dir / "005930_foreign_exh.csv"
+    # 캐시에는 FakeSession이 줄 날짜와 **같은 날짜**의 보유수량 실값이 있다
+    pd.DataFrame(
+        [{"소진율": 48.30, "보유수량": 2_823_815_351, "종가": 349_000},
+         {"소진율": 47.81, "보유수량": 2_795_254_819, "종가": 351_500}],
+        index=pd.DatetimeIndex(["2026-06-01", "2026-06-04"], name="date"),
+    ).to_csv(cache_file)
+
+    fc.collect_foreign_exhaustion(["005930"], force=False)
+
+    saved = pd.read_csv(cache_file, index_col=0, parse_dates=True)
+    assert saved.loc[pd.Timestamp("2026-06-01"), "보유수량"] == 2_823_815_351,         "기존 보유수량이 지워졌다 — [F-170] 계열 조용한 삭제 재발"
+    assert saved.loc[pd.Timestamp("2026-06-04"), "보유수량"] == 2_795_254_819,         "기존 보유수량이 지워졌다 — [F-170] 계열 조용한 삭제 재발"
+
+
+def test_merge_lets_new_ratio_win_over_stale_cache(tmp_path, monkeypatch):
+    """보유수량을 지키는 대신 **신규 값이 이기는 성질**까지 잃으면 안 된다.
+
+    보존만 하고 갱신을 못 하면 소진율이 영원히 옛 값으로 굳는다 — 반대 방향의 사고.
+    """
+    flow_dir = _setup_flow(tmp_path, monkeypatch)
+    cache_file = flow_dir / "005930_foreign_exh.csv"
+    # 06-04 소진율을 일부러 틀린 값으로 둔다. 원천은 47.81 을 준다.
+    pd.DataFrame(
+        [{"소진율": 11.11, "보유수량": 2_795_254_819, "종가": 111_111}],
+        index=pd.DatetimeIndex(["2026-06-04"], name="date"),
+    ).to_csv(cache_file)
+
+    fc.collect_foreign_exhaustion(["005930"], force=False)
+
+    saved = pd.read_csv(cache_file, index_col=0, parse_dates=True)
+    row = saved.loc[pd.Timestamp("2026-06-04")]
+    assert row["소진율"] == 47.81, "신규 소진율이 반영되지 않았다"
+    assert row["종가"] == 351_500, "신규 종가가 반영되지 않았다"
+    assert row["보유수량"] == 2_795_254_819, "보유수량은 기존 값을 지켜야 한다"
+
+
+def test_csv_header_order_is_stable_after_merge(tmp_path, monkeypatch):
+    """combine_first 는 컬럼을 알파벳순으로 재배열한다 — CSV 헤더가 흔들리면 안 된다."""
+    flow_dir = _setup_flow(tmp_path, monkeypatch)
+    cache_file = flow_dir / "005930_foreign_exh.csv"
+    pd.DataFrame(
+        [{"소진율": 48.30, "보유수량": 2_823_815_351, "종가": 349_000}],
+        index=pd.DatetimeIndex(["2026-06-01"], name="date"),
+    ).to_csv(cache_file)
+
+    fc.collect_foreign_exhaustion(["005930"], force=False)
+
+    header = cache_file.read_text(encoding="utf-8").splitlines()[0]
+    assert header == "date,소진율,보유수량,종가", f"CSV 헤더가 바뀌었다: {header}"
+
+
+def test_holding_qty_keeps_integer_csv_notation(tmp_path, monkeypatch):
+    """★[F-237] 보유수량 표기가 `...0.0` 으로 바뀌면 안 된다.
+
+    결측이 섞이면 pandas 가 컬럼을 float 로 올려 전 파일의 표기가 바뀐다. 값은 같지만
+    **재수집 전후 바이트 재현** 대조가 죽는다 — 8/13·8/21 삭제 사고를 실제로 잡아낸 기법이다.
+    """
+    flow_dir = _setup_flow(tmp_path, monkeypatch)
+    cache_file = flow_dir / "005930_foreign_exh.csv"
+    pd.DataFrame(
+        [{"소진율": 48.30, "보유수량": 2_823_815_351, "종가": 349_000}],
+        index=pd.DatetimeIndex(["2026-06-01"], name="date"),
+    ).to_csv(cache_file)
+
+    fc.collect_foreign_exhaustion(["005930"], force=False)
+
+    text = cache_file.read_text(encoding="utf-8")
+    assert "2823815351" in text, "보유수량 값이 사라졌다"
+    assert "2823815351.0" not in text, "보유수량이 float 표기로 바뀌었다 — 바이트 대조가 죽는다"
+    # 신 원천이 주지 않는 날짜(06-04)의 보유수량 칸은 비어 있어야 한다
+    line_0604 = [l for l in text.splitlines() if l.startswith("2026-06-04")]
+    assert line_0604 and line_0604[0].split(",")[2] == "", f"빈 칸이 아니다: {line_0604}"
+
+
+def test_missing_close_must_not_overwrite_cached_close(tmp_path, monkeypatch):
+    """★[F-237·D-5] 종가 결측이 기존 실값을 0으로 덮으면 안 된다 (배선 층).
+
+    `_safe_int` 기본값 0 + 셀 단위 병합의 조합에서 나오는 조용한 파괴. 파서 단위
+    테스트만으로는 안 잡히고 `collect_foreign_exhaustion` 을 타야 드러난다(5/25 교훈).
+    """
+    payload = [{"bizdate": "20260604", "foreignerHoldRatio": "47.90%"}]   # closePrice 없음
+    flow_dir = _setup_flow(tmp_path, monkeypatch, payload=payload)
+    cache_file = flow_dir / "005930_foreign_exh.csv"
+    pd.DataFrame(
+        [{"소진율": 47.81, "보유수량": 2_795_254_819, "종가": 351_500}],
+        index=pd.DatetimeIndex(["2026-06-04"], name="date"),
+    ).to_csv(cache_file)
+
+    fc.collect_foreign_exhaustion(["005930"], force=False)
+
+    saved = pd.read_csv(cache_file, index_col=0, parse_dates=True)
+    row = saved.loc[pd.Timestamp("2026-06-04")]
+    assert row["종가"] == 351_500, "결측 종가가 기존 실값을 덮었다 [F-237·D-5]"
+    assert row["소진율"] == 47.90, "신규 소진율은 반영돼야 한다"
+
+
+def test_delisted_stock_is_not_counted_as_failure(tmp_path, monkeypatch):
+    """★[F-237·D-3] 상폐·정지(빈 응답)는 '실패'가 아니다 — 주석이 선언한 대로.
+
+    전수 실측 40종이 매일 `실패40` 으로 찍히면 반복되는 숫자가 배경이 되고,
+    진짜 실패가 그 안에 섞여도 안 보인다.
+    """
+    import io as _io
+    import contextlib
+
+    flow_dir = _setup_flow(tmp_path, monkeypatch, payload=[])   # 상폐·정지 모양
+    buf = _io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        fc.collect_foreign_exhaustion(["232530"], force=False)
+    out = buf.getvalue()
+    assert "실패0" in out, f"상폐·정지가 실패로 계수됐다: {out.strip().splitlines()[-1]}"
+    assert "상폐·정지1" in out, f"정상 부재가 내역에 안 보인다: {out.strip().splitlines()[-1]}"
+
+
+def test_schema_change_shows_up_in_the_summary_line(tmp_path, monkeypatch):
+    """★[F-237·D-2] 스키마 변경이 요약 한 줄에서 구분돼야 한다(9/11 사고의 교훈)."""
+    import io as _io
+    import contextlib
+
+    _setup_flow(tmp_path, monkeypatch, payload={"trend": []})
+    buf = _io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        fc.collect_foreign_exhaustion(["005930"], force=False)
+    out = buf.getvalue()
+    assert "스키마이상1" in out, f"스키마 이상이 안 보인다: {out.strip().splitlines()[-1]}"
+
+
+def test_new_source_outage_must_not_wipe_the_cache(tmp_path, monkeypatch):
+    """★9/19 사고 자체의 회귀 — 원천이 또 죽어도 기존 캐시를 지우면 안 된다.
+
+    9/11~9/18에 2,531종 전건 실패했을 때 **기존 행은 살아남았다**(그래서 소급 대조가
+    가능했다). 빈 응답에 캐시를 덮어쓰는 구현으로 바뀌면 다음 사고는 복구 불가가 된다.
+    """
+    flow_dir = _setup_flow(tmp_path, monkeypatch, payload=[])   # 원천 사망 = 빈 응답
+    cache_file = flow_dir / "005930_foreign_exh.csv"
+    pd.DataFrame(
+        [{"소진율": 46.71, "보유수량": 2_730_687_013, "종가": 269_000}],
+        index=pd.DatetimeIndex(["2026-06-03"], name="date"),
+    ).to_csv(cache_file)
+
+    fc.collect_foreign_exhaustion(["005930"], force=False)
+
+    saved = pd.read_csv(cache_file, index_col=0, parse_dates=True)
+    assert "2026-06-03" in {idx.strftime("%Y-%m-%d") for idx in saved.index}
+    assert saved.iloc[-1]["소진율"] == 46.71
 
 
 def test_collect_foreign_exhaustion_writes_latest_trading_date_and_removes_ghost(tmp_path, monkeypatch):
@@ -252,5 +457,5 @@ def test_collect_foreign_exhaustion_writes_latest_trading_date_and_removes_ghost
     assert saved.index[-1].strftime("%Y-%m-%d") == "2026-06-04"
     assert "2026-06-05" not in {idx.strftime("%Y-%m-%d") for idx in saved.index}
     assert saved.iloc[-1]["소진율"] == 47.81
-    assert saved.iloc[-1]["보유수량"] == 2_795_254_819
     assert saved.iloc[-1]["종가"] == 351_500
+    assert pd.isna(saved.iloc[-1]["보유수량"])     # [F-237] 신 원천 미제공

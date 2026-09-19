@@ -36,13 +36,30 @@ FLOW_DIR = DATA_DIR / "flow"          # 수급 데이터
 SHORT_DIR = DATA_DIR / "short"        # 공매도 데이터 (KIS 일별추이로 채움 2026-06-27)
 CREDIT_DIR = DATA_DIR / "credit"      # 신용잔고 데이터 (KIS 일별추이 2026-06-27 신설)
 NAT_DIR = DATA_DIR / "nationality"    # 외국인 국적별 데이터
+# ★9/19 [F-237] 구 frgn 페이지는 **폐지**됐다(302 → stock.naver.com).
+#   9/11부터 2,531종 전건 실패·6영업일 결손. 상수는 남겨 둔다 — 음성대조 테스트가
+#   "구 경로는 더 이상 표를 주지 않는다"를 고정하는 데 쓰고, 이력의 근거이기도 하다.
 NAVER_FRGN_URL = "https://finance.naver.com/item/frgn.naver"
+# 신 원천: 같은 데이터의 JSON 판. 대조 실측(9/19) = 소진율 807쌍·종가 130쌍 **100% 일치**,
+#   전수 2,531종 중 2,491 성공(1.5분). 즉 '다른 데이터로 갈아탄 것'이 아니라 **같은 자**다.
+NAVER_TREND_URL = "https://m.stock.naver.com/api/stock/{code}/trend"
+# ★9/19 [F-237·D-1] **자가복구 창**. 파라미터 없이 부르면 10거래일만 온다 —
+#   이번 사고가 6영업일이었으니 여유가 **단 4일**이었고, 일주일만 늦게 잡았으면
+#   정규 수집 경로로는 영영 못 채웠다(그리고 그 사실을 알려줄 알림도 없다).
+#   구 HTML 경로는 `page=1`로 20행을 받았으므로 10행은 **사고 대응력의 후퇴**이기도 하다.
+#   라이브 실측(9/19): pageSize 20·30·60 정상(전건 소진율 유효) / 100은 HTTP 400.
+#   30 = 약 6주 = 이번 사고 길이의 5배 여유. 응답만 커지고 요청 수는 그대로다.
+NAVER_TREND_PAGE_SIZE = 30
 NAVER_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36"
     ),
     "Referer": "https://finance.naver.com/",
+}
+NAVER_API_HEADERS = {
+    "User-Agent": NAVER_HEADERS["User-Agent"],
+    "Referer": "https://m.stock.naver.com/",
 }
 
 
@@ -491,6 +508,122 @@ def _parse_naver_frgn_html(code: str, html: str) -> List[dict]:
     return sorted(dedup.values(), key=lambda x: x["date"], reverse=True)
 
 
+def _parse_ratio_or_none(value) -> Optional[float]:
+    """소진율 문자열 → float. **숫자가 아니면 None**(0.0 아님).
+
+    ★9/19 [F-237] — `_safe_float`는 파싱 실패를 0.0으로 돌려준다. 이 채널에서 그건
+    치명적인데, **0.00은 '외국인 보유가 없다'는 실제 값**이기 때문이다. 신 원천은
+    일부 종목(실측 7종)에 `'-'`를 주므로 둘을 섞으면 '미제공'이 '보유 0'으로 둔갑한다.
+    8/11 교훈(라벨이 아니라 값)의 같은 얼굴 — 그래서 별도 함수로 None을 살려 둔다.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() == "nan":
+        return None
+    cleaned = (
+        text.replace(",", "").replace("%", "").replace("+", "")
+        .replace("−", "-").replace(" ", "")
+    )
+    if cleaned in ("", "-", "--"):
+        return None
+    try:
+        return float(cleaned)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_close_or_none(value) -> Optional[int]:
+    """종가 문자열 → int. 숫자가 아니면 **None**(0 아님) — [F-237·D-5]."""
+    v = _parse_ratio_or_none(value)
+    if v is None:
+        return None
+    try:
+        return int(v)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _parse_naver_trend_json(code: str, payload, stats: Optional[dict] = None) -> List[dict]:
+    """신 네이버 trend JSON → 거래일별 소진율 행 (최신순).
+
+    반환 스키마는 구 HTML 파서와 **동일**하다(date/소진율/보유수량/종가) — 호출부와
+    캐시 CSV를 한 줄도 바꾸지 않기 위해서다.
+
+    ★`보유수량`은 신 원천에 **없다**(integration·basic·price 전부 확인). 0을 채우지
+    않고 `None`(→ CSV 공란)으로 둔다. 0을 쓰면 '실제 보유 0'과 구분이 사라진다.
+    실소비처는 `spacex_watchlist`의 리포트 표시 1곳뿐이고 매매 경로(매수 게이트
+    `is_foreign_exhaustion_blocked`)는 소진율만 읽는다 — 9/19 호출부 전수 확인.
+    """
+    if not isinstance(payload, list):
+        # ★9/19 [F-237·D-2] 여기서 조용히 빠지면 **이 fix의 목적 자체가 미달**이다.
+        #   네이버가 `[...]` → `{"trend":[...]}` 로 감싸는 흔한 스키마 변경을 하면
+        #   2,531종 전건 실패인데 로그는 `실패2531 [HTTP오류0/...]` 로 찍혀
+        #   9/11 사고 때와 **글자 그대로 같은 정보량**이 된다.
+        if stats is not None:
+            stats["schema_error"] = stats.get("schema_error", 0) + 1
+        return []
+
+    rows = []
+    no_ratio_rows = 0
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        bizdate = str(item.get("bizdate") or "").strip()
+        if len(bizdate) != 8 or not bizdate.isdigit():
+            continue
+        rate = _parse_ratio_or_none(item.get("foreignerHoldRatio"))
+        if rate is None:
+            # '-' 종목(실측 7종). 이 채널의 목적이 소진율이므로 행을 만들지 않는다.
+            # 실패가 아니라 '값 미제공'이라 호출부에서 별도로 센다.
+            # ★[F-237·D-4] **종목 단위**로 센다. 행 단위로 세면 한 종목이 30행이라
+            #   로그의 `소진율미제공`이 옆 카운터(종목 단위)의 30배로 찍혀 오해를 만든다
+            #   ([F-178] 분모 병기 교훈).
+            no_ratio_rows += 1
+            continue
+        rows.append({
+            "date": f"{bizdate[:4]}-{bizdate[4:6]}-{bizdate[6:]}",
+            "소진율": rate,
+            "보유수량": None,      # 신 원천 미제공 — 0으로 위장하지 않는다
+            # ★[F-237·D-5] 종가도 같은 원칙. `_safe_int`는 결측을 **0**으로 돌려주는데,
+            #   병합이 셀 단위(combine_first)라 0은 '값'으로 취급돼 **기존 캐시의 실제
+            #   종가를 0으로 덮는다**(결측이었다면 지켰을 값). 소진율에만 이 원칙을
+            #   세우고 바로 옆 줄에서 깨뜨리고 있었다.
+            "종가": _parse_close_or_none(item.get("closePrice")),
+        })
+
+    if stats is not None and no_ratio_rows and not rows:
+        # 이 종목은 전 기간 소진율이 '-' 였다 = 값 미제공 **종목** 1건
+        stats["no_ratio"] = stats.get("no_ratio", 0) + 1
+
+    dedup = {row["date"]: row for row in rows}
+    return sorted(dedup.values(), key=lambda x: x["date"], reverse=True)
+
+
+def _drop_empty_exh_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """소진율 캐시의 빈 행 제거 — 소진율·보유수량이 **둘 다 결측**인 행만 버린다.
+
+    ★9/19 [F-237] 판정을 `> 0` 에서 `결측 아님` 으로 바꿨다. 이유 둘:
+      ① 신 원천은 보유수량을 주지 않는다(공란) → 옛 OR 조건은 한쪽 날개가 꺾인 채
+         돌아가고, **소진율 0.00인 84종(전수 실측 3.37%)**이 매일 행을 못 쌓아 빈다.
+      ② 0.00은 오염이 아니라 **'외국인 보유가 없다'는 사실**이다.
+    ★기존 행 삭제 위험 0 — 옛 규칙이 남긴 행은 전부 두 컬럼이 숫자라 새 규칙에서도
+      반드시 보존된다([F-170] 계열 삭제 사고 원천 차단).
+
+    ★★별도 함수인 이유 = **테스트가 이 코드를 직접 부르게** 하기 위해서다. 초안에서는
+      이 식을 테스트 파일에 복제해 두고 *"구현이 바뀌면 같이 깨진다"* 고 적었는데
+      정반대였다 — 프로덕션을 옛 규칙으로 되돌려도 복제 테스트 3건이 전부 통과했다
+      (9/19 Tier-1 검수가 실측으로 적발). 8/6 [F-89]와 같은 얼굴.
+    """
+    keep_cols = [c for c in ("소진율", "보유수량") if c in df.columns]
+    if not keep_cols:
+        return df
+    mask = df[keep_cols[0]].notna()
+    for c in keep_cols[1:]:
+        mask = mask | df[c].notna()
+    return df[mask]
+
+
 def _today_kst_ts() -> pd.Timestamp:
     """오늘(KST) 자정 Timestamp — foreign_exh ghost 컷 기준일([F-170]).
 
@@ -501,7 +634,8 @@ def _today_kst_ts() -> pd.Timestamp:
 
 
 def _fetch_foreign_rates_naver(code: str,
-                               http_session: Optional[_requests.Session] = None) -> List[dict]:
+                               http_session: Optional[_requests.Session] = None,
+                               stats: Optional[dict] = None) -> List[dict]:
     """네이버 frgn 일별 페이지의 **전 거래일** 외국인 보유율 행 (최신순).
 
     ★8/13 [F-170] — 이 페이지를 20일치 파싱해 놓고 최신 1행만 쓰고 버리던 것이
@@ -512,17 +646,27 @@ def _fetch_foreign_rates_naver(code: str,
     """
     sess = http_session or _requests.Session()
     try:
+        # ★9/19 [F-237] 구 frgn HTML 페이지 폐지 → 신 trend JSON.
+        #   `allow_redirects=False`를 쓰지 않는다 — 신 엔드포인트는 리다이렉트하지 않고,
+        #   혹시 또 바뀌면 조용히 빈 리스트가 아니라 **파싱 실패로 시끄럽게** 나야 한다.
         resp = sess.get(
-            NAVER_FRGN_URL,
-            params={"code": code, "page": 1},
-            headers=NAVER_HEADERS,
+            NAVER_TREND_URL.format(code=code),
+            params={"pageSize": NAVER_TREND_PAGE_SIZE},
+            headers=NAVER_API_HEADERS,
             timeout=10,
         )
         resp.raise_for_status()
-        if not resp.encoding:
-            resp.encoding = "euc-kr"
-        return _parse_naver_frgn_html(code, resp.text)
+        payload = resp.json()
+        if stats is not None and isinstance(payload, list) and not payload:
+            # 상장폐지·거래정지 종목(전수 실측 40종). **실패가 아니다** — 이것을
+            # 실패로 세면 매일 "실패 47"이 뜨고, 반복되는 숫자는 배경이 된다.
+            # ★[F-237·D-3] `not payload` 만으로는 truthy 한 dict/str 이 빠져나가
+            #   스키마 변경이 이 분기로 잘못 들어왔다. list 임을 먼저 확인한다.
+            stats["no_rows"] = stats.get("no_rows", 0) + 1
+        return _parse_naver_trend_json(code, payload, stats=stats)
     except Exception as e:
+        if stats is not None:
+            stats["http_error"] = stats.get("http_error", 0) + 1
         logger.warning(f"네이버 외국인 보유비율 조회 실패 {code}: {e}")
         return []
 
@@ -589,6 +733,10 @@ def collect_foreign_exhaustion(
     # ★[F-170] ghost 컷이 실제로 몇 행을 지웠는지 **반드시 보이게** 센다.
     # 이 사고가 오래 안 보인 이유가 "조용히 지웠다"는 것 하나였다.
     ghost_dropped = 0
+    # ★9/19 [F-237] 실패를 한 덩어리로 세면 원인이 안 보인다. 9/11~9/18 사고 때
+    #   로그는 매일 `실패2531`만 찍었고, 그 숫자만으로는 '네트워크'인지 '원천 폐지'인지
+    #   알 수 없었다. 종류별로 센다.
+    fetch_stats: dict = {}
     http_session = _requests.Session()
 
     for i, code in enumerate(need_fetch):
@@ -598,9 +746,21 @@ def collect_foreign_exhaustion(
             print(f"    [{i+1}/{len(need_fetch)}] 수집중... (성공{fetched} 실패{failed})")
 
         try:
-            rows = _fetch_foreign_rates_naver(code, http_session=http_session)
+            # ★[F-237·D-3] 주석은 "상폐·정지는 실패가 아니다"라고 선언해 놓고
+            #   구현은 전부 `failed` 로 세고 있었다 — 문서가 구현보다 낙관적인
+            #   [F-110]/[F-187] 계열. `failed` 는 이 로그에서만 쓰이므로
+            #   **진짜 실패(HTTP·스키마)만** 세고 정상 부재(상폐·정지·소진율 '-')는
+            #   내역에만 남긴다. 판정은 **카운터 증분**으로 — 별도 상태를 끼워 넣으면
+            #   그 상태를 아무도 안 세팅하는 사고가 난다(초안이 실제로 그랬다).
+            absent_before = (fetch_stats.get("no_rows", 0)
+                             + fetch_stats.get("no_ratio", 0))
+            rows = _fetch_foreign_rates_naver(code, http_session=http_session,
+                                              stats=fetch_stats)
             if not rows:
-                failed += 1
+                absent_after = (fetch_stats.get("no_rows", 0)
+                                + fetch_stats.get("no_ratio", 0))
+                if absent_after == absent_before:
+                    failed += 1          # 정상 부재로 분류되지 않았다 = 진짜 실패
                 continue
 
             # ★[F-170] 페이지가 준 거래일을 **전부** 병합한다. 최신 1행만 쓰면 아래
@@ -612,12 +772,23 @@ def collect_foreign_exhaustion(
                 recs, index=pd.DatetimeIndex(dates, name="date")
             ).sort_index()
 
-            # 기존 캐시에 병합 — 같은 날짜는 네이버(신규)가 이긴다(keep="last").
+            # 기존 캐시에 병합 — 같은 날짜는 네이버(신규)가 이긴다.
+            # ★★9/19 [F-237] `concat + duplicated(keep="last")`를 **쓰면 안 된다**.
+            #   신 원천은 보유수량을 주지 않으므로 신규 행의 그 칸은 결측인데, keep="last"는
+            #   행 단위로 통째 교체한다 → 같은 날짜의 **기존 보유수량 실값이 결측으로 덮인다**.
+            #   신 원천이 매번 10거래일을 주므로 수집 때마다 3,510파일 × 최근 10행이
+            #   조용히 지워지고, 신 원천에 그 값이 없으니 **되채울 경로가 0**이다.
+            #   = 8/13 [F-170]과 같은 얼굴(조용한 삭제)을, 그 사고를 고친 코드 위에서
+            #     다시 만드는 것. 9/19 검수에서 재현해 잡았다.
+            #   ★올바른 규칙 = **셀 단위**: 신규에 값이 있으면 신규가 이기고,
+            #     신규가 결측이면 기존 값을 지킨다(`combine_first`).
             if cache_file.exists():
                 old = pd.read_csv(cache_file, index_col=0, parse_dates=True)
-                df = pd.concat([old, new_rows])
-                df = df[~df.index.duplicated(keep="last")]
-                df = df.sort_index()
+                df = new_rows.combine_first(old)
+                # combine_first 는 컬럼 순서를 알파벳순으로 바꾼다 — CSV 헤더를 고정한다.
+                cols = [c for c in old.columns if c in df.columns]
+                cols += [c for c in df.columns if c not in cols]
+                df = df[cols].sort_index()
             else:
                 df = new_rows
 
@@ -634,12 +805,31 @@ def collect_foreign_exhaustion(
             df = df[df.index <= _today_kst_ts()]
             ghost_dropped += before_cut - len(df)
 
-            # 빈/오염 행 방어: 소진율 또는 보유수량이 있는 거래일만 보존
-            if "소진율" in df.columns and "보유수량" in df.columns:
-                before = len(df)
-                df = df[(df["소진율"].fillna(0) > 0) | (df["보유수량"].fillna(0) > 0)]
-                stale_skipped += before - len(df)
+            # 빈/오염 행 방어: 소진율 또는 보유수량에 **값이 있는** 거래일만 보존.
+            # ★9/19 [F-237] 판정을 `> 0`에서 `결측 아님`으로 바꿨다. 이유 둘:
+            #   ① 신 원천은 보유수량을 주지 않는다(공란) → 옛 OR 조건은 한쪽 날개가
+            #      꺾인 채로 돌아가고, **소진율 0.00인 84종(전수 실측 3.37%)**이
+            #      매일 행을 못 쌓아 조용히 빈다.
+            #   ② 0.00은 오염이 아니라 **'외국인 보유가 없다'는 사실**이다. 값을 값으로
+            #      취급하지 않은 것이 원래 틀렸다.
+            #   ★기존 행 삭제 위험 0 — 옛 규칙이 남긴 행은 전부 두 컬럼이 숫자라
+            #     새 규칙에서도 반드시 보존된다([F-170] 계열 삭제 사고 원천 차단).
+            before = len(df)
+            df = _drop_empty_exh_rows(df)
+            stale_skipped += before - len(df)
 
+
+            # ★9/19 [F-237] 보유수량을 nullable 정수로 고정한다.
+            #   신 원천이 이 칸을 주지 않아 결측이 섞이면 pandas 가 컬럼을 float 로 올려
+            #   CSV 표기가 `2736456466` → `2736456466.0` 으로 **전 파일에서** 바뀐다.
+            #   값은 같지만(2^53 미만이라 정밀도 손실 없음) 이 저장소가 실제로 쓰는
+            #   검증 기법 하나가 죽는다 — 8/13·8/21 삭제 사고를 잡아낸 것이 바로
+            #   **재수집 전후 바이트 재현** 대조였다. 표기를 지켜 그 기법을 살려 둔다.
+            if "보유수량" in df.columns:
+                try:
+                    df["보유수량"] = df["보유수량"].astype("Int64")
+                except (TypeError, ValueError):
+                    pass   # 예기치 못한 값이면 표기만 포기하고 데이터는 그대로 둔다
             df.to_csv(cache_file)
             results[code] = df
             fetched += 1
@@ -653,8 +843,13 @@ def collect_foreign_exhaustion(
 
     total = len(results)
     coverage = total / len(codes) * 100 if codes else 0
+    detail = (f" [HTTP오류{fetch_stats.get('http_error', 0)}"
+              f"/스키마이상{fetch_stats.get('schema_error', 0)}"
+              f"/상폐·정지{fetch_stats.get('no_rows', 0)}"
+              f"/소진율미제공{fetch_stats.get('no_ratio', 0)}]"
+              "  (실패=HTTP·스키마만·단위 모두 종목)")
     print(f"  외국인 소진율 완료: 수집{fetched}, 기존캐시{existing_cache_count}, 저장"
-          f"{total}종목/{len(codes)} ({coverage:.1f}%) 실패{failed} 정리{stale_skipped}"
+          f"{total}종목/{len(codes)} ({coverage:.1f}%) 실패{failed}{detail} 정리{stale_skipped}"
           f" ghost컷{ghost_dropped}")
     if ghost_dropped:
         # 미래 일자 행은 정상 경로로는 생길 수 없다 — 0이 아니면 새 유입 경로가 생긴 것.
