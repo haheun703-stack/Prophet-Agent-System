@@ -27,12 +27,12 @@
 import logging
 import numpy as np
 import pandas as pd
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from data.extend_parquet_data import load_daily
+from data.sajang_rules import SAJANG  # [F-245] 단일 진실
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +140,9 @@ class DynamicTargetEngine:
 
         # 매집원가 계산 (20일 VWAP 기관순매수 가중)
         inst_cost = self._calc_inst_cost(code, df)
+        # ※RULE-008 이 이 줄을 MEDIUM 으로 잡지만 **개념이 다르다** — 진입가가 아니라
+        #   **기관 매집원가** 대비 -3% 방어선이다(SAJANG 룰의 대상이 아님).
+        #   아래에서 진입가 가드와 SAJANG.clamp_sl 을 거치므로 룰 이탈은 차단된다.
         inst_cost_sl = int(inst_cost * 0.97) if inst_cost > 0 else 0
 
         # SL = max(매집원가 방어선, ATR SL) - 가장 타이트한 것 사용
@@ -159,7 +162,6 @@ class DynamicTargetEngine:
         #   룰보다 깊은 손절이 그대로 나간다 → 하한만 룰로 건다([F-226]과 같은 헬퍼).
         #   ★더 타이트해지는 쪽(sl_atr_mult=0.5)은 **전략 선택이라 손대지 않는다** —
         #     그건 사장님 결정 사안으로 남겨 둔다.
-        from data.sajang_rules import SAJANG
         final_sl = SAJANG.clamp_sl(entry_price, final_sl)
 
         state = TargetState(
@@ -213,10 +215,16 @@ class DynamicTargetEngine:
             name=name,
             entry_price=entry_price,
             entry_date=entry_date,
-            initial_tp=int(entry_price * 1.05),
-            initial_sl=int(entry_price * 0.97),
-            dynamic_tp=int(entry_price * 1.05),
-            dynamic_sl=int(entry_price * 0.97),
+            # ★★9/19 [F-245] 이 폴백이 **폐기된 고정 +5% 익절**을 쓰고 있었다.
+            #   사장님 1번 영구 룰 = **트레일링 only · 고정 TP 폐기**
+            #   (`SAJANG.FIXED_TP_DISABLED=True` · `get_take_profit()=0`).
+            #   RULE-005 가 바로 이것을 잡는 규칙인데 **이 파일은 staged 된 적이 없어**
+            #   규칙이 단 한 번도 돌지 않았다([F-241] 그대로).
+            #   SL 도 값(-3%)은 맞았지만 SAJANG 우회라 룰이 바뀌면 이 줄만 안 따라간다.
+            initial_tp=SAJANG.get_take_profit(entry_price),
+            initial_sl=SAJANG.get_normal_sl(entry_price),
+            dynamic_tp=SAJANG.get_take_profit(entry_price),
+            dynamic_sl=SAJANG.get_normal_sl(entry_price),
         )
 
     # ═══════════════════════════════════════════════════
@@ -428,8 +436,9 @@ class DynamicTargetEngine:
             state.trailing_activated = True
 
             # ─── 트레일링 SL 계산 ───
-            # 고점 × 0.97 (고점 대비 -3%)
-            trail_sl = int(hwm * 0.97)
+            # 고점 대비 -3% — ★9/19 [F-245] 값은 맞았지만 SAJANG 우회였다.
+            #   사장님이 TRAILING_PCT 를 바꾸면 이 줄만 안 따라간다(단일 진실 위반).
+            trail_sl = SAJANG.get_trailing_sl(hwm)
             # 수익 +3% 경험 → 본전 확보 (SL ≥ 진입가)
             if pnl_pct >= 3.0 or (hwm > entry * 1.03):
                 trail_sl = max(trail_sl, entry)

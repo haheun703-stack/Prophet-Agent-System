@@ -70,3 +70,41 @@ def test_source_guards_are_present():
     assert "SAJANG.clamp_sl(entry_price, final_sl)" in src, "사장님 룰 하한 없음"
     assert "max(inst_cost_sl, initial_sl) if inst_cost_sl > 0 else initial_sl" not in src, \
         "옛 무가드 식이 남아 있다"
+
+
+# ------------------------------------------------------------------
+#  [F-245] 폐기된 고정 +5% 익절 · SAJANG 우회
+# ------------------------------------------------------------------
+
+def test_no_fixed_take_profit_literal():
+    """★사장님 1번 영구 룰 — 트레일링 only, 고정 TP 폐기.
+
+    폴백 경로가 `entry_price * 1.05`(= 고정 +5% 익절)를 쓰고 있었다.
+    RULE-005 가 바로 이것을 잡는 규칙인데 이 파일은 staged 된 적이 없어
+    **규칙이 단 한 번도 돌지 않았다**([F-241]).
+    """
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent
+           / "strategies" / "dynamic_target.py").read_text(encoding="utf-8")
+    code_lines = [l for l in src.splitlines() if not l.strip().startswith("#")]
+    body = "\n".join(code_lines)
+    assert "* 1.05" not in body, "폐기된 고정 +5% 익절이 남아 있다"
+    assert "SAJANG.get_take_profit(entry_price)" in body
+
+
+def test_sajang_is_the_owner_of_sl_and_tp():
+    """값이 맞는 것과 SAJANG 을 경유하는 것은 다르다 — 룰이 바뀌면 따라가야 한다."""
+    from pathlib import Path
+    src = (Path(__file__).resolve().parent.parent
+           / "strategies" / "dynamic_target.py").read_text(encoding="utf-8")
+    code_lines = [l for l in src.splitlines() if not l.strip().startswith("#")]
+    body = "\n".join(code_lines)
+    assert "SAJANG.get_normal_sl(entry_price)" in body
+    assert "SAJANG.get_trailing_sl(hwm)" in body
+    assert "int(hwm * 0.97)" not in body, "트레일링이 여전히 SAJANG 을 우회한다"
+    assert "int(entry_price * 0.97)" not in body, "SL 이 여전히 SAJANG 을 우회한다"
+
+
+def test_fixed_tp_is_actually_disabled():
+    assert SAJANG.FIXED_TP_DISABLED is True
+    assert SAJANG.get_take_profit(10000) == 0

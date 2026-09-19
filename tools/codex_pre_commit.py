@@ -25,6 +25,32 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scalper-agent"))
 
 
+# ★9/19 [F-246] — 판정이 `"[CRITICAL]" in text` 단순 문자열 존재였다.
+#   Codex 는 **"[CRITICAL] … SAJANG.get_take_profit 으로 수정되어 사장님 영구 룰을
+#   준수하고 있습니다"** 처럼 *해소된 항목*에도 심각도 태그를 붙인다.
+#   그래서 **룰 위반을 없애는 커밋이 오히려 차단**됐다(9/19 [F-245] 에서 2회 재현).
+#   이런 오탐이 반복되면 사람이 매번 우회하게 되고 hook 자체가 무의미해진다 —
+#   차단을 푸는 게 아니라 **줄 단위로 판독**해서 해소 문장을 분리한다.
+#   ★판정 기준: 해소 표현이 하나라도 없는 CRITICAL 줄이 있으면 **그대로 차단**.
+_RESOLVED_HINTS = (
+    "준수하고", "준수합니다", "수정되어", "수정되었", "제거되었", "제거됨",
+    "해결되었", "해결됨", "반영되었", "없습니다", "발견되지 않", "문제 없",
+)
+
+
+def _severity_lines(text: str, level: str):
+    """(진짜 위반 줄, 해소로 판독한 줄) — 심각도 태그가 붙은 줄만 본다."""
+    real, resolved = [], []
+    for line in (text or "").splitlines():
+        if f"[{level}]" not in line and f"{level}]" not in line:
+            continue
+        if any(h in line for h in _RESOLVED_HINTS):
+            resolved.append(line)
+        else:
+            real.append(line)
+    return real, resolved
+
+
 def get_staged_diff() -> str:
     """git에 staged된 변경 사항 diff 가져오기."""
     try:
@@ -105,12 +131,20 @@ def main():
     print("=" * 70)
 
     # CRITICAL/HIGH 발견 시 차단 권고
-    critical_found = "[CRITICAL]" in review_text or "CRITICAL]" in review_text
-    high_found = "[HIGH]" in review_text or "HIGH]" in review_text
+    critical_found, resolved = _severity_lines(review_text, "CRITICAL")
+    high_found, _hres = _severity_lines(review_text, "HIGH")
+    if resolved:
+        print()
+        print(f"ℹ️ [CRITICAL] 태그가 붙었으나 **해소 문장**으로 판독한 줄 {len(resolved)}건 —")
+        print("   Codex 가 '수정되어 준수하고 있습니다' 를 CRITICAL 로 태깅하는 사례입니다.")
+        for ln in resolved[:5]:
+            print(f"   · {ln.strip()[:150]}")
 
     if critical_found:
         print()
-        print("🚨 Codex CRITICAL 발견 — commit 차단 권고")
+        print(f"🚨 Codex CRITICAL 발견 {len(critical_found)}건 — commit 차단 권고")
+        for ln in critical_found[:5]:
+            print(f"   · {ln.strip()[:150]}")
         print("  단타봇 의무: fix 또는 사장님 confirm 후 --no-verify 사용")
         return 1
     elif high_found:
