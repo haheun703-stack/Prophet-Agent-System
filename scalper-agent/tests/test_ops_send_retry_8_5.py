@@ -208,7 +208,10 @@ def _run_main_flow(seed_lines, argv_date="2026-08-06"):
         # ★패치·open 모두 try 안 — open 실패 시에도 finally가 전부 복원한다(Tier1 L-1)
         ops.LOGS_DIR = tmp
         ops.run_checks = lambda ref: ([], "", [])
-        ops.build_message = lambda ref, rows, score, dl: "본문"
+        # ★9/19 [F-239] — `**kw` 로 받는다. 프로덕션이 `streaks=` 를 넘기기 시작했고,
+        #   고정 시그니처 스텁이라 TypeError 로 이 파일 전체가 죽었다(회귀가 잡음).
+        #   앞으로 인자가 더 늘어도 **이 보호(8/6 자기참조)는 죽지 않는다.**
+        ops.build_message = lambda ref, rows, score, dl, **kw: "본문"
         ops._send_telegram = lambda m: (sent_msgs.append(m), 0)[1]
         sys.argv = ["daily_ops_check.py", "--date", argv_date]
         fh = open(selflog, "a", encoding="utf-8", buffering=1)  # cron `>>` + `-u` 라인 플러시

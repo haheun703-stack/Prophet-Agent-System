@@ -51,6 +51,7 @@ import sys
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Optional
 
 BASE_DIR = Path(__file__).resolve().parent.parent          # scalper-agent/
 if str(BASE_DIR) not in sys.path:
@@ -104,6 +105,14 @@ _OPS_TOKEN_PREFIX = "[ops]"    # 신규 마커·dry 토큰 인정 조건 — 자
 SEND_ATTEMPTS = 3
 SEND_BACKOFF = (2, 5)                     # 시도 사이 대기(초) — 최악 7초, cron 무해
 _OPS_HEADER_RE = re.compile(r"\[ops\] === (\d{4}-\d{2}-\d{2}) \d{2}:\d{2}:\d{2} 아침 점검")
+
+# ★9/19 [F-239] — 같은 경고가 반복되면 **배경이 된다.**
+#   9/11~9/18 외국인소진율이 6영업일 내내 `⚠️ 확인 권장: A1` 로 똑같이 나갔고,
+#   세션이 12일 없던 동안 아무도 파고들지 않았다. 첫날인지 6일째인지 화면에 없었다.
+#   ⇒ 연속 일수를 **얼굴에 붙인다**. 판정 로직·임계는 무변경, 문구만.
+_ALERT_LINE_RE = re.compile(r"^(?:🚨 즉시 확인 필요|⚠️ 확인 권장): ([^(]+)")
+STREAK_SHOW_FROM = 2        # 2영업일째부터 연속 표기
+STREAK_SUSPECT_FROM = 5     # 5영업일째부터 '채널 정지 의심'으로 승격
 
 try:
     from data.trading_calendar import is_trading_day, last_trading_day
@@ -409,7 +418,8 @@ def run_checks(ref: str) -> tuple:
     return rows, score, dl_rows
 
 
-def build_message(ref: str, rows: list, score: str, dl_rows: list) -> str:
+def build_message(ref: str, rows: list, score: str, dl_rows: list,
+                  streaks: Optional[dict] = None) -> str:
     today = date.today()
     rm, rd = ref[5:7], ref[8:10]
     head = (f"🌅 {today.month}/{today.day}({_WD[today.weekday()]}) 아침 점검 "
@@ -437,8 +447,85 @@ def build_message(ref: str, rows: list, score: str, dl_rows: list) -> str:
         lines.append(f"⚠️ 확인 권장: {', '.join(bad)}{tail}")
     else:
         lines.append(f"✅ 아침 점검 이상 없음 — 실주문 0·페이퍼{tail}")
+
+    # ★[F-239] 며칠째인지를 **얼굴에 붙인다**. 판정·임계는 위에서 이미 끝났고 여기는 문구뿐.
+    #   같은 ⚠️가 반복되면 배경이 된다 — 9/11~9/18 소진율이 6영업일 내내 똑같이 나갔다.
+    for c in bad:
+        note = streak_note(c, (streaks or {}).get(c, 0))
+        if note:
+            lines.append(note)
     lines.append("🤖 평일 08:30 자동 · 세션 없어도 감시")
     return "\n".join(lines)
+
+
+def alert_streaks(log_path: Path) -> dict:
+    """항목코드 → **직전까지** 연속으로 경보가 난 영업일 수 ([F-239]).
+
+    ★상태 파일을 만들지 않는다 — '상태 파일 무접촉' 불변식을 지키려고 자기 로그를
+      역산한다(8/5 [F-29] 규약 재사용). 새 cron·새 파일 0.
+    ★**이번 실행분은 포함되지 않는다.** 호출부가 우리 헤더를 찍기 전에 읽으므로
+      (8/6 [F-89] 순서 고정) 여기서 나온 값 N은 '어제까지 N일' 이고 오늘을 더하면 N+1이다.
+    ★자기참조 차단: 우리가 새로 찍을 승격 줄은 `🚨 즉시 확인 필요:`/`⚠️ 확인 권장:` 으로
+      **시작하지 않는다**(들여쓴 `└` 줄). 시작하게 만들면 다음 실행이 자기 문구를
+      경보로 다시 세어 streak 이 스스로 자란다 — 8/6·8/7·8/11에 세 번 겪은 함정.
+    """
+    try:
+        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return {}
+
+    by_day: dict = {}          # 실행일 → 그날 **마지막** 블록의 경보 코드 집합
+    cur_day = None
+    cur_codes: set = set()
+    seen_alert = False
+
+    def _close():
+        # 경보 줄이 한 번도 없던 블록도 '그날은 경보 0건' 으로 기록해야 연속이 끊긴다.
+        if cur_day is not None:
+            by_day[cur_day] = set(cur_codes) if seen_alert else set()
+
+    for ln in lines:
+        m = _OPS_HEADER_RE.search(ln)
+        if m:
+            _close()
+            cur_day, cur_codes, seen_alert = m.group(1), set(), False
+            continue
+        if cur_day is None:
+            continue
+        am = _ALERT_LINE_RE.match(ln.strip())
+        if am:
+            seen_alert = True
+            cur_codes = {c.strip() for c in am.group(1).split(",") if c.strip()}
+        elif ln.startswith("✅ 아침 점검 이상 없음"):
+            seen_alert = True
+            cur_codes = set()
+    _close()
+
+    days = sorted(by_day, reverse=True)
+    if not days:
+        return {}
+
+    # 최신 실행일의 경보 코드만 연속의 후보다. 과거로 거슬러 가며 교집합을 좁히고,
+    # 살아남은 코드마다 하루씩 더한다. 경보 0건인 날을 만나면 교집합이 비어 자연히 멈춘다.
+    streaks: dict = {}
+    alive = set(by_day[days[0]])
+    for day in days:
+        alive &= by_day[day]
+        if not alive:
+            break
+        for c in alive:
+            streaks[c] = streaks.get(c, 0) + 1
+    return streaks
+
+
+def streak_note(code: str, streak_before: int) -> str:
+    """연속 경보 문구 — streak_before 는 `alert_streaks` 값(이번 실행 **미포함**)."""
+    n = streak_before + 1
+    if n < STREAK_SHOW_FROM:
+        return ""
+    if n >= STREAK_SUSPECT_FROM:
+        return f"   └ {code} {n}영업일 연속 — 채널 정지 의심"
+    return f"   └ {code} {n}영업일 연속"
 
 
 def pending_unsent(log_path: Path) -> list:
@@ -614,6 +701,13 @@ def main() -> int:
     except Exception as e:  # noqa: BLE001 — 병기는 부가 정보. 실패해도 발송은 간다.
         pending, pending_err = [], e
 
+    # ★[F-239] 연속 경보 일수도 **같은 이유로 헤더보다 먼저** 읽는다. 순서를 지키면
+    #   자기 블록을 세는 경로가 구조적으로 생기지 않는다(8/6 사고와 동형 방지).
+    try:
+        streaks = alert_streaks(LOGS_DIR / SELF_LOG)
+    except Exception:  # noqa: BLE001 — 문구용 부가 정보. 실패해도 판정·발송은 간다.
+        streaks = {}
+
     print(f"[ops] === {datetime.now():%Y-%m-%d %H:%M:%S} 아침 점검 (기준 거래일 {ref}) ===")
     if pending_err is not None:
         # 헤더 '뒤'에 찍는다 — 헤더보다 앞선 줄은 스캐너 시야에서 직전 블록에 귀속되어
@@ -621,7 +715,7 @@ def main() -> int:
         print(f"[ops] 미발송 누적 판독 실패(무시): {pending_err}", file=sys.stderr)
 
     rows, score, dl_rows = run_checks(ref)
-    msg = build_message(ref, rows, score, dl_rows)
+    msg = build_message(ref, rows, score, dl_rows, streaks=streaks)
 
     # [F-89] 지난 미발송이 있으면 본문에 병기 — 실패 사실 자체가 사람에게 닿아야 한다.
     # 판정 로직(build_message)은 순수하게 두고 발송 직전에만 덧붙인다.
